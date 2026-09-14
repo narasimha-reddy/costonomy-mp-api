@@ -13,10 +13,26 @@ marketplace. Modular monolith on MySQL `costonomy_mp`.
 
 Mobile client: `costonomy-mp-mobile`.
 
+## Getting started
+
+```bash
+mvn spring-boot:run       # local profile, all providers mocked
+mvn test                  # unit tests — no Docker needed
+mvn verify                # + integration and migration tests (needs Docker)
+```
+
+Local development needs no external provider and no MySQL install: OTP, payment
+and delivery all run on mocks, and integration tests bring their own MySQL 8 via
+Testcontainers. You do need Docker running for `mvn verify`.
+
+Once running: `http://localhost:8080/costonomy-mp-api/swagger-ui.html`
+
 ## Status
 
-Specification only — no application code yet. The build sequence is in
-`docs/specs/00-README.md` §8; next up is Phase 1, backend foundation.
+**Phase 1 — backend foundation.** Project skeleton, API envelope and error
+catalogue, request correlation, security wiring, and the platform infrastructure
+every later phase depends on: idempotency, audit, outbox, config and job locks.
+Schema migrations `V1` (identity/access) and `V2` (platform).
 
-Two open questions should be settled before the code they affect gets written —
-see `docs/DECISIONS.md` OPEN-001 (payment grain) and OPEN-002 (API error envelope).
+No domain endpoints yet. Next is Phase 3, authentication — see
+`docs/specs/00-README.md` §8 for the full sequence.

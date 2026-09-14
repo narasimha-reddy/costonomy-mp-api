@@ -130,10 +130,103 @@ transactional authority in every version of the spec, checkout revalidates
 against it regardless, and running OpenSearch from day one adds operational
 surface with no user-visible gain at launch volumes.
 
+
 ---
 
-## OPEN-001 — Is a payment per procurement, or per supplier order?
-**Raised 2026-09-14 · Needs a decision before Phase 9 (Payments)**
+## D-007 — Integration tests run on real MySQL 8 via Testcontainers
+**2026-09-14 · Settled**
+
+**Decision:** database integration and migration tests run against a real MySQL 8
+container. H2 in MySQL compatibility mode was rejected.
+
+**Why:** `10-testing-cicd-seed-data.md` §8 requires every migration to run from a
+clean database in CI and requires testing an upgrade from the previous schema
+version. H2 does not faithfully reproduce MySQL 8 DDL, `utf8mb4_0900_ai_ci`
+collation, `JSON` columns or foreign-key behaviour, so migrations verified
+against H2 are verified against a database we never deploy to.
+
+Practical shape:
+
+- Unit tests are tagged plain and run under Surefire — no Docker, `mvn test`.
+- Integration tests extend `AbstractIntegrationTest`, are tagged `integration`,
+  and run under Failsafe — `mvn verify`.
+- `AbstractIntegrationTest` skips itself when no Docker daemon is reachable, so a
+  developer who has not started Docker gets a clean skip rather than a wall of
+  initialisation errors. **CI asserts Docker is present** before running `verify`,
+  because a silently skipped migration suite is the same as no migration suite.
+
+### The Docker API version pin
+
+`pom.xml` sets `-Dapi.version=1.44` for Failsafe. This is not optional on a
+current Docker install, and the failure it prevents is very hard to diagnose:
+
+Testcontainers 1.21.3 bundles docker-java 3.4.2, which negotiates a Docker Engine
+API version below 1.44. Docker Engine 25+ (Docker Desktop 29 reports
+`MinAPIVersion 1.44`) rejects those with an HTTP 400 whose body is an *empty*
+`Info` struct. Testcontainers reports that as **"Could not find a valid Docker
+environment"** — while `docker info` and `docker ps` work perfectly, which sends
+you looking at sockets, contexts and permissions instead of at API versions.
+
+Note the property is `api.version` (a docker-java **system property**). The
+`DOCKER_API_VERSION` environment variable is *not* consulted here, so exporting
+it has no effect. Override for an engine older than Docker 25 with
+`-Ddocker.api.version=1.41`.
+
+---
+
+## D-008 — Platform tables migrate before the domain tables
+**2026-09-14 · Settled**
+
+`02-domain-model-database.md` §8 sketches idempotency, audit, outbox and config as
+part of `V12__notifications_audit_analytics.sql`.
+
+**Decision:** they move to `V2__platform.sql`, and the domain migrations shift one
+number later:
+
+```
+V1  identity_access          V8  payments
+V2  platform          ← new  V9  credit
+V3  restaurant_outlet        V10 delivery
+V4  supplier                 V11 receiving_disputes_ratings
+V5  catalog                  V12 settlement_commission
+V6  requirements_procurement V13 notifications_analytics
+V7  orders_fulfillment       V14 seed_reference_data
+```
+
+**Why:** idempotency and audit are required by the *first* mutating endpoint, not
+the last. Doc 02 §8 presents its list as "suggested", and the grouping is
+preserved — only the order changed.
+
+---
+
+## D-009 — Enum columns are VARCHAR, annotated per field
+**2026-09-14 · Settled**
+
+Hibernate 6.4 maps `@Enumerated(EnumType.STRING)` on MySQL to a **native
+`ENUM`** column. Our migrations use `VARCHAR(32)`, which doc 02 §6 specifies for
+every `status` column, so `ddl-auto=validate` refuses to start.
+
+**Decision:** keep `VARCHAR` in the schema and add `@JdbcTypeCode(SqlTypes.VARCHAR)`
+to every enum field.
+
+**Why VARCHAR rather than a native ENUM:** these are state machines that will
+gain states — a new delivery failure branch, a new dispute resolution code. With a
+native `ENUM` each new state is an `ALTER TABLE` on a large table. With `VARCHAR`
+it is a code change.
+
+**Why per-field rather than globally:** the global setting
+(`hibernate.type.preferred_enum_jdbc_type`) only exists from **Hibernate 6.5**,
+and Spring Boot 3.2.1 ships 6.4.4 — setting it there is silently ignored, which is
+worse than not setting it. Revisit when Spring Boot brings 6.5+.
+
+**This applies to every enum column added from here on.** `ddl-auto=validate`
+will catch an omission at startup, but the error message points at a column type
+rather than a missing annotation, so it is worth knowing up front.
+
+---
+
+## D-010 — A payment is per supplier order
+**Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-001)
 
 The specs disagree:
 
@@ -156,14 +249,26 @@ commercial value per order.
   authorisations for one checkout, and a multi-supplier cart could partially fail
   at authorisation time.
 
-Not blocking the phases before Payments. **Do not let this get settled
-implicitly** by whichever migration is written first — `02`'s DDL currently
-implies per-supplier-order, and that should be a decision, not an accident.
+**Decision: per supplier order**, following `02`'s DDL
+(`payment.supplier_order_id`).
+
+**Why:** capture and refund then map one-to-one onto the thing actually being
+accepted. Partial acceptance captures the accepted value on that order's own
+payment; a rejection releases that order's authorisation and touches nothing
+else. Reconciliation (doc 09 §11, doc 10 §3 `captured <= authorized`) stays a
+per-order property rather than a cross-order allocation problem.
+
+**Accepted cost:** a restaurant checking out across three suppliers sees three
+authorisations rather than one, and a multi-supplier cart can partially fail at
+authorisation time. The mobile client must present these as one checkout even
+though the backend holds several payments — the same aggregation it already does
+for supplier orders (doc 05 §11: "Unified restaurant experience even when backend
+splits into multiple supplier orders").
 
 ---
 
-## OPEN-002 — API response envelope
-**Raised 2026-09-14 · Needs a decision before the first controller**
+## D-011 — API responses use the `{ data, error, meta }` envelope
+**Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-002)
 
 `04-api-specification.md` §2 specifies `{ data, error, meta }` with
 `error.code` / `error.message` / `error.details`. The existing `costonomy-api`
@@ -174,12 +279,23 @@ does something different: an `ERR_NNNN` code catalogue
 `00-README.md` §4 says to preserve existing Costonomy conventions; `04` §2 gives
 an explicit and different contract.
 
-Recommendation: follow `04`'s envelope. It is the newer, explicit contract, the
-mobile client is new so nothing depends on the old shape, and the error codes
-`04` §22 lists are domain codes (`SUPPLIER_ORDER_EXPIRED`, `PRICE_CHANGED`,
-`CREDIT_LIMIT_EXCEEDED`) that a numeric `ERR_NNNN` catalogue cannot express as
-readably. Needs confirming before controllers get written, because retrofitting
-an envelope across every endpoint is expensive.
+**Decision: doc 04's envelope.** Implemented in
+`com.costonomy.mp.common.api.ApiResponse`, with the code catalogue in
+`com.costonomy.mp.common.error.ErrorCode`.
+
+**Why:** it is the newer and more explicit contract; the mobile client is new so
+nothing depends on the old shape; and the codes doc 04 §22 lists are *domain*
+codes (`SUPPLIER_ORDER_EXPIRED`, `PRICE_CHANGED`, `CREDIT_LIMIT_EXCEEDED`) that a
+numeric `ERR_NNNN` catalogue cannot express as readably.
+
+Two consequences worth knowing:
+
+- `error.code` is a **stable public string**. Clients branch on it. Never rename
+  or repurpose one — add a new code.
+- Spring Security rejects before the dispatcher runs, so `SecurityConfig`
+  installs its own entry point and access-denied handler to emit the same
+  envelope. Without that, an expired token would return Spring's HTML error page
+  and the mobile client's central error mapping would have nothing to parse.
 
 ---
 

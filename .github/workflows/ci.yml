@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+
+      # Doc 10 §8 requires migrations to run from a clean database in CI, and
+      # §2 requires real concurrency tests. Both need Docker for Testcontainers.
+      #
+      # AbstractIntegrationTest skips itself when no Docker daemon is reachable,
+      # which is right for a developer's laptop but would silently turn CI's
+      # migration suite into a no-op. So assert Docker is present before running,
+      # and fail loudly if it ever disappears.
+      - name: Verify Docker is available
+        run: |
+          docker info > /dev/null
+          echo "Docker API: $(docker version --format '{{.Server.APIVersion}}')"
+
+      - name: Compile
+        run: mvn -B -ntp compile
+
+      - name: Unit tests
+        run: mvn -B -ntp test
+
+      # `verify` runs Failsafe: migrations against real MySQL 8, plus the
+      # integration and concurrency suites.
+      - name: Integration tests
+        run: mvn -B -ntp verify
+
+      - name: Publish test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/

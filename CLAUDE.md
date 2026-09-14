@@ -5,8 +5,8 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: specification only.** No application code yet. The build sequence is
-> in `docs/specs/00-README.md` §8; the next step is Phase 1, backend foundation.
+> **Status: Phase 1 complete** — foundation, no domain endpoints yet. Next is
+> Phase 3, authentication. Build sequence: `docs/specs/00-README.md` §8.
 
 ## Read before writing code
 
@@ -20,11 +20,10 @@ Where the specs disagree, `docs/DECISIONS.md` D-001 says which wins:
 the numbered `00`–`10` docs and PRD v2.2 are authoritative;
 `Mandi_Engineering_PRD_v1.0.md` is background only.
 
-**Two open questions block work that is coming soon** — read them before they get
-decided by accident:
-- **OPEN-001**: is a payment per procurement or per supplier order? Settle before
-  Phase 9, and before a migration implies an answer.
-- **OPEN-002**: which API error envelope? Settle before the first controller.
+Decisions already made that you should not re-litigate: **D-010** a payment is
+per supplier order; **D-011** responses use the `{ data, error, meta }` envelope;
+**D-002** Flyway owns the schema; **D-009** enum columns are `VARCHAR` and need
+`@JdbcTypeCode(SqlTypes.VARCHAR)` on every enum field.
 
 ## Stack
 
@@ -43,6 +42,41 @@ Base Java package: `com.costonomy.mp`.
 
 Deployment is out of scope for this version. Local development must work end to
 end with mock providers and documented environment configuration.
+
+## What exists
+
+```
+common/
+  api/          ApiResponse — the { data, error, meta } envelope
+  error/        ErrorCode catalogue, BusinessException, GlobalExceptionHandler
+  web/          RequestIdFilter, RequestContext — correlation (doc 09 §15)
+  idempotency/  IdempotencyService + IdempotencyStore (doc 04 §21)
+  audit/        AuditService — append-only, redacts secrets (doc 09 §7)
+  outbox/       OutboxService + OutboxPublisher (doc 02 §10)
+  domain/       BaseEntity — id, timestamps, @Version
+  config/       Security, Jackson, OpenAPI, ShedLock
+```
+
+Empty module packages (`identity`, `restaurant`, `supplier`, `catalog`,
+`requirement`, `procurement`, `order`, `payment`, `credit`, `delivery`, `trust`,
+`settlement`, `notification`, `admin`) are the agreed modular-monolith structure.
+A module owns its entities, repositories, services and controllers; modules talk
+through services, never by reaching into another module's repositories.
+`common` is the shared kernel every module may depend on.
+
+### Two things that are easy to get wrong here
+
+**`IdempotencyStore` is a separate bean from `IdempotencyService` on purpose.**
+Spring's `@Transactional` works through a proxy, and a self-invocation bypasses
+it silently. If the `REQUIRES_NEW` claim methods lived on `IdempotencyService`
+and were called from its own `execute()`, the annotation would be ignored, the
+claim would join the caller's transaction, and a concurrent duplicate would not
+see it until that transaction committed — by which point both callers have
+authorised a payment. Do not merge these two classes.
+
+**`AuditService` and `OutboxService` join the caller's transaction, also on
+purpose.** The audit row, the event, and the state change commit together or not
+at all. An audit entry for a rolled-back suspension is worse than none.
 
 ## Rules that are not negotiable
 
