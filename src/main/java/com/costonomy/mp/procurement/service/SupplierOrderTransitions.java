@@ -52,6 +52,7 @@ public class SupplierOrderTransitions {
     private final SupplierOrderItemRepository orderItems;
     private final SupplierOrderMapper mapper;
     private final RequirementService requirementService;
+    private final OrderFundingPort funding;
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
@@ -194,6 +195,12 @@ public class SupplierOrderTransitions {
         }
         requirementService.creditAcceptedQuantities(creditByRequirementItem, actorId);
 
+        // Take only what the supplier committed to (doc 01 §14). This marks the
+        // payment; the provider call happens after this transaction commits, so a
+        // slow gateway cannot hold it open and a gateway failure cannot roll back
+        // an acceptance that really happened.
+        funding.onOrderAccepted(order.getId(), order.getAcceptedAmount());
+
         auditService.record(actorId, null, "SUPPLIER_ORDER_" + order.getStatus().name(),
                 "SUPPLIER_ORDER", order.getId(),
                 SupplierOrderStatus.PENDING_ACCEPTANCE.name(), order.getStatus().name(),
@@ -250,6 +257,11 @@ public class SupplierOrderTransitions {
 
         // No requirement compensation is needed: nothing was ever credited, so the
         // shortfall is still sitting on the requirement, sourceable (D-015).
+        //
+        // The money is another matter: the customer's authorisation is released, so
+        // a supplier who declines costs them nothing (doc 01 §14).
+        funding.onOrderUnfulfilled(order.getId(), "Supplier rejected: " + reason);
+
         outbox.publish("SupplierOrderRejected", "SUPPLIER_ORDER", order.getId(),
                 Map.of("orderNumber", order.getOrderNumber(),
                         "supplierStoreId", order.getSupplierStoreId(),
@@ -296,6 +308,9 @@ public class SupplierOrderTransitions {
                 order.getId(), SupplierOrderStatus.PENDING_ACCEPTANCE.name(),
                 SupplierOrderStatus.EXPIRED.name(),
                 "No response within %ds".formatted(order.getResponseSlaSeconds()), "JOB");
+
+        // Nobody is charged for an order nobody answered.
+        funding.onOrderUnfulfilled(order.getId(), "No supplier response within SLA");
 
         // A distinct event from rejection. Doc 01 §12 rule 11: they are different
         // business outcomes and downstream — notifications, performance, analytics
@@ -367,6 +382,8 @@ public class SupplierOrderTransitions {
         order.setCancelledAt(Instant.now());
         order.setRejectionReason(reason);
         save(order, current);
+
+        funding.onOrderUnfulfilled(order.getId(), "Cancelled: " + reason);
 
         auditService.record(actorId, null, "SUPPLIER_ORDER_CANCELLED", "SUPPLIER_ORDER",
                 orderId, current.name(), SupplierOrderStatus.CANCELLED.name(), reason, "API");

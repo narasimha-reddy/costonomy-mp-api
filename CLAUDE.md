@@ -5,13 +5,13 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3–8 complete** — foundation, authentication, organisations
+> **Status: Phases 1, 3–9 complete** — foundation, authentication, organisations
 > with authorization, catalog, search with Best Value recommendations,
-> requirements through to submitted orders, and supplier acceptance with timeout.
-> Next is Phase 9, payments. Build sequence: `docs/specs/00-README.md` §8.
+> requirements through to submitted orders, supplier acceptance with timeout, and
+> payments. Next is Phase 10, credit. Build sequence: `docs/specs/00-README.md` §8.
 >
-> **Before Phase 9, read OPEN-004 in `docs/DECISIONS.md`:** payment is not yet
-> enforced before an order reaches a supplier.
+> **There are no open decisions.** OPEN-004 closed as D-020: a supplier order is
+> created `DRAFT` and released only once funding is secured.
 
 ## Read before writing code
 
@@ -84,6 +84,13 @@ procurement/    requirements, cart, checkout, approval, supplier orders
                 three state machines
   service/      RequirementService, ProcurementService, ApprovalPolicyEvaluator,
                 ProcurementSubmitter, ProcurementStateStore
+payment/        authorization, capture, release, refunds, webhooks
+  domain/       Payment, PaymentStatus, PaymentTransaction, Refund,
+                RefundReason, RefundStatus, PaymentWebhookEvent
+  provider/     PaymentProvider port + Razorpay and Mock adapters
+  service/      PaymentService, RefundService, PaymentJobs,
+                PaymentWebhookService + PaymentWebhookStore,
+                OrderFundingAdapter (implements procurement's OrderFundingPort)
 discovery/      search, serviceability, Best Value ranking
   domain/       Serviceability, RankingWeights, ExplanationCode, SupplierPerformance
   service/      BestValueScorer, RecommendationService, SearchService,
@@ -134,6 +141,13 @@ that looks correct from the outside, and it has now produced four real bugs here
 - `doSubmit` was `@Transactional` but self-invoked from inside the idempotency
   lambda, so the entire submission would have run with no transaction. Now in
   `ProcurementSubmitter`.
+- A **duplicate webhook** returned 500. The unique-constraint violation had
+  already marked the transaction rollback-only, so catching it changed nothing
+  and the commit threw afterwards — telling the provider to retry an event we
+  already had, forever. Now in `PaymentWebhookStore`, and note the second half of
+  the rule (D-021): the store **throws** the duplicate rather than catching it
+  inside its own transaction, because a catch cannot un-doom a transaction. Its
+  caller catches it, after that transaction has rolled back.
 
 Every one of these passed a test that checked the error response, and failed a
 test that checked whether the thing the error described had actually happened.
@@ -192,6 +206,16 @@ handle its absence the same way.
 
 **Commission is never a ranking input.** Guardrail 9. Not as a weight, not as a
 tiebreak, not in a response. `BestValueScorerTest` asserts the component set.
+
+**A supplier never sees an order that is not funded.** Guardrail 16, doc 01 §14,
+D-020. Submission creates supplier orders in `DRAFT` with **no acceptance
+deadline**; `OrderReleaseService.releaseIfFunded` moves them to
+`PENDING_ACCEPTANCE` and starts the clock at that moment, from whichever of the
+confirm call, the webhook or the reconciliation job arrives first. Funding means
+`PaymentStatus.fundsSecured()` — nothing else may decide it. Money is captured
+only after acceptance and only for what was accepted; the remainder of a partial
+acceptance is *released*, never refunded, so nothing reaches the restaurant's
+statement that should not be there.
 
 **A requirement is credited on acceptance, never on submission.** Guardrail 14,
 D-015. Placing an order is a hope; decrementing on hope makes a rejected order look

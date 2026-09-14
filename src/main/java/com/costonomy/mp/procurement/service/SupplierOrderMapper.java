@@ -66,11 +66,18 @@ public class SupplierOrderMapper {
                         .toList());
     }
 
-    /** The orders a procurement already produced. */
+    /**
+     * The orders a procurement already produced.
+     *
+     * <p>Returns no payment intents: this replays an existing submission, and the
+     * intents were handed to the client the first time. Re-issuing them would
+     * invite a second checkout against an order already being paid for.
+     */
     public ProcurementDtos.SubmitResponse submitResponse(Procurement procurement) {
         return new ProcurementDtos.SubmitResponse(
                 procurement.getId(), procurement.getStatus(),
                 supplierOrders.findByProcurementId(procurement.getId()).stream()
-                        .map(this::toResponse).toList());
+                        .map(this::toResponse).toList(),
+                List.of());
     }
 }

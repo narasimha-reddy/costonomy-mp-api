@@ -156,6 +156,9 @@ class MigrationIT extends AbstractIntegrationTest {
                         // Append-only facts.
                         "audit_log",
                         "catalog_import_row",
+                        // A ledger of what we asked the provider to do. Rewriting
+                        // one would erase the trail a payment is reconstructed from.
+                        "payment_transaction",
                         // Reference data that is added or removed, never edited.
                         "canonical_product_alias",
                         // Pure join tables.

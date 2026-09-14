@@ -534,25 +534,70 @@ query is slow, not when the theory says it might be.
 
 ---
 
-## OPEN-004 — Payment is not yet enforced before an order reaches a supplier
-**Raised 2026-09-14 · Must be closed in Phase 9 (Payments)**
+## D-020 — An order is funded before a supplier can see it
+**Raised 2026-09-14 · Settled 2026-09-15** (was OPEN-004)
 
 Doc 01 §14 and guardrail 16: a payment failure means the supplier never sees the
-order. Payments arrive in Phase 9, so today a submitted order carries
-`payment_status = PENDING` and still moves to `PENDING_ACCEPTANCE`.
+order. Until Phase 9 a submitted order carried `payment_status = PENDING` and
+moved to `PENDING_ACCEPTANCE` anyway — a real gap in an unreleased system rather
+than a design decision, which is why it was recorded as open.
 
-This is a real gap in an unreleased system, not a design decision. The insertion
-point is marked in `ProcurementSubmitter.submit()`. When `PaymentService` lands:
+**Decision: a supplier order is created `DRAFT` and released only once funding is
+secured.** `ProcurementSubmitter` creates the orders, asks `OrderFundingPort` to
+arrange funding, and returns a payment intent per order. `OrderReleaseService`
+moves `DRAFT → PENDING_ACCEPTANCE` when the money is held — from the client's
+confirm call, from the provider's webhook, or from the reconciliation job,
+whichever arrives first. Payment failure abandons the order instead.
 
-- authorize **before** creating the supplier orders;
-- create them in `DRAFT` and move them to `PENDING_ACCEPTANCE` only once
-  authorization succeeds — the acceptance deadline must not start ticking against
-  an order the supplier cannot yet be shown;
-- for `CREDIT`, reserve credit at the same point (doc 01 §19), which is a
-  different check with the same ordering requirement.
+Three consequences worth stating, because each one is a thing that would
+otherwise be got wrong later:
 
-`ProcurementIT$Submission` documents today's behaviour, so the change will be
-visible as a test change rather than a silent one.
+- **The acceptance deadline starts at release, not at submission.** Set at
+  submission, it would run down while the customer was still typing a card
+  number, and a supplier could be handed an order that had already expired.
+  `OrderReleaseService` stamps `acceptance_deadline = now + responseSlaSeconds`
+  at the moment the order becomes visible.
+- **Funding means authorized, not captured.** `PaymentStatus.fundsSecured()` is
+  the single predicate — `AUTHORIZED`, `CAPTURE_PENDING` or `CAPTURED` — and
+  nothing else may decide it. The money is only taken once the supplier accepts,
+  and only for what they accepted; the remainder of a partial acceptance is
+  *released*, not refunded, so nothing appears on the restaurant's statement.
+- **`CREDIT` is refused, not quietly allowed.** An unfunded credit order would be
+  the same guardrail-16 violation this decision exists to remove, so submission
+  rejects it with `CREDIT_AGREEMENT_NOT_ACTIVE` until credit funding lands in
+  Phase 10.
+
+`ProcurementIT$Submission.splitsBySupplier` now asserts the orders come back
+`DRAFT` with no deadline and acquire both only after payment, and
+`PaymentFlowIT$FundingGate` asserts the supplier's inbox is empty until then.
+
+---
+
+## D-021 — A webhook's three steps commit separately
+**2026-09-15 · Settled**
+
+`PaymentWebhookService.handle` is deliberately **not** `@Transactional`. It
+stores the event, reconciles the payment, then writes back the outcome, and each
+step commits on its own. Two failures forced this, both found by
+`PaymentFlowIT$Recovery` and both returning **500 to the provider** — which means
+the provider retries an event we already handled, forever.
+
+- **A duplicate poisoned the caller's transaction.** `uk_webhook_provider_event`
+  rejects a retry, and in MySQL a constraint violation marks the whole
+  transaction rollback-only. Catching the exception looked like it worked; the
+  commit afterwards threw `UnexpectedRollbackException`. The insert now happens
+  in `PaymentWebhookStore` under `REQUIRES_NEW` — and, importantly, the
+  exception is **thrown out of that method rather than caught inside it**, since
+  a catch inside cannot unmark a transaction that is already doomed.
+- **Writing the outcome deadlocked against the payment.** With one enclosing
+  transaction, the store's `REQUIRES_NEW` write of the event's result waited on
+  the `payment` row that same transaction had just locked and not yet committed.
+  The provider got its 500 fifty seconds later, when InnoDB's lock wait expired.
+
+This is the D-016 rule again, with a second edge: a side effect that must survive
+its caller needs its own bean *and* its caller must not be holding locks it wants.
+`PaymentJobs.reconcileStale` reaches the same state through the same calls with
+no enclosing transaction, which is the shape to copy.
 
 ---
 

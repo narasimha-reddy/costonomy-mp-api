@@ -3,8 +3,10 @@ package com.costonomy.mp.procurement;
 import com.costonomy.mp.procurement.service.SupplierOrderTimeoutJob;
 import com.costonomy.mp.procurement.service.SupplierOrderTransitions;
 import com.costonomy.mp.support.AbstractIntegrationTest;
+import com.costonomy.mp.payment.provider.MockPaymentProvider;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
+import com.costonomy.mp.support.TestCheckout;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,12 +43,15 @@ class SupplierAcceptanceIT extends AbstractIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private SupplierOrderTransitions transitions;
     @Autowired private SupplierOrderTimeoutJob timeoutJob;
+    @Autowired private MockPaymentProvider paymentProvider;
 
     private ApiClient api;
+    private TestCheckout checkout;
 
     @BeforeEach
     void setUp() {
         api = new ApiClient(mvc, json);
+        checkout = new TestCheckout(paymentProvider, api);
     }
 
     private record Buyer(String token, long outletId, long userId) {
@@ -132,7 +137,12 @@ class SupplierAcceptanceIT extends AbstractIntegrationTest {
         api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
                 Map.of("acceptPriceChanges", false));
 
-        long orderId = submitOrder(buyer, procurementId).at("/data/supplierOrders/0/id").asLong();
+        var submitted = submitOrder(buyer, procurementId);
+        long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
+
+        // The order is DRAFT until it is paid for. Everything below is about what
+        // a supplier does with an order they can see, so pay for it here.
+        checkout.payAll(buyer.token(), submitted);
 
         return new PlacedOrder(buyer, seller, orderId, procurementId, requirementItemId);
     }

@@ -181,10 +181,28 @@ public final class ProcurementDtos {
 
     // ── Supplier orders ──────────────────────────────────────────────────
 
+    /**
+     * @param paymentIntents what the client needs to pay, one per supplier order.
+     *                       The orders are in DRAFT and no supplier can see them
+     *                       until each payment authorises (guardrail 16).
+     */
     public record SubmitResponse(
             Long procurementId,
             ProcurementStatus status,
-            List<SupplierOrderResponse> supplierOrders) {
+            List<SupplierOrderResponse> supplierOrders,
+            List<PaymentIntentResponse> paymentIntents) {
+    }
+
+    public record PaymentIntentResponse(
+            Long supplierOrderId,
+            Long paymentId,
+            String provider,
+            /** The intent to open the provider's checkout against. */
+            String providerOrderId,
+            BigDecimal amount,
+            String currency,
+            /** Publishable key. Never a secret. */
+            String publicKey) {
     }
 
     public record SupplierOrderResponse(

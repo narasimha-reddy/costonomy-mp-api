@@ -62,8 +62,13 @@ Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
   sourcing. Acceptance and timeout resolve to exactly one outcome under real
   concurrency tests.
 
-258 tests pass (127 unit, 131 integration). Next is Phase 9, payments —
+- *Payments* — a `PaymentProvider` port with Razorpay and mock adapters, a
+  payment per supplier order, authorization before any supplier can see the
+  order, capture of only the amount accepted, release of the rest, refunds, and
+  webhook handling that survives duplicates, out-of-order delivery and a client
+  that dies mid-checkout.
+
+285 tests pass (138 unit, 147 integration). Next is Phase 10, credit —
 see `docs/specs/00-README.md` §8 for the full sequence.
 
-**Known gap:** payment is not yet enforced before an order reaches a supplier.
-See `docs/DECISIONS.md` OPEN-004; it closes in Phase 9.
+There are no open decisions: OPEN-004 closed as `docs/DECISIONS.md` D-020.

@@ -1,8 +1,10 @@
 package com.costonomy.mp.procurement;
 
+import com.costonomy.mp.payment.provider.MockPaymentProvider;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
+import com.costonomy.mp.support.TestCheckout;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -34,12 +36,15 @@ class ProcurementIT extends AbstractIntegrationTest {
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private MockPaymentProvider paymentProvider;
 
     private ApiClient api;
+    private TestCheckout checkout;
 
     @BeforeEach
     void setUp() {
         api = new ApiClient(mvc, json);
+        checkout = new TestCheckout(paymentProvider, api);
     }
 
     private record Buyer(String token, long restaurantId, long outletId) {
@@ -479,21 +484,52 @@ class ProcurementIT extends AbstractIntegrationTest {
                     .get("id").asLong();
 
             validate(buyer, cartId, false);
-            var orders = submit(buyer, cartId, UUID.randomUUID().toString())
-                    .at("/data/supplierOrders");
+            var submitted = submit(buyer, cartId, UUID.randomUUID().toString());
+            var orders = submitted.at("/data/supplierOrders");
 
             assertThat(orders).hasSize(2);
             assertThat(orders).allSatisfy(order -> {
-                assertThat(order.get("status").asText()).isEqualTo("PENDING_ACCEPTANCE");
+                // Drafts until they are paid for — a supplier must never see an
+                // order the restaurant has not funded (guardrail 16).
+                assertThat(order.get("status").asText()).isEqualTo("DRAFT");
                 assertThat(order.get("orderNumber").asText()).startsWith("MP-");
-                // The authoritative deadline the countdown reads (§23A.34).
-                assertThat(order.get("acceptanceDeadline").isNull()).isFalse();
+                assertThat(order.get("acceptanceDeadline").isNull())
+                        .describedAs("no clock runs while the customer is still in checkout")
+                        .isTrue();
                 assertThat(order.get("acceptedAmount").asDouble())
                         .describedAs("nothing is accepted until the supplier answers")
                         .isZero();
             });
+            // One payment per supplier order, not one per checkout (D-010).
+            assertThat(submitted.at("/data/paymentIntents")).hasSize(2);
 
-            var slas = orders.findValuesAsText("responseSlaSeconds");
+            checkout.payAll(buyer.token(), submitted);
+
+            var orderIds = new java.util.ArrayList<Long>();
+            orders.forEach(order -> orderIds.add(order.get("id").asLong()));
+
+            var released = orderIds.stream()
+                    .map(id -> {
+                        try {
+                            return api.get(buyer.token(), "/api/v1/supplier-orders/" + id)
+                                    .at("/data");
+                        } catch (Exception ex) {
+                            throw new IllegalStateException(ex);
+                        }
+                    })
+                    .toList();
+
+            assertThat(released).allSatisfy(order -> {
+                assertThat(order.get("status").asText()).isEqualTo("PENDING_ACCEPTANCE");
+                // The authoritative deadline the countdown reads (§23A.34). It
+                // starts when the supplier can first see the order, not when the
+                // restaurant pressed submit.
+                assertThat(order.get("acceptanceDeadline").isNull()).isFalse();
+            });
+
+            var slas = released.stream()
+                    .map(order -> order.get("responseSlaSeconds").asText())
+                    .toList();
             assertThat(slas).containsExactlyInAnyOrder("60", "120");
         }
 

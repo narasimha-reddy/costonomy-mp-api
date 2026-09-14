@@ -49,6 +49,7 @@ public class ProcurementSubmitter {
     private final ProcurementDirectory directory;
     private final OrderNumberGenerator orderNumbers;
     private final ProcurementStateStore stateStore;
+    private final OrderFundingPort funding;
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
@@ -97,11 +98,14 @@ public class ProcurementSubmitter {
             }
         }
 
-        // ── Payment authorization goes here (Phase 9) ────────────────────
-        // Doc 01 §14 and guardrail 16: a failed payment means the supplier never
-        // sees the order. When PaymentService lands, authorize before the orders
-        // below are created, and create them in DRAFT until it succeeds.
-        // Tracked as OPEN-004 in docs/DECISIONS.md.
+        // Credit funding arrives in Phase 10. Until then a CREDIT order would
+        // reach its supplier with nothing securing it, which is the same guardrail
+        // 16 violation prepaid orders used to have — so it is refused rather than
+        // quietly allowed.
+        if ("CREDIT".equals(procurement.getPaymentMethod())) {
+            throw new BusinessException(ErrorCode.CREDIT_AGREEMENT_NOT_ACTIVE,
+                    "Paying on credit isn't available yet. Please choose prepaid.");
+        }
 
         Instant now = Instant.now();
         var byStore = new LinkedHashMap<Long, List<ProcurementItem>>();
@@ -109,11 +113,20 @@ public class ProcurementSubmitter {
                 .computeIfAbsent(item.getSupplierStoreId(), key -> new ArrayList<>())
                 .add(item));
 
+        // Orders are created in DRAFT with **no acceptance deadline**. Neither the
+        // supplier nor the clock starts until the money is secured — a deadline
+        // ticking against an order the supplier cannot yet see would hand them an
+        // already-expired order the moment it appeared.
         List<SupplierOrder> created = new ArrayList<>();
         for (var entry : byStore.entrySet()) {
             created.add(createSupplierOrder(procurement, entry.getKey(), entry.getValue(),
                     stores.get(entry.getKey()), now, actorId));
         }
+
+        // Guardrail 16, doc 01 §14: the supplier sees nothing until payment is
+        // arranged. This creates the intents; the customer completes them, and
+        // PaymentReleaseService releases each order when its payment authorises.
+        var intents = funding.arrangeFunding(created);
 
         procurement.setStatus(ProcurementStatus.SUBMITTED);
         procurement.setSubmittedAt(now);
@@ -147,7 +160,13 @@ public class ProcurementSubmitter {
 
         return new ProcurementDtos.SubmitResponse(
                 procurement.getId(), procurement.getStatus(),
-                created.stream().map(mapper::toResponse).toList());
+                created.stream().map(mapper::toResponse).toList(),
+                intents.stream()
+                        .map(intent -> new ProcurementDtos.PaymentIntentResponse(
+                                intent.supplierOrderId(), intent.paymentId(), intent.provider(),
+                                intent.providerOrderId(), intent.amount(), intent.currency(),
+                                intent.publicKey()))
+                        .toList());
     }
 
     /** Move every requirement touched by these lines into SOURCING. */
@@ -176,10 +195,12 @@ public class ProcurementSubmitter {
         order.setSupplierStoreId(storeId);
         order.setOutletId(procurement.getOutletId());
         order.setOrderNumber(orderNumbers.next());
-        order.setStatus(SupplierOrderStatus.PENDING_ACCEPTANCE);
+        // DRAFT until funded. The SLA is snapshotted now — it is the store's
+        // commitment at the time of ordering — but the deadline itself is set when
+        // the order is released, because that is when the supplier can first act.
+        order.setStatus(SupplierOrderStatus.DRAFT);
         order.setResponseSlaSeconds(slaSeconds);
-        // Snapshotted. Never recomputed from the store's current SLA.
-        order.setAcceptanceDeadline(now.plusSeconds(slaSeconds));
+        order.setAcceptanceDeadline(null);
         order.setPaymentMethod(procurement.getPaymentMethod());
         order.setPaymentStatus("PENDING");
 
@@ -228,8 +249,7 @@ public class ProcurementSubmitter {
                 Map.of("orderNumber", order.getOrderNumber(),
                         "supplierStoreId", storeId,
                         "outletId", procurement.getOutletId(),
-                        "totalAmount", order.getTotalAmount().toPlainString(),
-                        "acceptanceDeadline", order.getAcceptanceDeadline().toString()),
+                        "totalAmount", order.getTotalAmount().toPlainString()),
                 actorId, now);
 
         return order;

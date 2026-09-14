@@ -30,17 +30,17 @@ Use:
 | REC-002 | Serviceability | 07,41 | discovery: Serviceability, RecommendationService | V4 supplier_delivery_policy | applied in recommendations | — | ServiceabilityTest (7), RecommendationIT$Filtering | TESTED |
 | REQ-001 | Requirement lifecycle | 01,03,04 | procurement: RequirementService, RequirementStatus | V9 requirement, requirement_item | /outlets/{id}/requirements, /requirements/{id} | Requirements screen pending | LifecycleTest, ProcurementIT$Requirements (3) | TESTED |
 | PROC-001 | Procurement, cart and checkout | 01,03,04 | procurement: ProcurementService, Pricing | V9 procurement, procurement_item | /cart, /procurements/{id}/validate | Cart/Checkout pending | PricingTest (7), ProcurementIT$Cart (4), $PriceChanges (5) | TESTED |
-| PROC-002 | Multi-supplier split | 01,03,04 | procurement: ProcurementSubmitter | V10 supplier_order, supplier_order_item | POST /procurements/{id}/submit | Orders screen pending | ProcurementIT$Submission (6) | TESTED |
+| PROC-002 | Multi-supplier split | 01,03,04 | procurement: ProcurementSubmitter, OrderReleaseService, OrderFundingPort | V10 supplier_order, supplier_order_item | POST /procurements/{id}/submit | Orders screen pending | ProcurementIT$Submission (6) | TESTED |
 | PROC-003 | Approval policy | 01,03,28 | procurement: ApprovalPolicyEvaluator | V3 procurement_policy | /procurements/{id}/approve, /reject | Approval screen pending | ProcurementIT$Approval (6) | TESTED |
 | ORD-001 | Supplier acceptance | 01,03,04 | procurement: SupplierOrderService, SupplierOrderTransitions | V10 supplier_order | /supplier-orders/{id}/accept, /reject, /preparing, /ready | Supplier Home/New Order pending | SupplierAcceptanceIT$Acceptance (4), $Concurrency (3) | TESTED |
 | ORD-002 | Partial acceptance | 01,03,04 | procurement: SupplierOrderTransitions.partialAccept | V10 supplier_order_item | POST /supplier-orders/{id}/partial-accept | Partial Acceptance screen pending | SupplierAcceptanceIT$PartialAcceptance (6) | TESTED |
 | ORD-003 | Supplier timeout | 01,13,38 | procurement: SupplierOrderTimeoutJob | V10 ix_supplier_order_deadline | — | countdown pending | SupplierAcceptanceIT$RejectionAndTimeout (6) | TESTED |
 | ORD-004 | Alternative sourcing | 01,15 | procurement: AlternativeSourcingService | V9 requirement_item | POST /requirements/{id}/find-suppliers | alternatives screen pending | SupplierAcceptanceIT$PartialAcceptance | TESTED |
-| PAY-001 | Provider abstraction | 01,04,06 | Payment module | payment | payment APIs | payment | provider tests | NOT_STARTED |
+| PAY-001 | Provider abstraction | 01,04,06 | payment: PaymentProvider port, Razorpay + Mock adapters, PaymentService | V11 payment, payment_transaction | POST /payments/{id}/confirm, GET /payments/{id} | payment sheet pending | PaymentLifecycleTest (11), PaymentFlowIT$FundingGate (4) | TESTED |
 | PLAT-001 | Idempotency framework | 04 | common.idempotency: Service + Store | V2 idempotency_record | Idempotency-Key header | — | IdempotencyServiceTest (10), MigrationIT | IMPLEMENTED |
 | PLAT-002 | Outbox / domain events | 02,08 | common.outbox: Service + Publisher | V2 outbox_event | — | — | pending consumers | IMPLEMENTED |
-| PAY-002 | Webhook idempotency | 01,04,09 | Payment module | webhook event | webhook | status | webhook tests | NOT_STARTED |
-| PAY-003 | Partial capture | 01,03 | Payment module | payment txn | confirm | payment status | financial tests | NOT_STARTED |
+| PAY-002 | Webhook idempotency | 01,04,09 | payment: PaymentWebhookService + Store, PaymentJobs.reconcileStale | V11 payment_webhook_event | POST /webhooks/razorpay | — | PaymentFlowIT$Recovery (4) | TESTED |
+| PAY-003 | Partial capture, release and refund | 01,03,22 | payment: PaymentService.markForCapture/performCapture/release, RefundService | V11 payment_transaction, refund | POST /payments/{id}/refund, GET /payments/{id}/refunds | refund status pending | PaymentLifecycleTest, PaymentFlowIT$Capture (4), $Refunds (4) | TESTED |
 | CRD-001 | Supplier credit | 01,03,04 | Credit module | credit tables | credit APIs | credit screens | credit tests | NOT_STARTED |
 | CRD-002 | Credit reservation | 01,03 | Credit module | reservation/txn | internal/domain | order UI | race tests | NOT_STARTED |
 | DEL-001 | Delivery abstraction | 01,06 | Delivery module | delivery | delivery APIs | tracking | provider tests | NOT_STARTED |
