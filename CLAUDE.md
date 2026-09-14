@@ -5,9 +5,9 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3 and 4 complete** — foundation, authentication, and
-> organisations with authorization. Next is Phase 5, catalog. Build sequence:
-> `docs/specs/00-README.md` §8.
+> **Status: Phases 1, 3, 4 and 5 complete** — foundation, authentication,
+> organisations with authorization, and catalog. Next is Phase 6, search and
+> recommendations. Build sequence: `docs/specs/00-README.md` §8.
 
 ## Read before writing code
 
@@ -70,6 +70,11 @@ access/         authorization — the heart of tenant isolation
   domain/       ScopeType, Permissions, Roles, Role, Permission, UserRole
   service/      AccessControlService, RoleGrantService, MembershipService,
                 RolePermissionCatalog, ScopeResolver
+catalog/        canonical products, supplier SKUs and offers, bulk import
+  domain/       CanonicalProduct, SupplierSku, SupplierOffer, Normalization,
+                ImportValues
+  service/      CatalogQueryService, SupplierCatalogService,
+                CatalogImportService, CatalogFileParser
 restaurant/     Restaurant, Outlet, membership; RestaurantService
 supplier/       SupplierOrganization, SupplierStore, verification; SupplierService
 identity/
@@ -138,6 +143,23 @@ alone grants nothing; the check is always actor + permission + scope (doc 03 §1
   `PermissionCatalogIT` enforces it. Ops read-access needs its own `INTERNAL`
   permissions (`ORDER_SUPPORT` exists; add `SUPPLIER_INSPECT` and friends in
   Phase 14) rather than borrowing the tenant's.
+
+**A price is never edited, only superseded.** Changing price, GST or availability
+closes the current `supplier_offer` and opens a new one (D-012). In-place updates
+break doc 02 §4 — historical values must survive a referencing transaction — and
+destroy the price history doc 01 §26 needs. Compare money with
+`BigDecimal.compareTo`, never `equals`: `410.00` and `410.0000` are the same price.
+
+**Suppliers map onto canonical products; they never create them.** Canonical
+products are platform-owned (doc 01 §7) and are the axis of comparison. If a
+supplier could invent one, two suppliers' paneer would never appear side by side,
+which is the marketplace failing at its only job. Brands are the opposite — created
+on demand, because a regional brand missing from a list should not block an import.
+
+**An import writes nothing before a human confirms it.** Doc 25 forbids a silent
+partial import; the way to make an outcome not silent is to show it in full and
+require someone to accept it. Invalid rows are reported per row and per field with
+their line number, and skipped — never guessed at.
 
 **Money.** `DECIMAL(19,4)`, never floating point. Rates `DECIMAL(9,4)`. Transaction
 tables snapshot the commercial values needed to reconstruct them; never

@@ -303,6 +303,45 @@ Two consequences worth knowing:
 
 ---
 
+## D-012 — SKU and offer are separate tables; a price is never edited
+**2026-09-14 · Settled**
+
+`02-domain-model-database.md` contradicts itself. §3 and §4 list `supplier_offer`
+as its own table and describe it as "current purchasable offer … historical
+commercial values must not be overwritten when they are referenced by a
+transaction". §9's representative DDL puts `price`, `gst_rate` and `availability`
+directly on `supplier_sku`.
+
+**Decision:** two tables.
+
+- `supplier_sku` is **identity** — the supplier's code, brand, pack, and the
+  canonical product it maps to.
+- `supplier_offer` is **commercial terms**, effective-dated. Changing price, GST
+  or availability closes the current row (`effective_to` = now, status
+  `SUPERSEDED`) and inserts a new one. Nothing is ever updated in place.
+
+**Why:** §9's DDL is explicitly "representative", and §9 itself says to expand it
+into complete DDL "for every table listed above" — so the table list in §3 wins
+over the illustrative DDL. More substantively, in-place price updates break two
+requirements at once: doc 02 §4's rule that historical values survive a
+referencing transaction, and doc 01 §26's pricing intelligence, which needs the
+history to exist.
+
+Orders still snapshot their own commercial values (doc 02 §5). The offer table is
+the *catalog's* record of what was offered, not the *order's* record of what was
+agreed. Both are needed: an order explains itself, and the catalog explains how
+prices moved.
+
+Two consequences worth knowing:
+
+- Editing only identity fields (a rename, a new image) deliberately leaves the
+  current offer untouched, so it does not manufacture a price-history entry.
+- Comparison uses `BigDecimal.compareTo`, not `equals`. A supplier re-uploading a
+  weekly price list where `410.00` becomes `410.0000` has not changed their price,
+  and must not accumulate a fake price change every week.
+
+---
+
 ## OPEN-003 — Requirement lifecycle: is there a `SOURCING` state?
 **Raised 2026-09-14 · Low stakes, decide when Requirements are built**
 

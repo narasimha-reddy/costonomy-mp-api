@@ -22,10 +22,10 @@ Use:
 | ORG-001 | Restaurant/outlet | 01,02,04 | restaurant: RestaurantService | V3 restaurant, outlet, restaurant_user | /restaurants, /outlets, /outlets/{id}/users | setup/outlet selector pending | TenantIsolationIT$Restaurants (6) | TESTED |
 | SUP-001 | Supplier lifecycle | 01,03,04 | supplier: SupplierService, SupplierLifecycleStatus | V4 supplier_organization, supplier_store | /suppliers, /supplier-stores | onboarding pending | SupplierLifecycleTest (7), TenantIsolationIT$Suppliers (6) | TESTED |
 | SUP-002 | GST verification | 01,09 | supplier: SupplierService.submitVerification/reviewVerification | V4 supplier_verification | POST /suppliers/{id}/verification, /admin/suppliers/... | verification screen pending | TenantIsolationIT$Suppliers | TESTED |
-| CAT-001 | Canonical products | 01,02,04 | Catalog module | product tables | product APIs | product screens | catalog tests | NOT_STARTED |
-| CAT-002 | Supplier SKU | 01,02,04 | Catalog module | supplier_sku | SKU APIs | catalog | catalog tests | NOT_STARTED |
-| CAT-003 | Bulk import | 01,04,05 | Catalog import | import tables | import APIs | bulk import | import tests | NOT_STARTED |
-| SRCH-001 | Product search | 01,07 | Search module | product/index | search APIs | Search | search tests | NOT_STARTED |
+| CAT-001 | Canonical products | 01,02,04 | catalog: CatalogQueryService, Normalization | V6 canonical_product/alias/category/brand, V7 seed | /categories, /brands, /products, /products/{id}/offers | product screens pending | NormalizationTest (5), CatalogIT$Canonical (5), $Comparison (5) | TESTED |
+| CAT-002 | Supplier SKU and offer | 01,02,04 | catalog: SupplierCatalogService | V6 supplier_sku, supplier_offer | /supplier-stores/{id}/skus, /supplier-skus/{id} | catalog screen pending | CatalogIT$Skus (6) | TESTED |
+| CAT-003 | Bulk import | 01,04,05 | catalog: CatalogImportService, CatalogFileParser | V6 catalog_import, catalog_import_row | /catalog/import, /catalog/imports/{id} | bulk import stepper pending | ImportParsingTest (11), CatalogIT$Import (9) | TESTED |
+| SRCH-001 | Product search | 01,07 | catalog: CatalogQueryService.searchProducts (MySQL port, D-006) | V6 ix_canonical_normalized | GET /search/products | Search screen pending | CatalogIT$Canonical | IN_PROGRESS |
 | REC-001 | Best-value recommendation | 01,07 | Recommendation | score config | recommendation API | recommendations | scoring tests | NOT_STARTED |
 | REQ-001 | Requirement lifecycle | 01,03,04 | Requirement | requirement | requirement APIs | requirements | lifecycle tests | NOT_STARTED |
 | PROC-001 | Procurement | 01,03,04 | Procurement | procurement | procurement APIs | cart/checkout | E2E | NOT_STARTED |

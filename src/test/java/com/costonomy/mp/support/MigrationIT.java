@@ -148,10 +148,16 @@ class MigrationIT extends AbstractIntegrationTest {
                 .describedAs("unexpected table without updated_at — is it meant to be append-only?")
                 .containsExactlyInAnyOrder(
                         "flyway_schema_history",
+                        // Append-only facts.
                         "audit_log",
+                        "catalog_import_row",
+                        // Reference data that is added or removed, never edited.
+                        "canonical_product_alias",
+                        // Pure join tables.
                         "role_permission",
                         "restaurant_user_outlet",
                         "supplier_user_store",
+                        // Owned by ShedLock; its columns are fixed by the library.
                         "shedlock");
     }
 }
