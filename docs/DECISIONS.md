@@ -342,6 +342,73 @@ Two consequences worth knowing:
 
 ---
 
+## D-013 — Best Value normalises by ratio-to-best, not min-max
+**2026-09-14 · Settled**
+
+Doc 07 §4 requires each ranking component to be normalised, without saying how.
+The obvious choice — min-max, `1 - (v-min)/(max-min)` — is wrong here, and the
+failure is quiet.
+
+Min-max stretches whatever spread exists to fill [0,1]. With two candidates the
+cheaper always scores 1 and the dearer always scores 0, **whether the gap is ₹1 or
+₹10,000**. Price then dominates every comparison, and a supplier ₹1 cheaper
+outranks one that is materially more reliable. "Best Value" degenerates into a
+price sort while still being described to the restaurant as best value.
+
+**Decision:** ratio-to-best. An offer scores `best ÷ itsValue` on dimensions where
+lower is better. 10% dearer scores 0.9; twice the price scores 0.5; all equal
+scores 1 for everyone.
+
+Differences stay proportionate to their real size, so a small price premium is a
+small penalty that a genuinely better supplier can earn back.
+
+This was found by the test doc 07 §14 names first — "cheapest is not recommended
+when reliability is materially worse". Under min-max it failed. Worth remembering
+if the scoring is ever revisited: that scenario is the one that tells you whether
+the normalisation is sound.
+
+---
+
+## D-014 — Missing performance signals redistribute their weight
+**2026-09-14 · Settled**
+
+Doc 07 §4 and Engineering PRD §10: *"If historical data is insufficient, use
+deterministic baseline ranking and never fabricate metrics."* Doc 07 §6 adds that
+new suppliers must not be penalised indefinitely.
+
+There are no completed orders until Phase 8, so **every** supplier is currently
+unrated. The two easy ways to handle that are both wrong:
+
+- Substitute 0 — marks every new supplier as having failed deliveries they never
+  made.
+- Substitute 1 — hands them the standing a supplier earned over 200 orders, and
+  then "Reliable supplier" appears on screen supported by nothing, which doc 07 §5
+  forbids outright.
+
+**Decision:** an absent signal is dropped from the score and its weight shared
+among the components that do have data. A candidate scored on three of seven
+components is still scored out of 1, so it stays comparable and a good new
+supplier can still reach the top.
+
+Two things follow, and both matter:
+
+- **The cold-start policy is not a special case.** A supplier with no history is
+  ranked on price, ETA and availability — neither penalised nor flattered. Doc 07
+  §6 falls out of the same rule rather than being bolted on.
+- **Thin history is ignored, not weighted down.** Below
+  `ranking.explain.minOrdersForTrust` the signals are dropped entirely: a 100%
+  fill rate over three deliveries is noise, and ranking on noise is worse than
+  ranking on price alone.
+
+The same rule covers an unknown ETA, which happens when a store has not been
+geocoded. Absent, not slow — otherwise a data-entry gap buries a good supplier.
+
+`SupplierPerformanceProvider` is a port whose only implementation today reports no
+history. Phase 8 adds an order-derived one; nothing in the scorer changes, because
+it already handles absence correctly rather than acquiring that behaviour later.
+
+---
+
 ## OPEN-003 — Requirement lifecycle: is there a `SOURCING` state?
 **Raised 2026-09-14 · Low stakes, decide when Requirements are built**
 

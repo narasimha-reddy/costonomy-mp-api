@@ -5,9 +5,10 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3, 4 and 5 complete** — foundation, authentication,
-> organisations with authorization, and catalog. Next is Phase 6, search and
-> recommendations. Build sequence: `docs/specs/00-README.md` §8.
+> **Status: Phases 1, 3, 4, 5 and 6 complete** — foundation, authentication,
+> organisations with authorization, catalog, and search with Best Value
+> recommendations. Next is Phase 7, requirements and procurement. Build sequence:
+> `docs/specs/00-README.md` §8.
 
 ## Read before writing code
 
@@ -75,6 +76,10 @@ catalog/        canonical products, supplier SKUs and offers, bulk import
                 ImportValues
   service/      CatalogQueryService, SupplierCatalogService,
                 CatalogImportService, CatalogFileParser
+discovery/      search, serviceability, Best Value ranking
+  domain/       Serviceability, RankingWeights, ExplanationCode, SupplierPerformance
+  service/      BestValueScorer, RecommendationService, SearchService,
+                SupplierPerformanceProvider
 restaurant/     Restaurant, Outlet, membership; RestaurantService
 supplier/       SupplierOrganization, SupplierStore, verification; SupplierService
 identity/
@@ -160,6 +165,16 @@ on demand, because a regional brand missing from a list should not block an impo
 partial import; the way to make an outcome not silent is to show it in full and
 require someone to accept it. Invalid rows are reported per row and per field with
 their line number, and skipped — never guessed at.
+
+**Never fabricate a metric, and never show an unsupported explanation.** Doc 07 §4
+and §5. A supplier with no order history has no fill rate — `SupplierPerformance`
+makes every signal `Optional`, `BestValueScorer` redistributes an absent signal's
+weight rather than substituting a value, and no explanation code is emitted unless
+the figure behind it was actually measured (D-014). When you add a ranking signal,
+handle its absence the same way.
+
+**Commission is never a ranking input.** Guardrail 9. Not as a weight, not as a
+tiebreak, not in a response. `BestValueScorerTest` asserts the component set.
 
 **Money.** `DECIMAL(19,4)`, never floating point. Rates `DECIMAL(9,4)`. Transaction
 tables snapshot the commercial values needed to reconstruct them; never

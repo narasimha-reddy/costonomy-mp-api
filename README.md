@@ -29,7 +29,7 @@ Once running: `http://localhost:8080/costonomy-mp-api/swagger-ui.html`
 
 ## Status
 
-**Phases 1, 3, 4 and 5 complete.**
+**Phases 1, 3, 4, 5 and 6 complete.**
 
 - *Foundation* — API envelope, error catalogue, request correlation, security
   wiring, idempotency, audit, outbox, config, job locks. Migrations `V1` and `V2`.
@@ -44,10 +44,14 @@ Once running: `http://localhost:8080/costonomy-mp-api/swagger-ui.html`
   effective-dated offers, product search, supplier comparison, and CSV/XLSX bulk
   import. Migrations `V6`–`V7`.
 
+- *Search and recommendations* — type-ahead suggestions, supplier search,
+  geographic serviceability, and Best Value ranking with explanations. Migration `V8`.
+
 Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
 `/suppliers`, `/supplier-stores`, `/categories`, `/brands`, `/products`,
-`/search/products`, `/supplier-skus`, `/catalog/imports`, and the operations
-verification endpoints under `/admin/suppliers`.
+`/products/{id}/recommendations`, `/search/*`, `/supplier-skus`,
+`/catalog/imports`, and the operations verification endpoints under
+`/admin/suppliers`.
 
-150 tests pass (78 unit, 72 integration). Next is Phase 6, search and
-recommendations — see `docs/specs/00-README.md` §8 for the full sequence.
+192 tests pass (105 unit, 87 integration). Next is Phase 7, requirements and
+procurement — see `docs/specs/00-README.md` §8 for the full sequence.

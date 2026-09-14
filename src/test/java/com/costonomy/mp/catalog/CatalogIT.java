@@ -2,6 +2,7 @@ package com.costonomy.mp.catalog;
 
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
+import com.costonomy.mp.support.TestCatalog;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -68,9 +69,16 @@ class CatalogIT extends AbstractIntegrationTest {
         return new Supplier(token, supplierId, storeId);
     }
 
-    private long productId(String normalizedName) {
-        return jdbc.queryForObject(
-                "select id from canonical_product where normalized_name = ?", Long.class, normalizedName);
+    /**
+     * A canonical product for this test alone.
+     *
+     * <p>The Canonical nested class deliberately uses the seeded catalog, because
+     * that is what it is testing. Everything else asserts exactly which offers or
+     * SKUs exist and must not share a product with the rest of the suite — see
+     * {@link TestCatalog}.
+     */
+    private long freshProduct(String label) {
+        return TestCatalog.freshProduct(jdbc, label);
     }
 
     // ── Canonical catalog ────────────────────────────────────────────────
@@ -151,7 +159,7 @@ class CatalogIT extends AbstractIntegrationTest {
         @DisplayName("a price change supersedes the old offer instead of overwriting it")
         void priceChangePreservesHistory() throws Exception {
             var supplier = newSupplier("ABC Foods");
-            long paneer = productId("paneer");
+            long paneer = freshProduct("paneer");
 
             long skuId = api.post(supplier.token(),
                     "/api/v1/supplier-stores/" + supplier.storeId() + "/skus", Map.of(
@@ -188,7 +196,7 @@ class CatalogIT extends AbstractIntegrationTest {
         @DisplayName("renaming a SKU does not manufacture a price-history entry")
         void identityEditDoesNotTouchTheOffer() throws Exception {
             var supplier = newSupplier("ABC Foods");
-            long skuId = createSku(supplier, productId("paneer"), "PNR-1KG", "410.00");
+            long skuId = createSku(supplier, freshProduct("paneer"), "PNR-1KG", "410.00");
 
             api.patchStatus(supplier.token(), "/api/v1/supplier-skus/" + skuId,
                     Map.of("name", "Amul Fresh Paneer 1kg"));
@@ -202,7 +210,7 @@ class CatalogIT extends AbstractIntegrationTest {
         @DisplayName("re-submitting the same price does not create a history entry")
         void unchangedPriceIsNotAChange() throws Exception {
             var supplier = newSupplier("ABC Foods");
-            long skuId = createSku(supplier, productId("paneer"), "PNR-1KG", "410.00");
+            long skuId = createSku(supplier, freshProduct("paneer"), "PNR-1KG", "410.00");
 
             // Different scale, same value. BigDecimal.equals would say these
             // differ; a supplier re-uploading their price list weekly would then
@@ -219,7 +227,7 @@ class CatalogIT extends AbstractIntegrationTest {
         @DisplayName("a duplicate SKU code within a store is rejected")
         void duplicateSkuCodeRejected() throws Exception {
             var supplier = newSupplier("ABC Foods");
-            long paneer = productId("paneer");
+            long paneer = freshProduct("paneer");
             createSku(supplier, paneer, "PNR-1KG", "410.00");
 
             int status = api.postStatus(supplier.token(),
@@ -238,7 +246,7 @@ class CatalogIT extends AbstractIntegrationTest {
         void catalogIsScopedToTheStore() throws Exception {
             var mine = newSupplier("ABC Foods");
             var theirs = newSupplier("XYZ Traders");
-            long skuId = createSku(mine, productId("paneer"), "PNR-1KG", "410.00");
+            long skuId = createSku(mine, freshProduct("paneer"), "PNR-1KG", "410.00");
 
             assertThat(api.getStatus(theirs.token(),
                     "/api/v1/supplier-stores/" + mine.storeId() + "/skus")).isEqualTo(404);
@@ -262,7 +270,7 @@ class CatalogIT extends AbstractIntegrationTest {
         @Test
         @DisplayName("offers from several suppliers appear against one product")
         void offersAreComparable() throws Exception {
-            long paneer = productId("paneer");
+            long paneer = freshProduct("paneer");
             var one = newSupplier("ABC Foods");
             var two = newSupplier("XYZ Traders");
             createSku(one, paneer, "ABC-PNR", "440.00");
@@ -281,7 +289,7 @@ class CatalogIT extends AbstractIntegrationTest {
         @Test
         @DisplayName("an out-of-stock offer is not purchasable")
         void outOfStockIsExcluded() throws Exception {
-            long curd = productId("curd");
+            long curd = freshProduct("curd");
             var supplier = newSupplier("ABC Foods");
             long skuId = createSku(supplier, curd, "ABC-CURD", "80.00");
 
@@ -295,7 +303,7 @@ class CatalogIT extends AbstractIntegrationTest {
         @Test
         @DisplayName("an offline store's offers disappear from comparison")
         void offlineStoreIsExcluded() throws Exception {
-            long butter = productId("butter");
+            long butter = freshProduct("butter");
             var supplier = newSupplier("ABC Foods");
             createSku(supplier, butter, "ABC-BUTTER", "520.00");
 
@@ -314,7 +322,7 @@ class CatalogIT extends AbstractIntegrationTest {
         @Test
         @DisplayName("a suspended supplier's offers disappear even if the store is active")
         void suspendedSupplierIsExcluded() throws Exception {
-            long ghee = productId("ghee");
+            long ghee = freshProduct("ghee");
             var supplier = newSupplier("ABC Foods");
             createSku(supplier, ghee, "ABC-GHEE", "620.00");
 
@@ -328,7 +336,7 @@ class CatalogIT extends AbstractIntegrationTest {
         @Test
         @DisplayName("an offer never carries a commission figure")
         void noCommissionInOffers() throws Exception {
-            long paneer = productId("paneer");
+            long paneer = freshProduct("paneer");
             var supplier = newSupplier("ABC Foods");
             createSku(supplier, paneer, "ABC-PNR-2", "410.00");
 

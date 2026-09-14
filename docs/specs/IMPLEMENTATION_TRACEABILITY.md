@@ -25,8 +25,9 @@ Use:
 | CAT-001 | Canonical products | 01,02,04 | catalog: CatalogQueryService, Normalization | V6 canonical_product/alias/category/brand, V7 seed | /categories, /brands, /products, /products/{id}/offers | product screens pending | NormalizationTest (5), CatalogIT$Canonical (5), $Comparison (5) | TESTED |
 | CAT-002 | Supplier SKU and offer | 01,02,04 | catalog: SupplierCatalogService | V6 supplier_sku, supplier_offer | /supplier-stores/{id}/skus, /supplier-skus/{id} | catalog screen pending | CatalogIT$Skus (6) | TESTED |
 | CAT-003 | Bulk import | 01,04,05 | catalog: CatalogImportService, CatalogFileParser | V6 catalog_import, catalog_import_row | /catalog/import, /catalog/imports/{id} | bulk import stepper pending | ImportParsingTest (11), CatalogIT$Import (9) | TESTED |
-| SRCH-001 | Product search | 01,07 | catalog: CatalogQueryService.searchProducts (MySQL port, D-006) | V6 ix_canonical_normalized | GET /search/products | Search screen pending | CatalogIT$Canonical | IN_PROGRESS |
-| REC-001 | Best-value recommendation | 01,07 | Recommendation | score config | recommendation API | recommendations | scoring tests | NOT_STARTED |
+| SRCH-001 | Product search | 01,07 | catalog: CatalogQueryService; discovery: SearchService | V6 ix_canonical_normalized | /search/products, /search/suggestions, /search/suppliers | Search screen pending | CatalogIT$Canonical (5), RecommendationIT$Search (4) | TESTED |
+| REC-001 | Best-value recommendation | 01,07 | discovery: BestValueScorer, RecommendationService, SupplierPerformanceProvider | V8 ranking weights in app_config | GET /products/{id}/recommendations | Recommended Procurement pending | BestValueScorerTest (20), RecommendationIT$Filtering (7), $Honesty (3) | TESTED |
+| REC-002 | Serviceability | 07,41 | discovery: Serviceability, RecommendationService | V4 supplier_delivery_policy | applied in recommendations | — | ServiceabilityTest (7), RecommendationIT$Filtering | TESTED |
 | REQ-001 | Requirement lifecycle | 01,03,04 | Requirement | requirement | requirement APIs | requirements | lifecycle tests | NOT_STARTED |
 | PROC-001 | Procurement | 01,03,04 | Procurement | procurement | procurement APIs | cart/checkout | E2E | NOT_STARTED |
 | PROC-002 | Multi-supplier split | 01,03,04 | Procurement | split/order | submit API | comparison | split tests | NOT_STARTED |
