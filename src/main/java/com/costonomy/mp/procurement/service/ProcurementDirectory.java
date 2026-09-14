@@ -59,6 +59,18 @@ public class ProcurementDirectory {
         return result;
     }
 
+    public record OutletSummary(String outletName, String restaurantName) {
+    }
+
+    /** Names for the supplier's view of an incoming order (doc 05 §25). */
+    public OutletSummary outletSummary(Long outletId) {
+        var rows = jdbc.query(
+                "select o.name, r.name from outlet o "
+                        + "join restaurant r on r.id = o.restaurant_id where o.id = ?",
+                (rs, i) -> new OutletSummary(rs.getString(1), rs.getString(2)), outletId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     public Long restaurantIdOfOutlet(Long outletId) {
         var ids = jdbc.queryForList(
                 "select restaurant_id from outlet where id = ?", Long.class, outletId);

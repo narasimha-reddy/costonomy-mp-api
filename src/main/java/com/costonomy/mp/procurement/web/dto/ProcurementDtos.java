@@ -206,6 +206,88 @@ public final class ProcurementDtos {
             List<SupplierOrderItemResponse> items) {
     }
 
+    // ── Supplier response ────────────────────────────────────────────────
+
+    /**
+     * Accept an order in full.
+     *
+     * <p>Deliberately carries nothing. A supplier accepting is agreeing to the
+     * order as sent; any change of quantity is a partial acceptance, which is a
+     * different decision with different consequences for the restaurant.
+     */
+    public record AcceptOrderRequest() {
+    }
+
+    public record PartialAcceptRequest(
+            @NotEmpty(message = "Answer every line")
+            @Valid List<PartialAcceptItem> items,
+            @Size(max = 500) String note) {
+    }
+
+    /**
+     * @param acceptedQuantity 0 to the requested quantity. Zero declines the line
+     *                         and must be sent explicitly — an omitted line is an
+     *                         unanswered line, not a declined one (doc 04 §11).
+     */
+    public record PartialAcceptItem(
+            @NotNull(message = "Which line?") Long supplierOrderItemId,
+            @NotNull(message = "How much can you supply?")
+            @DecimalMin(value = "0.0000", message = "Quantity can't be negative")
+            BigDecimal acceptedQuantity,
+            @Size(max = 500) String reason) {
+    }
+
+    public record RejectOrderRequest(
+            @NotBlank(message = "Choose a reason")
+            String reason,
+            @Size(max = 500) String note) {
+    }
+
+    /**
+     * A supplier's view of an incoming order. Doc 05 §25, §23A.34.
+     *
+     * @param secondsRemaining computed server-side from the authoritative deadline.
+     *                         The client still counts down against
+     *                         {@code acceptanceDeadline} — this is the starting
+     *                         point, not a substitute for it.
+     */
+    public record IncomingOrderResponse(
+            Long id,
+            String orderNumber,
+            Long outletId,
+            String outletName,
+            String restaurantName,
+            SupplierOrderStatus status,
+            Instant acceptanceDeadline,
+            Integer responseSlaSeconds,
+            long secondsRemaining,
+            BigDecimal subtotal,
+            BigDecimal gstAmount,
+            BigDecimal totalAmount,
+            String paymentMethod,
+            List<SupplierOrderItemResponse> items) {
+    }
+
+    /**
+     * An alternative supplier for a requirement item a supplier failed to fulfil.
+     * Doc 15, §23A.15.
+     */
+    public record AlternativesResponse(
+            Long requirementId,
+            List<RequirementAlternative> items) {
+    }
+
+    public record RequirementAlternative(
+            Long requirementItemId,
+            Long canonicalProductId,
+            String productName,
+            BigDecimal remainingQuantity,
+            String unit,
+            /** Ranked offers that can still serve the shortfall. Empty when none can. */
+            List<Object> offers,
+            String unservedReason) {
+    }
+
     public record SupplierOrderItemResponse(
             Long id,
             Long canonicalProductId,

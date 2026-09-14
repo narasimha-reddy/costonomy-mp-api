@@ -478,6 +478,62 @@ happened.
 
 ---
 
+## D-018 — A lost race is reported as what happened, not as a race
+**2026-09-15 · Settled**
+
+Doc 03 §5 and doc 10 §2 require acceptance and timeout to resolve to exactly one
+outcome. Optimistic locking on `supplier_order` does that: both read the same
+version, the second write throws.
+
+The decision is what happens **next**. The natural handling is to let
+`OptimisticLockingFailureException` surface as `CONCURRENT_MODIFICATION`, which is
+accurate and useless — a supplier who accepted a moment too late learns nothing
+they can act on, and their screen cannot render the expired state §23A.34 defines.
+
+**Decision:** on a lock failure, re-read the order and throw the error matching the
+outcome that actually won — `SUPPLIER_ORDER_EXPIRED`,
+`SUPPLIER_ORDER_ALREADY_ACCEPTED`, or a cancellation. `CONCURRENT_MODIFICATION`
+remains only for a genuinely unexplained conflict.
+
+The re-read is deliberate: the entity in hand lost the race and is stale by
+definition, so nothing on it can be trusted to describe the winner.
+
+Related: **the deadline, not the timeout job, is the authority on expiry.**
+`assertRespondable` refuses an acceptance past `acceptance_deadline` whether or
+not the job has swept, so doc 13's "a supplier cannot accept an expired order" is
+true at every instant rather than eventually. The job exists to move the state so
+the restaurant is told and can source elsewhere.
+
+---
+
+## D-019 — Only performance signals that actually exist are reported
+**2026-09-15 · Settled**
+
+`OrderDerivedPerformanceProvider` replaces `NoHistoryPerformanceProvider` now that
+orders exist. Nothing in `BestValueScorer` changed, which was the point of D-014.
+
+It returns **acceptance rate** and **cancellation rate**, computed from supplier
+orders. It leaves **fill rate**, **on-time rate** and **rating** empty, because
+those need delivered quantities (Phase 12), delivery timestamps (Phase 11) and
+ratings (Phase 12) — none of which exist yet. Approximating them from what is to
+hand would be a fabrication with a plausible face, which doc 07 §4 forbids.
+
+Two denominators worth knowing, because both are easy to get subtly wrong:
+
+- **Acceptance rate counts only orders the supplier answered.** Including orders
+  still pending would make a supplier's rate fall because an order arrived a
+  second ago.
+- **Cancellation rate is against orders they committed to**, not all orders.
+  Against all orders, a supplier who rejects frequently would look *more* reliable,
+  because rejections would dilute the denominator.
+
+Computed on demand rather than materialised. A grouped count over an indexed
+column is cheap at current volumes, and a materialised table is one more thing
+that can be stale while a restaurant is looking at a ranking. Revisit when the
+query is slow, not when the theory says it might be.
+
+---
+
 ## OPEN-004 — Payment is not yet enforced before an order reaches a supplier
 **Raised 2026-09-14 · Must be closed in Phase 9 (Payments)**
 

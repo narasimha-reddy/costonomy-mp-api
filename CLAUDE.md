@@ -5,10 +5,10 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3–7 complete** — foundation, authentication, organisations
-> with authorization, catalog, search with Best Value recommendations, and
-> requirements through to submitted supplier orders. Next is Phase 8, supplier
-> acceptance. Build sequence: `docs/specs/00-README.md` §8.
+> **Status: Phases 1, 3–8 complete** — foundation, authentication, organisations
+> with authorization, catalog, search with Best Value recommendations,
+> requirements through to submitted orders, and supplier acceptance with timeout.
+> Next is Phase 9, payments. Build sequence: `docs/specs/00-README.md` §8.
 >
 > **Before Phase 9, read OPEN-004 in `docs/DECISIONS.md`:** payment is not yet
 > enforced before an order reaches a supplier.
@@ -211,7 +211,14 @@ hard-delete a transactional record.
 **Concurrency.** Acceptance vs timeout must have exactly one winner. Same for
 duplicate acceptance, duplicate payment, credit reservation and delivery booking.
 These need real concurrency tests, not a code review
-(`docs/specs/10-testing-cicd-seed-data.md` §2).
+(`docs/specs/10-testing-cicd-seed-data.md` §2) — see
+`SupplierAcceptanceIT$Concurrency` for the shape: two threads on a latch, then
+assert the aggregate landed on exactly one outcome.
+
+**And report a lost race as what happened** (D-018). When optimistic locking
+rejects a write, re-read the aggregate and throw the error describing the outcome
+that won — `SUPPLIER_ORDER_EXPIRED`, not `CONCURRENT_MODIFICATION`. The second is
+accurate and tells the supplier nothing they can act on.
 
 **Idempotency** is mandatory on procurement submission, supplier state
 transitions, payments, refunds, credit reservation, delivery booking, receiving
