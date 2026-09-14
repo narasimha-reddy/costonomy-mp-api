@@ -29,10 +29,15 @@ Once running: `http://localhost:8080/costonomy-mp-api/swagger-ui.html`
 
 ## Status
 
-**Phase 1 — backend foundation.** Project skeleton, API envelope and error
-catalogue, request correlation, security wiring, and the platform infrastructure
-every later phase depends on: idempotency, audit, outbox, config and job locks.
-Schema migrations `V1` (identity/access) and `V2` (platform).
+**Phases 1 and 3 complete.**
 
-No domain endpoints yet. Next is Phase 3, authentication — see
-`docs/specs/00-README.md` §8 for the full sequence.
+- *Foundation* — API envelope, error catalogue, request correlation, security
+  wiring, idempotency, audit, outbox, config, job locks. Migrations `V1` and `V2`.
+- *Authentication* — OTP login over MSG91 or a mock, JWT access tokens, rotating
+  refresh tokens with replay detection, device registration.
+
+Working endpoints: `/api/v1/auth/otp/request`, `/auth/otp/verify`, `/auth/refresh`,
+`/auth/logout`, `/auth/me`, and `/api/v1/devices`.
+
+63 tests pass (41 unit, 22 integration). Next is Phase 4, organisations and
+authorization — see `docs/specs/00-README.md` §8 for the full sequence.

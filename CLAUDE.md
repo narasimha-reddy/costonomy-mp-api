@@ -5,8 +5,9 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phase 1 complete** — foundation, no domain endpoints yet. Next is
-> Phase 3, authentication. Build sequence: `docs/specs/00-README.md` §8.
+> **Status: Phases 1 and 3 complete** — foundation plus authentication. Next is
+> Phase 4, organisations and authorization. Build sequence:
+> `docs/specs/00-README.md` §8.
 
 ## Read before writing code
 
@@ -64,7 +65,18 @@ A module owns its entities, repositories, services and controllers; modules talk
 through services, never by reaching into another module's repositories.
 `common` is the shared kernel every module may depend on.
 
-### Two things that are easy to get wrong here
+```
+identity/
+  domain/       User, OtpVerification, RefreshToken, Device
+  provider/     OtpProvider port + MSG91 and Mock adapters
+  service/      OtpService + OtpAttemptStore, JwtService,
+                RefreshTokenService + RefreshTokenStore, AuthService,
+                DeviceService, PhoneNumbers
+  security/     AuthenticatedActor, ActorContext, JwtAuthenticationFilter
+  web/          AuthController, DeviceController
+```
+
+### Three things that are easy to get wrong here
 
 **`IdempotencyStore` is a separate bean from `IdempotencyService` on purpose.**
 Spring's `@Transactional` works through a proxy, and a self-invocation bypasses
@@ -77,6 +89,24 @@ authorised a payment. Do not merge these two classes.
 **`AuditService` and `OutboxService` join the caller's transaction, also on
 purpose.** The audit row, the event, and the state change commit together or not
 at all. An audit entry for a rolled-back suspension is worse than none.
+
+**A side effect that must survive a thrown exception needs its own transaction.**
+This is the same proxy rule as above, but it bites in a way that looks correct
+from the outside, and it has already produced two real security bugs here:
+
+- OTP attempt counting incremented inside the transaction that the
+  `OTP_INVALID` throw then rolled back. The counter stayed at zero, so the
+  attempt limit was decorative and a six-digit code was open to exhaustive
+  guessing. Now in `OtpAttemptStore` (`REQUIRES_NEW`, atomic SQL increment).
+- Refresh-token replay detection revoked every session and *then* threw. The
+  throw rolled the revocation back, so the replay was rejected while the
+  compromised session stayed live for another thirty days. Now in
+  `RefreshTokenStore`.
+
+Both were caught by integration tests that assert the *side effect*, not just the
+rejection — `attemptsAreLimited` checks the correct code stops working, and
+`replayRevokesAllSessions` checks the **other** token dies. Write that kind of
+assertion when you add a security control here.
 
 ## Rules that are not negotiable
 
