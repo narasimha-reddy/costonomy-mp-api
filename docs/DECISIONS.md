@@ -409,12 +409,107 @@ it already handles absence correctly rather than acquiring that behaviour later.
 
 ---
 
-## OPEN-003 — Requirement lifecycle: is there a `SOURCING` state?
-**Raised 2026-09-14 · Low stakes, decide when Requirements are built**
+## D-015 — A requirement is credited on acceptance, never on submission
+**2026-09-14 · Settled**
+
+Guardrail 14 forbids silently dropping unmet requirement quantities, and doc 01
+§9–10 require the shortfall from a rejection, timeout or partial acceptance to
+stay sourceable without the restaurant retyping anything.
+
+**Decision:** `requirement_item.fulfilled_quantity` increases only when a supplier
+**accepts**. Placing an order changes the requirement's status to `SOURCING` and
+credits nothing.
+
+**Why:** placing an order is a hope, not a fulfilment. Decrementing on submission
+is the obvious implementation and quietly loses the need — a rejected order would
+leave the requirement looking satisfied, and the shortfall would have to be
+reconstructed by compensating on every failure path (rejection, timeout,
+cancellation, partial acceptance, payment failure). Crediting on acceptance means
+there is nothing to compensate: the failure paths do nothing at all.
+
+Two consequences:
+
+- `remaining_quantity` is derived (`requested − fulfilled`), never stored, so the
+  header cannot drift from the lines.
+- A `CHECK (fulfilled_quantity <= requested_quantity)` constraint enforces doc 10
+  §3's invariant in the database rather than by discipline.
+
+The requirements a procurement serves are derived from its **lines**, not from a
+header field. A cart is built one offer at a time, each line linked to the need it
+serves, and one cart can serve several requirements — a single `requirement_id`
+would silently miss all but one.
+
+---
+
+## D-016 — A side effect that must survive its own exception needs its own bean
+**2026-09-14 · Settled**
+
+The same mistake has now produced four real bugs in this codebase, each of which
+looked correct from the outside:
+
+1. **OTP attempt counting** incremented inside the transaction that the
+   `OTP_INVALID` throw rolled back. The counter never left zero, so the attempt
+   limit was decorative and a six-digit code was open to exhaustive guessing.
+2. **Refresh-token replay detection** revoked every session and then threw. The
+   revocation was rolled back; the replay was rejected while the compromised
+   session stayed live for another thirty days.
+3. **Procurement submission failure** marked the order `FAILED` and then threw.
+   The restaurant was told a supplier had gone offline while the order still read
+   `READY`.
+4. (And the same proxy rule, in a different guise) **`doSubmit` was
+   `@Transactional` but self-invoked** from inside the idempotency lambda, so the
+   whole submission — several supplier orders and their items — would have run
+   with no transaction at all.
+
+**The rule:** if a side effect has to outlive the exception that reports it, it
+belongs in a `REQUIRES_NEW` method on a **separate bean**. Separate, because
+Spring's `@Transactional` is proxy-based and a method invoked through `this` —
+including from inside a lambda, which is easy to miss — never reaches the proxy
+and the annotation is silently ignored.
+
+The four such beans are `IdempotencyStore`, `OtpAttemptStore`,
+`RefreshTokenStore` and `ProcurementStateStore`. Do not merge any of them into
+their callers.
+
+**And the testing rule that catches it:** assert the *side effect*, not the
+rejection. Every one of these bugs passed a test that checked the error response.
+They failed tests that checked whether the thing the error described had actually
+happened.
+
+---
+
+## OPEN-004 — Payment is not yet enforced before an order reaches a supplier
+**Raised 2026-09-14 · Must be closed in Phase 9 (Payments)**
+
+Doc 01 §14 and guardrail 16: a payment failure means the supplier never sees the
+order. Payments arrive in Phase 9, so today a submitted order carries
+`payment_status = PENDING` and still moves to `PENDING_ACCEPTANCE`.
+
+This is a real gap in an unreleased system, not a design decision. The insertion
+point is marked in `ProcurementSubmitter.submit()`. When `PaymentService` lands:
+
+- authorize **before** creating the supplier orders;
+- create them in `DRAFT` and move them to `PENDING_ACCEPTANCE` only once
+  authorization succeeds — the acceptance deadline must not start ticking against
+  an order the supplier cannot yet be shown;
+- for `CREDIT`, reserve credit at the same point (doc 01 §19), which is a
+  different check with the same ordering requirement.
+
+`ProcurementIT$Submission` documents today's behaviour, so the change will be
+visible as a test change rather than a silent one.
+
+---
+
+## D-017 — The requirement lifecycle includes SOURCING
+**Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 
 `03-state-machines-permissions.md` §3 has `OPEN → SOURCING → PARTIALLY_FULFILLED
 → FULFILLED`. `Mandi_Engineering_PRD_v1.0.md` §6 omits `SOURCING`.
 
-Recommendation: include it — per D-001 the numbered set wins, and the state is
-genuinely useful ("we are looking for suppliers" is distinct from "nothing has
-happened yet"). Noted so nobody treats its absence in v1.0 as a contradiction.
+**Decision: included.** Per D-001 the numbered docs win, and the state earns its
+place — "we have submitted this to a supplier and are waiting" is genuinely not
+"nothing has happened yet", and §23A.14 shows the two differently.
+
+A requirement returns to `SOURCING` from `PARTIALLY_FULFILLED` when the shortfall
+is submitted to another supplier, which is the loop guardrail 14 exists to keep
+open.

@@ -28,9 +28,10 @@ Use:
 | SRCH-001 | Product search | 01,07 | catalog: CatalogQueryService; discovery: SearchService | V6 ix_canonical_normalized | /search/products, /search/suggestions, /search/suppliers | Search screen pending | CatalogIT$Canonical (5), RecommendationIT$Search (4) | TESTED |
 | REC-001 | Best-value recommendation | 01,07 | discovery: BestValueScorer, RecommendationService, SupplierPerformanceProvider | V8 ranking weights in app_config | GET /products/{id}/recommendations | Recommended Procurement pending | BestValueScorerTest (20), RecommendationIT$Filtering (7), $Honesty (3) | TESTED |
 | REC-002 | Serviceability | 07,41 | discovery: Serviceability, RecommendationService | V4 supplier_delivery_policy | applied in recommendations | — | ServiceabilityTest (7), RecommendationIT$Filtering | TESTED |
-| REQ-001 | Requirement lifecycle | 01,03,04 | Requirement | requirement | requirement APIs | requirements | lifecycle tests | NOT_STARTED |
-| PROC-001 | Procurement | 01,03,04 | Procurement | procurement | procurement APIs | cart/checkout | E2E | NOT_STARTED |
-| PROC-002 | Multi-supplier split | 01,03,04 | Procurement | split/order | submit API | comparison | split tests | NOT_STARTED |
+| REQ-001 | Requirement lifecycle | 01,03,04 | procurement: RequirementService, RequirementStatus | V9 requirement, requirement_item | /outlets/{id}/requirements, /requirements/{id} | Requirements screen pending | LifecycleTest, ProcurementIT$Requirements (3) | TESTED |
+| PROC-001 | Procurement, cart and checkout | 01,03,04 | procurement: ProcurementService, Pricing | V9 procurement, procurement_item | /cart, /procurements/{id}/validate | Cart/Checkout pending | PricingTest (7), ProcurementIT$Cart (4), $PriceChanges (5) | TESTED |
+| PROC-002 | Multi-supplier split | 01,03,04 | procurement: ProcurementSubmitter | V10 supplier_order, supplier_order_item | POST /procurements/{id}/submit | Orders screen pending | ProcurementIT$Submission (6) | TESTED |
+| PROC-003 | Approval policy | 01,03,28 | procurement: ApprovalPolicyEvaluator | V3 procurement_policy | /procurements/{id}/approve, /reject | Approval screen pending | ProcurementIT$Approval (6) | TESTED |
 | ORD-001 | Supplier acceptance | 01,03,04 | Order module | supplier_order | accept API | supplier order | race tests | NOT_STARTED |
 | ORD-002 | Partial acceptance | 01,03,04 | Order module | order items | partial API | partial screen | partial tests | NOT_STARTED |
 | PAY-001 | Provider abstraction | 01,04,06 | Payment module | payment | payment APIs | payment | provider tests | NOT_STARTED |

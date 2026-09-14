@@ -29,7 +29,7 @@ Once running: `http://localhost:8080/costonomy-mp-api/swagger-ui.html`
 
 ## Status
 
-**Phases 1, 3, 4, 5 and 6 complete.**
+**Phases 1 and 3–7 complete.**
 
 - *Foundation* — API envelope, error catalogue, request correlation, security
   wiring, idempotency, audit, outbox, config, job locks. Migrations `V1` and `V2`.
@@ -53,5 +53,12 @@ Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
 `/catalog/imports`, and the operations verification endpoints under
 `/admin/suppliers`.
 
-192 tests pass (105 unit, 87 integration). Next is Phase 7, requirements and
-procurement — see `docs/specs/00-README.md` §8 for the full sequence.
+- *Requirements and procurement* — requirements that survive supplier failure,
+  cart, checkout revalidation with explicit price-change confirmation, policy-driven
+  approval, and idempotent submission into supplier orders. Migrations `V9`–`V10`.
+
+239 tests pass (127 unit, 112 integration). Next is Phase 8, supplier acceptance —
+see `docs/specs/00-README.md` §8 for the full sequence.
+
+**Known gap:** payment is not yet enforced before an order reaches a supplier.
+See `docs/DECISIONS.md` OPEN-004; it closes in Phase 9.

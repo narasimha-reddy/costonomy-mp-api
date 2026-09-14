@@ -5,10 +5,13 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3, 4, 5 and 6 complete** — foundation, authentication,
-> organisations with authorization, catalog, and search with Best Value
-> recommendations. Next is Phase 7, requirements and procurement. Build sequence:
-> `docs/specs/00-README.md` §8.
+> **Status: Phases 1, 3–7 complete** — foundation, authentication, organisations
+> with authorization, catalog, search with Best Value recommendations, and
+> requirements through to submitted supplier orders. Next is Phase 8, supplier
+> acceptance. Build sequence: `docs/specs/00-README.md` §8.
+>
+> **Before Phase 9, read OPEN-004 in `docs/DECISIONS.md`:** payment is not yet
+> enforced before an order reaches a supplier.
 
 ## Read before writing code
 
@@ -76,6 +79,11 @@ catalog/        canonical products, supplier SKUs and offers, bulk import
                 ImportValues
   service/      CatalogQueryService, SupplierCatalogService,
                 CatalogImportService, CatalogFileParser
+procurement/    requirements, cart, checkout, approval, supplier orders
+  domain/       Requirement, Procurement, SupplierOrder, Pricing, and the
+                three state machines
+  service/      RequirementService, ProcurementService, ApprovalPolicyEvaluator,
+                ProcurementSubmitter, ProcurementStateStore
 discovery/      search, serviceability, Best Value ranking
   domain/       Serviceability, RankingWeights, ExplanationCode, SupplierPerformance
   service/      BestValueScorer, RecommendationService, SearchService,
@@ -106,9 +114,10 @@ authorised a payment. Do not merge these two classes.
 purpose.** The audit row, the event, and the state change commit together or not
 at all. An audit entry for a rolled-back suspension is worse than none.
 
-**A side effect that must survive a thrown exception needs its own transaction.**
-This is the same proxy rule as above, but it bites in a way that looks correct
-from the outside, and it has already produced two real security bugs here:
+**A side effect that must survive a thrown exception needs its own transaction,
+in its own bean.** This is the same proxy rule as above, but it bites in a way
+that looks correct from the outside, and it has now produced four real bugs here
+(D-016):
 
 - OTP attempt counting incremented inside the transaction that the
   `OTP_INVALID` throw then rolled back. The counter stayed at zero, so the
@@ -119,10 +128,18 @@ from the outside, and it has already produced two real security bugs here:
   compromised session stayed live for another thirty days. Now in
   `RefreshTokenStore`.
 
-Both were caught by integration tests that assert the *side effect*, not just the
-rejection — `attemptsAreLimited` checks the correct code stops working, and
-`replayRevokesAllSessions` checks the **other** token dies. Write that kind of
-assertion when you add a security control here.
+- Procurement submission marked an order `FAILED` and then threw. The restaurant
+  was told a supplier had gone offline while the order still read `READY`. Now in
+  `ProcurementStateStore`.
+- `doSubmit` was `@Transactional` but self-invoked from inside the idempotency
+  lambda, so the entire submission would have run with no transaction. Now in
+  `ProcurementSubmitter`.
+
+Every one of these passed a test that checked the error response, and failed a
+test that checked whether the thing the error described had actually happened.
+**Assert the side effect, not the rejection** — `attemptsAreLimited` checks the
+correct code stops working, `replayRevokesAllSessions` checks the *other* token
+dies, `offlineBetweenValidateAndSubmit` checks the procurement really is `FAILED`.
 
 ## Rules that are not negotiable
 
@@ -175,6 +192,16 @@ handle its absence the same way.
 
 **Commission is never a ranking input.** Guardrail 9. Not as a weight, not as a
 tiebreak, not in a response. `BestValueScorerTest` asserts the component set.
+
+**A requirement is credited on acceptance, never on submission.** Guardrail 14,
+D-015. Placing an order is a hope; decrementing on hope makes a rejected order look
+fulfilled and loses the need. Crediting on acceptance means the failure paths —
+rejection, timeout, cancellation, partial acceptance — need no compensation at all.
+
+**`Pricing` is the only place a line total is computed.** A second implementation
+would eventually differ in the last paisa, and the restaurant would be the one to
+notice. GST is computed on the *rounded* line value, so an invoice reconciles when
+someone checks it with a calculator.
 
 **Money.** `DECIMAL(19,4)`, never floating point. Rates `DECIMAL(9,4)`. Transaction
 tables snapshot the commercial values needed to reconstruct them; never

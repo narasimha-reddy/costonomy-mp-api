@@ -110,6 +110,11 @@ class MigrationIT extends AbstractIntegrationTest {
                 from information_schema.tables t
                 where t.table_schema = database()
                   and t.table_name <> 'flyway_schema_history'
+                  -- A counter, not an aggregate. It serialises on a row lock
+                  -- taken by INSERT … ON DUPLICATE KEY UPDATE; optimistic
+                  -- locking on a hot counter would mean constant conflicts on
+                  -- the one row every submission touches.
+                  and t.table_name <> 'order_number_sequence'
                   and exists (
                       select 1 from information_schema.columns c
                       where c.table_schema = t.table_schema
