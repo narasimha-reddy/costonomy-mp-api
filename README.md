@@ -68,7 +68,14 @@ Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
   webhook handling that survives duplicates, out-of-order delivery and a client
   that dies mid-checkout.
 
-285 tests pass (138 unit, 147 integration). Next is Phase 10, credit —
+- *Supplier credit* — credit requests and the negotiation around them, agreements
+  that are specific to one supplier store and one restaurant outlet, an append-only
+  ledger, reservation on order and utilization on acceptance, invoices with a due
+  date and a grace period, recorded repayments, and the overdue sweep. Credit is
+  supplier-funded throughout: Mandi runs the workflow and the ledger and funds
+  none of it.
+
+325 tests pass (152 unit, 173 integration). Next is Phase 11, delivery —
 see `docs/specs/00-README.md` §8 for the full sequence.
 
-There are no open decisions: OPEN-004 closed as `docs/DECISIONS.md` D-020.
+There are no open decisions.

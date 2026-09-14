@@ -52,7 +52,7 @@ public class SupplierOrderTransitions {
     private final SupplierOrderItemRepository orderItems;
     private final SupplierOrderMapper mapper;
     private final RequirementService requirementService;
-    private final OrderFundingPort funding;
+    private final OrderFunding funding;
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;

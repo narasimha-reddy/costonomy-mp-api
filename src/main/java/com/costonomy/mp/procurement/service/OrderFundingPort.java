@@ -16,17 +16,36 @@ import java.util.List;
  * <p>The contract is deliberately narrow. Procurement asks for funding to be
  * arranged and is told whether the order may be released; it never sees a payment,
  * a provider, or an amount it did not compute itself.
+ *
+ * <p>There is one implementation per payment method — prepaid money in the payment
+ * module, reserved credit in the credit module — and {@link OrderFunding} picks
+ * between them. Procurement depends on that router, never on an implementation:
+ * the two ways of funding an order differ in almost everything except the promise
+ * this interface makes, which is the only part procurement cares about.
  */
 public interface OrderFundingPort {
+
+    /**
+     * The payment method this funds — {@code PREPAID} or {@code CREDIT}.
+     *
+     * <p>Declared by the implementation rather than configured, so adding a funding
+     * method is adding a class and nothing else.
+     */
+    String paymentMethod();
 
     /**
      * Arrange funding for newly created orders.
      *
      * <p>Called inside the submission transaction, <b>before</b> the orders are
-     * released to suppliers. Creates the payment intents; it does not wait for the
-     * customer to pay.
+     * released to suppliers.
      *
-     * @return what the client needs to complete payment, one per order
+     * <p>Whether funding is secured by the time this returns depends on the method.
+     * Prepaid creates intents the customer must still complete; credit is reserved
+     * here and now, so the orders are ready to release immediately. Callers must
+     * not assume either — they ask {@link #isFundingSecured} afterwards.
+     *
+     * @return what the client needs to complete payment, one per order; empty when
+     *         there is nothing for the client to do
      */
     List<FundingIntent> arrangeFunding(List<SupplierOrder> orders);
 

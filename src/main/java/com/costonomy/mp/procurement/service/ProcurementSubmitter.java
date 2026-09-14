@@ -49,7 +49,8 @@ public class ProcurementSubmitter {
     private final ProcurementDirectory directory;
     private final OrderNumberGenerator orderNumbers;
     private final ProcurementStateStore stateStore;
-    private final OrderFundingPort funding;
+    private final OrderFunding funding;
+    private final OrderReleaseService orderRelease;
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
@@ -98,13 +99,9 @@ public class ProcurementSubmitter {
             }
         }
 
-        // Credit funding arrives in Phase 10. Until then a CREDIT order would
-        // reach its supplier with nothing securing it, which is the same guardrail
-        // 16 violation prepaid orders used to have — so it is refused rather than
-        // quietly allowed.
-        if ("CREDIT".equals(procurement.getPaymentMethod())) {
-            throw new BusinessException(ErrorCode.CREDIT_AGREEMENT_NOT_ACTIVE,
-                    "Paying on credit isn't available yet. Please choose prepaid.");
+        if (!funding.supports(procurement.getPaymentMethod())) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "That payment method isn't available.");
         }
 
         Instant now = Instant.now();
@@ -123,10 +120,17 @@ public class ProcurementSubmitter {
                     stores.get(entry.getKey()), now, actorId));
         }
 
-        // Guardrail 16, doc 01 §14: the supplier sees nothing until payment is
-        // arranged. This creates the intents; the customer completes them, and
-        // PaymentReleaseService releases each order when its payment authorises.
+        // Guardrail 16, doc 01 §14: the supplier sees nothing until the order is
+        // funded. What that takes depends on the method — a prepaid order gets an
+        // intent the customer must still complete, while credit is reserved right
+        // here — so this asks for funding and then releases whatever is already
+        // secured, rather than branching on the payment method.
+        //
+        // For prepaid nothing is secured yet, so the release is a no-op and the
+        // orders wait for the confirm call, the webhook or the reconciliation
+        // sweep. For credit every order is secured, so they all go out now.
         var intents = funding.arrangeFunding(created);
+        orderRelease.releaseProcurement(procurement.getId());
 
         procurement.setStatus(ProcurementStatus.SUBMITTED);
         procurement.setSubmittedAt(now);

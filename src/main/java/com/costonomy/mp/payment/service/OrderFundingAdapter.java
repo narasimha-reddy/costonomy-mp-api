@@ -35,6 +35,11 @@ public class OrderFundingAdapter implements OrderFundingPort {
     private final PaymentProvider provider;
 
     @Override
+    public String paymentMethod() {
+        return "PREPAID";
+    }
+
+    @Override
     @Transactional
     public List<FundingIntent> arrangeFunding(List<SupplierOrder> orders) {
         List<FundingIntent> intents = new ArrayList<>();

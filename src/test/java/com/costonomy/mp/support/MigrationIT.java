@@ -110,11 +110,11 @@ class MigrationIT extends AbstractIntegrationTest {
                 from information_schema.tables t
                 where t.table_schema = database()
                   and t.table_name <> 'flyway_schema_history'
-                  -- A counter, not an aggregate. It serialises on a row lock
+                  -- Counters, not aggregates. They serialise on a row lock
                   -- taken by INSERT … ON DUPLICATE KEY UPDATE; optimistic
                   -- locking on a hot counter would mean constant conflicts on
                   -- the one row every submission touches.
-                  and t.table_name <> 'order_number_sequence'
+                  and t.table_name not in ('order_number_sequence', 'credit_invoice_sequence')
                   and exists (
                       select 1 from information_schema.columns c
                       where c.table_schema = t.table_schema
@@ -159,6 +159,11 @@ class MigrationIT extends AbstractIntegrationTest {
                         // A ledger of what we asked the provider to do. Rewriting
                         // one would erase the trail a payment is reconstructed from.
                         "payment_transaction",
+                        // The same, for credit. A limit change or a repayment is
+                        // answered by the row that recorded it, not by today's balance.
+                        "credit_transaction",
+                        "credit_limit_history",
+                        "credit_payment",
                         // Reference data that is added or removed, never edited.
                         "canonical_product_alias",
                         // Pure join tables.

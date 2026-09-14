@@ -41,8 +41,8 @@ Use:
 | PLAT-002 | Outbox / domain events | 02,08 | common.outbox: Service + Publisher | V2 outbox_event | — | — | pending consumers | IMPLEMENTED |
 | PAY-002 | Webhook idempotency | 01,04,09 | payment: PaymentWebhookService + Store, PaymentJobs.reconcileStale | V11 payment_webhook_event | POST /webhooks/razorpay | — | PaymentFlowIT$Recovery (4) | TESTED |
 | PAY-003 | Partial capture, release and refund | 01,03,22 | payment: PaymentService.markForCapture/performCapture/release, RefundService | V11 payment_transaction, refund | POST /payments/{id}/refund, GET /payments/{id}/refunds | refund status pending | PaymentLifecycleTest, PaymentFlowIT$Capture (4), $Refunds (4) | TESTED |
-| CRD-001 | Supplier credit | 01,03,04 | Credit module | credit tables | credit APIs | credit screens | credit tests | NOT_STARTED |
-| CRD-002 | Credit reservation | 01,03 | Credit module | reservation/txn | internal/domain | order UI | race tests | NOT_STARTED |
+| CRD-001 | Supplier credit | 01,03,04 | credit: CreditAgreementService, CreditPolicyService, CreditInvoiceService, CreditJobs | V12 credit_agreement, credit_request, credit_limit_history, credit_invoice, credit_payment | /credit/requests, /credit/agreements/{id}/{approve,reject,modify,accept,suspend}, /credit/invoices/{id}/payments, /outlets/{id}/credit/summary | Credit Overview/Request pending | CreditExposureTest (14), CreditFlowIT$Negotiation (7), $InvoicesAndRepayment (7) | TESTED |
+| CRD-002 | Credit reservation | 01,03 | credit: CreditLedgerService, CreditLedger, CreditExposureStore, CreditFundingAdapter | V12 credit_reservation, credit_transaction | via procurement submit and supplier response | credit state in cart pending | CreditFlowIT$ReserveAndUtilize (5), $Limits (5), $Concurrency (1) | TESTED |
 | DEL-001 | Delivery abstraction | 01,06 | Delivery module | delivery | delivery APIs | tracking | provider tests | NOT_STARTED |
 | DEL-002 | Reassignment | 01,03,06 | Delivery module | attempts/events | reassign API | tracking | failure E2E | NOT_STARTED |
 | RCV-001 | Receiving | 01,03,04 | Receiving | receiving | receive API | receiving | receiving tests | NOT_STARTED |

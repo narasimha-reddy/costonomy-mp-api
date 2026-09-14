@@ -601,6 +601,98 @@ no enclosing transaction, which is the shape to copy.
 
 ---
 
+## D-022 — A credit request and its agreement are created together
+**2026-09-15 · Settled**
+
+Doc 02 §3 lists `credit_request` and `credit_agreement` as separate tables, but
+doc 04 §13 puts the approval on the *agreement* (`POST /credit/agreements/{id}/approve`)
+while creation is on the *request* (`POST /credit/requests`). Something has to
+reconcile the two.
+
+**Decision: asking creates both.** Doc 03 §8 starts the agreement's lifecycle at
+`REQUESTED`, so the agreement is the subject of the request rather than its
+result. `credit_request` records what was asked and what was said back, over what
+may be several rounds; `credit_agreement` is the commercial instrument those
+rounds are about.
+
+**Why it matters later:** `uk_credit_agreement_pair` means one live credit line
+per (outlet, supplier store). Without that, a second request would create a second
+limit, and the restaurant's exposure would be the sum of two numbers nobody
+separately agreed to.
+
+---
+
+## D-023 — Terms the supplier changed are not credit until the restaurant accepts
+**2026-09-15 · Settled**
+
+Doc 03 §8 has `APPROVED → ACTIVE` as its own transition and doc 05 §20 lists
+"approved with modified terms" as a status distinct from "approved". Both imply a
+step between the supplier's answer and usable credit, and someone has to take it.
+
+**Decision: approving *as asked* activates immediately; changing any term leaves
+the agreement `APPROVED` until the restaurant accepts.** `CreditAgreementStatus.canFund()`
+is true only for `ACTIVE`, so an unaccepted modification funds nothing.
+
+**Why:** a supplier who halves the limit and halves the period has made a
+different offer, and the restaurant may not want it. Activating it for them means
+orders get placed against an arrangement nobody agreed to — and the first the
+restaurant hears of the new terms is an invoice due a fortnight early. Doc 10 §1's
+seventh scenario is "credit request → **modified approval** → reserve → …", which
+only has a path through it if the modification can be accepted.
+
+---
+
+## D-024 — A credit limit cannot be cut below what is already committed
+**2026-09-15 · Settled**
+
+Doc 01 §18 lets a supplier adjust a limit, and also says `available` cannot go
+negative. Doc 10 §3 states the identity `approved = reserved + utilized +
+available`. A limit below current exposure cannot satisfy both.
+
+**Decision: the floor is `reserved + utilized`, and the error names it.** A
+supplier can cut to exactly what they have already extended, and no further.
+
+**Why:** reservations and utilization are credit already extended — an order a
+restaurant has placed and a supplier may already be packing. The alternatives are
+worse in both directions: clamping `available` to zero and letting the limit go
+lower breaks the identity, so the four numbers on the restaurant's Credit Overview
+stop adding up; clawing the reservation back cancels an order the supplier
+themselves accepted.
+
+A supplier who wants to stop lending immediately wants **suspension**, which
+exists and does exactly that: no new orders, commitments untouched. The error
+message says so, because the supplier's actual intent is nearly always that.
+
+---
+
+## D-025 — Exposure moves by conditional UPDATE, never read-modify-write
+**2026-09-15 · Settled**
+
+`reserved_amount` and `utilized_amount` are written only by `CreditExposureStore`,
+and every method there is a single UPDATE that re-checks its own precondition in
+the same statement — `… where status = 'ACTIVE' and approved_limit - reserved_amount
+- utilized_amount >= ?`.
+
+**Why not the obvious implementation?** Load the agreement, compute `available`,
+compare, add to `reserved`, save. Two concurrent orders for 60% of the limit both
+read the same row, both find the whole limit available, and both save. `@Version`
+catches it — the outcome is correct — but the loser is told
+`CONCURRENT_MODIFICATION`, which by D-018 is the wrong thing to say: the
+restaurant's actual problem is that there is not enough credit, and that is what
+they can act on. With the conditional UPDATE, InnoDB serialises the two statements
+and the second one's `WHERE` clause simply does not match, so the caller can
+report the real reason.
+
+The status check is in the same `WHERE` clause for the same reason: an agreement
+suspended between a caller's read and its write must not be drawn on, and the only
+way to be sure is to make the suspension and the reservation contend for one row.
+
+The database also carries `ck_credit_available`. The UPDATE makes the failure
+*informative*; the CHECK makes it *impossible*, including for code written later
+that forgets this class exists.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

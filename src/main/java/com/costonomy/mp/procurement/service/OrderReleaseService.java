@@ -34,7 +34,7 @@ import java.util.Map;
 public class OrderReleaseService {
 
     private final SupplierOrderRepository orders;
-    private final OrderFundingPort funding;
+    private final OrderFunding funding;
     private final AuditService auditService;
     private final OutboxService outbox;
 

@@ -5,10 +5,11 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3–9 complete** — foundation, authentication, organisations
+> **Status: Phases 1, 3–10 complete** — foundation, authentication, organisations
 > with authorization, catalog, search with Best Value recommendations,
-> requirements through to submitted orders, supplier acceptance with timeout, and
-> payments. Next is Phase 10, credit. Build sequence: `docs/specs/00-README.md` §8.
+> requirements through to submitted orders, supplier acceptance with timeout,
+> payments, and supplier credit. Next is Phase 11, delivery. Build sequence:
+> `docs/specs/00-README.md` §8.
 >
 > **There are no open decisions.** OPEN-004 closed as D-020: a supplier order is
 > created `DRAFT` and released only once funding is secured.
@@ -84,6 +85,14 @@ procurement/    requirements, cart, checkout, approval, supplier orders
                 three state machines
   service/      RequirementService, ProcurementService, ApprovalPolicyEvaluator,
                 ProcurementSubmitter, ProcurementStateStore
+credit/         supplier-funded credit: requests, agreements, ledger, invoices
+  domain/       CreditAgreement, CreditRequest, CreditReservation, CreditInvoice,
+                CreditPayment, CreditTransaction, CreditLimitHistory,
+                SupplierCreditPolicy, CreditExposure
+  repository/   CreditExposureStore (the conditional UPDATEs), InvoiceNumberGenerator
+  service/      CreditAgreementService, CreditLedgerService, CreditLedger,
+                CreditInvoiceService, CreditPolicyService, CreditJobs,
+                CreditFundingAdapter (implements procurement's OrderFundingPort)
 payment/        authorization, capture, release, refunds, webhooks
   domain/       Payment, PaymentStatus, PaymentTransaction, Refund,
                 RefundReason, RefundStatus, PaymentWebhookEvent
@@ -141,6 +150,11 @@ that looks correct from the outside, and it has now produced four real bugs here
 - `doSubmit` was `@Transactional` but self-invoked from inside the idempotency
   lambda, so the entire submission would have run with no transaction. Now in
   `ProcurementSubmitter`.
+- Reading a balance back through JPA after changing it with SQL. The conditional
+  UPDATEs in `CreditExposureStore` are invisible to the entity manager, so a
+  `findById` in the same transaction returns the **stale** first-level-cache
+  instance — and a ledger row built from it records balances that were never true.
+  `CreditExposureStore.read` goes straight to the row for exactly this reason.
 - A **duplicate webhook** returned 500. The unique-constraint violation had
   already marked the transaction rollback-only, so catching it changed nothing
   and the commit threw afterwards — telling the provider to retry an event we
@@ -216,6 +230,32 @@ confirm call, the webhook or the reconciliation job arrives first. Funding means
 only after acceptance and only for what was accepted; the remainder of a partial
 acceptance is *released*, never refunded, so nothing reaches the restaurant's
 statement that should not be there.
+
+This applies identically to credit, which is why both go through
+`OrderFundingPort` and `OrderFunding` routes between them. A credit order differs
+only in timing: the reservation succeeds or fails inside the submission, so the
+order releases immediately and there is no intent for the client to complete. Add
+a funding method by adding an `OrderFundingPort`, never by branching on the
+payment method in procurement.
+
+**Credit is supplier-funded and supplier-controlled.** Doc 01 §18. Every limit,
+term, per-order cap and suspension is the supplier's; Mandi runs the workflow,
+the ledger and the reconciliation and does **not** fund credit, guarantee or own
+receivables, bear losses, or chase debts. Concretely, that means: never grant or
+extend credit on a supplier's behalf (a store that has not configured a policy has
+not opted in — absent is not "enabled with defaults"); never auto-suspend unless
+they asked for it; and a repayment is *recorded by the supplier*, never by the
+restaurant, because the money moved outside Mandi and only the party it reached
+can confirm it arrived.
+
+**`reserved` and `utilized` are written only by `CreditExposureStore`.** Every
+method there is one conditional UPDATE that re-checks its precondition in the same
+statement, so the credit reservation race is settled by the database and the loser
+can be told what actually happened — "not enough credit", not
+`CONCURRENT_MODIFICATION` (D-025, D-018). `available` is always derived, never
+stored: a persisted copy is a second source of truth that drifts. And a limit can
+never be cut below `reserved + utilized`, or doc 10 §3's identity stops holding
+(D-024).
 
 **A requirement is credited on acceptance, never on submission.** Guardrail 14,
 D-015. Placing an order is a hope; decrementing on hope makes a rejected order look
