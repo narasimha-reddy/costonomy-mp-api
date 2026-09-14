@@ -184,14 +184,18 @@ part of `V12__notifications_audit_analytics.sql`.
 number later:
 
 ```
-V1  identity_access          V8  payments
-V2  platform          ← new  V9  credit
-V3  restaurant_outlet        V10 delivery
-V4  supplier                 V11 receiving_disputes_ratings
-V5  catalog                  V12 settlement_commission
-V6  requirements_procurement V13 notifications_analytics
-V7  orders_fulfillment       V14 seed_reference_data
+V1  identity_access             V8  orders_fulfillment
+V2  platform             ← new  V9  payments
+V3  restaurant_outlet           V10 credit
+V4  supplier                    V11 delivery
+V5  seed_roles_permissions ← new V12 receiving_disputes_ratings
+V6  catalog                     V13 settlement_commission
+V7  requirements_procurement    V14 notifications_analytics
 ```
+
+`V5` moved forward for the same reason as `V2`: authorization cannot work without
+seeded roles and permissions, and every endpoint from Phase 4 on is authorized.
+Doc 02 §8 put seed data last, which only works if nothing before it needs seeding.
 
 **Why:** idempotency and audit are required by the *first* mutating endpoint, not
 the last. Doc 02 §8 presents its list as "suggested", and the grouping is

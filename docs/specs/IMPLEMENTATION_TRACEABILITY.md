@@ -19,9 +19,9 @@ Use:
 |---|---|---|---|---|---|---|---|---|
 | AUTH-001 | OTP login | 01,04 | identity: OtpService, AuthService, OtpProvider (MSG91 + Mock) | V1 users, otp_verification | POST /auth/otp/request, /auth/otp/verify | Login/OTP screens pending | PhoneNumbersTest, AuthFlowIT$Login (9) | TESTED |
 | AUTH-002 | JWT session | 01,04 | identity: JwtService, RefreshTokenService + Store | V1 refresh_token | POST /auth/refresh, /auth/logout, GET /auth/me | session handling pending | JwtServiceTest, AuthFlowIT$Refresh (4), $Protected (2) | TESTED |
-| ORG-001 | Restaurant/outlet | 01,02,04 | Restaurant module | restaurant/outlet | outlet APIs | setup/outlet selector | API tests | NOT_STARTED |
-| SUP-001 | Supplier lifecycle | 01,03,04 | Supplier module | supplier tables | supplier APIs | supplier onboarding | transition tests | NOT_STARTED |
-| SUP-002 | GST verification | 01,09 | Verification module | verification | admin/supplier APIs | verification | verification tests | NOT_STARTED |
+| ORG-001 | Restaurant/outlet | 01,02,04 | restaurant: RestaurantService | V3 restaurant, outlet, restaurant_user | /restaurants, /outlets, /outlets/{id}/users | setup/outlet selector pending | TenantIsolationIT$Restaurants (6) | TESTED |
+| SUP-001 | Supplier lifecycle | 01,03,04 | supplier: SupplierService, SupplierLifecycleStatus | V4 supplier_organization, supplier_store | /suppliers, /supplier-stores | onboarding pending | SupplierLifecycleTest (7), TenantIsolationIT$Suppliers (6) | TESTED |
+| SUP-002 | GST verification | 01,09 | supplier: SupplierService.submitVerification/reviewVerification | V4 supplier_verification | POST /suppliers/{id}/verification, /admin/suppliers/... | verification screen pending | TenantIsolationIT$Suppliers | TESTED |
 | CAT-001 | Canonical products | 01,02,04 | Catalog module | product tables | product APIs | product screens | catalog tests | NOT_STARTED |
 | CAT-002 | Supplier SKU | 01,02,04 | Catalog module | supplier_sku | SKU APIs | catalog | catalog tests | NOT_STARTED |
 | CAT-003 | Bulk import | 01,04,05 | Catalog import | import tables | import APIs | bulk import | import tests | NOT_STARTED |
@@ -44,12 +44,13 @@ Use:
 | RCV-001 | Receiving | 01,03,04 | Receiving | receiving | receive API | receiving | receiving tests | NOT_STARTED |
 | DSP-001 | Disputes | 01,03,04 | Dispute module | dispute | dispute APIs | dispute | dispute tests | NOT_STARTED |
 | RAT-001 | Ratings | 01,04 | Rating module | rating | rating API | rating | rating tests | NOT_STARTED |
+| ORG-002 | Memberships in /auth/me | 04,05 | access: MembershipService | V1/V3/V4 | GET /auth/me | role-based routing pending | TenantIsolationIT$Memberships (5) | TESTED |
 | AUTH-003 | Device registration | 04,08 | identity: DeviceService | V1 device | POST/GET /devices, DELETE /devices/{id} | push registration pending | AuthFlowIT$Devices (2) | TESTED |
 | NTF-001 | Notifications | 08 | Notification module | notification | notification API | notifications | notification tests | NOT_STARTED |
 | ANA-001 | Analytics | 08 | Analytics module | analytics_event | event pipeline | event tracking | analytics tests | NOT_STARTED |
 | SET-001 | Commission | 01,09 | Settlement module | commission | admin APIs | settlement view | financial tests | NOT_STARTED |
 | SET-002 | Settlement | 01,09 | Settlement module | settlement | admin APIs | supplier settlement | settlement tests | NOT_STARTED |
-| SEC-001 | Authorization | 03,09 | Security | role tables | all APIs | role UI | authz tests | NOT_STARTED |
+| SEC-001 | Authorization | 03,09 | access: AccessControlService, ScopeType, RoleGrantService | V1 role/permission/user_role, V5 seed | enforced on all scoped APIs | permissions in /auth/me | ScopeTypeTest (5), PermissionCatalogIT (7), TenantIsolationIT (17) | TESTED |
 | SEC-002 | Audit | 03,09 | common.audit: AuditService (redacts secrets) | V2 audit_log | admin audit pending | — | covered via AuthFlowIT | IN_PROGRESS |
 | OPS-001 | Operations APIs | 09 | Admin module | all | admin APIs | future web | API tests | NOT_STARTED |
 

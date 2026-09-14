@@ -5,8 +5,8 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1 and 3 complete** — foundation plus authentication. Next is
-> Phase 4, organisations and authorization. Build sequence:
+> **Status: Phases 1, 3 and 4 complete** — foundation, authentication, and
+> organisations with authorization. Next is Phase 5, catalog. Build sequence:
 > `docs/specs/00-README.md` §8.
 
 ## Read before writing code
@@ -66,6 +66,12 @@ through services, never by reaching into another module's repositories.
 `common` is the shared kernel every module may depend on.
 
 ```
+access/         authorization — the heart of tenant isolation
+  domain/       ScopeType, Permissions, Roles, Role, Permission, UserRole
+  service/      AccessControlService, RoleGrantService, MembershipService,
+                RolePermissionCatalog, ScopeResolver
+restaurant/     Restaurant, Outlet, membership; RestaurantService
+supplier/       SupplierOrganization, SupplierStore, verification; SupplierService
 identity/
   domain/       User, OtpVerification, RefreshToken, Device
   provider/     OtpProvider port + MSG91 and Mock adapters
@@ -113,6 +119,25 @@ assertion when you add a security control here.
 **The backend is the authority.** Never trust a client-supplied price, total, or
 state transition. The server calculates price, GST, delivery, total, commission
 and credit — every time.
+
+**Every scoped read and write goes through `AccessControlService`.** A permission
+alone grants nothing; the check is always actor + permission + scope (doc 03 §16).
+
+- Use `requireScoped(...)` when the resource might belong to another tenant. It
+  reports denial as **404, not 403** — otherwise a caller can change an id in a
+  URL and enumerate which outlets, stores and orders exist (doc 09 §3).
+- Use `require(...)` only when the caller is already known to be inside the tenant.
+- Grants are read live from `user_role` on every check. Only the role → permission
+  catalogue is cached. Revoking access must take effect on the next request
+  (doc 46), which is also why the JWT carries no permissions.
+- A role grant endpoint must restrict which roles it can grant. `REST_*` on an
+  outlet, `SUP_*` on a supplier. Without that, an org admin can grant themselves
+  an internal role and leave their own tenant.
+- **No internal (`OPS_*`) role may hold a tenant permission.** That property is
+  what makes a `PLATFORM`-scoped grant safe to accept at any scope, and
+  `PermissionCatalogIT` enforces it. Ops read-access needs its own `INTERNAL`
+  permissions (`ORDER_SUPPORT` exists; add `SUPPLIER_INSPECT` and friends in
+  Phase 14) rather than borrowing the tenant's.
 
 **Money.** `DECIMAL(19,4)`, never floating point. Rates `DECIMAL(9,4)`. Transaction
 tables snapshot the commercial values needed to reconstruct them; never

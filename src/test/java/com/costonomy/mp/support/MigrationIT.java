@@ -96,16 +96,25 @@ class MigrationIT extends AbstractIntegrationTest {
     }
 
     @Test
-    @DisplayName("stateful tables carry the audit and version columns doc 02 §6 requires")
-    void statefulTablesHaveVersionAndTimestamps() {
-        // audit_log and outbox-adjacent join tables are deliberately exempt:
-        // audit rows are append-only facts, and role_permission is a join table.
+    @DisplayName("every mutable table carries a version column for optimistic locking")
+    void mutableTablesHaveVersion() {
+        // Stated as a rule rather than a list of exemptions, so it keeps working
+        // as tables are added: a table that can be updated has an `updated_at`,
+        // and anything that can be updated concurrently needs `version` for the
+        // optimistic locking doc 02 §6 requires.
+        //
+        // Tables with only `created_at` are append-only by design — audit_log,
+        // and the pure join tables — and are correctly exempt.
         var missing = jdbc.queryForList("""
                 select t.table_name
                 from information_schema.tables t
                 where t.table_schema = database()
-                  and t.table_name not in ('flyway_schema_history', 'audit_log',
-                                           'role_permission', 'shedlock')
+                  and t.table_name <> 'flyway_schema_history'
+                  and exists (
+                      select 1 from information_schema.columns c
+                      where c.table_schema = t.table_schema
+                        and c.table_name = t.table_name
+                        and c.column_name = 'updated_at')
                   and not exists (
                       select 1 from information_schema.columns c
                       where c.table_schema = t.table_schema
@@ -114,7 +123,35 @@ class MigrationIT extends AbstractIntegrationTest {
                 """, String.class);
 
         assertThat(missing)
-                .describedAs("stateful aggregates need a version column for optimistic locking")
+                .describedAs("a table with updated_at can be mutated and needs optimistic locking")
                 .isEmpty();
+    }
+
+    @Test
+    @DisplayName("append-only tables are append-only on purpose, not by omission")
+    void appendOnlyTablesAreDeliberate() {
+        // The other half of the rule above. If one of these ever grows an
+        // updated_at, that is a design change — an audit row being rewritten, or a
+        // join table becoming an entity — and should be a conscious one.
+        var appendOnly = jdbc.queryForList("""
+                select t.table_name
+                from information_schema.tables t
+                where t.table_schema = database()
+                  and not exists (
+                      select 1 from information_schema.columns c
+                      where c.table_schema = t.table_schema
+                        and c.table_name = t.table_name
+                        and c.column_name = 'updated_at')
+                """, String.class);
+
+        assertThat(appendOnly)
+                .describedAs("unexpected table without updated_at — is it meant to be append-only?")
+                .containsExactlyInAnyOrder(
+                        "flyway_schema_history",
+                        "audit_log",
+                        "role_permission",
+                        "restaurant_user_outlet",
+                        "supplier_user_store",
+                        "shedlock");
     }
 }

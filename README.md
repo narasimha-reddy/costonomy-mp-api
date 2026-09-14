@@ -29,15 +29,20 @@ Once running: `http://localhost:8080/costonomy-mp-api/swagger-ui.html`
 
 ## Status
 
-**Phases 1 and 3 complete.**
+**Phases 1, 3 and 4 complete.**
 
 - *Foundation* — API envelope, error catalogue, request correlation, security
   wiring, idempotency, audit, outbox, config, job locks. Migrations `V1` and `V2`.
 - *Authentication* — OTP login over MSG91 or a mock, JWT access tokens, rotating
   refresh tokens with replay detection, device registration.
 
-Working endpoints: `/api/v1/auth/otp/request`, `/auth/otp/verify`, `/auth/refresh`,
-`/auth/logout`, `/auth/me`, and `/api/v1/devices`.
+- *Organisations and authorization* — restaurants, outlets, supplier
+  organisations, stores, GST verification, and the `Role → Permission → Scope`
+  model that every endpoint is checked against. Migrations `V3`–`V5`.
 
-63 tests pass (41 unit, 22 integration). Next is Phase 4, organisations and
-authorization — see `docs/specs/00-README.md` §8 for the full sequence.
+Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
+`/suppliers`, `/supplier-stores`, and the operations verification endpoints under
+`/admin/suppliers`.
+
+100 tests pass (53 unit, 47 integration). Next is Phase 5, catalog — see
+`docs/specs/00-README.md` §8 for the full sequence.

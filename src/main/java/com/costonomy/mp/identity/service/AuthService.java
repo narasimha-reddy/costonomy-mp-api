@@ -1,5 +1,6 @@
 package com.costonomy.mp.identity.service;
 
+import com.costonomy.mp.access.service.MembershipService;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
@@ -41,6 +42,7 @@ public class AuthService {
     private final RefreshTokenService refreshTokenService;
     private final DeviceService deviceService;
     private final AuditService auditService;
+    private final MembershipService membershipService;
 
     @Transactional
     public AuthDtos.OtpRequestResponse requestOtp(AuthDtos.OtpRequest request) {
@@ -134,12 +136,17 @@ public class AuthService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.UNAUTHENTICATED));
 
-        // Memberships arrive in Phase 4 (organisations and authorization). The
-        // field is present and empty rather than absent, so the contract the
-        // client codes against does not change when it fills in — and so the
-        // client never infers a role from anything other than this response
-        // (§23A.30: routing is server-authoritative).
-        return new AuthDtos.MeResponse(toProfile(user), List.of());
+        // Routing is server-authoritative (§23A.30). Everything the client needs
+        // to decide restaurant-versus-supplier, and to render an outlet or store
+        // switcher, is resolved here rather than inferred on the device.
+        var memberships = membershipService.membershipsOf(userId).stream()
+                .map(m -> new AuthDtos.Membership(
+                        m.scopeType().name(), m.scopeId(), m.scopeName(),
+                        m.parentScopeId(), m.parentScopeName(),
+                        m.roles(), m.permissions()))
+                .toList();
+
+        return new AuthDtos.MeResponse(toProfile(user), memberships);
     }
 
     private User findOrCreate(String phone) {
