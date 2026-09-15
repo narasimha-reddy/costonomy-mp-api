@@ -1,8 +1,9 @@
 package com.costonomy.mp.delivery.web;
 
 import com.costonomy.mp.common.api.ApiResponse;
-import com.costonomy.mp.delivery.service.DeliveryService;
+import com.costonomy.mp.admin.service.AdminQueryService;
 import com.costonomy.mp.delivery.service.DeliverySimulationService;
+import com.costonomy.mp.admin.web.dto.AdminDtos;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
 import com.costonomy.mp.identity.security.ActorContext;
 import io.swagger.v3.oas.annotations.Operation;
@@ -24,7 +25,7 @@ import org.springframework.web.bind.annotation.*;
 public class DeliverySimulationController {
 
     private final DeliverySimulationService simulation;
-    private final DeliveryService deliveries;
+    private final AdminQueryService adminQueries;
 
     @PostMapping
     @Operation(
@@ -37,12 +38,16 @@ public class DeliverySimulationController {
 
                     Requires DELIVERY_OPERATE at platform scope, which no tenant role holds.
                     """)
-    public ApiResponse<DeliveryDtos.DeliveryResponse> simulate(
+    public ApiResponse<AdminDtos.DeliveryDetail> simulate(
             @PathVariable Long id,
             @Valid @RequestBody DeliveryDtos.SimulateEventRequest body) {
 
         Long actorId = ActorContext.requireUserId();
         simulation.simulate(actorId, id, body);
-        return ApiResponse.ok(deliveries.get(actorId, id));
+
+        // The operations view, not the restaurant's. An operator holds no tenant
+        // permission since V17, and reading back through the tenant endpoint would
+        // have been the very shortcut that change exists to remove.
+        return ApiResponse.ok(adminQueries.delivery(actorId, simulation.orderIdOf(id)));
     }
 }

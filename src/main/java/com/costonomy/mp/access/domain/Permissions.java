@@ -78,4 +78,15 @@ public final class Permissions {
     public static final String SETTLEMENT_OPERATE = "SETTLEMENT_OPERATE";
     public static final String AUDIT_VIEW = "AUDIT_VIEW";
     public static final String CONFIG_MANAGE = "CONFIG_MANAGE";
+
+    // Internal, read-only. Doc 09 §13: "support users may inspect records without
+    // receiving unrestricted mutation rights". Each is the read half of a
+    // mutation permission above — without them, granting someone the ability to
+    // look at a delivery also granted the ability to reassign it.
+    public static final String SUPPLIER_INSPECT = "SUPPLIER_INSPECT";
+    public static final String ORDER_INSPECT = "ORDER_INSPECT";
+    public static final String PAYMENT_INSPECT = "PAYMENT_INSPECT";
+    public static final String DELIVERY_INSPECT = "DELIVERY_INSPECT";
+    public static final String DISPUTE_INSPECT = "DISPUTE_INSPECT";
+    public static final String CONFIG_VIEW = "CONFIG_VIEW";
 }

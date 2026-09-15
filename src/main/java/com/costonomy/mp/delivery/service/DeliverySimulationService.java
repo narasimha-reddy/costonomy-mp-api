@@ -85,6 +85,14 @@ public class DeliverySimulationService {
         }
     }
 
+    /** The order a delivery belongs to, so an operator can read it back. */
+    @Transactional(readOnly = true)
+    public Long orderIdOf(Long deliveryId) {
+        return deliveries.findById(deliveryId)
+                .map(com.costonomy.mp.delivery.domain.Delivery::getSupplierOrderId)
+                .orElseThrow(() -> new NotFoundException("Delivery", deliveryId));
+    }
+
     private DeliveryProvider.ProviderDeliveryStatus parse(String value) {
         try {
             return DeliveryProvider.ProviderDeliveryStatus.valueOf(value);

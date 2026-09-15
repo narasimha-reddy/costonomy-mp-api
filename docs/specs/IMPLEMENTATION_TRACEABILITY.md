@@ -57,8 +57,9 @@ Use:
 | SET-001 | Commission | 01,09 | Settlement module | commission | admin APIs | settlement view | financial tests | NOT_STARTED |
 | SET-002 | Settlement | 01,09 | Settlement module | settlement | admin APIs | supplier settlement | settlement tests | NOT_STARTED |
 | SEC-001 | Authorization | 03,09 | access: AccessControlService, ScopeType, RoleGrantService | V1 role/permission/user_role, V5 seed | enforced on all scoped APIs | permissions in /auth/me | ScopeTypeTest (5), PermissionCatalogIT (7), TenantIsolationIT (17) | TESTED |
-| SEC-002 | Audit | 03,09 | common.audit: AuditService (redacts secrets) | V2 audit_log | admin audit pending | — | covered via AuthFlowIT | IN_PROGRESS |
-| OPS-001 | Operations APIs | 09 | Admin module | all | admin APIs | future web | API tests | NOT_STARTED |
+| SEC-002 | Audit | 03,09 | common.audit: AuditService (redacts secrets); admin: audit search | V2 audit_log | GET /admin/audit | — | AuthFlowIT, OperationsIT$Inspection.auditIsSearchable | TESTED |
+| OPS-001 | Operations inspection | 09,04,08 | admin: AdminQueryService, OperationsDashboardService | V17 inspection permissions | GET /admin/{suppliers,orders,orders/{id}/timeline,orders/{id}/payment,orders/{id}/delivery,credit/exposure,disputes,audit,config,dashboard} | future operations web | OperationsIT$Boundary (3), $Inspection (5) | TESTED |
+| OPS-002 | Operations moderation and config | 09 | admin: AdminModerationService, AdminConfigService | V17 role grants; app_config versioning | POST /admin/suppliers/{id}/{suspend,reactivate}, /admin/catalog/skus/{id}/disable, PATCH /admin/catalog/products/{id}, POST /admin/disputes/{id}/resolve, PATCH /admin/config | future operations web | OperationsIT$ReadWriteSeparation (2), $Moderation (3), $Configuration (4) | TESTED |
 
 ## 3. State-machine coverage
 

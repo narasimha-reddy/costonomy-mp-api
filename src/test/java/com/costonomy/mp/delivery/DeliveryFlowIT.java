@@ -186,6 +186,11 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
         return token;
     }
 
+    /** What the restaurant sees. Read with their token, through their endpoint. */
+    private JsonNode tenantView(ReadyOrder order, long deliveryId) throws Exception {
+        return api.get(order.buyer().token(), "/api/v1/deliveries/" + deliveryId).at("/data");
+    }
+
     private JsonNode simulate(String operatorToken, long deliveryId, Map<String, Object> body)
             throws Exception {
         String response = mvc.perform(MockMvcRequestBuilders
@@ -227,16 +232,19 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
             assertThat(delivery.get("location").isNull()).isTrue();
             assertThat(delivery.get("trackable").asBoolean()).isFalse();
 
-            var assigned = simulate(operator, deliveryId,
+            simulate(operator, deliveryId,
                     Map.of("status", "DRIVER_ASSIGNED", "description", "Driver on the way"));
+
+            var assigned = tenantView(order, deliveryId);
             assertThat(assigned.get("status").asText()).isEqualTo("DRIVER_ASSIGNED");
             assertThat(assigned.get("driverName").asText()).isNotBlank();
             assertThat(assigned.get("trackable").asBoolean()).isTrue();
 
             simulate(operator, deliveryId, Map.of("status", "DRIVER_AT_PICKUP"));
 
-            var pickedUp = simulate(operator, deliveryId, Map.of("status", "PICKED_UP"));
-            assertThat(pickedUp.get("status").asText()).isEqualTo("PICKED_UP");
+            simulate(operator, deliveryId, Map.of("status", "PICKED_UP"));
+            assertThat(tenantView(order, deliveryId).get("status").asText())
+                    .isEqualTo("PICKED_UP");
             // The consignment drives the order. §23A.38: only the courier's event
             // can do this, which is why the supplier has no transition for it.
             assertThat(orderStatus(order.orderId())).isEqualTo("OUT_FOR_DELIVERY");
@@ -245,7 +253,9 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
                     "latitude", "17.4280", "longitude", "78.4660"));
             simulate(operator, deliveryId, Map.of("status", "ARRIVED_AT_DESTINATION"));
 
-            var delivered = simulate(operator, deliveryId, Map.of("status", "DELIVERED"));
+            simulate(operator, deliveryId, Map.of("status", "DELIVERED"));
+
+            var delivered = tenantView(order, deliveryId);
             assertThat(delivered.get("status").asText()).isEqualTo("DELIVERED");
             assertThat(orderStatus(order.orderId())).isEqualTo("DELIVERED");
 
@@ -449,9 +459,10 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
             long deliveryId = delivery.get("id").asLong();
 
             simulate(operator, deliveryId, Map.of("status", "DRIVER_ASSIGNED"));
-            var cancelled = simulate(operator, deliveryId,
+            simulate(operator, deliveryId,
                     Map.of("status", "DRIVER_CANCELLED", "description", "Bike broke down"));
 
+            var cancelled = tenantView(order, deliveryId);
             assertThat(cancelled.get("status").asText()).isEqualTo("DRIVER_CANCELLED");
             // The driver is gone, so their details go with them — showing a name
             // for a courier who is not coming is worse than showing none.
@@ -523,9 +534,10 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
             long deliveryId = delivery.get("id").asLong();
 
             simulate(operator, deliveryId, Map.of("status", "DRIVER_ASSIGNED"));
-            var moving = simulate(operator, deliveryId, Map.of("status", "PICKED_UP",
+            simulate(operator, deliveryId, Map.of("status", "PICKED_UP",
                     "latitude", "17.4300", "longitude", "78.4700"));
 
+            var moving = tenantView(order, deliveryId);
             assertThat(moving.get("location").isNull()).isFalse();
             assertThat(moving.get("locationStale").asBoolean()).isFalse();
 

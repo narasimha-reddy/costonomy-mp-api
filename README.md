@@ -98,7 +98,13 @@ Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
   override, and analytics ingest that strips anything named like a secret before
   storing it.
 
-450 tests pass (199 unit, 251 integration). Next is Phase 15, operations APIs —
+- *Operations APIs* — supplier and order search, a per-order timeline assembled
+  from every module, payment and delivery inspection including the provider
+  bidding restaurants never see, credit exposure, dispute moderation, audit
+  search, versioned configuration and an operational dashboard. Operations holds
+  its own permissions, separated into inspection and mutation.
+
+467 tests pass (199 unit, 268 integration). Next is Phase 16, hardening —
 see `docs/specs/00-README.md` §8 for the full sequence.
 
 There are no open decisions.

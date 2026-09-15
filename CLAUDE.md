@@ -5,12 +5,12 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3–14 complete** — foundation, authentication, organisations
+> **Status: Phases 1, 3–15 complete** — foundation, authentication, organisations
 > with authorization, catalog, search with Best Value recommendations,
 > requirements through to submitted orders, supplier acceptance with timeout,
-> payments, supplier credit, delivery, realtime, receiving/disputes/ratings, and
-> notifications with analytics. Next is Phase 15, operations APIs. Build sequence:
-> `docs/specs/00-README.md` §8.
+> payments, supplier credit, delivery, realtime, receiving/disputes/ratings,
+> notifications with analytics, and operations APIs. Next is Phase 16, hardening.
+> Build sequence: `docs/specs/00-README.md` §8.
 >
 > **There are no open decisions.** OPEN-004 closed as D-020: a supplier order is
 > created `DRAFT` and released only once funding is secured.
@@ -98,6 +98,9 @@ procurement/    requirements, cart, checkout, approval, supplier orders
                 three state machines
   service/      RequirementService, ProcurementService, ApprovalPolicyEvaluator,
                 ProcurementSubmitter, ProcurementStateStore
+admin/          operations: inspection, moderation, configuration, dashboard
+  service/      AdminQueryService (reads), AdminModerationService (writes),
+                AdminConfigService, OperationsDashboardService
 notification/   the inbox, push and SMS, plus analytics ingest
   domain/       NotificationRules (the catalogue), Notification,
                 NotificationDelivery, NotificationPreference, AnalyticsEvent
@@ -301,6 +304,28 @@ not opted in — absent is not "enabled with defaults"); never auto-suspend unle
 they asked for it; and a repayment is *recorded by the supplier*, never by the
 restaurant, because the money moved outside Mandi and only the party it reached
 can confirm it arrived.
+
+**Operations is a separate API, not a privileged tenant view.** D-045, doc 09 §17.
+Everything under `/api/v1/admin/**` is gated on an INTERNAL permission at PLATFORM
+scope, and **no tenant permission appears anywhere in the admin module**. Never
+grant an OPS role a tenant or tenant-facing shared permission to make an ops
+feature work — that is how an operator becomes indistinguishable from the
+restaurant in the audit trail. Add an inspection permission instead.
+
+**Inspection and mutation are separately permissioned.** D-046, doc 09 §13. Every
+write permission has a read-only counterpart, so support can be given the whole
+read surface and none of the writes. Adding an ops endpoint means deciding which
+of the two it is.
+
+**Operations changes what is possible, never what a party decided.** D-048.
+Suspension stops new trade but leaves accepted orders alone; disabling a SKU
+supersedes its offer rather than deleting it; an operator resolving a dispute
+records an outcome rather than imposing one, and moves no money. Every mutation
+needs a reason and is audited.
+
+**A configuration change supersedes, never overwrites.** D-047. Settlement must
+stay reproducible (doc 09 §11), which is impossible if the rate that applied in
+March can be edited in June.
 
 **Notification rules are a catalogue, never calls.** D-040. `NotificationRules`
 maps event type → audience, category, criticality, channels and template, and

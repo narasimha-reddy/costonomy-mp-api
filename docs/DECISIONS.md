@@ -1167,6 +1167,121 @@ Writing a consumer is the cheapest audit of a producer there is.
 
 ---
 
+## D-045 — Operations gets its own permissions, not the tenant's
+**2026-09-15 · Settled** (closes the note V5 left for this phase)
+
+V5 granted `ORDER_VIEW` and `CREDIT_VIEW` to the OPS roles. Both are SHARED rather
+than tenant permissions, so `PermissionCatalogIT` was satisfied — but a
+PLATFORM-scoped grant satisfies a check at *any* outlet or store, so an operator
+could read and act through the restaurant's and the supplier's own endpoints.
+
+**Decision: V17 takes those grants off the OPS roles and adds INTERNAL inspection
+permissions** — `SUPPLIER_INSPECT`, `ORDER_INSPECT`, `PAYMENT_INSPECT`,
+`DELIVERY_INSPECT`, `DISPUTE_INSPECT`, `CONFIG_VIEW`. Operations reads through
+`/api/v1/admin/**`, and no tenant permission appears anywhere in the admin module.
+
+**Why it matters more than it looks:** doc 09 §17 says operations is a separate
+consumer and the APIs should serve a future Operations web app "without changing
+domain rules". An operator arriving through a tenant endpoint is subject to tenant
+rules, gets tenant shapes, and is indistinguishable in the audit trail from the
+restaurant itself. The support agent who "just looked at the order" and the
+restaurant that looked at it should not be the same event.
+
+The change had teeth: the delivery simulation endpoint read its result back
+through the tenant endpoint and stopped working, which is exactly the shortcut
+this removes. It now reads through the operations view.
+
+---
+
+## D-046 — Inspection and mutation are separate permissions
+**2026-09-15 · Settled**
+
+Doc 09 §13: "support users may inspect records without receiving unrestricted
+mutation rights. Separate read and write permissions."
+
+Until V17 there was no way to honour that. `DELIVERY_OPERATE` and
+`PAYMENT_RECONCILE` are mutations, and they were the only permissions that
+mentioned deliveries and payments — so granting someone the ability to *look* at a
+delivery granted the ability to reassign it.
+
+**Each mutation permission now has a read-only counterpart**, and `OPS_SUPPORT`
+holds the whole inspection surface and none of the writes. `supportInspectsOnly`
+asserts both halves in one test, because the property is only interesting as a
+pair: a read that works and a write that does not.
+
+Specialist roles stay narrow for the same reason — a delivery operator can inspect
+deliveries and orders, and gets 403 on payments and credit. There is no operational
+need for the person chasing a courier to read a credit ledger.
+
+---
+
+## D-047 — A configuration change supersedes; it never overwrites
+**2026-09-15 · Settled**
+
+`AdminConfigService.update` closes the current `app_config` row with an
+`effective_to` and inserts a new version. Doc 09 §10: versioned, audited, and
+effective-dated where financially relevant.
+
+**Why:** doc 09 §11 requires settlement to be reproducible and commission to be
+snapshotted into each calculation. Both are impossible if the rate that applied in
+March can be edited in June. It is the same rule as D-012's "a price is never
+edited, only superseded", applied to policy rather than to price.
+
+Two smaller choices inside it:
+
+- **An unknown key is refused, not created.** A typo would otherwise become a
+  configuration value nothing reads, while the setting the operator meant to
+  change stays exactly as it was — and they would have no reason to think it had
+  not worked.
+- **The cache is refreshed on change.** A configuration value that takes effect at
+  the next restart has not changed.
+
+---
+
+## D-048 — Operations changes what is possible, never what a party decided
+**2026-09-15 · Settled**
+
+The line the admin module does not cross. Suspension stops new trade; moderation
+hides content; configuration changes policy. Nothing in `AdminModerationService`
+approves an order, accepts on a supplier's behalf, or moves money.
+
+Three consequences:
+
+- **Suspension is forward-looking.** A supplier suspended today still owes the
+  deliveries they accepted yesterday; cancelling those would punish the
+  restaurants rather than the supplier.
+- **Disabling a SKU supersedes its offer rather than deleting it.** Doc 02 §4: an
+  order placed last week was placed at a price, and deleting the SKU would make
+  that order unreconstructable.
+- **An operator resolving a dispute records an outcome, it does not impose one.**
+  Doc 01 §23 is unchanged by operations being involved: Mandi does not move money
+  between a restaurant and a supplier. The operator's note is stored as an
+  internal message neither party sees (§23A.32); the resolution is what they read.
+
+Every mutation requires a reason and is audited. An unexplained suspension is
+indistinguishable from a mistake, and the supplier asking why deserves an answer
+that exists.
+
+---
+
+## D-049 — An operational dashboard shows a dash, not a flattering number
+**2026-09-15 · Settled**
+
+Every rate in `OperationsDashboard` is null where its denominator is zero — the
+same rule the ranking signals follow (doc 07 §4, D-039), and it matters more here
+because a dashboard is read at a glance.
+
+A fresh environment showing 100% acceptance and 100% on-time because nothing has
+happened is worse than one showing a dash: an operator who learns to discount the
+green numbers will discount the real ones too.
+
+**Counts are absolute; rates are windowed.** "How many orders are in flight" is a
+question about now. "What share were accepted" is meaningless without a period,
+and a lifetime average hides this week entirely — which is the week an operations
+dashboard exists to show.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 
