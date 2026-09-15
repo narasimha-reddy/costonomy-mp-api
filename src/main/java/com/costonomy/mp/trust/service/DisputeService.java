@@ -255,7 +255,7 @@ public class DisputeService {
         auditService.record(actorId, null, "DISPUTE_" + target.name(), "DISPUTE",
                 dispute.getId(), previous.name(), target.name(), resolutionType, "API");
 
-        outbox.publish("Dispute" + target.name(), "DISPUTE", dispute.getId(),
+        outbox.publish(target.eventName(), "DISPUTE", dispute.getId(),
                 Map.of("outletId", dispute.getOutletId(),
                         "supplierStoreId", dispute.getSupplierStoreId(),
                         "disputeNumber", dispute.getDisputeNumber(),

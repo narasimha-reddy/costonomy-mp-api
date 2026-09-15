@@ -25,6 +25,24 @@ public enum DisputeStatus {
 
     private static final Set<DisputeStatus> TERMINAL = Set.of(RESOLVED, REJECTED);
 
+    /**
+     * The domain event this status raises, in doc 08 §1's vocabulary.
+     *
+     * <p>Named here rather than derived as {@code "Dispute" + name()}, which would
+     * produce {@code DisputeRESOLVED} — not the {@code DisputeResolved} doc 08 §1
+     * specifies, and not something a consumer matching the documented contract
+     * would ever receive.
+     */
+    public String eventName() {
+        return switch (this) {
+            case OPEN -> "DisputeCreated";
+            case UNDER_REVIEW -> "DisputeUnderReview";
+            case RESPONDED -> "DisputeResponded";
+            case RESOLVED -> "DisputeResolved";
+            case REJECTED -> "DisputeRejected";
+        };
+    }
+
     public boolean isTerminal() {
         return TERMINAL.contains(this);
     }

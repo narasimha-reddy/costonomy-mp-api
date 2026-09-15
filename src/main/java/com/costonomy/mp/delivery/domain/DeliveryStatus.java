@@ -41,6 +41,37 @@ public enum DeliveryStatus {
     DELIVERY_FAILED,
     CANCELLED;
 
+    /**
+     * The domain event this status raises, in doc 08 §1's vocabulary.
+     *
+     * <p>Named centrally because the event name is a <b>contract</b>: notification
+     * rules, realtime consumers and analytics all match on it. Deriving it inline
+     * as {@code "Delivery" + name()} produced {@code DeliveryDRIVER_ASSIGNED},
+     * which is neither doc 08's {@code DriverAssigned} nor the
+     * {@code DeliveryDriverAssigned} the own-delivery path used — three spellings
+     * of one event, and a consumer that matched any of them would silently miss
+     * the others.
+     */
+    public String eventName() {
+        return switch (this) {
+            case DELIVERY_REQUESTED -> "DeliveryRequested";
+            case QUOTE_RECEIVED -> "DeliveryQuoteReceived";
+            case PROVIDER_SELECTED -> "DeliveryProviderSelected";
+            case DRIVER_ASSIGNED -> "DriverAssigned";
+            case DRIVER_AT_PICKUP -> "DriverAtPickup";
+            case PICKED_UP -> "DeliveryPickedUp";
+            case IN_TRANSIT -> "DeliveryInTransit";
+            case ARRIVED_AT_DESTINATION -> "DeliveryArrived";
+            case DELIVERED -> "DeliveryDelivered";
+            case QUOTE_FAILED -> "DeliveryQuoteFailed";
+            case PROVIDER_UNAVAILABLE -> "DeliveryProviderUnavailable";
+            case DRIVER_CANCELLED -> "DeliveryDriverCancelled";
+            case PICKUP_FAILED -> "DeliveryPickupFailed";
+            case DELIVERY_FAILED -> "DeliveryFailed";
+            case CANCELLED -> "DeliveryCancelled";
+        };
+    }
+
     /** Progress order, used to refuse an event that would move backwards. */
     public int rank() {
         return switch (this) {

@@ -92,7 +92,13 @@ Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
   moderated away. Receiving and rating complete the picture ranking needs: fill
   rate, on-time rate and average rating are now measured rather than absent.
 
-417 tests pass (187 unit, 230 integration). Next is Phase 14, notifications —
+- *Notifications and analytics* — a catalogue mapping domain events to who needs
+  telling and in what words, an inbox with server-backed unread state, push and
+  SMS with bounded retry, opt-out preferences that critical notifications
+  override, and analytics ingest that strips anything named like a secret before
+  storing it.
+
+450 tests pass (199 unit, 251 integration). Next is Phase 15, operations APIs —
 see `docs/specs/00-README.md` §8 for the full sequence.
 
 There are no open decisions.

@@ -184,6 +184,10 @@ class MigrationIT extends AbstractIntegrationTest {
                         "dispute_item",
                         "dispute_message",
                         "dispute_evidence",
+                        // Analytics is a firehose of facts about the past. A row
+                        // that could be edited would be a metric that could be
+                        // rewritten after the fact.
+                        "analytics_event",
                         // Reference data that is added or removed, never edited.
                         "canonical_product_alias",
                         // Pure join tables.

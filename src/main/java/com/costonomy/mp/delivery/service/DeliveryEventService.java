@@ -60,7 +60,7 @@ public class DeliveryEventService {
 
         var record = new DeliveryEvent();
         record.setDeliveryId(delivery.getId());
-        record.setEventType("Delivery" + event.status().name());
+        record.setEventType(target.eventName());
         record.setStatus(target);
         record.setProviderCode(delivery.getProviderCode());
         record.setProviderEventId(event.providerEventId());
@@ -175,7 +175,7 @@ public class DeliveryEventService {
         }
         deliveries.save(delivery);
 
-        timeline.record(delivery, "Delivery" + target.name(), target, event.description());
+        timeline.record(delivery, target.eventName(), target, event.description());
 
         auditService.record(null, null, "DELIVERY_" + target.name(), "DELIVERY",
                 delivery.getId(), previous.name(), target.name(), event.description(), "PROVIDER");

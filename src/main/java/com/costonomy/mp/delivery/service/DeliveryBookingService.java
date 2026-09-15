@@ -92,7 +92,7 @@ public class DeliveryBookingService {
 
                 // No provider name in the description. Doc 06 §10: the restaurant
                 // sees their delivery, not our supply chain.
-                timeline.record(delivery, "DeliveryProviderSelected",
+                timeline.record(delivery, DeliveryStatus.PROVIDER_SELECTED.eventName(),
                         DeliveryStatus.PROVIDER_SELECTED, "Finding a driver");
 
                 auditService.record(null, null, "DELIVERY_BOOKED", "DELIVERY",
@@ -161,7 +161,7 @@ public class DeliveryBookingService {
         delivery.setFailureReason(reason);
         deliveries.save(delivery);
 
-        timeline.record(delivery, "DeliveryProviderUnavailable", status, reason);
+        timeline.record(delivery, status.eventName(), status, reason);
         return false;
     }
 }

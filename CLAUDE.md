@@ -5,11 +5,12 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3–13 complete** — foundation, authentication, organisations
+> **Status: Phases 1, 3–14 complete** — foundation, authentication, organisations
 > with authorization, catalog, search with Best Value recommendations,
 > requirements through to submitted orders, supplier acceptance with timeout,
-> payments, supplier credit, delivery, realtime, and receiving/disputes/ratings.
-> Next is Phase 14, notifications. Build sequence: `docs/specs/00-README.md` §8.
+> payments, supplier credit, delivery, realtime, receiving/disputes/ratings, and
+> notifications with analytics. Next is Phase 15, operations APIs. Build sequence:
+> `docs/specs/00-README.md` §8.
 >
 > **There are no open decisions.** OPEN-004 closed as D-020: a supplier order is
 > created `DRAFT` and released only once funding is secured.
@@ -97,6 +98,12 @@ procurement/    requirements, cart, checkout, approval, supplier orders
                 three state machines
   service/      RequirementService, ProcurementService, ApprovalPolicyEvaluator,
                 ProcurementSubmitter, ProcurementStateStore
+notification/   the inbox, push and SMS, plus analytics ingest
+  domain/       NotificationRules (the catalogue), Notification,
+                NotificationDelivery, NotificationPreference, AnalyticsEvent
+  provider/     NotificationSender port + Mock push and SMS
+  service/      NotificationRelay, NotificationDispatcher, NotificationAudience,
+                NotificationPreferences, NotificationService, AnalyticsService
 trust/          receiving, disputes and ratings — what happens after goods arrive
   domain/       Receiving, ReceivingItem, Dispute, DisputeItem, DisputeMessage,
                 DisputeEvidence, Rating, and their lifecycles
@@ -180,14 +187,16 @@ that looks correct from the outside, and it has now produced four real bugs here
 - `doSubmit` was `@Transactional` but self-invoked from inside the idempotency
   lambda, so the entire submission would have run with no transaction. Now in
   `ProcurementSubmitter`.
-- Catching a constraint violation inside the transaction it poisoned — **three
-  times now** (D-021 payments, D-031 realtime, and the delivery event store built
-  to avoid it). The realtime case was the worst: the relay runs inside the outbox
+- Catching a constraint violation inside the transaction it poisoned — **five
+  times now** (D-021 payments, D-031 realtime, D-040's notification store, the
+  analytics batch, and the delivery event store built to avoid it). The realtime case was the worst: the relay runs inside the outbox
   drain's transaction, so one duplicate projection would have rolled back a batch
   of up to a hundred unrelated events. The rule, stated once: **the insert goes in
   its own bean under `REQUIRES_NEW`, and it throws rather than catching** — a
   catch cannot un-doom a transaction that is already rolling back. The caller
-  catches it afterwards.
+  catches it afterwards. The analytics batch showed the cost most plainly: a
+  client resending two hundred events, one already stored, would have lost the
+  other hundred and ninety-nine at commit — and retried forever.
 - Sequencing several writes to one aggregate from a caller with no transaction.
   Each `@Transactional` method re-attached a **stale detached copy** of the
   delivery, so the second write silently reverted the first and the status never
@@ -292,6 +301,27 @@ not opted in — absent is not "enabled with defaults"); never auto-suspend unle
 they asked for it; and a repayment is *recorded by the supplier*, never by the
 restaurant, because the money moved outside Mandi and only the party it reached
 can confirm it arrived.
+
+**Notification rules are a catalogue, never calls.** D-040. `NotificationRules`
+maps event type → audience, category, criticality, channels and template, and
+`NotificationRelay` listens to the outbox. Never add a `notify(...)` call to a
+service: that mechanism is the one people forget, and a new event type would
+simply never reach anybody. **Bodies render from named fields, never from the
+payload** — a notification lands on a lock screen, and a template that asks for
+`{orderNumber}` can only ever contain an order number (doc 08 §8).
+
+**Critical notifications ignore preferences; SMS is rarer still.** D-041. Doc 08
+§4's list is critical and un-mutable — a supplier who muted order notifications
+still learns an order is counting down. Preferences are **opt-out**, so absent
+means enabled. SMS is reserved for order rejected, order expired, payment failed
+and credit overdue; `smsImpliesCritical` enforces that anything worth an SMS is
+worth being un-mutable.
+
+**An event name is a contract.** D-044. It is owned by the enum that raises it
+(`DeliveryStatus.eventName()`, `DisputeStatus.eventName()`), never assembled
+inline — `"Delivery" + name()` produced `DeliveryDRIVER_ASSIGNED` while another
+path published `DeliveryDriverAssigned`, and doc 08 §1 specifies a third spelling.
+Notifications, realtime and analytics all match on these names.
 
 **Receiving adds to the order; it never rewrites it.** Doc 03 §11, D-035. The
 accepted quantity stays exactly as the supplier committed to it — that is what was

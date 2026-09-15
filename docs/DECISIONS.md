@@ -1032,6 +1032,141 @@ moved: a store with no deliveries has no fill rate, not a perfect one.
 
 ---
 
+## D-040 — Notification rules are a catalogue, not calls
+**2026-09-15 · Settled**
+
+`NotificationRules` is a table of `(event type → audience, category, criticality,
+channels, template)`. No service calls a `notify(…)` method. `NotificationRelay`
+listens to the outbox, the same shape as the realtime relay (D-031) and for the
+same reasons.
+
+**Why data rather than calls:** the interesting question about notifications is
+always "who gets told what", and it should be answerable by reading one file
+rather than searching five modules for `notify(`. A per-service call is also the
+one people forget — a new event type would simply never reach anybody, with
+nothing failing to say so.
+
+**Bodies are rendered from named fields, never from the payload.** Doc 08 §8
+forbids logging an OTP, a card number or a provider secret, and a notification
+goes further than a log: it lands on a lock screen and is mirrored to a watch.
+A template that asks for `{orderNumber}` can only ever contain an order number;
+interpolating a payload wholesale would make that a matter of hoping no producer
+ever adds the wrong field. `unnamedFieldsCannotLeak` asserts it.
+
+**Not every domain event is a notification.** Doc 08 §1 lists forty events for the
+outbox; the catalogue maps the ones a person must act on. `DeliveryLocationUpdated`
+arrives every few seconds and belongs on a map — pushing it would be the fastest
+way to get the app's notifications turned off entirely.
+
+---
+
+## D-041 — Critical is doc 08 §4's list, and it overrides preferences
+**2026-09-15 · Settled**
+
+Doc 08 §5: "critical operational/financial notifications may be mandatory
+according to policy". The policy here is that they are. `NotificationPreferences.allows`
+returns true for a critical notification without reading a preference.
+
+**Why:** a supplier who muted order notifications still needs to know an order is
+counting down against them. The alternative is an order that expires beside a
+silent phone and a restaurant that gets nothing — and the supplier did not intend
+either when they turned off a toggle. The mute still applies to everything
+non-critical in the same category.
+
+**Preferences are opt-out.** A row exists only where something was turned off, so
+absent means enabled and a new category or new user starts receiving. Opt-in fails
+quietly and badly: a restaurant who never learns their order was rejected and
+never knew there was a setting.
+
+**SMS is narrower still**, and `smsIsRare` pins the list: order rejected, order
+expired, payment failed, credit overdue. Each is a case where someone must act
+today and a push may never be seen. An SMS for every status change trains people
+to ignore SMS, which costs us the one that matters. `smsImpliesCritical` enforces
+the converse — if it is worth an SMS it is worth being un-mutable, and if it is
+mutable it is not worth an SMS.
+
+---
+
+## D-042 — In-app and outbound delivery are different lifecycles
+**2026-09-15 · Settled**
+
+`notification` is the inbox row; `notification_delivery` is one attempt to get it
+to a device or a phone number, carrying doc 08 §6's
+`CREATED → QUEUED → SENT → DELIVERED` with bounded backoff.
+
+**Why not one table:** "did they read it" and "did the network take it" are
+different questions, and collapsing them makes both unanswerable. It also implies
+tracking whether we successfully wrote to our own database, which is what an
+IN_APP delivery row would be.
+
+Three consequences, each a way this goes wrong quietly:
+
+- **SENT and DELIVERED are different facts.** SENT is "the provider accepted it";
+  DELIVERED is "the device acknowledged it", which only some providers report.
+  Treating acceptance as delivery makes every dashboard show perfect delivery
+  regardless of what reached a phone.
+- **A permanent failure is not retried.** An unregistered push token belongs to an
+  uninstalled app; retrying it every minute for a day fills the queue with
+  messages for phones that no longer exist and buries the transient failures that
+  would have succeeded.
+- **A failed send does not unsend the notification.** The inbox is the durable
+  channel and push is best-effort on top. A dead token is not a reason to pretend
+  nothing happened — and a user with no registered device gets no delivery row at
+  all, rather than a permanent failure against a phone that does not exist.
+
+---
+
+## D-043 — Analytics strips secrets server-side
+**2026-09-15 · Settled**
+
+`AnalyticsService` drops any property whose **name** matches a forbidden fragment
+(`otp`, `card`, `cvv`, `token`, `secret`, `auth`, …), caps property count and
+value length, and discards nested structures.
+
+**Why not trust the client:** doc 08 §8 forbids storing an OTP, a card number, a
+CVV or a provider credential, and the client is the wrong place to enforce it. One
+debugging property added in a hurry, or a third-party SDK that helpfully attaches
+form state, and a card number is in a database that was never meant to hold one.
+The rule is blunt and fails safe: a legitimately-named property being dropped
+costs one analytics field; the opposite costs a compliance incident.
+
+Nested objects are discarded rather than flattened, because an analytics table is
+the easiest place in a system to accidentally store an entire object graph —
+including the fields nobody audited.
+
+Ingest is idempotent on the client's event id, and reports what it dropped. A
+double-counted event quietly inflates every funnel metric doc 08 §9 is built from,
+and a client that is double-sending deserves to be able to find out.
+
+---
+
+## D-044 — Event names are owned by the enum that raises them
+**2026-09-15 · Settled**
+
+`DeliveryStatus.eventName()` and `DisputeStatus.eventName()` name the domain event
+each status raises. Callers ask; nobody derives a name inline.
+
+**Why this became a decision:** writing the notification catalogue — the first
+consumer that matches on event names — surfaced that delivery was publishing
+`DeliveryDRIVER_ASSIGNED` (from `"Delivery" + name()`) in one path and
+`DeliveryDriverAssigned` in another, and disputes were publishing
+`DisputeRESOLVED`. Doc 08 §1 specifies `DriverAssigned`, `DeliveryDelivered` and
+`DisputeResolved`. Three spellings of one event, none of them the documented one,
+and a consumer matching the contract would have silently received nothing.
+
+**An event name is a contract**, read by notifications, realtime and analytics. It
+belongs somewhere single and testable, not assembled at each call site.
+
+The same exercise found that **approval events were not published at all** —
+doc 08 §1 lists `ProcurementApproved` and `ProcurementRejected`, and doc 08 §4
+makes approval requests critical. A cart was waiting for an approver who was never
+told, silently on both sides. `ProcurementApprovalRequested`, `ProcurementApproved`
+and `ProcurementRejected` are now published.
+
+Writing a consumer is the cheapest audit of a producer there is.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

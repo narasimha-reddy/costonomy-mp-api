@@ -132,7 +132,8 @@ public class DeliveryService {
             delivery.setDriverPhone(pickup.contactPhone());
             deliveries.save(delivery);
 
-            timeline.record(delivery, "DeliveryDriverAssigned", DeliveryStatus.DRIVER_ASSIGNED,
+            timeline.record(delivery, DeliveryStatus.DRIVER_ASSIGNED.eventName(),
+                    DeliveryStatus.DRIVER_ASSIGNED,
                     "The supplier is delivering this order");
             return toResponse(delivery, order.orderNumber());
         }
@@ -159,7 +160,8 @@ public class DeliveryService {
             delivery.setFailureCode("NO_SERVICEABLE_PROVIDER");
             delivery.setFailureReason("No delivery partner covers this route right now.");
             deliveries.save(delivery);
-            timeline.record(delivery, "DeliveryQuoteFailed", DeliveryStatus.QUOTE_FAILED,
+            timeline.record(delivery, DeliveryStatus.QUOTE_FAILED.eventName(),
+                    DeliveryStatus.QUOTE_FAILED,
                     delivery.getFailureReason());
             return;
         }
@@ -298,7 +300,8 @@ public class DeliveryService {
         delivery.setFailureReason(reason);
         deliveries.save(delivery);
 
-        timeline.record(delivery, "DeliveryCancelled", DeliveryStatus.CANCELLED, reason);
+        timeline.record(delivery, DeliveryStatus.CANCELLED.eventName(),
+                DeliveryStatus.CANCELLED, reason);
         auditService.record(actorId, null, "DELIVERY_CANCELLED", "DELIVERY", deliveryId,
                 null, DeliveryStatus.CANCELLED.name(), reason, "API");
 
@@ -381,7 +384,7 @@ public class DeliveryService {
         }
         deliveries.save(delivery);
 
-        timeline.record(delivery, "Delivery" + target.name(), target, null);
+        timeline.record(delivery, target.eventName(), target, null);
         auditService.record(actorId, null, "DELIVERY_" + target.name(), "DELIVERY",
                 deliveryId, previous.name(), target.name(), "Supplier own delivery", "API");
 

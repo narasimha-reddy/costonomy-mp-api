@@ -9,6 +9,7 @@ import com.costonomy.mp.catalog.repository.CanonicalProductRepository;
 import com.costonomy.mp.catalog.repository.SupplierOfferRepository;
 import com.costonomy.mp.catalog.repository.SupplierSkuRepository;
 import com.costonomy.mp.common.audit.AuditService;
+import com.costonomy.mp.common.outbox.OutboxService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
@@ -58,6 +59,7 @@ public class ProcurementService {
     private final ProcurementDirectory directory;
     private final AccessControlService accessControl;
     private final AuditService auditService;
+    private final OutboxService outbox;
 
     /**
      * How long a validation stays good.
@@ -366,6 +368,11 @@ public class ProcurementService {
                 procurementId, ApprovalStatus.PENDING.name(), ApprovalStatus.APPROVED.name(),
                 null, "API");
 
+        outbox.publish("ProcurementApproved", "PROCUREMENT", procurementId,
+                Map.of("outletId", procurement.getOutletId(),
+                        "totalAmount", procurement.getTotalAmount().toPlainString()),
+                actorId);
+
         return respond(procurement, List.of(), List.of());
     }
 
@@ -393,6 +400,11 @@ public class ProcurementService {
         auditService.record(actorId, null, "PROCUREMENT_REJECTED", "PROCUREMENT",
                 procurementId, ApprovalStatus.PENDING.name(), ApprovalStatus.REJECTED.name(),
                 reason, "API");
+
+        outbox.publish("ProcurementRejected", "PROCUREMENT", procurementId,
+                Map.of("outletId", procurement.getOutletId(),
+                        "reason", reason == null ? "" : reason),
+                actorId);
 
         return respond(procurement, List.of(), List.of());
     }
@@ -445,6 +457,15 @@ public class ProcurementService {
         auditService.record(actorId, null, "PROCUREMENT_APPROVAL_REQUIRED", "PROCUREMENT",
                 procurement.getId(), null, ApprovalStatus.PENDING.name(),
                 decision.reason(), "API");
+
+        // Doc 08 §1 and §4: an approval request is a critical notification. Without
+        // this event, a cart waits for an approver who was never told — the failure
+        // is silent on both sides, and the restaurant simply does not get its order.
+        outbox.publish("ProcurementApprovalRequested", "PROCUREMENT", procurement.getId(),
+                Map.of("outletId", procurement.getOutletId(),
+                        "totalAmount", procurement.getTotalAmount().toPlainString(),
+                        "reason", decision.reason() == null ? "" : decision.reason()),
+                actorId);
     }
 
     /** Price a line from an offer. The single path by which a cart line gets its money. */
