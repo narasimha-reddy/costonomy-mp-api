@@ -1467,6 +1467,60 @@ usually zero.
 
 ---
 
+## D-056 — The app asks the server which outlets a user has; it does not read them off memberships
+**2026-09-15 · Settled**
+
+`/auth/me` returns one membership per scope the user holds a *grant* in. A
+restaurant owner therefore holds a single RESTAURANT membership and no OUTLET
+memberships at all — `ScopeResolver` is explicit that "a grant at the parent
+satisfies a check at the child — an owner does not need re-granting for every
+outlet they open".
+
+M1's home screen listed `memberships.filter(scopeType === 'OUTLET')` and so told
+an owner they had no outlets, one screen after they had created one. Caught in the
+browser, not in a test, because both sides were individually right.
+
+**Decision: `useOutlets()` resolves the list against the server** — outlets are
+fetched per restaurant the user holds a grant in, unioned with the outlets named
+by any OUTLET-scope grant whose restaurant the user does *not* already hold. A
+manager assigned to two of a chain's nine outlets gets exactly those two; an owner
+gets all nine.
+
+**Why not expand it into `/auth/me`.** A fifty-outlet chain would carry all fifty
+rows on every session restore and every token refresh, and outlets change far more
+often than grants do. `/auth/me` answers "what may this user do"; the outlet list
+is data, and it caches and invalidates on its own schedule.
+
+The old helpers are renamed `outletGrantsOf` / `storeGrantsOf` so the next reader
+cannot mistake a grant list for a resource list. **The supplier side has the
+identical shape** — a SUPPLIER grant covers its stores — and M4 must resolve
+stores the same way rather than filtering for SUPPLIER_STORE.
+
+---
+
+## D-057 — A route group is guarded by its layout, not by the index route
+**2026-09-15 · Settled**
+
+Signing out cleared the tokens and left the user looking at the restaurant home,
+now rendered empty. The redirect lived in `app/index.tsx`, which had already run;
+nothing re-ran it, so the mounted screen simply stayed.
+
+**Decision: `AuthGate` wraps each group's `_layout`.** A layout re-renders when the
+session changes, so losing a session unmounts the group — and a deep link into a
+screen inside the group is gated too, which an index-route redirect never sees
+because it does not pass through `/`.
+
+It also redirects an audience mismatch back to `/` rather than rendering, so the
+answer to "which half of the app is this" stays in one place (`audienceOf`) as M2
+adds routes.
+
+**This is navigation, not security** — doc 09 §2: never rely on mobile route
+visibility for security. The server authorises every call regardless of what the
+client chose to render. The gate exists so a signed-out user is not left sitting
+in a shell of someone's dashboard.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 
