@@ -1363,6 +1363,110 @@ would be a disclosure that no amount of log redaction catches.
 
 ---
 
+## D-053 — A commission rate is snapshotted, never re-read
+**2026-09-15 · Settled**
+
+`commission_calculation` copies the rate onto the row and the settlement sums the
+stored figures. Nothing recalculates commission from `commission_configuration`
+at read time.
+
+**Why:** doc 05 §33 — "historical settlement must not depend on current commission
+configuration" — and doc 09 §11's requirement that settlement be reproducible.
+Recomputing would make every past figure a function of today's table: a statement
+printed twice would disagree with itself the moment a rate was renegotiated, and
+a settlement replayed months later would not be a settlement but an estimate.
+
+It is the same rule as D-012 (a price is never edited, only superseded) and D-047
+(a configuration change supersedes), applied to money leaving the platform.
+
+The base is **accepted item value plus GST, excluding delivery** (doc 01 §16).
+Delivery is subtracted explicitly even though it is currently zero on every order,
+so the calculation stays correct if the fee is ever folded into the order total.
+A partial acceptance owes commission on what was supplied, not what was ordered —
+the supplier was not paid for the rest.
+
+Rates resolve most-specific-first: store, then organisation, then the platform
+default. A negotiated rate is a row, not a code change.
+
+---
+
+## D-054 — A settlement freezes at approval; corrections are the next settlement's
+**2026-09-15 · Settled**
+
+`SettlementStatus.isMutable()` is true only for PENDING and CALCULATED.
+Adjustments after approval are refused, with a message saying where the correction
+belongs.
+
+**Why:** an approved payout is a commitment somebody signed off. Changing the
+figure afterwards means the supplier's copy of the statement and ours stop
+matching, and neither party can tell which is right. A correction raised against
+the next settlement carries its own reason and leaves both records intact — the
+same reasoning as doc 09 §11's "credit ledger must be append-only; corrections use
+adjustment transactions".
+
+**Approval is a human step and cannot be skipped** (doc 03 §13). A settlement is
+money leaving the platform, and the gap between CALCULATED and APPROVED is where
+somebody reads the number first. `SettlementJobs` deliberately stops at
+CALCULATED: a job that walked past approval would let a calculation bug pay itself
+out overnight.
+
+**A failed payout returns to APPROVED, not to PENDING.** It has already been
+calculated and already been approved; sending it to the start would recalculate
+against whatever changed since and ask again for an approval already given.
+
+---
+
+## D-055 — Reconciliation records a mismatch rather than refusing
+**2026-09-15 · Settled**
+
+`SettlementReconciliationService` compares two independent records of the same
+money — what the order records say a supplier is owed, and what the payment
+records say restaurants actually paid (captured minus refunded) — and writes the
+answer onto the settlement.
+
+**A mismatch is recorded, not thrown.** Doc 03 §13 requires reconciliation to be
+idempotent, and a discrepancy needs a human rather than a retry. Refusing to
+complete would make one unexplained figure block every later run; recording it
+surfaces the problem while the payout waits at APPROVED, which is the correct
+place for money nobody has explained yet. The mismatch is logged at error and
+written to the audit trail, because this is money.
+
+**Idempotent by construction**: it recomputes from the same two sources and
+overwrites its own last answer, so a settlement reconciled a hundred times looks
+exactly like one reconciled once. It runs repeatedly on purpose — a captured total
+can change after calculation when a refund lands or a delayed capture completes,
+which is exactly the case worth catching.
+
+---
+
+## OPEN-005 — The delivery fee is never charged to the restaurant
+**Raised 2026-09-15 · Not yet closed**
+
+Doc 01 §20: "restaurant pays delivery by default". In the implementation
+`supplier_order.delivery_fee` is set to zero at submission and `total_amount` is
+`subtotal + gst`. The courier's fee is recorded on the `delivery` row when one is
+booked (Phase 11) and is never added to the order total — so the payment that is
+authorised and captured does not include it, and the restaurant is not charged.
+
+Found while writing the commission base, which must *exclude* delivery: the
+subtraction is a no-op today because the fee never reaches the order.
+
+**Why it is not fixed here.** The fee is only known at booking, which happens
+*after* the payment is authorised and, for a full acceptance, after it is
+captured. Charging it correctly means either authorising an estimate at checkout
+and capturing the actual amount later, or raising a second charge after delivery —
+a payment-flow decision with its own idempotency and refund implications, not a
+line to add to a total. Doing it hastily in the last phase would risk the
+guarantees D-020 and D-010 were built to provide.
+
+**What it affects if left:** restaurants are under-charged by the delivery fee on
+Costonomy deliveries; supplier settlement and commission are unaffected, because
+both are computed on the item value and would exclude the fee anyway. Own-delivery
+orders are already correct — the supplier's own fee is theirs to set and is
+usually zero.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

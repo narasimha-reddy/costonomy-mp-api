@@ -5,12 +5,19 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3–16 complete** — foundation, authentication, organisations
-> with authorization, catalog, search with Best Value recommendations,
-> requirements through to submitted orders, supplier acceptance with timeout,
-> payments, supplier credit, delivery, realtime, receiving/disputes/ratings,
-> notifications with analytics, operations APIs, and hardening. Next is Phase 17,
-> audit and reconciliation. Build sequence: `docs/specs/00-README.md` §8.
+> **Status: the build sequence is complete** — phases 1 and 3–17 of
+> `docs/specs/00-README.md` §8. Foundation, authentication, organisations with
+> authorization, catalog, search with Best Value recommendations, requirements
+> through to submitted orders, supplier acceptance with timeout, payments,
+> supplier credit, delivery, realtime, receiving/disputes/ratings, notifications
+> with analytics, operations APIs, hardening, and settlement with reconciliation.
+>
+> **One open item: OPEN-005 in `docs/DECISIONS.md`** — the delivery fee is never
+> charged to the restaurant, because it is only known after the payment is
+> authorised. Read it before touching the payment flow.
+>
+> **The mobile app is next.** Only its design system exists (`costonomy-mp-mobile`);
+> every screen in `docs/specs/05-mobile-screens.md` is still to build.
 >
 > **There are no open decisions.** OPEN-004 closed as D-020: a supplier order is
 > created `DRAFT` and released only once funding is secured.
@@ -99,6 +106,11 @@ procurement/    requirements, cart, checkout, approval, supplier orders
                 three state machines
   service/      RequirementService, ProcurementService, ApprovalPolicyEvaluator,
                 ProcurementSubmitter, ProcurementStateStore
+settlement/     commission, supplier payouts and reconciliation
+  domain/       CommissionConfiguration, CommissionCalculation, Settlement,
+                SettlementStatus, SettlementAdjustment
+  service/      CommissionService, SettlementService,
+                SettlementReconciliationService, SettlementJobs
 admin/          operations: inspection, moderation, configuration, dashboard
   service/      AdminQueryService (reads), AdminModerationService (writes),
                 AdminConfigService, OperationsDashboardService
@@ -305,6 +317,24 @@ not opted in — absent is not "enabled with defaults"); never auto-suspend unle
 they asked for it; and a repayment is *recorded by the supplier*, never by the
 restaurant, because the money moved outside Mandi and only the party it reached
 can confirm it arrived.
+
+**A commission rate is snapshotted onto the calculation, never re-read.** D-053,
+doc 05 §33. A settlement sums stored figures; nothing recomputes commission from
+configuration at read time, or every past number becomes a function of today's
+table. The base is accepted item value plus GST, **excluding delivery**, and a
+partial acceptance owes commission only on what was supplied.
+
+**A settlement freezes at approval.** D-054. Approval is a human step that cannot
+be skipped or automated — `SettlementJobs` stops at CALCULATED on purpose. After
+approval a correction belongs to the *next* settlement, with its own reason;
+changing a signed-off figure makes the supplier's statement and ours disagree with
+nobody able to say which is right.
+
+**Reconciliation records a mismatch rather than refusing.** D-055. It compares
+what the order records say is owed against what the payment records say was
+captured, writes the answer, logs it at error and audits it — and leaves the
+payout where it was. Refusing would make one unexplained figure block every later
+run instead of surfacing for a human.
 
 **Rate limits are per endpoint and per caller, and zero turns one off.** D-050,
 doc 09 §14. Adding a limit means adding a rule to `RateLimitPolicies`, not a check

@@ -54,8 +54,8 @@ Use:
 | RT-001 | Realtime updates | 05,06 | realtime: RealtimeEventRelay, RealtimeRouter, RealtimeSessionRegistry, RealtimeBroadcaster (Local/Redis) | V14 realtime_event | WS /realtime/socket, GET /realtime/events | live tracking/order screens pending | RealtimeRoutingTest (9), RealtimeFlowIT$Isolation (4), $Polling (5), $Projection (2) | TESTED |
 | RT-002 | Realtime authentication | 06,09 | realtime: RealtimeTicketService, RealtimeTicketStore, RealtimeHandshakeInterceptor, RealtimeEntitlements | V14 realtime_ticket | POST /realtime/ticket | socket client pending | RealtimeFlowIT$Handshake (6) | TESTED |
 | ANA-001 | Analytics | 08 | notification: AnalyticsService, AnalyticsEventStore (secret stripping, idempotent ingest) | V16 analytics_event | POST /analytics/events | client event tracking pending | NotificationFlowIT$Analytics (4) | TESTED |
-| SET-001 | Commission | 01,09 | Settlement module | commission | admin APIs | settlement view | financial tests | NOT_STARTED |
-| SET-002 | Settlement | 01,09 | Settlement module | settlement | admin APIs | supplier settlement | settlement tests | NOT_STARTED |
+| SET-001 | Commission | 01,09 | settlement: CommissionService, CommissionConfiguration (scoped, effective-dated) | V18 commission_configuration, commission_calculation | rate resolution is internal; rates visible on settlement lines | Settlements screen pending | SettlementLifecycleTest (9), SettlementFlowIT$Commission (3), $Reproducibility (2) | TESTED |
+| SET-002 | Settlement and reconciliation | 01,03,09 | settlement: SettlementService, SettlementReconciliationService, SettlementJobs | V18 settlement, settlement_adjustment; V19 settlement.offsetDays | GET /supplier-stores/{id}/settlements, /settlements/{id}, /admin/settlements/{id}/{approve,processing,paid,failed,adjustments,reconcile} | Settlements screen pending | SettlementFlowIT$Settling (4), $Adjustments (3), $Reconciliation (3) | TESTED |
 | SEC-003 | Rate limiting | 09 | common.ratelimit: RateLimiter port (InMemory + Redis), RateLimitPolicies, RateLimitInterceptor | — | 429 + Retry-After on OTP, auth, search, payment, webhooks, admin mutations | client backoff pending | RateLimiterTest (9), RateLimitIT (7) | TESTED |
 | SEC-004 | Error contract | 04 | common.error: ErrorCode catalogue, GlobalExceptionHandler | — | every documented code and status | typed client errors pending | ErrorContractTest (5) | TESTED |
 | SEC-001 | Authorization | 03,09 | access: AccessControlService, ScopeType, RoleGrantService | V1 role/permission/user_role, V5 seed | enforced on all scoped APIs | permissions in /auth/me | ScopeTypeTest (5), PermissionCatalogIT (7), TenantIsolationIT (17) | TESTED |
@@ -119,23 +119,43 @@ Must always be tested:
 
 ## 7. Final audit checklist
 
-Before declaring implementation complete:
+Before declaring implementation complete. Checked at the end of the backend build
+sequence (phases 1, 3–17); **unchecked items are genuinely outstanding**, not
+oversights.
 
-- [ ] all PRD requirements mapped
-- [ ] all tables migrated
-- [ ] all state machines implemented
-- [ ] all API endpoints implemented
-- [ ] all mobile screens implemented
-- [ ] all provider abstractions implemented
-- [ ] mock providers work
-- [ ] all critical events emitted
-- [ ] audit trail complete
-- [ ] idempotency complete
-- [ ] concurrency tests pass
-- [ ] E2E scenarios pass
-- [ ] security tests pass
-- [ ] no mobile-only financial authority
-- [ ] no hidden commission ranking
-- [ ] no Costonomy runtime dependency
-- [ ] no fake delivery tracking
-- [ ] docs synchronized with code
+- [x] all PRD requirements mapped — every row above is TESTED
+- [x] all tables migrated — V1–V19, verified from clean in `MigrationIT`
+- [x] all state machines implemented — requirement, procurement, supplier order,
+      payment, refund, credit agreement, credit reservation, delivery, receiving,
+      dispute, settlement
+- [x] all API endpoints implemented — doc 04 §1–19
+- [ ] **all mobile screens implemented** — only the design system exists in
+      `costonomy-mp-mobile`. Every screen in `05-mobile-screens.md` is outstanding,
+      and it is the largest remaining piece of work.
+- [x] all provider abstractions implemented — `OtpProvider`, `PaymentProvider`,
+      `DeliveryProvider`, `NotificationSender`, plus `OrderFundingPort` and
+      `RateLimiter` as internal ports
+- [x] mock providers work — every port has one, and CI runs entirely on them
+- [x] all critical events emitted — doc 08 §1, with `NotificationRulesTest`
+      pinning the names consumers match on
+- [x] audit trail complete — doc 09 §7's list, searchable via `/admin/audit`
+- [x] idempotency complete — doc 04 §21's list
+- [x] concurrency tests pass — doc 10 §2's mandatory set: acceptance vs timeout,
+      duplicate acceptance, duplicate submission, duplicate payment, duplicate
+      webhook, credit reservation race
+- [x] E2E scenarios pass — including doc 10 §1's seventh, credit request through
+      to reconciliation
+- [x] security tests pass — tenant isolation, permission catalogue invariants,
+      operations boundary, rate limiting, error contract
+- [x] no mobile-only financial authority — every price, total, capture and payout
+      is computed server-side
+- [x] no hidden commission ranking — `BestValueScorerTest` asserts the component
+      set; nothing in `discovery` depends on `settlement`
+- [x] no Costonomy runtime dependency — the `costonomy-*` repos are reference only
+- [x] no fake delivery tracking — positions come from a provider or are absent,
+      and a stale fix is reported stale
+- [x] docs synchronized with code — this file, `DECISIONS.md`, `CLAUDE.md` and
+      `README.md` updated at the end of every phase
+
+**Open items** (`docs/DECISIONS.md`): OPEN-005 — the delivery fee is never charged
+to the restaurant, because it is only known after the payment is authorised.

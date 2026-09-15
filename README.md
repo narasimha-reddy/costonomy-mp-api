@@ -109,7 +109,17 @@ Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
   multi-instance deployments; and a test that pins the documented error contract
   so a status cannot quietly change under its clients.
 
-488 tests pass (213 unit, 275 integration). Next is Phase 17, audit and
-reconciliation — see `docs/specs/00-README.md` §8 for the full sequence.
+- *Settlement and reconciliation* — commission at a rate snapshotted onto each
+  calculation so a historical statement never moves, supplier payouts through
+  `PENDING → CALCULATED → APPROVED → PROCESSING → PAID` with approval as a human
+  step, auditable adjustments, and reconciliation against what restaurants
+  actually paid.
+
+512 tests pass (222 unit, 290 integration). **The backend build sequence in
+`docs/specs/00-README.md` §8 is complete.** One open item is recorded as OPEN-005
+in `docs/DECISIONS.md`: the delivery fee is never charged to the restaurant,
+because it is only known after the payment is authorised.
+
+The mobile app is the remaining work — only its design system exists today.
 
 There are no open decisions.

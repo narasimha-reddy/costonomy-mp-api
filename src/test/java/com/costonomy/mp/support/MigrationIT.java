@@ -115,7 +115,8 @@ class MigrationIT extends AbstractIntegrationTest {
                   -- locking on a hot counter would mean constant conflicts on
                   -- the one row every submission touches.
                   and t.table_name not in ('order_number_sequence', 'credit_invoice_sequence',
-                                           'dispute_number_sequence')
+                                           'dispute_number_sequence',
+                                           'settlement_number_sequence')
                   and exists (
                       select 1 from information_schema.columns c
                       where c.table_schema = t.table_schema
@@ -188,6 +189,9 @@ class MigrationIT extends AbstractIntegrationTest {
                         // that could be edited would be a metric that could be
                         // rewritten after the fact.
                         "analytics_event",
+                        // A correction to a payout is a record of what was agreed.
+                        // Editing one would rewrite what a supplier was paid.
+                        "settlement_adjustment",
                         // Reference data that is added or removed, never edited.
                         "canonical_product_alias",
                         // Pure join tables.
