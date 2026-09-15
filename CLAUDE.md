@@ -5,12 +5,12 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3–15 complete** — foundation, authentication, organisations
+> **Status: Phases 1, 3–16 complete** — foundation, authentication, organisations
 > with authorization, catalog, search with Best Value recommendations,
 > requirements through to submitted orders, supplier acceptance with timeout,
 > payments, supplier credit, delivery, realtime, receiving/disputes/ratings,
-> notifications with analytics, and operations APIs. Next is Phase 16, hardening.
-> Build sequence: `docs/specs/00-README.md` §8.
+> notifications with analytics, operations APIs, and hardening. Next is Phase 17,
+> audit and reconciliation. Build sequence: `docs/specs/00-README.md` §8.
 >
 > **There are no open decisions.** OPEN-004 closed as D-020: a supplier order is
 > created `DRAFT` and released only once funding is secured.
@@ -70,6 +70,7 @@ common/
   error/        ErrorCode catalogue, BusinessException, GlobalExceptionHandler
   web/          RequestIdFilter, RequestContext — correlation (doc 09 §15)
   idempotency/  IdempotencyService + IdempotencyStore (doc 04 §21)
+  ratelimit/    RateLimiter port (in-memory + Redis), policies, interceptor
   audit/        AuditService — append-only, redacts secrets (doc 09 §7)
   outbox/       OutboxService + OutboxPublisher (doc 02 §10)
   domain/       BaseEntity — id, timestamps, @Version
@@ -304,6 +305,18 @@ not opted in — absent is not "enabled with defaults"); never auto-suspend unle
 they asked for it; and a repayment is *recorded by the supplier*, never by the
 restaurant, because the money moved outside Mandi and only the party it reached
 can confirm it arrived.
+
+**Rate limits are per endpoint and per caller, and zero turns one off.** D-050,
+doc 09 §14. Adding a limit means adding a rule to `RateLimitPolicies`, not a check
+in a controller. Pre-auth endpoints key by IP, authenticated ones by user — an
+authenticated endpoint keyed by IP throttles a whole restaurant for one person.
+A refusal is a 429 with `Retry-After`; without it a client can only guess.
+**On more than one instance the backend must be `REDIS`** (D-051), or each
+instance enforces the full limit separately and nothing says so.
+
+**The error contract is tested.** D-052. `ErrorContractTest` pins every code doc
+04 §22 names and the status it maps to — a 409 silently becoming a 422 changes how
+every client's retry logic behaves, and compiles cleanly on both sides.
 
 **Operations is a separate API, not a privileged tenant view.** D-045, doc 09 §17.
 Everything under `/api/v1/admin/**` is gated on an INTERNAL permission at PLATFORM

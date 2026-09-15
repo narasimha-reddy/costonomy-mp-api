@@ -1282,6 +1282,87 @@ dashboard exists to show.
 
 ---
 
+## D-050 — Rate limits are per endpoint, per caller, and configurable to zero
+**2026-09-15 · Settled**
+
+Doc 09 §14 names seven things to limit: OTP request, OTP verification, login,
+search, payment initiation, webhooks and admin mutations. `RateLimitPolicies` gives
+each its own policy rather than applying one global limit.
+
+**Why per endpoint:** the right number differs by two orders of magnitude between
+them. A provider retrying a burst of webhooks and a script guessing six-digit OTPs
+look identical to a single counter, and any limit low enough to stop the second
+would break the first.
+
+**Why per caller, and why the key differs:** an unauthenticated endpoint has no
+user to key by, and an authenticated one keyed by IP throttles an entire
+restaurant behind one office router for one person's enthusiasm. So pre-auth
+endpoints key by IP and authenticated ones by user, falling back to IP when there
+is no principal — without that fallback, anonymous traffic to a user-keyed
+endpoint would share one bucket and one script could lock it for everyone.
+
+**Why zero means off:** the test suite creates hundreds of users from one address,
+and a suite throttled by its own fixtures tests the fixtures. More importantly, a
+limit that cannot be tuned without a deploy is a limit that gets deleted the first
+time it fires at the wrong moment. `RateLimitIT` turns them back on for itself with
+`@TestPropertySource`, at the cost of a second application context — the price of
+testing a cross-cutting concern honestly rather than around it.
+
+**A 429 carries `Retry-After`.** A client without it can only guess, and one that
+guesses wrong retries immediately and makes the problem worse.
+
+**`X-Forwarded-For` is honoured, and that is a deliberate trade.** Behind a proxy
+`getRemoteAddr` is the proxy — one key for the entire internet. Deployed *without*
+a proxy that overwrites the header, a caller can change their own rate-limit key at
+will. This is one layer among several: OTP attempt counting, idempotency and
+authorization do not depend on it being unspoofable.
+
+---
+
+## D-051 — Redis is required for rate limiting on more than one instance
+**2026-09-15 · Settled**
+
+`InMemoryRateLimiter` is the default and counts in this JVM. `RedisRateLimiter`
+counts in Redis, behind `costonomy.mp.ratelimit.backend=REDIS`.
+
+**Why it is not optional at scale:** each instance counting separately means a
+three-instance deployment enforces three times the limit, silently and with
+nothing failing. This is the same shape as D-034's realtime broadcaster, and the
+same guardrail-6 use of Redis: coordination, never the record.
+
+**Redis being down allows the request.** A rate limiter that refuses everything
+when its counter is unreachable turns a cache outage into a total outage — a far
+worse failure than briefly permitting more traffic than intended.
+
+**A fixed window, not a sliding one.** One counter and one timestamp per key; its
+worst case is a caller sending two windows' worth across a boundary. For an OTP
+endpoint that is the difference between ten and twenty attempts an hour, which is
+not the difference that matters. A sliding window costs a data structure per key
+to close a gap this small — and the keys include client IPs, so per-key cost is
+exactly what needs bounding.
+
+---
+
+## D-052 — The error contract is tested, not conventional
+**2026-09-15 · Settled**
+
+`ErrorContractTest` asserts that every code doc 04 §22 names exists, that each
+carries the HTTP status the doc assigns it, and that no message leaks an internal
+detail.
+
+**Why a test:** an error code is the part of an API a client writes a switch
+statement against. A renamed code, a status quietly changed from 409 to 422, or a
+deleted one is a breaking change that compiles cleanly on both sides and is found
+by a user. The HTTP status in particular is what retry logic keys on — a 409 is
+worth retrying after a refresh, a 422 is not, and a 429 means wait — so swapping
+two of them silently changes how every client behaves.
+
+The message check exists because these strings are returned to clients verbatim
+(doc 09 §16, §4): a stack trace, a table name or a provider's own wording in one
+would be a disclosure that no amount of log redaction catches.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

@@ -104,7 +104,12 @@ Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
   search, versioned configuration and an operational dashboard. Operations holds
   its own permissions, separated into inspection and mutation.
 
-467 tests pass (199 unit, 268 integration). Next is Phase 16, hardening —
-see `docs/specs/00-README.md` §8 for the full sequence.
+- *Hardening* — endpoint-specific rate limiting on everything doc 09 §14 names,
+  keyed by IP before authentication and by user after it, with a Redis backend for
+  multi-instance deployments; and a test that pins the documented error contract
+  so a status cannot quietly change under its clients.
+
+488 tests pass (213 unit, 275 integration). Next is Phase 17, audit and
+reconciliation — see `docs/specs/00-README.md` §8 for the full sequence.
 
 There are no open decisions.
