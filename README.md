@@ -81,7 +81,12 @@ Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
   identity, an honest tracking view with a staleness indicator, and supplier own
   delivery as a first-class mode. Provider bidding never reaches a restaurant.
 
-360 tests pass (168 unit, 192 integration). Next is Phase 12, realtime —
-see `docs/specs/00-README.md` §8 for the full sequence.
+- *Realtime* — a WebSocket channel authenticated by single-use ticket, fed by a
+  projection of the outbox, with a polling fallback that reads the same rows by
+  the same cursor. Channels are tenant scopes derived from grants, so an event
+  reaches exactly the outlet and store it concerns.
+
+387 tests pass (177 unit, 210 integration). Next is Phase 13,
+receiving/disputes/ratings — see `docs/specs/00-README.md` §8 for the full sequence.
 
 There are no open decisions.

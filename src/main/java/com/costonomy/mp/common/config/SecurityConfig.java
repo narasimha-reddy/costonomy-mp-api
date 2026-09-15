@@ -72,6 +72,14 @@ public class SecurityConfig {
                         // handler verifies the signature before doing anything
                         // else (doc 09 §5); an unverified body is never trusted.
                         .requestMatchers(HttpMethod.POST, "/api/v1/webhooks/**").permitAll()
+                        // The realtime handshake authenticates by single-use
+                        // ticket, not by a bearer token: a browser cannot set
+                        // headers on a WebSocket, and a token in a query string
+                        // ends up in access logs. RealtimeHandshakeInterceptor
+                        // spends the ticket before the connection is accepted, so
+                        // this path is unauthenticated only as far as Spring
+                        // Security is concerned — see doc 09 §4.
+                        .requestMatchers("/api/v1/realtime/socket").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                         .requestMatchers("/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .anyRequest().authenticated())

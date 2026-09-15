@@ -82,6 +82,15 @@
 		<!-- ── Cache / coordination ────────────────────────────────────── -->
 		<!-- Redis is cache, rate limiting and short-lived locks only. It is
 		     never authoritative for money, orders or credit (guardrail 6). -->
+		<!--
+			Realtime. Doc 06 §9 and v2.2 §23A.21 put WebSocket first, with push and
+			polling behind it — the socket is the fast path, not the only one.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-websocket</artifactId>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-redis</artifactId>

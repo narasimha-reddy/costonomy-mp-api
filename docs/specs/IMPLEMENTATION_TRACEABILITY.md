@@ -51,6 +51,8 @@ Use:
 | ORG-002 | Memberships in /auth/me | 04,05 | access: MembershipService | V1/V3/V4 | GET /auth/me | role-based routing pending | TenantIsolationIT$Memberships (5) | TESTED |
 | AUTH-003 | Device registration | 04,08 | identity: DeviceService | V1 device | POST/GET /devices, DELETE /devices/{id} | push registration pending | AuthFlowIT$Devices (2) | TESTED |
 | NTF-001 | Notifications | 08 | Notification module | notification | notification API | notifications | notification tests | NOT_STARTED |
+| RT-001 | Realtime updates | 05,06 | realtime: RealtimeEventRelay, RealtimeRouter, RealtimeSessionRegistry, RealtimeBroadcaster (Local/Redis) | V14 realtime_event | WS /realtime/socket, GET /realtime/events | live tracking/order screens pending | RealtimeRoutingTest (9), RealtimeFlowIT$Isolation (4), $Polling (5), $Projection (2) | TESTED |
+| RT-002 | Realtime authentication | 06,09 | realtime: RealtimeTicketService, RealtimeTicketStore, RealtimeHandshakeInterceptor, RealtimeEntitlements | V14 realtime_ticket | POST /realtime/ticket | socket client pending | RealtimeFlowIT$Handshake (6) | TESTED |
 | ANA-001 | Analytics | 08 | Analytics module | analytics_event | event pipeline | event tracking | analytics tests | NOT_STARTED |
 | SET-001 | Commission | 01,09 | Settlement module | commission | admin APIs | settlement view | financial tests | NOT_STARTED |
 | SET-002 | Settlement | 01,09 | Settlement module | settlement | admin APIs | supplier settlement | settlement tests | NOT_STARTED |

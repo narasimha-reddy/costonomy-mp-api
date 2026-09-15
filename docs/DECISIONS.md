@@ -803,6 +803,104 @@ controller was not, and nothing in the type system said so.
 
 ---
 
+## D-031 — Realtime is a projection of the outbox, not a second publisher
+**2026-09-15 · Settled**
+
+`RealtimeEventRelay` listens to the outbox's `DomainEventEnvelope` and projects
+each event onto the channels it concerns. No service calls a `broadcast(...)`
+method.
+
+**Why:** every state change already publishes to the outbox — that is what it is
+for. A parallel publishing call in procurement, payment, credit and delivery
+would be a second mechanism to keep in step with the first, and it would be the
+one people forget: a new event type would simply never reach a phone, with
+nothing failing to say so.
+
+Two properties come free. Realtime inherits the outbox's **transactional
+guarantee** — an event exists only if the state change committed, so a client
+cannot be shown a rolled-back order. And it inherits **at-least-once** delivery,
+which is why `realtime_event` is deduplicated on `(event_id, channel)`.
+
+The projection is per **(event, channel)**, not per event: a supplier order
+concerns the restaurant that placed it and the store filling it, and each sees it
+on their own channel.
+
+---
+
+## D-032 — All three transports read the same rows
+**2026-09-15 · Settled**
+
+Doc 06 §9 wants WebSocket, push and polling. `realtime_event.id` is the cursor
+all of them share: the socket pushes rows, `GET /realtime/events?cursor=` walks
+them, and a reconnecting client resumes from the last id it saw.
+
+**Why:** the alternative is a socket that carries something polling cannot
+produce — a fact that exists only while you are connected. Doc 05 §16 requires a
+client to refresh authoritative state on reconnect and cold start, which is only
+possible if the two agree on what it missed.
+
+Consequences worth stating:
+
+- **There is no channel parameter on the polling endpoint.** A caller asks for
+  "my events"; what that means is the server's decision, derived from grants. The
+  same reason `/auth/me` takes no user id.
+- **A fresh client starts at the current cursor, not at zero.** Opening the app
+  should not replay a week the user already saw elsewhere.
+- **Events expire (7 days) and that is safe.** A client past the window gets
+  nothing from its cursor and refreshes state instead — which doc 05 §16 has it
+  doing on cold start anyway. Realtime is a prompt to refresh, never the record.
+
+---
+
+## D-033 — The socket is authenticated by a single-use ticket
+**2026-09-15 · Settled**
+
+`POST /realtime/ticket` returns a short-lived, single-use credential; the
+handshake spends it atomically and derives the session's channels from live
+grants.
+
+**Why not the access token?** A browser's WebSocket API cannot set headers, so a
+token would have to travel in the query string — and query strings end up in
+access logs, proxy logs and error reports. Doc 09 forbids logging a token, and a
+URL is the one place that promise cannot be kept. A ticket that lives thirty
+seconds and works once is a far smaller thing to lose.
+
+The rest follows: stored **hashed** like a refresh token, so the table is not a
+list of working credentials; claimed by an **atomic conditional UPDATE** in
+`RealtimeTicketStore`, because a read-then-write would let two simultaneous
+handshakes with one stolen ticket both succeed; and spent, expired and
+never-issued all give the **same answer**, so a caller cannot probe which.
+
+**Channels are never requested, only derived.** A client cannot ask to join
+`outlet:99`; the server decides from grants at handshake time and re-checks
+membership on every delivery. That removes the entire class of bug where a client
+asks for someone else's channel and the check has a hole in it — and the
+re-derivation is what makes doc 46's "revocation takes effect on the next
+request" true of the longest-lived connection in the system.
+
+---
+
+## D-034 — Redis carries the cross-instance hop, and only an id
+**2026-09-15 · Settled**
+
+`RealtimeBroadcaster` has two implementations: `LOCAL` (default) fans out within
+the JVM, `REDIS` publishes over pub/sub.
+
+**Why it is not optional on more than one instance:** the outbox drain runs under
+a `@SchedulerLock`, so exactly one instance produces events — and it is
+emphatically not the instance holding most of the sockets. Without a hop,
+realtime would work perfectly in development and deliver to a fraction of users
+in production, with nothing failing.
+
+**Only the event id crosses Redis.** Each instance re-reads the row from
+`realtime_event` before delivering, so Redis never carries tenant data and a
+message lost in transit costs nothing — the durable copy is in MySQL and the
+client's cursor will find it. That keeps Redis inside guardrail 6: cache,
+coordination and hints, never the record. Redis being down degrades realtime to
+polling, which is the designed fallback rather than an outage.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

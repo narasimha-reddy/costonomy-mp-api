@@ -5,11 +5,11 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3–11 complete** — foundation, authentication, organisations
+> **Status: Phases 1, 3–12 complete** — foundation, authentication, organisations
 > with authorization, catalog, search with Best Value recommendations,
 > requirements through to submitted orders, supplier acceptance with timeout,
-> payments, supplier credit, and delivery. Next is Phase 12, realtime. Build
-> sequence: `docs/specs/00-README.md` §8.
+> payments, supplier credit, delivery, and realtime. Next is Phase 13,
+> receiving/disputes/ratings. Build sequence: `docs/specs/00-README.md` §8.
 >
 > **There are no open decisions.** OPEN-004 closed as D-020: a supplier order is
 > created `DRAFT` and released only once funding is secured.
@@ -30,6 +30,18 @@ Decisions already made that you should not re-litigate: **D-010** a payment is
 per supplier order; **D-011** responses use the `{ data, error, meta }` envelope;
 **D-002** Flyway owns the schema; **D-009** enum columns are `VARCHAR` and need
 `@JdbcTypeCode(SqlTypes.VARCHAR)` on every enum field.
+
+**Build with JDK 17.** Maven picks up whatever `JAVA_HOME` points at, and on a
+newer JDK Lombok stops processing *silently* — the build then fails with several
+hundred "cannot find symbol" errors on generated getters and constructors, none
+of which point at the real cause. If you see that, check `mvn -v` before changing
+any code:
+
+```
+export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+```
+
+Integration tests need Docker running (Testcontainers, real MySQL 8).
 
 ## Stack
 
@@ -85,6 +97,12 @@ procurement/    requirements, cart, checkout, approval, supplier orders
                 three state machines
   service/      RequirementService, ProcurementService, ApprovalPolicyEvaluator,
                 ProcurementSubmitter, ProcurementStateStore
+realtime/       live updates over WebSocket, with a polling fallback
+  domain/       RealtimeChannel, RealtimeEvent, RealtimeTicket
+  repository/   RealtimeEventStore, RealtimeTicketStore (the atomic claims)
+  service/      RealtimeEventRelay, RealtimeRouter, RealtimeEntitlements,
+                RealtimeSessionRegistry, RealtimeBroadcaster (Local/Redis),
+                RealtimeTicketService, RealtimeQueryService, RealtimeJobs
 delivery/       provider-agnostic delivery, tracking and reassignment
   domain/       Delivery, DeliveryStatus, DeliveryMode, DeliverySelection,
                 DeliveryQuote, DeliveryProviderAttempt, DeliveryEvent,
@@ -158,6 +176,14 @@ that looks correct from the outside, and it has now produced four real bugs here
 - `doSubmit` was `@Transactional` but self-invoked from inside the idempotency
   lambda, so the entire submission would have run with no transaction. Now in
   `ProcurementSubmitter`.
+- Catching a constraint violation inside the transaction it poisoned — **three
+  times now** (D-021 payments, D-031 realtime, and the delivery event store built
+  to avoid it). The realtime case was the worst: the relay runs inside the outbox
+  drain's transaction, so one duplicate projection would have rolled back a batch
+  of up to a hundred unrelated events. The rule, stated once: **the insert goes in
+  its own bean under `REQUIRES_NEW`, and it throws rather than catching** — a
+  catch cannot un-doom a transaction that is already rolling back. The caller
+  catches it afterwards.
 - Sequencing several writes to one aggregate from a caller with no transaction.
   Each `@Transactional` method re-attached a **stale detached copy** of the
   delivery, so the second write silently reverted the first and the status never
@@ -262,6 +288,21 @@ not opted in — absent is not "enabled with defaults"); never auto-suspend unle
 they asked for it; and a repayment is *recorded by the supplier*, never by the
 restaurant, because the money moved outside Mandi and only the party it reached
 can confirm it arrived.
+
+**Realtime is a projection of the outbox, never a second publisher.** D-031. A
+new event type reaches phones because it is published to the outbox, not because
+somebody remembered to call a broadcaster — so never add a `broadcast(...)` call
+to a service. The socket, the polling endpoint and a reconnect all read
+`realtime_event` by the same cursor (D-032), and **realtime is a prompt to
+refresh, never the record**: authoritative state always comes from the resource's
+own endpoint, which is why a client past the retention window is fine.
+
+**A realtime channel is an authorization decision.** D-033. Channels are derived
+from live grants at handshake and re-checked on every delivery; a client cannot
+ask to join one, and there is no channel parameter on the polling endpoint. A
+routing mistake here is a disclosure with no per-message audit trail to find it
+afterwards, which is why `RealtimeRouter` drops anything it cannot route rather
+than guessing.
 
 **A delivery is one consignment, whatever goes wrong.** Doc 06 §7, D-026. A
 driver cancelling, a provider refusing, a pickup failing — each appends a

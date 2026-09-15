@@ -171,6 +171,11 @@ class MigrationIT extends AbstractIntegrationTest {
                         "delivery_provider_attempt",
                         "delivery_event",
                         "delivery_location",
+                        // Realtime's projection and its handshake tickets. Both are
+                        // written once and read by cursor; a row that changed after
+                        // the fact would change what a client already replayed.
+                        "realtime_event",
+                        "realtime_ticket",
                         // Reference data that is added or removed, never edited.
                         "canonical_product_alias",
                         // Pure join tables.
