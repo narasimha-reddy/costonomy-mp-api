@@ -15,6 +15,37 @@ Mobile client: `costonomy-mp-mobile`.
 
 ## Getting started
 
+### Local database
+
+Shares the MySQL container `costonomy-jobs` already runs, as a separate schema —
+one local database server rather than one per repo. Create the schema once:
+
+```bash
+docker exec jobs-mysql mysql -uroot -proot \
+  -e "CREATE DATABASE IF NOT EXISTS costonomy_mp \
+      CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
+```
+
+Then run the app; Flyway applies V1–V19 on startup and the data persists across
+restarts:
+
+```bash
+export JAVA_HOME=$(/usr/libexec/java_home -v 17)   # Lombok breaks silently on newer JDKs
+mvn spring-boot:run -Dspring-boot.run.profiles=local
+```
+
+- API: `http://localhost:8080/costonomy-mp-api`
+- Swagger: `/swagger-ui.html` · OpenAPI: `/api-docs`
+- Every OTP is `123456` locally, and every provider is a mock.
+
+Pointing at a different MySQL? Check two settings first: server collation must be
+`utf8mb4_0900_ai_ci`, and the server time zone must be UTC. The migrations use
+both `now(6)` and `utc_timestamp(6)`, which agree only on a UTC server.
+
+Integration tests are unaffected by any of this — they get their own throwaway
+Testcontainers MySQL per run (D-007), and need Docker running.
+
+
 ```bash
 mvn spring-boot:run       # local profile, all providers mocked
 mvn test                  # unit tests — no Docker needed
