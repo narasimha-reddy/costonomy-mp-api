@@ -693,6 +693,116 @@ that forgets this class exists.
 
 ---
 
+## D-026 — One delivery per order, for the life of that order
+**2026-09-15 · Settled**
+
+Doc 06 §7 says a reassignment "must not create a second logical delivery", and
+doc 03 §10 repeats it. Everything about the delivery schema follows from taking
+that literally.
+
+**Decision: `uk_delivery_order`, and every failure appends rather than replaces.**
+A driver cancelling, a provider refusing, a pickup going wrong — each writes a
+`delivery_provider_attempt` and a `delivery_event`, increments
+`delivery.attempt_count`, and leaves the delivery the restaurant is watching
+exactly where it was.
+
+**Why:** a second row would show two journeys for one consignment on the tracking
+screen, and it would make "how often do deliveries fail" unanswerable — the
+retries would be counted as separate deliveries, one failed and one succeeded,
+rather than as one delivery that took two goes. The attempt table is what makes
+the retry visible without splitting the thing being retried.
+
+---
+
+## D-027 — Provider bidding never reaches a restaurant
+**2026-09-15 · Settled**
+
+Doc 06 §4: "internal provider quotes are never shown to restaurant". Doc 06 §10:
+"restaurant sees only final applicable fee".
+
+**Decision: there is no DTO for `delivery_quote` and no endpoint returns one.**
+`DeliveryResponse` carries a fee and deliberately carries no `providerCode`. The
+test asserts this against the **serialised response body**, not against the DTO's
+type — a field added later would pass a type-level check and still leak.
+
+**Why:** who bid what is our commercial position and the couriers'. An API that
+returns it hands a supplier's and a provider's pricing to everyone who places an
+order. The fee the restaurant pays is the fact they need; the auction behind it
+is not.
+
+Failed and declined quotes are still *stored*, because doc 06 §12 requires the
+quoting to be reconstructable — and because without them a delivery that fell
+back to the only courier left looks like a choice somebody made.
+
+---
+
+## D-028 — On a partner delivery, only the partner's events move the order
+**2026-09-15 · Settled**
+
+`SupplierOrderStatus` gives a supplier no transition past `READY_FOR_PICKUP`, so
+`OUT_FOR_DELIVERY` and `DELIVERED` cannot be set by any human. `DeliveryOrderBridge`
+sets them from the courier's `PICKED_UP` and `DELIVERED` events.
+
+**Why:** §23A.38 is explicit that a supplier must not claim a pickup or a delivery
+a courier performed. "Just mark it delivered" is the shortcut that turns a
+delivery record into an assertion nobody checked, and it is the one that would
+make receiving disputes unanswerable.
+
+**Supplier own delivery is the exception, and is a different mode.** There the
+supplier *is* the courier, so they report their own progress through
+`/deliveries/{id}/dispatched` and `/delivered`, and those endpoints refuse a
+`COSTONOMY` delivery outright. Two modes, two sources of truth, no overlap.
+
+The bridge writes across a module edge with a guarded `UPDATE` rather than
+importing procurement's aggregate — the same boundary rule as the directories,
+and the guard (`where status = ?`) means a replayed event cannot skip a state.
+
+---
+
+## D-029 — Two mock delivery providers, not one
+**2026-09-15 · Settled**
+
+Doc 06 §11 requires a mock provider. We register **two**, differing the way real
+couriers do: one faster, dearer and wider-ranging, one cheaper, slower and with a
+smaller service area.
+
+**Why:** doc 06 §4's rule is "lowest cost meeting the required ETA and
+serviceability". With a single candidate every selection strategy produces the
+same answer, so a selection bug — picking the dearest, ignoring the ETA, ignoring
+serviceability — is invisible until a second real provider is added in
+production. Two mocks make the rule testable, and make failover testable too: one
+can be armed to fail while the other still answers.
+
+`DeliverySelection` is pure and static for the same reason — the rule can be
+tested without a database, a provider or a delivery, including the tie-breaks that
+make selection deterministic rather than "either answer is fine".
+
+---
+
+## D-030 — Sequencing writes to one aggregate needs one transaction
+**2026-09-15 · Settled**
+
+A simulated provider event touches a delivery several times: the driver, the
+status, the position, the ETA. Each of those is a `@Transactional` method on
+`DeliveryEventService` taking the `Delivery` entity.
+
+Called in sequence from a **controller with no transaction**, each call
+re-attaches a *stale detached copy*: the second write is built on the entity as it
+was before the first, and silently reverts it. The delivery never left
+`PROVIDER_SELECTED`, so nothing downstream applied — five tests failed, none of
+them about the thing that was broken.
+
+**Decision: that sequencing lives in `DeliverySimulationService`, under one
+transaction, with one managed entity.**
+
+This is a cousin of D-025's lesson and the ledger's stale-read bug, and the
+general rule is worth stating once: **when several writes to one aggregate have to
+compose, they belong inside a single transaction**, not strung together by a
+caller. The polling job was always correct because it is `@Transactional`; the
+controller was not, and nothing in the type system said so.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

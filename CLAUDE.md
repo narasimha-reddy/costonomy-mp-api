@@ -5,11 +5,11 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3–10 complete** — foundation, authentication, organisations
+> **Status: Phases 1, 3–11 complete** — foundation, authentication, organisations
 > with authorization, catalog, search with Best Value recommendations,
 > requirements through to submitted orders, supplier acceptance with timeout,
-> payments, and supplier credit. Next is Phase 11, delivery. Build sequence:
-> `docs/specs/00-README.md` §8.
+> payments, supplier credit, and delivery. Next is Phase 12, realtime. Build
+> sequence: `docs/specs/00-README.md` §8.
 >
 > **There are no open decisions.** OPEN-004 closed as D-020: a supplier order is
 > created `DRAFT` and released only once funding is secured.
@@ -85,6 +85,14 @@ procurement/    requirements, cart, checkout, approval, supplier orders
                 three state machines
   service/      RequirementService, ProcurementService, ApprovalPolicyEvaluator,
                 ProcurementSubmitter, ProcurementStateStore
+delivery/       provider-agnostic delivery, tracking and reassignment
+  domain/       Delivery, DeliveryStatus, DeliveryMode, DeliverySelection,
+                DeliveryQuote, DeliveryProviderAttempt, DeliveryEvent,
+                DeliveryLocation
+  provider/     DeliveryProvider port + two configured mocks
+  service/      DeliveryService, DeliveryQuotingService, DeliveryBookingService,
+                DeliveryEventService, DeliveryOrderBridge, DeliveryTimeline,
+                DeliverySimulationService, DeliveryJobs
 credit/         supplier-funded credit: requests, agreements, ledger, invoices
   domain/       CreditAgreement, CreditRequest, CreditReservation, CreditInvoice,
                 CreditPayment, CreditTransaction, CreditLimitHistory,
@@ -150,6 +158,13 @@ that looks correct from the outside, and it has now produced four real bugs here
 - `doSubmit` was `@Transactional` but self-invoked from inside the idempotency
   lambda, so the entire submission would have run with no transaction. Now in
   `ProcurementSubmitter`.
+- Sequencing several writes to one aggregate from a caller with no transaction.
+  Each `@Transactional` method re-attached a **stale detached copy** of the
+  delivery, so the second write silently reverted the first and the status never
+  moved. Five tests failed, none of them about the thing that was broken. The
+  sequencing now lives in `DeliverySimulationService` under one transaction
+  (D-030) — the general rule being that writes which have to compose belong
+  inside a transaction, not strung together by their caller.
 - Reading a balance back through JPA after changing it with SQL. The conditional
   UPDATEs in `CreditExposureStore` are invisible to the entity manager, so a
   `findById` in the same transaction returns the **stale** first-level-cache
@@ -247,6 +262,32 @@ not opted in — absent is not "enabled with defaults"); never auto-suspend unle
 they asked for it; and a repayment is *recorded by the supplier*, never by the
 restaurant, because the money moved outside Mandi and only the party it reached
 can confirm it arrived.
+
+**A delivery is one consignment, whatever goes wrong.** Doc 06 §7, D-026. A
+driver cancelling, a provider refusing, a pickup failing — each appends a
+`delivery_provider_attempt` and a `delivery_event` and leaves the delivery the
+restaurant is watching where it was. Never create a second delivery row for the
+same order; `uk_delivery_order` will stop you, and the reason is that two rows
+make one retried delivery look like two deliveries, one of which failed.
+
+**Never fabricate a driver, a position or an ETA.** Doc 06 §8. There is no driver
+before assignment and the response says so; a position exists only because a
+provider reported one, and `recorded_at` is *their* timestamp; a fix older than
+the freshness threshold comes back with `locationStale` set rather than drawn as
+current. An interpolated position is indistinguishable from a real one once it is
+on a map, which is why the rule is absolute rather than a matter of degree.
+
+**What the restaurant pays is one number; the auction behind it is ours.** Doc 06
+§4 and §10, D-027. `DeliveryResponse` has no `providerCode` and there is no
+endpoint returning `delivery_quote`. Failed and declined quotes are still stored,
+because doc 06 §12 needs the quoting reconstructable and because otherwise a
+forced fallback looks like a choice.
+
+**On a partner delivery, only the partner's events move the order.** §23A.38,
+D-028. `SupplierOrderStatus` gives the supplier nothing past `READY_FOR_PICKUP`,
+so `OUT_FOR_DELIVERY` and `DELIVERED` come from the courier's events via
+`DeliveryOrderBridge`. Supplier own delivery is a different mode with a different
+source of truth, and the endpoints for it refuse a `COSTONOMY` delivery.
 
 **`reserved` and `utilized` are written only by `CreditExposureStore`.** Every
 method there is one conditional UPDATE that re-checks its precondition in the same

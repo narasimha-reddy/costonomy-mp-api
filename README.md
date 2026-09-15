@@ -75,7 +75,13 @@ Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
   supplier-funded throughout: Mandi runs the workflow and the ledger and funds
   none of it.
 
-325 tests pass (152 unit, 173 integration). Next is Phase 11, delivery —
+- *Delivery* — a provider-agnostic `DeliveryProvider` port with two configured
+  mocks, quoting across every partner, selection by lowest cost meeting the
+  required ETA, booking with failover, reassignment that keeps one delivery
+  identity, an honest tracking view with a staleness indicator, and supplier own
+  delivery as a first-class mode. Provider bidding never reaches a restaurant.
+
+360 tests pass (168 unit, 192 integration). Next is Phase 12, realtime —
 see `docs/specs/00-README.md` §8 for the full sequence.
 
 There are no open decisions.
