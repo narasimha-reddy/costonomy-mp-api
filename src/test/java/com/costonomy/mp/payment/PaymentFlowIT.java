@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * Payments end to end, including doc 46's edge cases.
@@ -144,6 +145,50 @@ class PaymentFlowIT extends AbstractIntegrationTest {
     }
 
     // ── The guardrail ────────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("mock checkout simulation")
+    class CheckoutSimulation {
+
+        @Test
+        @DisplayName("stands in for the hosted checkout a mock provider does not have")
+        void completesCheckout() throws Exception {
+            var submitted = submit("400", 10);
+
+            String providerPaymentId = api.post(submitted.buyer().token(),
+                            "/api/v1/internal/payments/" + submitted.paymentId() + "/simulate-checkout",
+                            Map.of())
+                    .at("/data/providerPaymentId").asText();
+
+            assertThat(providerPaymentId).isNotBlank();
+
+            // It stops at authorisation on purpose: the caller still goes through
+            // the real confirm, so the path production takes stays exercised.
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("DRAFT");
+
+            api.post(submitted.buyer().token(),
+                    "/api/v1/payments/" + submitted.paymentId() + "/confirm",
+                    Map.of("providerPaymentId", providerPaymentId));
+
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("PENDING_ACCEPTANCE");
+        }
+
+        @Test
+        @DisplayName("is refused to someone who cannot pay for that order")
+        void refusesAnotherTenant() throws Exception {
+            var submitted = submit("400", 10);
+            // A restaurant with no grant on this payment's outlet. Denial of a
+            // tenant-owned resource is a 404, not a 403 (doc 09 §3).
+            var stranger = newBuyer();
+
+            mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/internal/payments/" + submitted.paymentId()
+                                    + "/simulate-checkout")
+                            .header("Authorization", "Bearer " + stranger.token())
+                            .contentType(MediaType.APPLICATION_JSON))
+                    .andExpect(status().isNotFound());
+        }
+    }
 
     @Nested
     @DisplayName("funding gate")
