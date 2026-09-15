@@ -13,9 +13,12 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.text.NumberFormat;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Turns domain events into notifications. Doc 08 §1, §4.
@@ -186,9 +189,39 @@ public class NotificationRelay {
         payload.fields().forEachRemaining(entry -> {
             var value = entry.getValue();
             if (value != null && !value.isNull() && value.isValueNode()) {
-                fields.put(entry.getKey(), value.asText());
+                fields.put(entry.getKey(), stringify(entry.getKey(), value));
             }
         });
         return fields;
+    }
+
+    /**
+     * Money fields, by name.
+     *
+     * <p>A {@code DECIMAL(19,4)} reaches a template as "35000.0000", and
+     * "You have 35000.0000 of credit" is not a sentence anyone should be sent.
+     *
+     * <p>Named rather than inferred: a rule like "format anything with decimals"
+     * would turn a GST rate of 5.0000 into ₹5.00. A new money field is one line
+     * here, and forgetting it degrades to the raw number rather than to a wrong
+     * currency.
+     */
+    private static final Set<String> MONEY_FIELDS = Set.of(
+            "amount", "approvedLimit", "requestedLimit", "totalAmount", "acceptedAmount",
+            "outstanding", "netAmount", "grossAmount", "claimedAmount", "fee", "available");
+
+    private static final NumberFormat RUPEES = NumberFormat.getCurrencyInstance(
+            Locale.forLanguageTag("en-IN"));
+
+    private String stringify(String key, JsonNode value) {
+        if (!MONEY_FIELDS.contains(key)) {
+            return value.asText();
+        }
+        try {
+            return RUPEES.format(new java.math.BigDecimal(value.asText()));
+        } catch (NumberFormatException ex) {
+            // Not a number after all. The raw text is still better than nothing.
+            return value.asText();
+        }
     }
 }

@@ -56,6 +56,25 @@ public class SupplierOrderTransitions {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
+    private final ProcurementDirectory directory;
+
+    /**
+     * The supplier's display name, for the notification a restaurant reads.
+     *
+     * <p>Every event below carries `supplierStoreId`, which is what downstream
+     * modules key on — but doc 08's templates say "{supplierName} accepted order
+     * {orderNumber}", and an id cannot fill that. Without the name the renderer
+     * drops the placeholder and the restaurant is told " accepted order MP-…",
+     * which reads as a bug because it is one.
+     *
+     * <p>Empty rather than a guess when the store has vanished: the renderer
+     * already collapses an unresolved placeholder, and inventing "Your supplier"
+     * here would put words in a real company's mouth.
+     */
+    private String supplierNameOf(Long storeId) {
+        var info = directory.stores(java.util.List.of(storeId)).get(storeId);
+        return info == null || info.supplierName() == null ? "" : info.supplierName();
+    }
 
     // ── Acceptance ───────────────────────────────────────────────────────
 
@@ -208,6 +227,7 @@ public class SupplierOrderTransitions {
 
         outbox.publish(eventType, "SUPPLIER_ORDER", order.getId(),
                 Map.of("orderNumber", order.getOrderNumber(),
+                        "supplierName", supplierNameOf(order.getSupplierStoreId()),
                         "supplierStoreId", order.getSupplierStoreId(),
                         "outletId", order.getOutletId(),
                         "acceptedAmount", order.getAcceptedAmount().toPlainString()),
@@ -264,6 +284,7 @@ public class SupplierOrderTransitions {
 
         outbox.publish("SupplierOrderRejected", "SUPPLIER_ORDER", order.getId(),
                 Map.of("orderNumber", order.getOrderNumber(),
+                        "supplierName", supplierNameOf(order.getSupplierStoreId()),
                         "supplierStoreId", order.getSupplierStoreId(),
                         "outletId", order.getOutletId(),
                         "reason", reason),
@@ -317,6 +338,7 @@ public class SupplierOrderTransitions {
         // — must be able to tell them apart.
         outbox.publish("SupplierOrderExpired", "SUPPLIER_ORDER", order.getId(),
                 Map.of("orderNumber", order.getOrderNumber(),
+                        "supplierName", supplierNameOf(order.getSupplierStoreId()),
                         "supplierStoreId", order.getSupplierStoreId(),
                         "outletId", order.getOutletId()),
                 null, order.getExpiredAt());
@@ -352,6 +374,7 @@ public class SupplierOrderTransitions {
                         ? "SupplierOrderPreparing" : "SupplierOrderReady",
                 "SUPPLIER_ORDER", orderId,
                 Map.of("orderNumber", order.getOrderNumber(),
+                        "supplierName", supplierNameOf(order.getSupplierStoreId()),
                         "supplierStoreId", order.getSupplierStoreId(),
                         "outletId", order.getOutletId()),
                 actorId);

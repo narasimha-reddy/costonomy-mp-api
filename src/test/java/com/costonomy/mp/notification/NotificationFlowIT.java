@@ -132,6 +132,26 @@ class NotificationFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("money reads as money, not as a database column")
+        void formatsMoney() throws Exception {
+            var buyer = newBuyer();
+
+            publish("CreditApproved", "CREDIT_AGREEMENT", 1002L, Map.of(
+                    "outletId", buyer.outletId(),
+                    "approvedLimit", "35000.0000",
+                    "creditPeriodDays", 30));
+
+            var body = inbox(buyer.token()).at("/notifications/0/body").asText();
+
+            // A DECIMAL(19,4) reaches the template as "35000.0000", and
+            // "You have 35000.0000 of credit" is not a sentence to send anyone.
+            assertThat(body).doesNotContain("35000.0000");
+            assertThat(body).contains("35,000.00");
+            // The period is a count, not money, and must not gain a currency symbol.
+            assertThat(body).contains("30 days");
+        }
+
+        @Test
         @DisplayName("one event tells both sides, each in their own words")
         void bothSidesAreTold() throws Exception {
             var buyer = newBuyer();

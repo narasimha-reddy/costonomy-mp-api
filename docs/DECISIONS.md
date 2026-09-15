@@ -1745,6 +1745,83 @@ explains it; it does not reconstruct it.
 
 ---
 
+## D-068 — A realtime event is a prompt to refresh, never the record
+**2026-09-15 · Settled**
+
+`RealtimeProvider` holds one socket for the whole app and, on every event,
+invalidates the queries that event touches. It never writes a payload into a
+screen's cache.
+
+A socket frame is the one piece of state in the system that arrives without an
+access check at read time. Rendering it directly would let a stale or mis-scoped
+payload appear as fact — and the payloads are deliberately thin (doc 06 §10 keeps
+provider identity and quotes out of them), so a screen fed from a frame would
+show less than the endpoint it replaced.
+
+**Invalidation is deliberately coarse.** A delivery event invalidates the order
+and its lists rather than one key. Being precise would mean encoding, on the
+client, which screen shows which status — the thing the server already decides.
+
+**Polling is the floor, not the failure case.** §16 orders the transports socket,
+push, polling; the interval keeps running whenever the socket is not OPEN, and
+with the socket up the tracking screen keeps a slow backstop. A socket that is
+connected but silently dead looks exactly like a quiet delivery, and tracking is
+where that distinction matters most.
+
+**`ready` is not an event.** The server opens with a frame carrying the resume
+cursor. Running it through the event handler would advance the cursor past events
+the socket has not delivered, losing precisely what the reconnect drain exists to
+collect.
+
+---
+
+## D-069 — The socket path is concatenated, not URL-resolved
+**2026-09-15 · Settled**
+
+`/realtime/ticket` returns a path relative to the **API's context**
+(`/api/v1/realtime/socket`), while the API lives under `/costonomy-mp-api`.
+`new URL(path, base)` treats a leading slash as origin-absolute and drops the
+context path, producing a URL that never connects.
+
+The failure is silent by construction: the client falls back to polling, the app
+keeps working, and nothing anywhere says the socket is dead. It was found by
+instrumenting `window.WebSocket` in a browser, not by any test — so there are
+tests now, one per shape the server can return.
+
+**Allowed origins are configuration, defaulting to none.** The socket config
+reasoned that "clients are native apps, which send no Origin header" — true, and
+it meant the Expo web build was refused by Spring's same-origin default, falling
+back to polling in exactly the same invisible way. The local profile now names the
+dev server. **Never a wildcard**: a leaked ticket plus `*` is any web page on the
+internet opening an authenticated socket.
+
+---
+
+## D-070 — A notification event carries the words its template needs
+**2026-09-15 · Settled**
+
+Doc 08's template is `{supplierName} accepted order {orderNumber}`. The events
+`SupplierOrderTransitions` published carried `supplierStoreId` and no name, so the
+renderer dropped the placeholder and restaurants were told " accepted order
+MP-260915-000010." — a headless sentence that reads as a bug because it is one.
+
+`NotificationFlowIT` passed throughout, because it published its own payload with
+`supplierName` included. **It proved the template and never the payload.** The new
+test in `SupplierAcceptanceIT` asserts on what the transition actually emits.
+
+**Money is formatted by name.** A `DECIMAL(19,4)` reached templates as
+"35000.0000" — "You have 35000.0000 of credit" is not a sentence to send anyone.
+`NotificationRelay` formats a named set of money fields as rupees. Named rather
+than inferred: "anything with decimals" would turn a GST rate of 5.0000 into
+₹5.00, and forgetting to add a new field degrades to a raw number rather than to a
+wrong currency.
+
+**The rule behind all three:** an event is published for consumers that do not
+exist yet. Carrying the id alone is correct for a module that will look things up,
+and insufficient for one that has to write a sentence.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

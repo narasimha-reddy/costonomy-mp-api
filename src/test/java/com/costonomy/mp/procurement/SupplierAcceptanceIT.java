@@ -203,6 +203,27 @@ class SupplierAcceptanceIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("the acceptance event names the supplier")
+        void acceptanceEventNamesTheSupplier() throws Exception {
+            var placed = placeOrder(20, false);
+            respond(placed.seller().token(),
+                    "/api/v1/supplier-orders/" + placed.orderId() + "/accept", Map.of());
+
+            String payload = jdbc.queryForObject("""
+                    select payload from outbox_event
+                     where event_type = 'SupplierOrderAccepted' and aggregate_id = ?
+                    """, String.class, placed.orderId());
+
+            // Doc 08's template is "{supplierName} accepted order {orderNumber}".
+            // The payload carried supplierStoreId and no name, so the renderer
+            // dropped the placeholder and a restaurant was told " accepted order
+            // MP-…". The notification test supplied the name itself, so it proved
+            // the template and never the payload.
+            assertThat(payload).contains("\"supplierName\"");
+            assertThat(payload).doesNotContain("\"supplierName\": \"\"");
+        }
+
+        @Test
         @DisplayName("accepting credits the requirement — and only then")
         void acceptCreditsTheRequirement() throws Exception {
             var placed = placeOrder(20, true);
