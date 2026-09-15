@@ -5,11 +5,11 @@ marketplace. Modular monolith, MySQL `costonomy_mp`.
 
 Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 
-> **Status: Phases 1, 3–12 complete** — foundation, authentication, organisations
+> **Status: Phases 1, 3–13 complete** — foundation, authentication, organisations
 > with authorization, catalog, search with Best Value recommendations,
 > requirements through to submitted orders, supplier acceptance with timeout,
-> payments, supplier credit, delivery, and realtime. Next is Phase 13,
-> receiving/disputes/ratings. Build sequence: `docs/specs/00-README.md` §8.
+> payments, supplier credit, delivery, realtime, and receiving/disputes/ratings.
+> Next is Phase 14, notifications. Build sequence: `docs/specs/00-README.md` §8.
 >
 > **There are no open decisions.** OPEN-004 closed as D-020: a supplier order is
 > created `DRAFT` and released only once funding is secured.
@@ -97,6 +97,10 @@ procurement/    requirements, cart, checkout, approval, supplier orders
                 three state machines
   service/      RequirementService, ProcurementService, ApprovalPolicyEvaluator,
                 ProcurementSubmitter, ProcurementStateStore
+trust/          receiving, disputes and ratings — what happens after goods arrive
+  domain/       Receiving, ReceivingItem, Dispute, DisputeItem, DisputeMessage,
+                DisputeEvidence, Rating, and their lifecycles
+  service/      ReceivingService, DisputeService, RatingService, TrustDirectory
 realtime/       live updates over WebSocket, with a polling fallback
   domain/       RealtimeChannel, RealtimeEvent, RealtimeTicket
   repository/   RealtimeEventStore, RealtimeTicketStore (the atomic claims)
@@ -288,6 +292,28 @@ not opted in — absent is not "enabled with defaults"); never auto-suspend unle
 they asked for it; and a repayment is *recorded by the supplier*, never by the
 restaurant, because the money moved outside Mandi and only the party it reached
 can confirm it arrived.
+
+**Receiving adds to the order; it never rewrites it.** Doc 03 §11, D-035. The
+accepted quantity stays exactly as the supplier committed to it — that is what was
+paid for and what every dispute is argued from — and what arrived goes to
+`fulfilled_quantity`. Every line must be answered and
+`received + damaged + missing` must equal `accepted`; defaulting any of those
+would reinstate the blind "Complete" button §23A.22 forbids. A receiving shortfall
+does **not** re-open the requirement: it is a commercial dispute, and re-opening
+would have the restaurant order the same goods twice.
+
+**A dispute never touches the order.** Doc 01 §22, D-036. Not its status, not its
+quantities, not its payment — and the response carries the order status so the app
+can say so (§23A.26). Several disputes per order are allowed, because a delivery
+can be short *and* damaged. A supplier answers and proposes; only the restaurant
+resolves. **Mandi records disputes, it does not adjudicate them** — nothing here
+issues a refund or a credit note on anyone's behalf.
+
+**Ratings publish on write and are removed by moderation, never gated by it.**
+D-037. Hiding one removes it from the public average *and* from ranking, which is
+what makes moderation more than cosmetic. A store nobody has rated has no average,
+and a blank dimension is excluded from that dimension's mean rather than counted
+as neutral.
 
 **Realtime is a projection of the outbox, never a second publisher.** D-031. A
 new event type reaches phones because it is published to the outbox, not because

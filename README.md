@@ -86,7 +86,13 @@ Working endpoints: `/auth/*`, `/devices`, `/restaurants`, `/outlets`,
   the same cursor. Channels are tenant scopes derived from grants, so an event
   reaches exactly the outlet and store it concerns.
 
-387 tests pass (177 unit, 210 integration). Next is Phase 13,
-receiving/disputes/ratings — see `docs/specs/00-README.md` §8 for the full sequence.
+- *Receiving, disputes and ratings* — item-level check-in whose numbers must
+  reconcile against what the supplier accepted, disputes that run alongside an
+  order without ever changing it, and ratings that publish on write and can be
+  moderated away. Receiving and rating complete the picture ranking needs: fill
+  rate, on-time rate and average rating are now measured rather than absent.
+
+417 tests pass (187 unit, 230 integration). Next is Phase 14, notifications —
+see `docs/specs/00-README.md` §8 for the full sequence.
 
 There are no open decisions.

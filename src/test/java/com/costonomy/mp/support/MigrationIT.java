@@ -114,7 +114,8 @@ class MigrationIT extends AbstractIntegrationTest {
                   -- taken by INSERT … ON DUPLICATE KEY UPDATE; optimistic
                   -- locking on a hot counter would mean constant conflicts on
                   -- the one row every submission touches.
-                  and t.table_name not in ('order_number_sequence', 'credit_invoice_sequence')
+                  and t.table_name not in ('order_number_sequence', 'credit_invoice_sequence',
+                                           'dispute_number_sequence')
                   and exists (
                       select 1 from information_schema.columns c
                       where c.table_schema = t.table_schema
@@ -176,6 +177,13 @@ class MigrationIT extends AbstractIntegrationTest {
                         // the fact would change what a client already replayed.
                         "realtime_event",
                         "realtime_ticket",
+                        // What arrived, what was complained about, and the evidence
+                        // for it. Editing any of these would rewrite the record a
+                        // dispute is argued from.
+                        "receiving_item",
+                        "dispute_item",
+                        "dispute_message",
+                        "dispute_evidence",
                         // Reference data that is added or removed, never edited.
                         "canonical_product_alias",
                         // Pure join tables.

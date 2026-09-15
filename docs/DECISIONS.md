@@ -901,6 +901,137 @@ polling, which is the designed fallback rather than an outage.
 
 ---
 
+## D-035 — Receiving adds to the order; it never rewrites it
+**2026-09-15 · Settled**
+
+Doc 03 §11: "receiving does not rewrite the supplier order to erase delivered
+quantities". Taken literally: `accepted_quantity` stays exactly as the supplier
+committed to it, and what arrived is written to `fulfilled_quantity` — the column
+V10 left null for this moment.
+
+**Why:** the accepted quantity is what was paid for and what every dispute is
+argued from. Overwriting it would leave a restaurant complaining about a shortfall
+against an order that no longer records the larger number they were promised.
+
+**The three quantities partition the accepted one**:
+`received + damaged + missing = accepted`, and a mismatch is refused with the
+arithmetic in the message. Two consequences, both deliberate:
+
+- **No blind completion.** §23A.22 forbids a "Complete" button that records a
+  perfect delivery nobody counted; requiring all three numbers on every line is
+  what actually prevents it, and defaulting any of them would reinstate it.
+- **Over-delivery is refused, not absorbed.** The restaurant paid for the accepted
+  quantity. Quietly recording twelve when ten were bought puts stock on the books
+  that nobody priced. The usual cause is a typo, which the message says.
+
+**A shortfall does not re-open the requirement.** Guardrail 14 credited it on
+acceptance; re-opening on a receiving discrepancy would have the restaurant order
+the same goods twice while a dispute about the first lot is still running. The
+shortfall is a commercial dispute, which is what disputes are for.
+
+---
+
+## D-036 — A dispute never touches the order
+**2026-09-15 · Settled**
+
+Doc 01 §22 and doc 03 §12. Nothing in `DisputeService` changes a supplier order's
+status, quantities or payment, and `DisputeResponse` carries
+`supplierOrderStatus` so the app can state that plainly — §23A.26 requires it to.
+
+**Why:** an order status that moved on a complaint would make a restaurant's own
+record of what arrived depend on whether they complained about it. They would be
+choosing between having the delivery recorded and disputing it.
+
+Two smaller decisions inside this one:
+
+- **Several disputes per order.** A delivery can be short *and* damaged, and doc
+  01 §23 lists seven distinct categories. One dispute per order would force a
+  restaurant to pick which problem to report.
+- **A supplier's response does not close a dispute.** They can answer and propose
+  a resolution; only the restaurant resolves, and only the supplier rejects.
+  Letting a supplier close it by replying would end a conversation the other party
+  has not agreed to.
+
+**Mandi records; it does not adjudicate.** Doc 01 §23: disputes exist for
+intelligence and audit. A resolution is what the two parties agreed, written down.
+No money moves here, and nothing in this module issues a refund or a credit note
+on anyone's behalf.
+
+---
+
+## D-037 — Ratings are published on write and removed by moderation
+**2026-09-15 · Settled**
+
+Doc 01 §24: "ratings are public to the marketplace subject to moderation". Read as
+moderation that **removes**, not moderation that **gates**: a rating is visible the
+moment it is written, and `RATING_MODERATE` can hide it afterwards with a reason
+and an audit entry.
+
+**Why:** pre-moderation means no rating appears until someone reviews it. A
+marketplace whose ratings lag by a working day effectively has none, and the
+supplier whose rating is held in a queue is penalised for their reviewer's
+backlog rather than for anything they did.
+
+Hiding a rating removes it from the public average **and from ranking** — the
+summary and `OrderDerivedPerformanceProvider` both read `PUBLISHED` only. Without
+that, moderation would be cosmetic.
+
+**An absent rating stays absent.** A store nobody has rated has no average, not a
+default of three (doc 07 §4), and a dimension left blank is excluded from that
+dimension's mean rather than counted as neutral — one half-filled form should not
+drag a store's packaging score toward the middle without anyone having said
+anything about packaging.
+
+---
+
+## D-038 — Two permissions the spec's list omits
+**2026-09-15 · Settled**
+
+Doc 04 §16 requires `POST /disputes/{id}/response` and doc 09 §9 requires rating
+moderation, but doc 03 §14's permission list contains neither. V15 adds
+`DISPUTE_RESPOND` (supplier world) and `RATING_MODERATE` (internal).
+
+**Why not reuse a neighbour?** The tempting shortcuts are both bad. Gating the
+supplier's write behind `ORDER_VIEW` puts a write behind a read permission, which
+is how an authorization model becomes impossible to reason about. And
+`DISPUTE_MODERATE` is an *internal* permission — `PermissionCatalogIT` enforces
+that no supplier role holds one, and reusing it would have broken that invariant
+rather than bent it.
+
+The seeded grants follow the existing shape: supplier roles that already own
+orders can answer for them, and moderation goes to the roles that already
+moderate.
+
+---
+
+## D-039 — The last three performance signals become real
+**2026-09-15 · Settled** (closes the gap left by D-019)
+
+`OrderDerivedPerformanceProvider` returned `Optional.empty()` for fill rate,
+on-time rate and rating because the data did not exist. It does now, and all
+three are computed — with **no change to `BestValueScorer`**, which is exactly
+what D-014's weight redistribution was for.
+
+Each denominator is chosen to avoid a plausible-looking lie:
+
+- **Fill rate** is received ÷ accepted, over lines that have actually been checked
+  in. Damaged stock arrived but is not usable, so it does not count as filled —
+  otherwise a supplier with a packing problem looks identical to one without. A
+  line with no `fulfilled_quantity` is excluded rather than counted as zero, or a
+  supplier's rate would fall while their van is still on the road. Over-delivery
+  is capped at 1.0, because above that the number stops meaning "share filled".
+- **On-time** is measured against `estimated_arrival_at` — the courier's own
+  estimate at booking, which is the number the restaurant was shown. Grading
+  against a figure we computed ourselves would score a supplier on a promise
+  nobody made to anybody. Own-delivery consignments are excluded: doc 06 §2 says
+  Costonomy measures no provider SLA there.
+- **Rating** is the mean of published ratings only.
+
+All three stay empty where the denominator is zero. Doc 07 §4's rule has not
+moved: a store with no deliveries has no fill rate, not a perfect one.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

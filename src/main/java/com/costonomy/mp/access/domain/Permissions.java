@@ -54,6 +54,8 @@ public final class Permissions {
     public static final String CREDIT_APPROVE = "CREDIT_APPROVE";
     public static final String CREDIT_REJECT = "CREDIT_REJECT";
     public static final String CREDIT_MODIFY = "CREDIT_MODIFY";
+    /** Answer a dispute raised against this store's order. Doc 04 §16. */
+    public static final String DISPUTE_RESPOND = "DISPUTE_RESPOND";
     public static final String SETTLEMENT_VIEW = "SETTLEMENT_VIEW";
     public static final String PERFORMANCE_VIEW = "PERFORMANCE_VIEW";
 
@@ -68,6 +70,8 @@ public final class Permissions {
     public static final String CATALOG_MODERATE = "CATALOG_MODERATE";
     public static final String ORDER_SUPPORT = "ORDER_SUPPORT";
     public static final String DISPUTE_MODERATE = "DISPUTE_MODERATE";
+    /** Hide or restore a published rating. Doc 09 §9. */
+    public static final String RATING_MODERATE = "RATING_MODERATE";
     public static final String DELIVERY_OPERATE = "DELIVERY_OPERATE";
     public static final String PAYMENT_RECONCILE = "PAYMENT_RECONCILE";
     public static final String CREDIT_AUDIT = "CREDIT_AUDIT";

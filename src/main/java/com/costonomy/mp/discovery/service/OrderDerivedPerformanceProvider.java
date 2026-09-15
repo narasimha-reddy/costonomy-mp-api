@@ -17,12 +17,17 @@ import java.util.*;
  * redistributing their weight (D-014), which is why this could be added without
  * touching ranking.
  *
- * <p><b>Only the signals that genuinely exist are returned.</b> Acceptance and
- * cancellation can be computed from supplier orders today. Fill rate needs
- * delivered quantities (Phase 12, receiving) and on-time needs delivery
- * timestamps (Phase 11); both stay {@link Optional#empty()} rather than being
- * approximated from what is to hand. Doc 07 §4 forbids fabricating metrics, and an
- * approximation of a reliability figure is a fabrication with a plausible face.
+ * <p><b>Only the signals that genuinely exist are returned.</b> All five now do:
+ * acceptance and cancellation from supplier orders, fill rate from received
+ * quantities, on-time from delivery timestamps against the promised arrival, and
+ * rating from published ratings. Each is still computed from its own denominator
+ * and each is still {@link Optional#empty()} where that denominator is zero —
+ * doc 07 §4 forbids fabricating a metric, and a store with no deliveries has no
+ * fill rate rather than a perfect one.
+ *
+ * <p>The three that were empty until Phase 13 became real the moment the data
+ * existed, with no change to {@code BestValueScorer} — which is what D-014's
+ * weight redistribution was for.
  *
  * <p>Computed on demand rather than materialised. At current volumes a grouped
  * count over an indexed column is cheap, and a materialised table would be one
@@ -48,6 +53,10 @@ public class OrderDerivedPerformanceProvider implements SupplierPerformanceProvi
         supplierStoreIds.forEach(id -> performance.put(id, SupplierPerformance.unknown(id)));
 
         String placeholders = String.join(",", Collections.nCopies(supplierStoreIds.size(), "?"));
+
+        var fillRates = fillRates(supplierStoreIds, placeholders);
+        var onTimeRates = onTimeRates(supplierStoreIds, placeholders);
+        var averageRatings = averageRatings(supplierStoreIds, placeholders);
 
         jdbc.query("""
                 select supplier_store_id,
@@ -79,22 +88,123 @@ public class OrderDerivedPerformanceProvider implements SupplierPerformanceProvi
                             // the supplier actually responded to — an ignored order
                             // is a data point about them, but not a completed one.
                             answered,
-                            // Needs delivered quantities (Phase 12).
-                            Optional.empty(),
-                            // Needs delivery timestamps (Phase 11).
-                            Optional.empty(),
+                            fillRates.getOrDefault(storeId, Optional.empty()),
+                            onTimeRates.getOrDefault(storeId, Optional.empty()),
                             ratio(accepted, answered),
                             // Cancellations as a share of what they committed to.
                             // Against all orders, a supplier who rejects often would
                             // look *more* reliable, because rejections would dilute
                             // the denominator.
                             ratio(cancelled, committed),
-                            // Needs ratings (Phase 12).
-                            Optional.empty()));
+                            averageRatings.getOrDefault(storeId, Optional.empty())));
                 },
                 supplierStoreIds.toArray());
 
         return performance;
+    }
+
+    /**
+     * Delivered ÷ accepted, across every received order.
+     *
+     * <p>Received quantity rather than accepted-minus-missing: damaged stock
+     * arrived but is not usable, and counting it as filled would let a supplier
+     * with a packing problem look indistinguishable from one without.
+     *
+     * <p>Only lines that were actually received count. A line with no
+     * {@code fulfilled_quantity} is one nobody has checked in yet, and including
+     * it as a zero would make a supplier's fill rate fall while their delivery is
+     * still on the road.
+     */
+    private Map<Long, Optional<BigDecimal>> fillRates(List<Long> storeIds, String placeholders) {
+        Map<Long, Optional<BigDecimal>> rates = new HashMap<>();
+        jdbc.query("""
+                select o.supplier_store_id,
+                       sum(i.accepted_quantity)  as accepted,
+                       sum(i.fulfilled_quantity) as fulfilled
+                  from supplier_order_item i
+                  join supplier_order o on o.id = i.supplier_order_id
+                 where o.supplier_store_id in (%s)
+                   and i.fulfilled_quantity is not null
+                   and i.accepted_quantity is not null
+                 group by o.supplier_store_id
+                """.formatted(placeholders),
+                rs -> {
+                    rates.put(rs.getLong(1),
+                            share(rs.getBigDecimal(3), rs.getBigDecimal(2)));
+                },
+                storeIds.toArray());
+        return rates;
+    }
+
+    /**
+     * Deliveries that arrived by the time the provider promised.
+     *
+     * <p>Measured against {@code estimated_arrival_at} — the courier's own
+     * estimate at booking — because that is the number the restaurant was shown.
+     * Measuring against a figure we computed ourselves would grade a supplier on a
+     * promise nobody made to anybody.
+     *
+     * <p>Own-delivery consignments are excluded: doc 06 §2 says Costonomy claims
+     * no operational responsibility there and measures no provider SLA, and a
+     * supplier who delivers in their own van should not be scored on a courier
+     * metric that does not apply to them.
+     */
+    private Map<Long, Optional<BigDecimal>> onTimeRates(List<Long> storeIds, String placeholders) {
+        Map<Long, Optional<BigDecimal>> rates = new HashMap<>();
+        jdbc.query("""
+                select supplier_store_id,
+                       count(*)                                        as measured,
+                       sum(delivered_at <= estimated_arrival_at)       as on_time
+                  from delivery
+                 where supplier_store_id in (%s)
+                   and mode = 'COSTONOMY'
+                   and status = 'DELIVERED'
+                   and delivered_at is not null
+                   and estimated_arrival_at is not null
+                 group by supplier_store_id
+                """.formatted(placeholders),
+                rs -> {
+                    rates.put(rs.getLong(1), ratio(rs.getInt(3), rs.getInt(2)));
+                },
+                storeIds.toArray());
+        return rates;
+    }
+
+    /**
+     * Mean overall rating, from published ratings only.
+     *
+     * <p>A hidden rating leaves the average, which is what makes moderation mean
+     * something — and a store nobody has rated has no rating rather than a
+     * middling one.
+     */
+    private Map<Long, Optional<BigDecimal>> averageRatings(List<Long> storeIds,
+                                                           String placeholders) {
+        Map<Long, Optional<BigDecimal>> averages = new HashMap<>();
+        jdbc.query("""
+                select supplier_store_id, avg(overall_rating)
+                  from rating
+                 where supplier_store_id in (%s)
+                   and moderation_status = 'PUBLISHED'
+                 group by supplier_store_id
+                """.formatted(placeholders),
+                rs -> {
+                    var average = rs.getBigDecimal(2);
+                    averages.put(rs.getLong(1), average == null ? Optional.empty()
+                            : Optional.of(average.setScale(2, RoundingMode.HALF_UP)));
+                },
+                storeIds.toArray());
+        return averages;
+    }
+
+    /** A ratio of two decimal quantities, empty when there is nothing to divide by. */
+    private static Optional<BigDecimal> share(BigDecimal numerator, BigDecimal denominator) {
+        if (numerator == null || denominator == null || denominator.signum() <= 0) {
+            return Optional.empty();
+        }
+        return Optional.of(numerator.divide(denominator, 4, RoundingMode.HALF_UP)
+                // A supplier who over-delivers has filled the order, not more than
+                // filled it. Above 1.0 the number stops meaning "share filled".
+                .min(BigDecimal.ONE));
     }
 
     private static Optional<BigDecimal> ratio(int numerator, int denominator) {
