@@ -174,6 +174,7 @@ def seed_supplier(spec):
     if already is not None:
         supplier_id = already["id"]
         store_id = already["stores"][0]["id"]
+        enable_credit(token, store_id)
         print(f"  {spec['name']}: reusing supplier {supplier_id}, store {store_id}")
         return stock_store(token, supplier_id, store_id, spec)
 
@@ -227,11 +228,31 @@ def stock_store(token, supplier_id, store_id, spec):
             stocked += 1
         except ApiError as error:
             # Re-running the seed is normal; an existing SKU is not a failure.
-            if error.code not in ("CONFLICT", "DUPLICATE_SKU", "VALIDATION_ERROR"):
+            if error.code not in ("CONFLICT", "DUPLICATE_SKU", "DUPLICATE_SKU_CODE",
+                                  "VALIDATION_ERROR"):
                 raise
 
+    enable_credit(token, store_id)
     print(f"  {spec['name']}: supplier {supplier_id}, store {store_id}, {stocked} SKUs")
     return supplier_id
+
+
+def enable_credit(token, store_id):
+    """Offer credit terms from this store.
+
+    A store with no policy refuses every credit request with "this supplier
+    doesn't offer credit terms", which is correct — and makes the whole credit
+    half of the app unreachable on a fresh local database.
+    """
+    call(f"/supplier-stores/{store_id}/credit-policy", {
+        "creditEnabled": True,
+        "defaultCreditLimit": "50000.00",
+        "defaultCreditPeriodDays": 30,
+        "defaultGracePeriodDays": 5,
+        "maxSingleOrderCredit": "25000.00",
+        "maxOverdueAmount": "10000.00",
+        "autoSuspendEnabled": True,
+    }, token=token, method="PUT")
 
 
 def seed_restaurant():

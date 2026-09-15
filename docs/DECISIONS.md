@@ -1700,6 +1700,51 @@ Sending one where the server ignores it is harmless, so when in doubt, send it.
 
 ---
 
+## D-066 — The two experiences are URL segments, not route groups
+**2026-09-15 · Settled**
+
+The restaurant and supplier halves lived in expo-router groups — `app/(restaurant)`
+and `app/(supplier)`. A group adds no URL segment, so `(restaurant)/credit` and
+`(supplier)/(tabs)/credit` both resolve to `/credit`. So did `index`, `orders` and
+`orders/[id]`: four collisions, and M5 made the fourth.
+
+Navigation *inside* the app worked, because every `router.push` named the group.
+What broke was opening `/credit` directly — a deep link, a refresh, a shared URL,
+or the browser checks this app is verified with. The router picked one of the two,
+and a supplier landing on the restaurant's route was bounced by `AuthGate` to a
+blank screen.
+
+**Decision: `app/restaurant/` and `app/supplier/`, as real path segments.** URLs
+become `/restaurant/credit` and `/supplier/credit`, and nothing is ambiguous from
+a cold load. The cost is a prefix in every href; the alternative is a routing
+table where correctness depends on never entering a URL from outside.
+
+A group is right for a layout that should not appear in the URL — `(tabs)` still
+is one. It is wrong for two experiences that both own a screen called "orders".
+
+---
+
+## D-067 — Credit that cannot be drawn shows the limit, and says why
+**2026-09-15 · Settled**
+
+REST-CREDIT-01 rendered `available` on every agreement card. For a line the
+supplier had approved on modified terms, that meant a card reading "₹35,000
+available" underneath a headline reading "₹0.00 available" — because the outlet
+summary correctly excludes credit that cannot yet fund anything.
+
+Both figures were the server's and both were right. Shown together they told a
+restaurant they had money they could not spend.
+
+**Decision: `available` is shown only when `canFund` is true.** Otherwise the card
+shows the approved limit and a line saying what is standing in the way —
+acceptance, a supplier's decision, suspension, expiry.
+
+**`canFund` stays the server's answer**, never inferred from `status`: an ACTIVE
+agreement can still be unable to fund today. The client reads the boolean and
+explains it; it does not reconstruct it.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 
