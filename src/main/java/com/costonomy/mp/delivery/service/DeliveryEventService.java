@@ -175,7 +175,13 @@ public class DeliveryEventService {
         }
         deliveries.save(delivery);
 
-        timeline.record(delivery, target.eventName(), target, event.description());
+        // Publish, do not record. The ledger row for this event was already written
+        // at the top of this method, carrying the provider's event id and its
+        // disposition. Calling timeline.record() here wrote a *second* row for the
+        // same event — same type, same status, no provider id — and since the
+        // timeline read returns everything marked APPLIED, a restaurant saw every
+        // step of their delivery twice.
+        timeline.publish(delivery, target.eventName(), event.description());
 
         auditService.record(null, null, "DELIVERY_" + target.name(), "DELIVERY",
                 delivery.getId(), previous.name(), target.name(), event.description(), "PROVIDER");

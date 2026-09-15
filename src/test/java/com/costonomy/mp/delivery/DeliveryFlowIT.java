@@ -268,6 +268,31 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("each step appears once, not twice")
+        void timelineDoesNotRepeatItself() throws Exception {
+            // Every applied provider event used to write two timeline rows — the
+            // ledger row carrying the provider's event id, and a second one from
+            // `timeline.record()` at the end of `apply()`. Both were marked
+            // APPLIED, so a restaurant saw every step of their delivery twice.
+            //
+            // The existing journey test used containsSubsequence, which is happy
+            // with duplicates. This one is not.
+            var order = readyOrder();
+            var operator = operator();
+            long deliveryId = requestDelivery(order).get("id").asLong();
+
+            simulate(operator, deliveryId, Map.of("status", "DRIVER_ASSIGNED"));
+            simulate(operator, deliveryId, Map.of("status", "DRIVER_AT_PICKUP"));
+            simulate(operator, deliveryId, Map.of("status", "PICKED_UP"));
+
+            var timeline = tenantView(order, deliveryId).get("timeline");
+            var statuses = new java.util.ArrayList<String>();
+            timeline.forEach(entry -> statuses.add(entry.get("status").asText()));
+
+            assertThat(statuses).containsOnlyOnce("DRIVER_ASSIGNED", "DRIVER_AT_PICKUP", "PICKED_UP");
+        }
+
+        @Test
         @DisplayName("an order that isn't packed yet can't have a courier sent to it")
         void notReadyMeansNoDelivery() throws Exception {
             var buyer = newBuyer();

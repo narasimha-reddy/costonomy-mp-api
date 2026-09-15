@@ -92,25 +92,36 @@ SUPPLIERS = [
     {
         "phone": "+919876511001",
         "name": "Sri Balaji Traders",
-        "store": "Begumpet",
-        "lat": "17.4399", "lng": "78.4983",
+        "store": "Domlur",
+        "lat": "12.9611", "lng": "77.6387",
         "multiplier": 1.00,
     },
     {
         "phone": "+919876511002",
         "name": "Metro Fresh Supplies",
-        "store": "Jubilee Hills",
-        "lat": "17.4239", "lng": "78.4738",
+        "store": "Koramangala",
+        "lat": "12.9352", "lng": "77.6245",
         "multiplier": 0.94,
     },
     {
         "phone": "+919876511003",
         "name": "Deccan Wholesale",
-        "store": "Secunderabad",
-        "lat": "17.4399", "lng": "78.4983",
+        "store": "Whitefield",
+        "lat": "12.9698", "lng": "77.7500",
         "multiplier": 1.07,
     },
 ]
+
+# The demo restaurant. Coordinates matter: delivery quoting is a real
+# serviceability check against the distance between store and outlet, so an
+# outlet without them can never be quoted for and the lifecycle stops dead at
+# READY_FOR_PICKUP.
+RESTAURANT = {
+    "phone": "+919876500004",
+    "name": "Spice Garden",
+    "outlet": "Indiranagar",
+    "lat": "12.9784", "lng": "77.6408",
+}
 
 # canonical product id -> (sku code, base price, gst rate, pack size, pack unit)
 STOCK = {
@@ -141,17 +152,40 @@ STOCK = {
 }
 
 
+def existing_supplier(token):
+    """The supplier this user already owns, if any.
+
+    Re-running the seed is normal — after a migration, after a wipe of one table,
+    or just to top up SKUs. Without this check each run created a *new* supplier
+    organisation for the same person, and the catalog filled up with three
+    identical "Metro Fresh Supplies" competing with each other in search.
+    """
+    me = call("/auth/me", token=token)
+    for membership in me.get("memberships", []):
+        if membership["scopeType"] == "SUPPLIER" and membership["scopeId"]:
+            return call(f"/suppliers/{membership['scopeId']}", token=token)
+    return None
+
+
 def seed_supplier(spec):
     token = login(spec["phone"])
+
+    already = existing_supplier(token)
+    if already is not None:
+        supplier_id = already["id"]
+        store_id = already["stores"][0]["id"]
+        print(f"  {spec['name']}: reusing supplier {supplier_id}, store {store_id}")
+        return stock_store(token, supplier_id, store_id, spec)
+
     created = call("/suppliers", {
         "legalName": spec["name"] + " Pvt Ltd",
         "displayName": spec["name"],
         "firstStore": {
             "name": spec["name"] + " — " + spec["store"],
             "addressLine1": spec["store"] + " Main Road",
-            "city": "Hyderabad",
-            "state": "Telangana",
-            "pincode": "500016",
+            "city": "Bengaluru",
+            "state": "Karnataka",
+            "pincode": "560071",
             "latitude": spec["lat"],
             "longitude": spec["lng"],
             # The platform default is 60 seconds, which is right in production and
@@ -173,6 +207,10 @@ def seed_supplier(spec):
     sql("update supplier_organization set lifecycle_status = 'ACTIVE', "
         f"verification_status = 'VERIFIED' where id = {supplier_id}")
 
+    return stock_store(token, supplier_id, store_id, spec)
+
+
+def stock_store(token, supplier_id, store_id, spec):
     stocked = 0
     for product_id, (code, price, gst, pack_size, pack_unit) in STOCK.items():
         adjusted = f"{float(price) * spec['multiplier']:.2f}"
@@ -196,6 +234,70 @@ def seed_supplier(spec):
     return supplier_id
 
 
+def seed_restaurant():
+    """A restaurant with a located outlet, so the whole journey is walkable."""
+    token = login(RESTAURANT["phone"])
+
+    me = call("/auth/me", token=token)
+    for membership in me.get("memberships", []):
+        if membership["scopeType"] == "RESTAURANT" and membership["scopeId"]:
+            restaurant = call(f"/restaurants/{membership['scopeId']}", token=token)
+            outlet = restaurant["outlets"][0]
+            if outlet.get("latitude") is None:
+                call(f"/outlets/{outlet['id']}", {
+                    "latitude": RESTAURANT["lat"],
+                    "longitude": RESTAURANT["lng"],
+                }, token=token, method="PATCH")
+                print(f"  {restaurant['name']}: located existing outlet {outlet['id']}")
+            else:
+                print(f"  {restaurant['name']}: reusing outlet {outlet['id']}")
+            return
+
+    created = call("/restaurants", {
+        "name": RESTAURANT["name"],
+        "firstOutlet": {
+            "name": RESTAURANT["outlet"],
+            "addressLine1": RESTAURANT["outlet"] + " 100 Feet Road",
+            "city": "Bengaluru",
+            "state": "Karnataka",
+            "pincode": "560038",
+            "latitude": RESTAURANT["lat"],
+            "longitude": RESTAURANT["lng"],
+        },
+    }, token=token)
+    print(f"  {created['name']}: restaurant {created['id']}, outlet {created['outlets'][0]['id']}")
+
+
+OPERATOR_PHONE = "+919876599001"
+
+
+def seed_operator():
+    """A local operations account, so delivery simulation is reachable.
+
+    Doc 06 §11's simulation endpoints need DELIVERY_OPERATE at PLATFORM scope,
+    which no tenant role holds and no local database has anyone in. Without an
+    operator the delivery lifecycle stops at READY_FOR_PICKUP and everything past
+    it — tracking, receiving, rating, disputes — is unreachable outside the Java
+    suite.
+
+    Granted by direct insert because granting a platform role is deliberately not
+    an API a tenant can call. That is the same reason this only ever runs against
+    a local database.
+    """
+    token = login(OPERATOR_PHONE)
+    user_id = call("/auth/me", token=token)["user"]["id"]
+
+    sql(
+        "insert into user_role (user_id, role_id, scope_type, scope_id, status, "
+        "granted_at, created_at, updated_at, version) "
+        "select %d, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0 "
+        "from role r where r.code = 'OPS_ADMIN' "
+        "and not exists (select 1 from user_role ur where ur.user_id = %d "
+        "and ur.role_id = r.id and ur.scope_type = 'PLATFORM')" % (user_id, user_id)
+    )
+    print(f"  operations account {OPERATOR_PHONE} (user {user_id}) — OPS_ADMIN at platform scope")
+
+
 def main():
     print(f"Seeding {API}")
 
@@ -213,6 +315,9 @@ def main():
 
     for spec in SUPPLIERS:
         seed_supplier(spec)
+
+    seed_restaurant()
+    seed_operator()
 
     print("\nDone. Sign in on the app with any number; the OTP is", OTP)
 

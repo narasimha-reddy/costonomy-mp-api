@@ -1636,6 +1636,70 @@ been told nothing.
 
 ---
 
+## D-063 — An applied delivery event writes one timeline row, not two
+**2026-09-15 · Settled**
+
+`DeliveryEventService.apply()` built a `DeliveryEvent`, wrote it through
+`eventStore.record()` with the provider's event id and its disposition, and then
+— at the end of the same method — called `timeline.record()`, which wrote a
+*second* row for the same event: same type, same status, no provider id.
+
+Both rows are marked `APPLIED`, and the timeline read returns everything marked
+`APPLIED`. So a restaurant watching a delivery saw every step twice: driver
+assigned, driver assigned, picked up, picked up.
+
+**Decision: `apply()` publishes, it does not record.** The ledger row is already
+written; what it still needed from `timeline.record()` was the outbox
+publication, and `DeliveryTimeline.publish()` exists for exactly that. Everything
+the platform does of its own accord — requesting a delivery, selecting a
+provider, an ETA change — still goes through `record()`, which is the one place
+that decides what a timeline entry looks like.
+
+**Why no test caught it.** `DeliveryFlowIT` asserted the timeline with
+`containsSubsequence`, which is perfectly happy with duplicates. The new test
+asserts `containsOnlyOnce`. A sequence assertion answers "did these happen in
+this order"; it does not answer "did anything happen twice", and a timeline needs
+both.
+
+---
+
+## D-064 — The web build of the map is a real view, not a placeholder
+**2026-09-15 · Settled**
+
+`react-native-maps` has no web implementation, and the restaurant app is checked
+in a browser on :7001. A `MandiMap.web.tsx` that said "map unavailable" would
+make REST-ORDER-TRACK-01 the one screen nobody could actually look at.
+
+**Decision: the web build renders the same facts without the tiles** — distance
+from the outlet, the driver's coordinates and heading, and whether the fix is
+current. It is explicitly labelled as the web view so nobody mistakes it for the
+shipped experience.
+
+**Doc 06 §8's stale rule is about the data, not the tiles**, so it holds
+identically here: a position older than the freshness threshold is drawn as "last
+known position" and never as a live one. Showing an old fix as current is worse
+than showing none, because the restaurant plans around it.
+
+---
+
+## D-065 — A required header is part of the contract, and gets read like one
+**2026-09-15 · Settled**
+
+`markPreparing` and `markReady` were written as bodyless POSTs. Both endpoints
+require an `Idempotency-Key` **header**, and a missing required header surfaces
+as `MALFORMED_REQUEST` — so a supplier could accept an order and then never move
+it, with an error message that sounded like a client bug in the request body.
+
+Caught by walking the flow, not by a type: a header is invisible to TypeScript.
+
+**Decision:** the same rule as D-061, extended. When writing a client call, read
+the controller method — its `@RequestBody`, its `@PathVariable`, **and its
+`@RequestHeader`**. Four endpoints require the key today (`accept`, `reject`,
+`preparing`, `ready`, plus credit invoice payments); `cancel` takes it optionally.
+Sending one where the server ignores it is harmless, so when in doubt, send it.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 
