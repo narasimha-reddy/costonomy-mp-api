@@ -2248,6 +2248,13 @@ the same thing twice and made the screen read as being about two products. The
 "Currently" card went entirely: its price, pack and GST are each already stated by
 the field that edits them.
 
+**Availability and delisting are rows, not buttons.** Side by side as outlined
+pills they read as equal in weight to Save and to each other, and they are
+neither: marking stock is a daily toggle, delisting takes the listing off the
+market. As rows they have room to say what is true now — "Restaurants can order
+this right now" — which is also where the state the removed "Currently" card used
+to show now lives, stated as a consequence rather than as a chip.
+
 **The save bar is always present and disabled until there is something to save.**
 Appearing only once a field changed made it arrive under the thumb mid-edit and
 pushed the content up as it did — and a supplier who cannot see a save button has
