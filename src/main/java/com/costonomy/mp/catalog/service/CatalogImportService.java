@@ -149,8 +149,39 @@ public class CatalogImportService {
                 errors.add(error("packSize", "INVALID", "Pack size must be greater than zero"));
             }
 
+            // Reported per row and per field, never guessed at (doc 25). A unit
+            // we cannot read is the one error where guessing would be worst: it
+            // decides what a restaurant thinks they are buying.
+            Unit packUnit = null;
             if (isBlank(raw.get("packUnit"))) {
-                errors.add(error("packUnit", "REQUIRED", "Pack unit is required (KG, L, PIECE…)"));
+                errors.add(error("packUnit", "REQUIRED", "Pack unit is required (KG, LTR, PC…)"));
+            } else {
+                packUnit = Unit.parseOrNull(raw.get("packUnit"));
+                if (packUnit == null) {
+                    errors.add(error("packUnit", "INVALID",
+                            "\"%s\" is not a unit we know".formatted(raw.get("packUnit"))));
+                }
+            }
+
+            BigDecimal measureValue = parseDecimal(raw.get("measureValue"));
+            Unit measureUnit = Unit.parseOrNull(raw.get("measureUnit"));
+            if (packUnit != null && packUnit.requiresMeasure()) {
+                if (measureValue == null || measureValue.signum() <= 0) {
+                    errors.add(error("measureValue", "REQUIRED",
+                            "Say what is inside one %s — for example 500".formatted(packUnit)));
+                }
+                if (measureUnit == null) {
+                    errors.add(error("measureUnit", "REQUIRED",
+                            "Pack contents unit is required for %s (GM, KG, ML…)"
+                                    .formatted(packUnit)));
+                } else if (!measureUnit.canMeasure() || measureUnit == packUnit) {
+                    errors.add(error("measureUnit", "INVALID",
+                            "%s cannot measure what is inside a %s".formatted(measureUnit, packUnit)));
+                }
+            } else if (packUnit != null
+                    && (measureValue != null || !isBlank(raw.get("measureUnit")))) {
+                errors.add(error("measureUnit", "INVALID",
+                        "A pack measured in %s already states its amount".formatted(packUnit)));
             }
 
             String availability = normalizeAvailability(raw.get("availability"));
@@ -241,6 +272,8 @@ public class CatalogImportService {
                                 raw.get("brand"),
                                 parseDecimal(raw.get("packSize")),
                                 raw.get("packUnit"),
+                                parseDecimal(raw.get("measureValue")),
+                                raw.get("measureUnit"),
                                 raw.get("imageUrl"),
                                 null,
                                 parseDecimal(raw.get("sellingPrice")),
@@ -257,6 +290,8 @@ public class CatalogImportService {
                                 raw.get("brand"),
                                 parseDecimal(raw.get("packSize")),
                                 raw.get("packUnit"),
+                                parseDecimal(raw.get("measureValue")),
+                                raw.get("measureUnit"),
                                 raw.get("imageUrl"),
                                 parseDecimal(raw.get("sellingPrice")),
                                 parseDecimal(raw.get("gstRate")),

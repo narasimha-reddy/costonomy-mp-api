@@ -45,6 +45,21 @@ public class SupplierSku extends BaseEntity {
     @Column(name = "pack_unit", nullable = false, length = 32)
     private String packUnit;
 
+    /**
+     * How much is inside one pack, when the pack unit does not say.
+     *
+     * <p>"1 PKT" describes a bundle; "1 PKT of 500 GM" describes an amount. Set
+     * for the container units and null for the rest — a SKU packed in KG already
+     * states its amount, and a second statement of the same quantity is a second
+     * chance to disagree with itself. {@code SupplierCatalogService} enforces
+     * both halves of that.
+     */
+    @Column(name = "measure_value", precision = 19, scale = 4)
+    private BigDecimal measureValue;
+
+    @Column(name = "measure_unit", length = 16)
+    private String measureUnit;
+
     @Column(name = "image_url", length = 1000)
     private String imageUrl;
 

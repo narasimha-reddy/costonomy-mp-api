@@ -5,6 +5,7 @@ import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.catalog.domain.SupplierOffer;
 import com.costonomy.mp.catalog.domain.SupplierSku;
+import com.costonomy.mp.catalog.domain.Unit;
 import com.costonomy.mp.catalog.repository.*;
 import com.costonomy.mp.catalog.web.dto.CatalogDtos;
 import com.costonomy.mp.common.audit.AuditService;
@@ -84,7 +85,11 @@ public class SupplierCatalogService {
         sku.setName(request.name());
         sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
         sku.setPackSize(request.packSize());
-        sku.setPackUnit(request.packUnit());
+
+        var pack = Unit.parse(request.packUnit(), "Pack unit");
+        sku.setPackUnit(pack.name());
+        applyMeasure(sku, pack, request.measureValue(), request.measureUnit(), true);
+
         sku.setImageUrl(blankToNull(request.imageUrl()));
 
         try {
@@ -127,7 +132,22 @@ public class SupplierCatalogService {
         if (request.name() != null) sku.setName(request.name());
         if (request.brandName() != null) sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
         if (request.packSize() != null) sku.setPackSize(request.packSize());
-        if (request.packUnit() != null) sku.setPackUnit(request.packUnit());
+        // The pack unit and its measure are validated together even when only one
+        // of them was sent: changing KG to PKT without saying what is in the
+        // packet leaves a SKU that states a bundle and never an amount.
+        if (request.packUnit() != null || request.measureValue() != null
+                || request.measureUnit() != null) {
+            var pack = Unit.parse(
+                    request.packUnit() != null ? request.packUnit() : sku.getPackUnit(),
+                    "Pack unit");
+            sku.setPackUnit(pack.name());
+
+            boolean supplied = request.measureValue() != null || request.measureUnit() != null;
+            applyMeasure(sku, pack,
+                    request.measureValue() != null ? request.measureValue() : sku.getMeasureValue(),
+                    request.measureUnit() != null ? request.measureUnit() : sku.getMeasureUnit(),
+                    supplied);
+        }
         // blankToNull, as for skuCode: an empty string is how a supplier takes
         // their own photo back down, and it has to store as absent. Stored as ""
         // the field is present-but-empty, and every client falling back with
@@ -263,7 +283,9 @@ public class SupplierCatalogService {
         return new CatalogDtos.SkuResponse(
                 sku.getId(), sku.getSupplierStoreId(), sku.getCanonicalProductId(), productName,
                 categoryId, sku.getSkuCode(), sku.getName(), brandName,
-                sku.getPackSize(), sku.getPackUnit(), sku.getImageUrl(), productImage,
+                sku.getPackSize(), sku.getPackUnit(),
+                sku.getMeasureValue(), sku.getMeasureUnit(),
+                sku.getImageUrl(), productImage,
                 sku.getStatus(),
                 offer.map(SupplierOffer::getSellingPrice).orElse(null),
                 offer.map(SupplierOffer::getGstRate).orElse(null),
@@ -285,6 +307,57 @@ public class SupplierCatalogService {
                 .filter(sku -> sku.getSkuCode() != null)
                 .collect(java.util.stream.Collectors.toMap(
                         SupplierSku::getSkuCode, sku -> sku, (a, b) -> a));
+    }
+
+    /**
+     * Set what is inside a pack, or refuse to.
+     *
+     * <p>Both directions are enforced, and the second is the one easy to leave
+     * out. A container with no measure is a SKU that says how the goods are
+     * bundled and never how much a restaurant is buying. A measure on a unit that
+     * is already an amount — "1 KG of 500 GM" — is two statements of one quantity,
+     * which is two chances to disagree, and the disagreement would be discovered
+     * by whoever received the wrong weight.
+     */
+    private void applyMeasure(SupplierSku sku, Unit pack,
+                              BigDecimal measureValue, String measureUnit, boolean supplied) {
+
+        if (!pack.requiresMeasure()) {
+            // Only object when the caller actually asked for a measure. A SKU
+            // moving from PKT to KG still *holds* 500 GM, and treating that
+            // leftover as a contradiction would refuse an edit nobody got wrong —
+            // the right answer is to clear it, because a stale 500 GM on a SKU now
+            // sold by the kilo is worse than either.
+            if (supplied && (measureValue != null
+                    || (measureUnit != null && !measureUnit.isBlank()))) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        ("A pack measured in %s already states its amount, so it cannot also "
+                                + "carry pack contents.").formatted(pack));
+            }
+            sku.setMeasureValue(null);
+            sku.setMeasureUnit(null);
+            return;
+        }
+
+        if (measureValue == null || measureUnit == null || measureUnit.isBlank()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Say what is inside one %s — for example 500 GM.".formatted(pack));
+        }
+
+        var measure = Unit.parse(measureUnit, "Pack contents unit");
+        if (!measure.canMeasure()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "%s cannot measure what is inside a pack. Use one of: %s."
+                            .formatted(measure, Unit.measureUnits()));
+        }
+        if (measure == pack) {
+            // "1 PKT of 3 PKT" is a riddle, not a quantity.
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "A %s cannot be measured in %s.".formatted(pack, measure));
+        }
+
+        sku.setMeasureValue(measureValue);
+        sku.setMeasureUnit(measure.name());
     }
 
     private static String blankToNull(String value) {

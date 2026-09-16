@@ -58,6 +58,23 @@ public final class CatalogDtos {
             Integer preparationMinutes) {
     }
 
+    /**
+     * The unit vocabulary, served rather than hard-coded in each client.
+     *
+     * <p>D-079 is the argument for this endpoint existing: a client that keeps its
+     * own copy of a server vocabulary compiles perfectly while being wrong, and
+     * nothing notices until a comparison silently stops matching. A list the app
+     * fetches cannot drift from the enum that validates against it.
+     *
+     * @param requiresMeasure the pack units that must also state their contents
+     * @param measureUnits    what those contents may be measured in
+     */
+    public record UnitsResponse(
+            List<String> packUnits,
+            List<String> requiresMeasure,
+            List<String> measureUnits) {
+    }
+
     // ── Supplier-side SKU management ─────────────────────────────────────
 
     public record CreateSkuRequest(
@@ -70,6 +87,15 @@ public final class CatalogDtos {
             @DecimalMin(value = "0.0001", message = "Pack size must be greater than zero")
             BigDecimal packSize,
             @NotBlank(message = "Enter the pack unit") @Size(max = 32) String packUnit,
+            /**
+             * What is inside one pack, when {@code packUnit} does not say.
+             * <p>Required for PKT, CASE, BULK, TIN and BUNDLE — "1 PKT" is a
+             * bundle, not an amount. Refused for the rest, because a SKU packed
+             * in KG already states its amount once.
+             */
+            @DecimalMin(value = "0.0001", message = "Pack contents must be greater than zero")
+            BigDecimal measureValue,
+            @Size(max = 16) String measureUnit,
             @Size(max = 1000) String imageUrl,
             @NotNull(message = "Enter the price")
             @DecimalMin(value = "0.0000", message = "Price can't be negative")
@@ -96,6 +122,8 @@ public final class CatalogDtos {
             @Size(max = 200) String brandName,
             @DecimalMin(value = "0.0001") BigDecimal packSize,
             @Size(max = 32) String packUnit,
+            @DecimalMin(value = "0.0001") BigDecimal measureValue,
+            @Size(max = 16) String measureUnit,
             @Size(max = 1000) String imageUrl,
             @Pattern(regexp = "ACTIVE|INACTIVE") String status,
             @DecimalMin(value = "0.0000") BigDecimal sellingPrice,
@@ -123,6 +151,9 @@ public final class CatalogDtos {
             String brandName,
             BigDecimal packSize,
             String packUnit,
+            /** What is inside one pack, or null when the pack unit already says. */
+            BigDecimal measureValue,
+            String measureUnit,
             /**
              * This SKU's own picture — the supplier's pack, as they sell it.
              * <p>Usually null. Most suppliers never photograph their packs, which

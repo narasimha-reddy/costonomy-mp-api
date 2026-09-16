@@ -2264,6 +2264,88 @@ price).
 
 ---
 
+## D-082 — Units are a closed vocabulary, and a container states its contents
+**2026-09-16 · Settled**
+
+`base_unit` and `pack_unit` were `VARCHAR(32)` with no validation anywhere: no
+CHECK, no enum, no pattern, no normalisation. The only vocabulary written down was
+five strings hard-coded in the mobile create form — and it was wrong, offering
+`BOX` and `DOZEN` while omitting `GM`, `LTR` and `PC`.
+
+**Decision: `Unit` is an enum of fifteen**, and it is the only thing that decides
+what a unit is.
+
+```
+GM KG OZ LB · ML LTR · PC DOZEN PAIR · BOTTLE PKT CASE BULK TIN BUNDLE
+```
+
+This is a comparison-correctness rule, not a tidiness one. Two suppliers' paneer
+map to one canonical product so a restaurant can hold their prices side by side,
+and that only means anything if both quote the same measure. Free text could not
+carry it: `KG`, `Kg`, `kg` and `kgs` are four units to a database and one to a
+person, and nothing would have noticed until a restaurant compared two prices that
+were not comparable.
+
+**The enum, not a CHECK constraint.** Adding a unit should be a code change with
+tests rather than a migration, the column stays readable in a dump, and this
+follows D-009 and every status column already here.
+
+### A pack unit is not always a measure
+"1 PKT" says how goods are bundled and nothing about how much is being bought.
+So `supplier_sku` gains `measure_value` and `measure_unit`, and the rule runs both
+ways:
+
+- **PKT, CASE, BULK, TIN, BUNDLE must carry a measure.** Without one, the listing
+  states a bundle and never an amount, and no comparison can use it.
+- **Everything else must not.** "1 KG of 500 GM" is two statements of one
+  quantity, which is two chances to disagree — and the disagreement is discovered
+  by whoever receives the wrong weight.
+
+`BOTTLE` is deliberately on the second list even though it is a container: "1
+BOTTLE of 1 LTR" is worth saying, but a bottle is also a unit people quote alone.
+Contents are measured in `GM KG ML LTR PC BOTTLE PKT` — a subset, because a
+measure has to be something a person can add up. "1 CASE of 24 PKT" is useful; "1
+CASE of 2 BULK" is a riddle. A unit may not measure itself.
+
+### Two things the tests forced
+**Carried-forward is not supplied.** The first update path merged the request over
+the stored values and then validated the result, so moving a SKU from PKT to KG
+was refused: the leftover 500 GM looked like a contradiction the caller had
+written. It is not — the right answer is to clear it, because a stale 500 GM on a
+SKU now sold by the kilo is worse than either. The validator now knows which
+values the caller actually sent.
+
+**Changing only `packUnit` still validates the measure.** The dangerous edit is
+KG → PKT with nothing else in the request: a check that looked at the request
+alone would see no measure to object to and store a container with no contents.
+
+### Legacy spellings
+`L` and `PIECE` predate the vocabulary. V20 rewrites them to `LTR` and `PC`
+everywhere, **including on order, procurement and receiving lines**. Those are
+transactional snapshots, and the rule against rewriting a snapshot is about
+*values* — a price, a quantity, a total — because those must reconstruct what was
+agreed. A unit's spelling is not a value: `L` and `LTR` are the same litre.
+Leaving them would make a past order render `L` while a new one renders `LTR`, and
+would break any grouping by unit across time.
+
+`Unit.parse` also accepts the spellings people type — `Kg`, `litre`, `pcs`,
+`packet`, `carton` — because an import that rejects a supplier's whole file over
+`Kg` is an import nobody uses. Leniency at the edge, one spelling in the database.
+
+### The vocabulary is served, not copied
+`GET /api/v1/units` returns the pack units, which of them require a measure, and
+what a measure may be. D-079 is the argument: a client holding its own copy of a
+server vocabulary compiles perfectly while being wrong, and nothing notices until
+a comparison silently stops matching. The mobile list is gone.
+
+### Not settled
+Nothing checks that a SKU's pack unit is *compatible* with its canonical product's
+base unit — a supplier can still list Paneer in `LTR`. That needs a dimension on
+each unit (weight, volume, count) and a rule about which conversions are
+meaningful, and it is a larger decision than this one.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

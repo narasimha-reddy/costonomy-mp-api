@@ -1,6 +1,7 @@
 package com.costonomy.mp.catalog.web;
 
 import com.costonomy.mp.catalog.service.CatalogQueryService;
+import com.costonomy.mp.catalog.domain.Unit;
 import com.costonomy.mp.catalog.web.dto.CatalogDtos;
 import com.costonomy.mp.common.api.ApiResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -31,6 +32,24 @@ public class CatalogController {
     @Operation(summary = "Brands")
     public ApiResponse<List<CatalogDtos.BrandResponse>> brands() {
         return ApiResponse.ok(catalog.listBrands());
+    }
+
+    @GetMapping("/units")
+    @Operation(
+            summary = "The unit vocabulary",
+            description = """
+                    Every unit a canonical product or a SKU may be sold in, which of
+                    those are containers that must also state their contents, and what
+                    those contents may be measured in.
+
+                    Fetch it rather than hard-coding it: a client holding its own copy
+                    of a server vocabulary compiles perfectly while being wrong.
+                    """)
+    public ApiResponse<CatalogDtos.UnitsResponse> units() {
+        return ApiResponse.ok(new CatalogDtos.UnitsResponse(
+                Unit.packUnits().stream().map(Enum::name).toList(),
+                Unit.packUnits().stream().filter(Unit::requiresMeasure).map(Enum::name).toList(),
+                Unit.measureUnits().stream().map(Enum::name).toList()));
     }
 
     @GetMapping("/products")
