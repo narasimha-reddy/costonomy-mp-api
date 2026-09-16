@@ -48,6 +48,7 @@ class SkuMeasureIT extends AbstractIntegrationTest {
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
         jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
                 + "verification_status = 'VERIFIED' where id = ?", created.get("id").asLong());
+        TestCatalog.tradesAroundTheClock(jdbc, created.get("id").asLong());
         storeId = created.get("stores").get(0).get("id").asLong();
         productId = TestCatalog.freshProduct(jdbc, "turmeric");
     }

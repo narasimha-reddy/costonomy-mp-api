@@ -85,6 +85,7 @@ class ProcurementIT extends AbstractIntegrationTest {
         long supplierId = created.get("id").asLong();
         jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
                 + "verification_status = 'VERIFIED' where id = ?", supplierId);
+        TestCatalog.tradesAroundTheClock(jdbc, supplierId);
 
         return new Seller(token, supplierId, created.get("stores").get(0).get("id").asLong());
     }
@@ -474,9 +475,12 @@ class ProcurementIT extends AbstractIntegrationTest {
             var one = newSeller("ABC Foods");
             var two = newSeller("XYZ Traders");
 
-            // Different SLAs, so the snapshot is visibly per-store.
-            api.patchStatus(two.token(), "/api/v1/supplier-stores/" + two.storeId(),
-                    Map.of("responseSlaSeconds", 120));
+            // Different SLAs, so the snapshot is visibly per-store. Arranged
+            // directly: a supplier cannot set their own answer window any more —
+            // it is an operations setting (doc 13) — and this test is about the
+            // order splitting, not about who may change an SLA.
+            jdbc.update("update supplier_store set response_sla_seconds = 120 where id = ?",
+                    two.storeId());
 
             addToCart(buyer, stockOffer(one, TestCatalog.freshProduct(jdbc, "p1"), "A", "100"), 2);
             long cartId = addToCart(buyer,

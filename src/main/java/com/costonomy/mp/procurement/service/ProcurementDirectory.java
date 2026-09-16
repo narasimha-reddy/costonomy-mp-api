@@ -4,7 +4,10 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import com.costonomy.mp.supplier.domain.OperatingHours;
+import com.costonomy.mp.supplier.domain.OperatingHoursCodec;
 import java.math.BigDecimal;
+import java.time.ZonedDateTime;
 import java.util.*;
 
 /**
@@ -22,8 +25,14 @@ public class ProcurementDirectory {
     private final JdbcTemplate jdbc;
 
     /**
-     * @param tradeable store ACTIVE <em>and</em> organisation ACTIVE — doc 03 §15
-     *                  only permits an order against a store that can accept one
+     * @param tradeable store ACTIVE, organisation ACTIVE <em>and</em> the store
+     *                  open right now — doc 03 §15 only permits an order against a
+     *                  store that can accept one, and a shut store cannot. An order
+     *                  placed at midnight would otherwise count down against a
+     *                  window nobody was ever going to answer, and the restaurant
+     *                  would wait the full thirty minutes to learn what was already
+     *                  knowable when they tapped.
+     * @param openNow   why {@code tradeable} is false, when that is the reason
      */
     public record StoreInfo(
             Long storeId,
@@ -33,7 +42,9 @@ public class ProcurementDirectory {
             Integer responseSlaSeconds,
             /** The store's own position, so a caller can measure the leg to an outlet. */
             BigDecimal latitude,
-            BigDecimal longitude) {
+            BigDecimal longitude,
+            boolean openNow,
+            String opensAt) {
     }
 
     public Map<Long, StoreInfo> stores(List<Long> storeIds) {
@@ -45,7 +56,8 @@ public class ProcurementDirectory {
         Map<Long, StoreInfo> result = new HashMap<>();
         jdbc.query("""
                 select s.id, s.name, o.display_name, s.status, o.lifecycle_status,
-                       s.response_sla_seconds, s.latitude, s.longitude
+                       s.response_sla_seconds, s.latitude, s.longitude,
+                       s.operating_hours_json
                   from supplier_store s
                   join supplier_organization o on o.id = s.supplier_organization_id
                  where s.id in (%s)
@@ -54,10 +66,15 @@ public class ProcurementDirectory {
                 // which makes the lambda ambiguous between ResultSetExtractor and
                 // RowCallbackHandler.
                 rs -> {
+                    // Absent hours are the defaults, never "closed".
+                    var hours = OperatingHoursCodec.read(rs.getString(9));
+                    boolean open = hours.isOpenAt(ZonedDateTime.now(OperatingHours.ZONE));
                     result.put(rs.getLong(1), new StoreInfo(
                             rs.getLong(1), rs.getString(2), rs.getString(3),
-                            "ACTIVE".equals(rs.getString(4)) && "ACTIVE".equals(rs.getString(5)),
-                            rs.getInt(6), rs.getBigDecimal(7), rs.getBigDecimal(8)));
+                            "ACTIVE".equals(rs.getString(4)) && "ACTIVE".equals(rs.getString(5))
+                                    && open,
+                            rs.getInt(6), rs.getBigDecimal(7), rs.getBigDecimal(8),
+                            open, hours.opensAt().toString()));
                 },
                 storeIds.toArray());
         return result;

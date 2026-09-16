@@ -98,6 +98,7 @@ class SupplierAcceptanceIT extends AbstractIntegrationTest {
 
         jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
                 + "verification_status = 'VERIFIED' where id = ?", created.get("id").asLong());
+        TestCatalog.tradesAroundTheClock(jdbc, created.get("id").asLong());
 
         return new Seller(token, created.get("stores").get(0).get("id").asLong(), userId);
     }

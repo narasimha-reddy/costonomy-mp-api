@@ -65,6 +65,7 @@ class CatalogIT extends AbstractIntegrationTest {
         // covered by TenantIsolationIT, and this suite is about the catalog.
         jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
                 + "verification_status = 'VERIFIED' where id = ?", supplierId);
+        TestCatalog.tradesAroundTheClock(jdbc, supplierId);
 
         return new Supplier(token, supplierId, storeId);
     }

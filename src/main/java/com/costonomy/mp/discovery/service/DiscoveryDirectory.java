@@ -5,7 +5,10 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import com.costonomy.mp.supplier.domain.OperatingHours;
+import com.costonomy.mp.supplier.domain.OperatingHoursCodec;
 import java.math.BigDecimal;
+import java.time.ZonedDateTime;
 import java.util.*;
 
 /**
@@ -44,7 +47,16 @@ public class DiscoveryDirectory {
             Integer responseSlaSeconds,
             Integer preparationMinutes,
             BigDecimal maxDeliveryRadiusKm,
-            Set<String> serviceablePincodes) {
+            Set<String> serviceablePincodes,
+            /**
+             * Whether the store is trading right now.
+             * <p>Separate from {@code tradeable}, which is about the store and the
+             * organisation being active at all. A store can be perfectly active
+             * and simply shut at 11pm, and a restaurant should be told which.
+             */
+            boolean openNow,
+            /** {@code HH:mm} the store next opens, for the "opens at" label. */
+            String opensAt) {
     }
 
     public Optional<OutletInfo> outlet(Long outletId) {
@@ -70,7 +82,8 @@ public class DiscoveryDirectory {
                 select s.id, s.name, o.display_name, s.status, o.lifecycle_status,
                        s.latitude, s.longitude, s.city,
                        s.response_sla_seconds, s.preparation_minutes,
-                       d.max_delivery_radius_km, d.serviceable_pincodes_json
+                       d.max_delivery_radius_km, d.serviceable_pincodes_json,
+                       s.operating_hours_json
                   from supplier_store s
                   join supplier_organization o on o.id = s.supplier_organization_id
                   left join supplier_delivery_policy d on d.supplier_store_id = s.id
@@ -79,11 +92,16 @@ public class DiscoveryDirectory {
                 rs -> {
                     boolean tradeable = "ACTIVE".equals(rs.getString(4))
                             && "ACTIVE".equals(rs.getString(5));
+                    // Absent hours are the defaults, never "closed": every store
+                    // predating the field would otherwise vanish from search.
+                    var hours = OperatingHoursCodec.read(rs.getString(13));
                     result.put(rs.getLong(1), new StoreInfo(
                             rs.getLong(1), rs.getString(2), rs.getString(3), tradeable,
                             rs.getBigDecimal(6), rs.getBigDecimal(7), rs.getString(8),
                             rs.getInt(9), rs.getInt(10),
-                            rs.getBigDecimal(11), parsePincodes(rs.getString(12))));
+                            rs.getBigDecimal(11), parsePincodes(rs.getString(12)),
+                            hours.isOpenAt(ZonedDateTime.now(OperatingHours.ZONE)),
+                            hours.opensAt().toString()));
                 },
                 storeIds.toArray());
         return result;

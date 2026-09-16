@@ -263,8 +263,14 @@ public class ProcurementService {
             var store = stores.get(item.getSupplierStoreId());
             if (store == null || !store.tradeable()) {
                 blockers.add(blocker(item, productNames, ErrorCode.SUPPLIER_OFFLINE.name(),
-                        "%s isn't accepting orders right now.".formatted(
-                                store == null ? "This supplier" : store.supplierName())));
+                        // Say which of the two it is. "Not accepting orders" sends
+                        // someone looking for a problem when the answer is simply
+                        // that the shop is shut and opens in the morning.
+                        store != null && !store.openNow()
+                                ? "%s is closed. They open at %s.".formatted(
+                                        store.supplierName(), store.opensAt())
+                                : "%s isn't accepting orders right now.".formatted(
+                                        store == null ? "This supplier" : store.supplierName())));
                 continue;
             }
 

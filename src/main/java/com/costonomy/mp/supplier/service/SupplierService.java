@@ -161,9 +161,7 @@ public class SupplierService {
         store.setLongitude(request.longitude());
         store.setContactName(request.contactName());
         store.setContactPhone(request.contactPhone());
-        if (request.responseSlaSeconds() != null) {
-            store.setResponseSlaSeconds(request.responseSlaSeconds());
-        }
+        applyHours(store, request.operatingHours());
         if (request.preparationMinutes() != null) {
             store.setPreparationMinutes(request.preparationMinutes());
         }
@@ -205,9 +203,7 @@ public class SupplierService {
         if (request.longitude() != null) store.setLongitude(request.longitude());
         if (request.contactName() != null) store.setContactName(request.contactName());
         if (request.contactPhone() != null) store.setContactPhone(request.contactPhone());
-        if (request.responseSlaSeconds() != null) {
-            store.setResponseSlaSeconds(request.responseSlaSeconds());
-        }
+        applyHours(store, request.operatingHours());
         if (request.preparationMinutes() != null) {
             store.setPreparationMinutes(request.preparationMinutes());
         }
@@ -475,12 +471,46 @@ public class SupplierService {
     }
 
     private static SupplierDtos.StoreResponse toStoreResponse(SupplierStore store) {
+        var hours = OperatingHoursCodec.read(store.getOperatingHoursJson());
         return new SupplierDtos.StoreResponse(
                 store.getId(), store.getSupplierOrganizationId(), store.getName(),
-                store.getAddressLine1(), store.getCity(), store.getState(), store.getPincode(),
+                store.getAddressLine1(), store.getAddressLine2(),
+                store.getCity(), store.getState(), store.getPincode(),
                 store.getLatitude(), store.getLongitude(), store.getContactName(),
-                store.getContactPhone(), store.getResponseSlaSeconds(),
+                store.getContactPhone(),
+                new SupplierDtos.OperatingHoursPayload(
+                        hours.dayNames(),
+                        hours.opensAt().toString(),
+                        hours.closesAt().toString()),
+                store.getResponseSlaSeconds(),
                 store.getPreparationMinutes(), store.getStatus());
+    }
+
+    /**
+     * Apply a submitted set of hours, refusing one that says nothing.
+     *
+     * <p>An empty day list is the shape a client sends when someone unticks every
+     * day. Stored, it would read as the defaults on the way back out — so the
+     * store would look open all week while its owner believed it closed. Refusing
+     * is the only answer that cannot silently disagree with them.
+     */
+    private static void applyHours(SupplierStore store,
+                                   SupplierDtos.OperatingHoursPayload payload) {
+        if (payload == null) {
+            return;
+        }
+        if (payload.days() == null || payload.days().isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Choose at least one day you trade on. To stop taking orders, "
+                            + "set the store offline instead.");
+        }
+        var hours = OperatingHoursCodec.fromParts(
+                payload.days(), payload.opensAt(), payload.closesAt());
+        if (hours.days().size() != payload.days().size()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Days must be MONDAY through SUNDAY.");
+        }
+        store.setOperatingHoursJson(OperatingHoursCodec.write(hours));
     }
 
     private static SupplierDtos.VerificationResponse toVerificationResponse(SupplierVerification v) {

@@ -43,4 +43,28 @@ public final class TestCatalog {
         return jdbc.queryForObject(
                 "select id from canonical_product where normalized_name = ?", Long.class, normalized);
     }
+
+    /**
+     * Make a store trade around the clock.
+     *
+     * <p>Every test that places an order needs this, and the reason is worth
+     * stating once rather than ten times: a store's default hours are 10:00 to
+     * 21:00, so without it the order suite passes in the afternoon and fails at
+     * night. That is the worst kind of red — it arrives on a morning when nobody
+     * changed anything, and it points at whichever test happened to run.
+     *
+     * <p>It is arrangement, in the same class as the {@code lifecycle_status =
+     * ACTIVE} these helpers already set: the test is about orders, and it is
+     * saying the shop is open.
+     */
+    public static void tradesAroundTheClock(JdbcTemplate jdbc, long supplierOrganizationId) {
+        jdbc.update("""
+                update supplier_store
+                   set operating_hours_json = ?
+                 where supplier_organization_id = ?
+                """,
+                "{\"days\":[\"MONDAY\",\"TUESDAY\",\"WEDNESDAY\",\"THURSDAY\",\"FRIDAY\","
+                        + "\"SATURDAY\",\"SUNDAY\"],\"opensAt\":\"00:00\",\"closesAt\":\"00:00\"}",
+                supplierOrganizationId);
+    }
 }

@@ -221,6 +221,45 @@ public class AdminModerationService {
                 reason);
     }
 
+    /**
+     * Set a store's answer window. Doc 13, doc 09 §17.
+     *
+     * <p>An operations decision, not a supplier's. A supplier who could set their
+     * own window could set it to an hour and never be late again, and "responds
+     * quickly" would stop meaning anything to compare across the marketplace —
+     * the number is also what a restaurant's countdown is measured against, so it
+     * belongs to whoever is accountable for that promise rather than to the party
+     * being held to it.
+     *
+     * <p>Live orders keep the window they were created with: the deadline is
+     * snapshotted onto the order, and doc 13 is explicit that changing an SLA must
+     * not move a countdown already running.
+     */
+    public void setResponseSla(Long actorId, Long storeId, int seconds, String reason) {
+        accessControl.require(actorId, Permissions.CATALOG_MODERATE, ScopeType.PLATFORM, null);
+
+        if (seconds < 10 || seconds > 86_400) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "The answer window must be between 10 seconds and 24 hours.");
+        }
+
+        var rows = jdbc.queryForList(
+                "select response_sla_seconds from supplier_store where id = ?",
+                Integer.class, storeId);
+        if (rows.isEmpty()) {
+            throw new NotFoundException("SupplierStore", storeId);
+        }
+
+        jdbc.update("""
+                update supplier_store
+                   set response_sla_seconds = ?, version = version + 1, updated_at = now(6)
+                 where id = ?
+                """, seconds, storeId);
+
+        auditService.record(actorId, null, "SUPPLIER_STORE_SLA_CHANGED", "SUPPLIER_STORE",
+                storeId, String.valueOf(rows.get(0)), String.valueOf(seconds), reason, "ADMIN");
+    }
+
     // ── Disputes ─────────────────────────────────────────────────────────
 
     /**

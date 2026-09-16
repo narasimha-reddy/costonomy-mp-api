@@ -95,7 +95,11 @@ public class ProcurementSubmitter {
                         "Supplier store %d stopped accepting orders".formatted(item.getSupplierStoreId()),
                         actorId);
                 throw new BusinessException(ErrorCode.SUPPLIER_OFFLINE,
-                        "A supplier in your order stopped accepting orders. Please review and try again.");
+                        store != null && !store.openNow()
+                                ? "%s closed while you were ordering. They open at %s."
+                                        .formatted(store.supplierName(), store.opensAt())
+                                : "A supplier in your order stopped accepting orders. "
+                                        + "Please review and try again.");
             }
         }
 

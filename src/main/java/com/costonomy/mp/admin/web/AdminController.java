@@ -124,6 +124,24 @@ public class AdminController {
         return ApiResponse.ok(Map.of("updated", true));
     }
 
+    @PutMapping("/supplier-stores/{id}/response-sla")
+    @Operation(summary = "Set a store's answer window",
+            description = """
+                    Seconds a supplier has to answer an order. Not a supplier setting:
+                    one who could set their own window could set it to an hour and never
+                    be late, and "responds quickly" would stop being comparable.
+
+                    Orders already counting down keep the window they were created with.
+                    """)
+    public ApiResponse<Map<String, Object>> setResponseSla(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> request) {
+        int seconds = Integer.parseInt(String.valueOf(request.get("responseSlaSeconds")));
+        moderation.setResponseSla(ActorContext.requireUserId(), id, seconds,
+                String.valueOf(request.getOrDefault("reason", "Operations change")));
+        return ApiResponse.ok(Map.of("responseSlaSeconds", seconds));
+    }
+
     // ── Orders ───────────────────────────────────────────────────────────
 
     @GetMapping("/orders")

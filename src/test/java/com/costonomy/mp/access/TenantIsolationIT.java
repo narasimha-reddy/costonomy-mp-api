@@ -206,10 +206,14 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             createSupplier(supplierB, "XYZ Traders");
 
             assertThat(api.getStatus(supplierB, "/api/v1/supplier-stores/" + storeA)).isEqualTo(404);
-            // The SLA is commercially significant — a competitor lengthening it
-            // would make that store lose orders to timeouts.
+            // Denial is 404, not 403: a competitor must not be able to learn which
+            // store ids exist by reading the status code (doc 09 §3). The patch
+            // carries an ordinary field — the answer window used to be here and is
+            // now an operations setting, so sending it would be refused as a
+            // malformed body before the scope check ever ran, and this test would
+            // pass for the wrong reason.
             assertThat(api.patchStatus(supplierB, "/api/v1/supplier-stores/" + storeA,
-                    Map.of("responseSlaSeconds", 3600))).isEqualTo(404);
+                    Map.of("name", "Renamed by a competitor"))).isEqualTo(404);
         }
 
         @Test

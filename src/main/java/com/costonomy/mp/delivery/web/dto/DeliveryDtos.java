@@ -5,6 +5,8 @@ import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.DecimalMax;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -102,5 +104,30 @@ public final class DeliveryDtos {
             BigDecimal latitude,
             BigDecimal longitude,
             Integer etaMinutes) {
+    }
+
+    // ── Supplier delivery policy ─────────────────────────────────────────
+
+    public record DeliveryPolicyResponse(
+            Long supplierStoreId,
+            boolean ownDeliveryEnabled,
+            boolean costonomyDeliveryEnabled,
+            BigDecimal ownDeliveryFee,
+            /** Null means no minimum. */
+            BigDecimal ownDeliveryMinOrderValue,
+            /** Null means no limit beyond the platform's own serviceability. */
+            BigDecimal maxDeliveryRadiusKm) {
+    }
+
+    public record UpdateDeliveryPolicyRequest(
+            Boolean ownDeliveryEnabled,
+            Boolean costonomyDeliveryEnabled,
+            @DecimalMin(value = "0.0", message = "A delivery fee can't be negative")
+            BigDecimal ownDeliveryFee,
+            @DecimalMin(value = "0.0", message = "A minimum order value can't be negative")
+            BigDecimal ownDeliveryMinOrderValue,
+            @DecimalMin(value = "0.1", message = "A delivery radius must be at least 0.1 km")
+            @DecimalMax(value = "500.0", message = "A delivery radius of more than 500 km is not a radius")
+            BigDecimal maxDeliveryRadiusKm) {
     }
 }

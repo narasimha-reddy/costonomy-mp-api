@@ -2418,6 +2418,90 @@ from the client's switch, which is the mildest version of the same problem.
 
 ---
 
+## D-084 — A store says when it trades, and the answer window is not its to set
+**2026-09-16 · Settled**
+
+The store settings screen edited a name, a street line and a prep time. Address,
+PIN code, coordinates, trading hours and both policies were unreachable or
+absent — a supplier could not say when they were open or how they delivered, and
+the marketplace had no way to know either.
+
+### Hours are a trading rule, not a display preference
+`supplier_store.operating_hours_json` had existed since V4 and nothing read it.
+It now decides whether an order may be placed at all, because a shut store cannot
+answer one: an order placed at midnight counts down against a window nobody is
+there to answer, and the restaurant waits the full thirty minutes to learn what
+was knowable when they tapped.
+
+**A closed store is shown, marked closed, and not orderable.** Hiding it would be
+simpler and worse — a supplier would look *gone* at 9pm and their catalogue
+unreachable until morning. The blocker names the reason and the opening time:
+"Metro Fresh Supplies is closed. They open at 03:00."
+
+**Defaults are every day, 10:00–21:00, and absent means the defaults** rather than
+"closed". Unreadable JSON falls back the same way: one malformed row must not
+remove a supplier from the marketplace with nothing to say why.
+
+**Unticking every day is refused.** It reads as "closed forever", but no days is
+how the server spells no answer, so it falls back to the defaults — and the store
+would look open all week to everyone except its owner. Going offline is the
+control for that, and the message says so.
+
+### The answer window belongs to operations
+A supplier who could set their own window could set it to an hour and never be
+late again, and "responds quickly" would stop meaning anything to compare across
+the marketplace. It is also the number a restaurant's countdown is measured
+against, so it belongs to whoever is accountable for that promise rather than to
+the party being held to it.
+
+Removed from `CreateStoreRequest` and `UpdateStoreRequest`, still returned by
+`StoreResponse` — a number you are judged by should be visible — and settable at
+`PUT /admin/supplier-stores/{id}/response-sla` under `CATALOG_MODERATE` at
+`PLATFORM`, audited. Live orders keep the window they were created with; doc 13
+is explicit that changing an SLA must not move a countdown already running.
+
+**Note for clients:** Jackson rejects unknown properties, so sending
+`responseSlaSeconds` is now a 400 rather than a silent ignore. That is the better
+failure — an attempt to change a protected setting should not look like success —
+but it breaks an older client rather than degrading it.
+
+### Both policies became reachable
+`supplier_delivery_policy` had no endpoint at all: the policy decided how every
+order shipped and no supplier could read or change it. `GET`/`PUT
+/supplier-stores/{id}/delivery-policy` now exist. **Turning both delivery modes
+off is refused** — that is not a policy, it is a store nobody can buy from, and it
+would otherwise surface at checkout as "no delivery partner" rather than as the
+setting that caused it.
+
+### The screen
+A list, not a form. One expanding card meant a supplier scanning for "which store
+is offline" had to read a form to find out. Each store is a summary row that opens
+its own screen of five sections, with Save and Cancel in a sticky footer —
+present always, disabled until something changes, because a form whose save button
+appears only once you have typed gives no sign it saves at all.
+
+### What this broke, and why it mattered
+**The suite became time-dependent.** Eleven ITs create a store and place an order
+against it, and with a 10:00–21:00 default every one of them would fail between
+9pm and 10am. It passed first time only because the run happened at 19:22 — the
+worst kind of red, arriving on a morning when nobody changed anything and pointing
+at whichever test ran. `TestCatalog.tradesAroundTheClock` now says the shop is
+open, beside the `lifecycle_status = ACTIVE` those helpers already set.
+
+**A tenant-isolation test nearly passed for the wrong reason.**
+`foreignStoreIsUnreachable` asserts 404 rather than 403 so store ids cannot be
+enumerated (doc 09 §3). It began returning **400**, because its patch body carried
+the now-removed SLA field and an unknown property is refused as malformed before
+the scope check runs. The isolation held; the test had stopped exercising it.
+
+### Not settled
+Defaulting *unset* hours to 10:00–21:00 changes the behaviour of stores already in
+the database, not only new ones: every existing store stops trading at 9pm the day
+this ships. The alternative — unset means unknown, keep trading, and only new
+stores get the default written — is a smaller blast radius and a weaker promise.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

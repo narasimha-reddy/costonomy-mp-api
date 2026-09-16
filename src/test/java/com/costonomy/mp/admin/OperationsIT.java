@@ -100,6 +100,7 @@ class OperationsIT extends AbstractIntegrationTest {
         long supplierId = created.get("id").asLong();
         jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
                 + "verification_status = 'VERIFIED' where id = ?", supplierId);
+        TestCatalog.tradesAroundTheClock(jdbc, supplierId);
         return new Seller(token, supplierId, created.get("stores").get(0).get("id").asLong());
     }
 

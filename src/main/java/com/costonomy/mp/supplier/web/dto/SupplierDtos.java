@@ -48,6 +48,18 @@ public final class SupplierDtos {
             List<StoreResponse> stores) {
     }
 
+    /**
+     * When a store trades. Day names and {@code HH:mm}, the store's local time.
+     *
+     * <p>Absent means the defaults — every day, 10:00 to 21:00 — never "closed".
+     * A store that has never opened this screen must still be findable.
+     */
+    public record OperatingHoursPayload(
+            List<String> days,
+            String opensAt,
+            String closesAt) {
+    }
+
     public record CreateStoreRequest(
             @NotBlank(message = "Enter the store name") @Size(max = 200) String name,
             @NotBlank(message = "Enter the address") @Size(max = 250) String addressLine1,
@@ -59,9 +71,7 @@ public final class SupplierDtos {
             BigDecimal longitude,
             @Size(max = 150) String contactName,
             @Size(max = 32) String contactPhone,
-            /** Defaults to the platform's 60s. Configurable per store (doc 13). */
-            @Min(value = 10, message = "The response window must be at least 10 seconds")
-            Integer responseSlaSeconds,
+            @Valid OperatingHoursPayload operatingHours,
             @Min(value = 0, message = "Preparation time can't be negative")
             Integer preparationMinutes) {
     }
@@ -77,7 +87,7 @@ public final class SupplierDtos {
             BigDecimal longitude,
             @Size(max = 150) String contactName,
             @Size(max = 32) String contactPhone,
-            @Min(10) Integer responseSlaSeconds,
+            @Valid OperatingHoursPayload operatingHours,
             @Min(0) Integer preparationMinutes,
             @Pattern(regexp = "ACTIVE|OFFLINE", message = "Status must be ACTIVE or OFFLINE")
             String status) {
@@ -88,6 +98,7 @@ public final class SupplierDtos {
             Long supplierOrganizationId,
             String name,
             String addressLine1,
+            String addressLine2,
             String city,
             String state,
             String pincode,
@@ -95,6 +106,16 @@ public final class SupplierDtos {
             BigDecimal longitude,
             String contactName,
             String contactPhone,
+            OperatingHoursPayload operatingHours,
+            /**
+             * Read-only to a supplier.
+             * <p>It is still returned, because the countdown a supplier sees is
+             * measured against it and a number you are held to should be visible.
+             * Changing it is an operations decision (doc 13): a supplier who could
+             * set their own answer window could set it to an hour and never be
+             * late again, and "responds quickly" would stop meaning anything
+             * across the marketplace.
+             */
             Integer responseSlaSeconds,
             Integer preparationMinutes,
             String status) {
