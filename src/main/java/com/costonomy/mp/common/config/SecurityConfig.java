@@ -80,6 +80,12 @@ public class SecurityConfig {
                         // this path is unauthenticated only as far as Spring
                         // Security is concerned — see doc 09 §4.
                         .requestMatchers("/api/v1/realtime/socket").permitAll()
+                        // Locally-stored uploads, standing in for a public bucket.
+                        // The key carries a UUID, so the URL is the capability —
+                        // the same property the bucket it replaces relies on. The
+                        // bean, and so the controller, does not exist when storage
+                        // is S3.
+                        .requestMatchers(HttpMethod.GET, "/files/**").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                         .requestMatchers("/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .anyRequest().authenticated())

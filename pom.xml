@@ -199,6 +199,24 @@
 			<artifactId>junit-jupiter</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!--
+			S3, for user-uploaded images. Not active by default: the storage port
+			selects LocalFileStorage unless costonomy.mp.storage.provider=S3, so
+			neither a bucket nor credentials are needed to run, to test, or to
+			develop the whole upload path against.
+		-->
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>s3</artifactId>
+			<version>2.25.16</version>
+			<exclusions>
+				<!-- Netty ships with the async client, which we do not use. -->
+				<exclusion>
+					<groupId>software.amazon.awssdk</groupId>
+					<artifactId>netty-nio-client</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
 	</dependencies>
 
 	<dependencyManagement>

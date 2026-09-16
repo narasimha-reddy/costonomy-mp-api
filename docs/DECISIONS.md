@@ -2182,6 +2182,81 @@ one product photographed badly. No decision has been made about hosting.
 
 ---
 
+## D-081 — Uploads go through us, and the bucket is laid out by tenant
+**2026-09-16 · Settled**
+
+A supplier can now photograph their pack. Pasting a URL was never the feature —
+it was the part that could be built without deciding anything.
+
+**Decision: the file is posted to us and we put it in the store.** A presigned URL
+is cheaper and is the obvious alternative, and it is wrong here for two reasons.
+It moves validation to the client — what a browser calls a JPEG and what a file
+actually is are different claims, and only the server can check the second. And it
+leaves local development with nothing to presign against, so the upload path could
+not be exercised until a bucket existed.
+
+`FileStorage` is a port with two adapters, selected by
+`costonomy.mp.storage.provider`. `LocalFileStorage` writes to disk under the
+**identical key** and serves it back from `/files`, so an upload produces a URL
+that really resolves and every screen can be checked today. **There is no bucket
+yet, and none is needed**: turning S3 on is four properties, and `S3FileStorage`
+is not instantiated until then. Credentials come from the default AWS chain and
+are deliberately not properties — a bucket secret in `application.properties` is a
+bucket secret in the repository.
+
+### The layout is an access-control decision
+`suppliers/{orgId}/stores/{storeId}/sku-images/{yyyy}/{MM}/{uuid}.{ext}`
+
+**The tenant is the first segment, always.** A bucket organised by kind —
+`images/`, `documents/` — is one nobody can reason about later: "delete everything
+belonging to this supplier" becomes a full scan, an IAM policy cannot be written
+per tenant, and listing one prefix reveals every tenant's filenames. Laid out by
+owner, all three are a prefix operation. The date below it exists for lifecycle
+rules, not for people.
+
+**The owner id is read from the database, never taken from the request.** A
+client-supplied owner is a directory-traversal parameter with a friendly name. The
+filename is a UUID for the same family of reasons: an uploaded name is
+attacker-controlled, collides across tenants, and leaks whatever the person called
+the file.
+
+### The bytes are the authority
+`ImageBytes` identifies the format from the file's own magic bytes and ignores the
+declared content type and the extension entirely. An HTML file named `.jpg`, served
+back from our own origin, is a script running as us — `ImageBytesTest` asserts it
+is refused. **SVG is excluded on purpose**, not by oversight: it is a document that
+executes script. Anything unidentifiable is refused rather than stored.
+
+The 5 MB limit is stated twice — `ImageBytes.MAX_BYTES` and
+`spring.servlet.multipart.max-file-size` — and the two must agree, because Tomcat
+rejects an oversized part before our check runs and would otherwise produce the
+wrong error.
+
+### Uploading and saving are separate acts
+The endpoint attaches the image to nothing; it returns a URL for the form to
+submit later. A supplier who picks a photo and then abandons the form leaves an
+orphaned object, which a lifecycle rule collects — the alternative is a listing
+that is half-changed, which only a person can notice. For the same reason the
+client uploads **on pick, not on save**: otherwise the slowest part of saving runs
+after the person has committed, and a failure arrives attached to an action they
+thought was about a price.
+
+### The SKU editor after this
+The canonical product moved **into the header** — its picture, its name, the
+supplier's own name for it beneath. A "Listed against" card below the header said
+the same thing twice and made the screen read as being about two products. The
+"Currently" card went entirely: its price, pack and GST are each already stated by
+the field that edits them.
+
+**The save bar is always present and disabled until there is something to save.**
+Appearing only once a field changed made it arrive under the thumb mid-edit and
+pushed the content up as it did — and a supplier who cannot see a save button has
+no way to know the screen saves at all. Disabled covers two different things:
+nothing has changed, and what changed cannot be saved (an empty name, a zero
+price).
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

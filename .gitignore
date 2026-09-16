@@ -13,3 +13,4 @@ target/
 *.log
 application-local.properties
 .env
+var/uploads/
