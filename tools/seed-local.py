@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 API = os.environ.get("API", "http://localhost:7070") + "/costonomy-mp-api/api/v1"
@@ -116,12 +117,26 @@ SUPPLIERS = [
 # serviceability check against the distance between store and outlet, so an
 # outlet without them can never be quoted for and the lifecycle stops dead at
 # READY_FOR_PICKUP.
-RESTAURANT = {
-    "phone": "+919876500004",
-    "name": "Spice Garden",
-    "outlet": "Indiranagar",
-    "lat": "12.9784", "lng": "77.6408",
-}
+RESTAURANTS = [
+    {
+        "phone": "+919876500004",
+        "name": "Spice Garden",
+        "outlet": "Indiranagar",
+        "lat": "12.9784", "lng": "77.6408",
+        # Already has a live line with Metro Fresh, so it asks the other one.
+        "credit_from": "Sri Balaji",
+    },
+    {
+        # A second restaurant exists so the busiest supplier has an unanswered
+        # request to look at. A second request from the *same* outlet to a store
+        # it already has an agreement with is refused, and rightly so.
+        "phone": "+919876500007",
+        "name": "Tandoor House",
+        "outlet": "Koramangala",
+        "lat": "12.9352", "lng": "77.6245",
+        "credit_from": "Metro Fresh",
+    },
+]
 
 # canonical product id -> (sku code, base price, gst rate, pack size, pack unit)
 STOCK = {
@@ -255,9 +270,9 @@ def enable_credit(token, store_id):
     }, token=token, method="PUT")
 
 
-def seed_restaurant():
+def seed_restaurant(spec):
     """A restaurant with a located outlet, so the whole journey is walkable."""
-    token = login(RESTAURANT["phone"])
+    token = login(spec["phone"])
 
     me = call("/auth/me", token=token)
     for membership in me.get("memberships", []):
@@ -266,27 +281,65 @@ def seed_restaurant():
             outlet = restaurant["outlets"][0]
             if outlet.get("latitude") is None:
                 call(f"/outlets/{outlet['id']}", {
-                    "latitude": RESTAURANT["lat"],
-                    "longitude": RESTAURANT["lng"],
+                    "latitude": spec["lat"],
+                    "longitude": spec["lng"],
                 }, token=token, method="PATCH")
                 print(f"  {restaurant['name']}: located existing outlet {outlet['id']}")
             else:
                 print(f"  {restaurant['name']}: reusing outlet {outlet['id']}")
-            return
+            return token, outlet["id"]
 
     created = call("/restaurants", {
-        "name": RESTAURANT["name"],
+        "name": spec["name"],
         "firstOutlet": {
-            "name": RESTAURANT["outlet"],
-            "addressLine1": RESTAURANT["outlet"] + " 100 Feet Road",
+            "name": spec["outlet"],
+            "addressLine1": spec["outlet"] + " Main Road",
             "city": "Bengaluru",
             "state": "Karnataka",
             "pincode": "560038",
-            "latitude": RESTAURANT["lat"],
-            "longitude": RESTAURANT["lng"],
+            "latitude": spec["lat"],
+            "longitude": spec["lng"],
         },
     }, token=token)
     print(f"  {created['name']}: restaurant {created['id']}, outlet {created['outlets'][0]['id']}")
+    return token, created["outlets"][0]["id"]
+
+
+def seed_credit_request(token, outlet_id, supplier_term):
+    """One credit request left unanswered, for the supplier's Requests tab.
+
+    Every other seeded relationship is already settled, which leaves SUP-CREDIT-01
+    permanently empty and its whole approve / modify / decline path unreachable
+    without hand-crafting a request first.
+
+    Raised against a *different* supplier from the one that already has a live
+    agreement — a second request from the same outlet to the same store would be
+    refused, and would teach nobody anything.
+    """
+    # Searched by name rather than listed: supplier search is search, and there
+    # is no endpoint that lists the suppliers serving an outlet.
+    stores = call("/search/suppliers?q=%s&outletId=%d"
+                  % (urllib.parse.quote(supplier_term), outlet_id), token=token)
+    target = stores[0] if stores else None
+    if target is None:
+        print("  no serviceable supplier to request credit from")
+        return
+
+    try:
+        call("/credit/requests", {
+            "supplierStoreId": target["supplierStoreId"],
+            "outletId": outlet_id,
+            "requestedLimit": "75000.00",
+            "requestedDays": 30,
+            "purpose": "Daily vegetables and staples",
+            "note": "We order from you most mornings and would rather settle monthly.",
+        }, token=token)
+        print(f"  credit request: {target['supplierName']} <- outlet {outlet_id}, pending")
+    except ApiError as error:
+        # Already requested on a previous run, which is fine.
+        if error.code not in ("CONFLICT", "VALIDATION_ERROR", "CREDIT_AGREEMENT_NOT_ACTIVE"):
+            raise
+        print(f"  credit request: already exists for {target['supplierName']}")
 
 
 OPERATOR_PHONE = "+919876599001"
@@ -337,7 +390,10 @@ def main():
     for spec in SUPPLIERS:
         seed_supplier(spec)
 
-    seed_restaurant()
+    for spec in RESTAURANTS:
+        token, outlet_id = seed_restaurant(spec)
+        seed_credit_request(token, outlet_id, spec["credit_from"])
+
     seed_operator()
 
     print("\nDone. Sign in on the app with any number; the OTP is", OTP)

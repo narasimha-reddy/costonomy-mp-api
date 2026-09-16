@@ -16,6 +16,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 
@@ -87,6 +88,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({
             HttpMessageNotReadableException.class,
             MethodArgumentTypeMismatchException.class,
+            // A required query parameter that was not sent is the caller's
+            // mistake, not ours. Without this it fell through to INTERNAL_ERROR,
+            // so a client bug was reported to the client as a server fault — and
+            // the message told them to try again, which could never help.
+            MissingServletRequestParameterException.class,
             MissingRequestHeaderException.class,
     })
     public ResponseEntity<ApiResponse<Void>> handleMalformed(Exception ex) {
