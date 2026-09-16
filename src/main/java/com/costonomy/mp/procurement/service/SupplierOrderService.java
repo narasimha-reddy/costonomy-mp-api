@@ -16,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -167,6 +168,75 @@ public class SupplierOrderService {
                         Permissions.ORDER_READY));
     }
 
+    /**
+     * Every status a supplier may see.
+     *
+     * <p><b>DRAFT is absent, deliberately.</b> An order is created DRAFT and stays
+     * invisible until it is funded (guardrail 16, D-020), so "all orders" is this
+     * list rather than the absence of a filter — a query written as "no status
+     * clause" would leak unfunded orders the first time somebody added a tab.
+     */
+    private static final List<SupplierOrderStatus> VISIBLE = List.of(
+            SupplierOrderStatus.PENDING_ACCEPTANCE,
+            SupplierOrderStatus.CONFIRMED,
+            SupplierOrderStatus.PARTIALLY_ACCEPTED,
+            SupplierOrderStatus.PREPARING,
+            SupplierOrderStatus.READY_FOR_PICKUP,
+            SupplierOrderStatus.OUT_FOR_DELIVERY,
+            SupplierOrderStatus.DELIVERED,
+            SupplierOrderStatus.COMPLETED,
+            SupplierOrderStatus.REJECTED,
+            SupplierOrderStatus.EXPIRED,
+            SupplierOrderStatus.CANCELLED);
+
+    /** How far back a window reaches when the caller does not say. */
+    private static final Duration DEFAULT_WINDOW = Duration.ofDays(7);
+
+    /**
+     * A store's order history, by status and by when the order arrived.
+     *
+     * <p>Dated on {@code createdAt} rather than on any status timestamp, because
+     * that is the one date every order has and the one a supplier means by "last
+     * week". Sorting the same way keeps a list stable while orders move through
+     * their lifecycle underneath it.
+     *
+     * <p>An absent window defaults to seven days rather than to everything: an
+     * unbounded history is a table scan that grows with the marketplace, and it
+     * is not what anyone opening a list wants to wait for.
+     */
+    @Transactional(readOnly = true)
+    public List<ProcurementDtos.IncomingOrderResponse> historyForStore(
+            Long actorId, Long storeId,
+            List<SupplierOrderStatus> statuses, Instant from, Instant to) {
+
+        accessControl.requireScoped(actorId, Permissions.ORDER_VIEW,
+                ScopeType.SUPPLIER_STORE, storeId, "SupplierStore");
+
+        Instant end = to == null ? Instant.now() : to;
+        Instant start = from == null ? end.minus(DEFAULT_WINDOW) : from;
+        if (start.isAfter(end)) {
+            throw new BusinessException(ErrorCode.MALFORMED_REQUEST,
+                    "The start of the range is after its end.");
+        }
+
+        // Intersected with VISIBLE rather than used as given: a caller asking for
+        // DRAFT gets nothing back instead of an unfunded order.
+        List<SupplierOrderStatus> wanted = statuses == null || statuses.isEmpty()
+                ? VISIBLE
+                : statuses.stream().filter(VISIBLE::contains).toList();
+        if (wanted.isEmpty()) {
+            return List.of();
+        }
+
+        Instant now = Instant.now();
+        return orders
+                .findBySupplierStoreIdAndStatusInAndCreatedAtBetweenOrderByCreatedAtDesc(
+                        storeId, wanted, start, end)
+                .stream()
+                .map(order -> toIncoming(order, now))
+                .toList();
+    }
+
     // ── Restaurant side ──────────────────────────────────────────────────
 
     /**
@@ -200,7 +270,8 @@ public class SupplierOrderService {
                 outlet == null ? null : outlet.restaurantName(),
                 full.outletLocality(), full.outletCity(), full.distanceKm(),
                 order.getStatus(), order.getAcceptanceDeadline(), order.getResponseSlaSeconds(),
-                remaining, order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
+                remaining, order.getCreatedAt(),
+                order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
                 order.getAcceptedAmount(), order.getPaymentMethod(), full.items());
     }
 

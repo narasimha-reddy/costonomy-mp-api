@@ -68,6 +68,7 @@ public class SupplierOrderMapper {
                 outlet == null ? null : outlet.city(),
                 distanceKm(store, outlet),
                 order.getStatus(), order.getAcceptanceDeadline(), order.getResponseSlaSeconds(),
+                order.getCreatedAt(),
                 order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
                 order.getAcceptedAmount(), order.getPaymentMethod(), order.getPaymentStatus(),
                 items.stream()

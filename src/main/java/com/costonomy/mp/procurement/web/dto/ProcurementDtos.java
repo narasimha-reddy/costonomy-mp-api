@@ -236,6 +236,7 @@ public final class ProcurementDtos {
             /** The authoritative deadline. The client counts down to this, not to a local timer. */
             Instant acceptanceDeadline,
             Integer responseSlaSeconds,
+            Instant createdAt,
             BigDecimal subtotal,
             BigDecimal gstAmount,
             BigDecimal totalAmount,
@@ -304,6 +305,8 @@ public final class ProcurementDtos {
             Instant acceptanceDeadline,
             Integer responseSlaSeconds,
             long secondsRemaining,
+            /** When the order reached this store. What a supplier means by "when". */
+            Instant createdAt,
             BigDecimal subtotal,
             BigDecimal gstAmount,
             BigDecimal totalAmount,

@@ -465,6 +465,51 @@ class ProcurementIT extends AbstractIntegrationTest {
     // ── Submission ───────────────────────────────────────────────────────
 
     @Nested
+    @DisplayName("order history")
+    class History {
+
+        @Test
+        @DisplayName("an unfunded order is not in it, however the window is asked for")
+        void draftsStayInvisible() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("ABC Foods");
+            long cartId = addToCart(buyer,
+                    stockOffer(seller, TestCatalog.freshProduct(jdbc, "paneer"), "P", "100"), 2)
+                    .get("id").asLong();
+            api.post(buyer.token(), "/api/v1/procurements/" + cartId + "/validate", null);
+            submit(buyer, cartId, UUID.randomUUID().toString());
+
+            // Submitted but never paid: the order exists and is DRAFT, which is
+            // exactly the state guardrail 16 says a supplier must never see.
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from supplier_order where supplier_store_id = ? "
+                            + "and status = 'DRAFT'", Integer.class, seller.storeId()))
+                    .isEqualTo(1);
+
+            String base = "/api/v1/supplier-stores/" + seller.storeId() + "/orders";
+            assertThat(api.get(seller.token(), base).at("/data")).isEmpty();
+            // And asking for it by name returns nothing rather than the order.
+            assertThat(api.get(seller.token(), base + "?status=DRAFT").at("/data")).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the window is on when the order arrived, and defaults to a week")
+        void windowIsOnArrival() throws Exception {
+            var seller = newSeller("XYZ Traders");
+            String base = "/api/v1/supplier-stores/" + seller.storeId() + "/orders";
+
+            // A window that ends before anything existed is empty; the default
+            // window reaches back over it.
+            assertThat(api.getStatus(seller.token(),
+                    base + "?from=2020-01-01T00:00:00Z&to=2020-01-08T00:00:00Z")).isEqualTo(200);
+
+            // Backwards is a caller mistake, not an empty result.
+            assertThat(api.getStatus(seller.token(),
+                    base + "?from=2026-09-10T00:00:00Z&to=2026-09-01T00:00:00Z")).isEqualTo(400);
+        }
+    }
+
+    @Nested
     @DisplayName("submission")
     class Submission {
 

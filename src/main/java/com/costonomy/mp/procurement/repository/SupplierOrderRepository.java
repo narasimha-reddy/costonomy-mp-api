@@ -20,6 +20,22 @@ public interface SupplierOrderRepository extends JpaRepository<SupplierOrder, Lo
     List<SupplierOrder> findByOutletIdOrderByCreatedAtDesc(Long outletId);
 
     /**
+     * A store's orders in a window, newest first.
+     *
+     * <p>Always filtered by status, never by absence of one: a supplier must not
+     * see a DRAFT order (guardrail 16, D-020), so "all statuses" is a list the
+     * service builds rather than a query that omits the clause.
+     *
+     * <p>Bounded by {@code createdAt} because an unbounded history is a table
+     * scan that grows with the marketplace, and nobody browsing orders wants one.
+     */
+    List<SupplierOrder> findBySupplierStoreIdAndStatusInAndCreatedAtBetweenOrderByCreatedAtDesc(
+            Long supplierStoreId,
+            Collection<SupplierOrderStatus> statuses,
+            Instant from,
+            Instant to);
+
+    /**
      * Orders whose response window has closed. Read by the timeout job (Phase 8).
      *
      * <p>Selects candidates only — it does not expire them. Each is transitioned
