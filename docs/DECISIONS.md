@@ -1960,6 +1960,31 @@ supplier the order is next door.
 
 One shared component, so the four places an order appears cannot drift apart.
 
+### Grouping, after the flat version proved cluttered
+The first build stacked the facts one per line. Seven lines, each as loud as the
+next, with the money pinned to a row labelled "Order value" that said nothing the
+₹ sign had not already said. The fix is grouping, not removal:
+
+- **Two columns.** Payment method over order number on the left; the amount over
+  the item count on the right. Four facts read as two pairs. The dominant figure
+  in each column leads, and the two reference numbers sit beneath in the same
+  quiet tone — a person reaches for those only when they already know why.
+- **The SKU names go last**, below the columns. It is the widest line and the one
+  a reader scans rather than parses.
+
+### Only credit is coloured
+Prepaid was a filled green pill, and it sat directly beside a green "Confirmed"
+status chip. The two read as one smeared signal. Status chips already use every
+one of green, blue, amber, red and grey, so **no filled colour is free for a
+payment method** — the collision was structural, not a bad choice of green.
+
+**Decision: prepaid is plain text; credit carries `Colors.credit` (violet).** That
+token exists for precisely this reason — "credit is supplier-funded and must never
+be visually confused with cash payment". Prepaid is the unremarkable case: the
+money is secured, there is nothing to act on. The colour now means *this one is on
+credit*, which is the fact a supplier acts on, and violet can never be mistaken
+for a status.
+
 ### The layout bug this exposed
 The first attempt put all three text lines in a column beside the status chip.
 That narrowed *every* line by the chip's width, and the first casualty was the
