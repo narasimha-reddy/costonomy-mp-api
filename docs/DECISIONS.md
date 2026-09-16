@@ -2550,6 +2550,42 @@ same nesting one layer down.
 ---
 
 
+## D-086 — The outlet leads the restaurant header, and its restaurant is already known
+**Raised 2026-09-16 · Settled 2026-09-16**
+
+The restaurant half of D-085, and deliberately the same shape: the outlet is the
+title, the restaurant the caption, the title is the switcher when there is more
+than one outlet, and `placeLabel()` drops a repeated business prefix so "Spice
+Garden Koramangala" under "Spice Garden" reads as "Koramangala".
+
+If anything the case is stronger here than on the supplier side. "Which outlet is
+this cart for" decides where a delivery is sent, and it was previously answered by
+a small grey "Ordering for …" row on Home only — the other four tabs showed the
+outlet as a chip beside a section title, in one of three different layouts.
+
+### The restaurant's name is not fetched
+`/auth/me` already carries it: a RESTAURANT grant names the restaurant in its own
+`scopeName`, and an OUTLET grant names it in `parentScopeName`. So an owner and a
+single-outlet manager both get an answer, from different rows, with no request
+and nothing new on the wire.
+
+It is resolved **per outlet** rather than per user, because a person can hold
+outlet grants in two different restaurants — taking the first grant would caption
+the header with whichever restaurant happened to sort first.
+
+### One header, not five
+Each restaurant tab built its own, which is why the cart badge existed on Home
+and nowhere else: a cook could add to a cart on Discover and lose sight of it.
+The bell had the same gap. `OutletSelector` is deleted rather than kept — it was
+the fifth bottom sheet implementing the same list, and the header subsumes it.
+
+`RestaurantHeader` takes the screen's doc 05 code as a required prop. The cart is
+now reachable from five screens instead of one, and "opened the cart" is only
+worth recording if it says from where.
+
+---
+
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 
