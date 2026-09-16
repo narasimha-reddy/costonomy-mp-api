@@ -227,6 +227,10 @@ def seed_supplier(spec):
 
 
 def stock_store(token, supplier_id, store_id, spec):
+    # Name each SKU after the product it maps to, not after its own code. A
+    # catalog listing "BTR-1KG" tells a supplier nothing, and a restaurant never
+    # sees the code at all.
+    names = {p["id"]: p["name"] for p in call("/products?size=200", token=token)}
     stocked = 0
     for product_id, (code, price, gst, pack_size, pack_unit) in STOCK.items():
         adjusted = f"{float(price) * spec['multiplier']:.2f}"
@@ -234,7 +238,7 @@ def stock_store(token, supplier_id, store_id, spec):
             call(f"/supplier-stores/{store_id}/skus", {
                 "canonicalProductId": product_id,
                 "skuCode": f"{code}-{supplier_id}",
-                "name": code,
+                "name": names.get(product_id, code),
                 "packSize": pack_size,
                 "packUnit": pack_unit,
                 "sellingPrice": adjusted,

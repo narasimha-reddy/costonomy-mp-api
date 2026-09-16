@@ -249,14 +249,15 @@ public class SupplierCatalogService {
     CatalogDtos.SkuResponse toResponse(SupplierSku sku) {
         Optional<SupplierOffer> offer = offers.findBySupplierSkuIdAndStatus(sku.getId(), "ACTIVE");
 
-        String productName = products.findById(sku.getCanonicalProductId())
-                .map(p -> p.getName()).orElse(null);
+        var product = products.findById(sku.getCanonicalProductId()).orElse(null);
+        String productName = product == null ? null : product.getName();
+        Long categoryId = product == null ? null : product.getCategoryId();
         String brandName = sku.getBrandId() == null ? null
                 : directory.brandNames(List.of(sku.getBrandId())).get(sku.getBrandId());
 
         return new CatalogDtos.SkuResponse(
                 sku.getId(), sku.getSupplierStoreId(), sku.getCanonicalProductId(), productName,
-                sku.getSkuCode(), sku.getName(), brandName,
+                categoryId, sku.getSkuCode(), sku.getName(), brandName,
                 sku.getPackSize(), sku.getPackUnit(), sku.getImageUrl(), sku.getStatus(),
                 offer.map(SupplierOffer::getSellingPrice).orElse(null),
                 offer.map(SupplierOffer::getGstRate).orElse(null),

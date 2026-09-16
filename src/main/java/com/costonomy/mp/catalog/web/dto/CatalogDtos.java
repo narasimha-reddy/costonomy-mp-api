@@ -109,6 +109,15 @@ public final class CatalogDtos {
             Long supplierStoreId,
             Long canonicalProductId,
             String canonicalProductName,
+            /**
+             * The canonical product's category.
+             *
+             * <p>Free to include — the product is already loaded to get its name —
+             * and without it a supplier's own catalog cannot be grouped or filtered
+             * by category at all. The name is deliberately not repeated here: a
+             * client that needs it already holds the category list.
+             */
+            Long categoryId,
             String skuCode,
             String name,
             String brandName,
