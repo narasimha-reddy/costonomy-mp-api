@@ -1822,6 +1822,72 @@ and insufficient for one that has to write a sentence.
 
 ---
 
+## D-071 — Choosing a side selects a form; the organisation makes it true
+**2026-09-16 · Settled**
+
+A signed-in user with no memberships is asked whether they run a restaurant or
+supply them. That answer is **not stored on the device** and is not a role. It
+picks which registration form to show; the organisation the form creates is what
+makes the user a restaurant owner or a supplier, and `/auth/me` is what says so
+afterwards.
+
+Remembering "they said supplier" locally would put a claim about a role in the
+one place doc 46 says it must never live — and the two would disagree the moment
+someone was invited to the other side.
+
+**Registration ends with `reload()` before routing.** The screen has just created
+an organisation, and it would be trivial to route on that fact directly. It
+routes on the refreshed memberships instead, so there is exactly one answer to
+"what is this user" in the whole app.
+
+**A user who was invited never sees this screen**, because they already have a
+membership. The screen says so, rather than letting them register a duplicate
+restaurant next to the one they were invited to.
+
+---
+
+## D-072 — An outlet is pinned at registration, or it cannot be quoted
+**2026-09-16 · Settled**
+
+Delivery quoting is a real serviceability check against the distance between a
+store and an outlet. An outlet with no coordinates can never be quoted for: its
+orders stop at `READY_FOR_PICKUP` with no error on any screen. This build hit
+exactly that, and spent a while looking for the bug.
+
+**Decision: registration asks for the device's location**, at the moment the
+person is standing in the place they are describing. `expo-location` on a device,
+`navigator.geolocation` on web, imported lazily so the web bundle never pulls the
+native module in.
+
+**It is optional, and the copy says what is lost rather than insisting.** A
+refusal is a supported outcome — the address is still enough for a human to find
+— so the form submits either way and the confirm step states plainly that
+delivery cannot be quoted until the outlet is pinned. A required-field asterisk
+would have been a weaker argument and a worse experience.
+
+**Permission is requested when it is used, never at launch.**
+
+---
+
+## D-073 — Verification is part of supplier registration, not a later task
+**2026-09-16 · Settled**
+
+A supplier cannot trade until a GST verification is reviewed: `canTrade` stays
+false and no restaurant sees their catalog. Putting that behind a settings screen
+would let someone register, list a hundred SKUs, and wonder for a week why
+nothing ever sells.
+
+So SUP-ONB-02 is the third step of SUP-ONB-01, with the GSTIN validated against
+the same pattern the server enforces — 15 characters, state code, PAN, entity, Z,
+checksum — so a typo is caught before a round trip.
+
+**If the verification call fails, registration still succeeds.** The organisation
+and its store exist, the person can build their catalog, and the toast says what
+is still outstanding. Rolling back a good registration because a second call
+failed would strand someone halfway through setup with nothing to show for it.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 
