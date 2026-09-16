@@ -1888,6 +1888,46 @@ failed would strand someone halfway through setup with nothing to show for it.
 
 ---
 
+## D-074 — Approved is not usable, on both sides of the screen
+**2026-09-16 · Settled**
+
+D-067 stopped the restaurant being shown "₹35,000 available" for a line it had
+not yet accepted. The supplier's own screen had the same fault and kept it: an
+agreement approved on modified terms rendered a full credit position, so a
+supplier saw a spendable balance for credit nobody could draw on.
+
+**Decision: `canFund` gates the position on every screen, not just the
+restaurant's.** Where it is false the screen states what is actually true —
+"waiting for them to accept" — and shows the terms that were approved rather than
+a balance.
+
+The rule generalises: **a status is not a capability.** `APPROVED` describes how
+the agreement got here; `canFund` describes what can be done with it today, and
+only the server knows the second one. Any screen that renders money conditional
+on a state machine should be reading the capability instead.
+
+---
+
+## D-075 — Setting terms and approving them are one deliberate act, stated
+**2026-09-16 · Settled**
+
+Answering a credit request on modified terms used to read as "Send these terms",
+with the values edited inline on a list card. A supplier could change a number
+and find the request approved, without ever seeing the two facts together.
+
+**Decision: the counter form ends with what is about to happen and a button that
+says it** — "Approving ₹40,000 · 45 days", then "Approve at these terms". It is
+still one call, because the API has one; what changed is that the screen no
+longer hides the consequence behind a neutral verb.
+
+**A disabled primary explains itself.** The edit form's save button was greyed
+with no reason given, and the reason — no limit, a cut below committed exposure,
+a missing justification — is always knowable. One expression now returns the
+sentence rather than a boolean, so the check and its explanation cannot drift
+apart.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 
