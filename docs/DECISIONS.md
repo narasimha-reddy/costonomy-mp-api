@@ -2041,6 +2041,52 @@ the dispatcher, not in the enum.
 
 ---
 
+## D-079 — A status literal is a contract, and a union of lies type-checks
+**2026-09-16 · Settled**
+
+The mobile `SupplierOrderStatus` union declared `ACCEPTED` and `RECEIVED`. The
+server has only ever sent `CONFIRMED` and `COMPLETED`. `ProcurementStatus` was
+worse — `CART`, `VALIDATED` and `COMPLETED`, three spellings the API has never
+produced.
+
+TypeScript could not help, and that is the whole lesson. `order.status ===
+'ACCEPTED'` compares a value of the union against a member of that same union.
+It is perfectly typed. It is also permanently false.
+
+What it cost:
+
+- **A supplier who accepted an order in full got no "Start preparing" button.**
+  The entire fulfilment path — preparing, ready for pickup — was unreachable from
+  the app. The order sat CONFIRMED forever.
+- A confirmed order **vanished from the restaurant's Active tab**, whose filter
+  listed `ACCEPTED`.
+- A completed order never reached the **Completed** tab, and stayed on the
+  restaurant's home as "in flight" for good, because both lists said `RECEIVED`.
+
+Nothing looked broken. `models/status.ts` had the *correct* keys, so every chip
+rendered "Confirmed" and "Completed" exactly as it should. Only the branches were
+dead, and a dead branch renders nothing rather than something wrong.
+
+**Decision: the unions are the server's spellings, verbatim, and a mismatch is a
+compile error.** Each display map is now written
+`satisfies Record<StatusCode, StatusDisplay>` and only then widened to
+`Record<string, StatusDisplay>`. The widening has to stay — `resolveStatus` must
+survive a status a newer backend invents, because mobile releases lag the API —
+but the literal itself is now checked in both directions: a code with no display
+fails, and a display for a non-existent code fails. Restoring the old `ACCEPTED`
+key now produces `TS2353` on the line that declares it.
+
+An audit of every status union against its Java enum found one more: the client's
+`RequirementStatus` was missing `EXPIRED`. The rest matched.
+
+This is D-061 and D-077 a third time, and the general rule is now as strong as it
+can be stated: **a client model is written by reading the server's enum, and the
+type system is then made to enforce what reading it established.** Naming a
+constant after what a field *means* — an accepted order is "accepted" — is how
+every one of these happened.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 
