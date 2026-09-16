@@ -379,8 +379,11 @@ class RecommendationIT extends AbstractIntegrationTest {
             stock(store, freshProduct("curd"), "KRI-CURD", "70");
             var outlet = newOutlet();
 
+            // D-087: the response is a page now, because a distance filter has to be
+            // able to say what it left out rather than just returning less.
             var results = api.get(outlet.token(),
-                    "/api/v1/search/suppliers?q=krishna&outletId=" + outlet.outletId()).at("/data");
+                    "/api/v1/search/suppliers?q=krishna&outletId=" + outlet.outletId())
+                    .at("/data/suppliers");
 
             assertThat(results).hasSize(1);
             assertThat(results.get(0).get("supplierName").asText()).isEqualTo("Krishna Dairy");
@@ -395,8 +398,8 @@ class RecommendationIT extends AbstractIntegrationTest {
             jdbc.update("update supplier_organization set lifecycle_status = 'SUSPENDED' where id = ?",
                     store.supplierId());
 
-            assertThat(api.get(api.loginFresh(), "/api/v1/search/suppliers?q=ghost").at("/data"))
-                    .isEmpty();
+            assertThat(api.get(api.loginFresh(), "/api/v1/search/suppliers?q=ghost")
+                    .at("/data/suppliers")).isEmpty();
         }
     }
 }

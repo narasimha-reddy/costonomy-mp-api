@@ -33,13 +33,22 @@ public record SupplierPerformance(
         /** Orders cancelled by the supplier after acceptance ÷ accepted. */
         Optional<BigDecimal> cancellationRate,
         /** Mean overall rating, 1–5. */
-        Optional<BigDecimal> averageRating) {
+        Optional<BigDecimal> averageRating,
+        /**
+         * How many published ratings the average came from.
+         *
+         * <p>Shown beside the average because 5.0 from one order and 4.6 from two
+         * hundred are not the same claim, and a restaurant choosing a supplier is
+         * entitled to tell them apart. Zero exactly when {@code averageRating} is
+         * absent.
+         */
+        int ratingCount) {
 
     /** A store we know nothing about. Every signal absent. */
     public static SupplierPerformance unknown(Long supplierStoreId) {
         return new SupplierPerformance(supplierStoreId, 0,
                 Optional.empty(), Optional.empty(), Optional.empty(),
-                Optional.empty(), Optional.empty());
+                Optional.empty(), Optional.empty(), 0);
     }
 
     /**

@@ -41,7 +41,10 @@ class BestValueScorerTest {
                 Optional.of(new BigDecimal(onTime)),
                 Optional.of(new BigDecimal("0.98")),
                 Optional.of(new BigDecimal("0.01")),
-                Optional.of(new BigDecimal(rating)));
+                Optional.of(new BigDecimal(rating)),
+                // A rating average is only meaningful beside the count it came
+                // from; an established supplier is rated as often as they trade.
+                orders);
     }
 
     private static BestValueScorer.Candidate candidate(

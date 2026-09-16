@@ -49,7 +49,12 @@ public final class DiscoveryDtos {
             List<ExplanationCode> explanations,
             BigDecimal score,
             /** Per-component normalised scores, for operations to inspect. */
-            Map<String, BigDecimal> scoreComponents) {
+            Map<String, BigDecimal> scoreComponents,
+            /** The SKU's own picture, falling back to the canonical product's. */
+            String imageUrl,
+            /** Null when nobody has rated this store. Absent stays absent (doc 07 §4). */
+            BigDecimal averageRating,
+            int ratingCount) {
     }
 
     /**
@@ -82,6 +87,58 @@ public final class DiscoveryDtos {
             String city,
             BigDecimal distanceKm,
             boolean serviceable,
-            Integer productCount) {
+            Integer productCount,
+            /** Null when nobody has rated this store. Never zero standing in for that. */
+            BigDecimal averageRating,
+            int ratingCount,
+            boolean openNow,
+            String opensAt) {
+    }
+
+    /**
+     * A page of suppliers, and how many a distance filter left out.
+     *
+     * <p>{@code beyondRadius} exists so the app can say "4 more deliver here" and
+     * offer to widen, rather than presenting a filtered list as the whole truth.
+     */
+    public record SupplierSearchPage(
+            List<SupplierSearchResult> suppliers,
+            int beyondRadius) {
+    }
+
+    /**
+     * One thing a restaurant can buy, from one supplier.
+     *
+     * <p>The row behind SKU search, a store's catalog and the supplier comparison.
+     * It leads with the SKU because that is what is being bought — the pack, the
+     * brand, the price — and carries the supplier as context rather than as the
+     * headline.
+     *
+     * <p>No commission field, here or anywhere near ranking: guardrail 9.
+     */
+    public record StorefrontSku(
+            Long offerId,
+            Long supplierSkuId,
+            String skuName,
+            String brandName,
+            BigDecimal packSize,
+            String packUnit,
+            BigDecimal sellingPrice,
+            BigDecimal gstRate,
+            String availability,
+            BigDecimal availableQuantity,
+            /** The SKU's own picture, falling back to the canonical product's. */
+            String imageUrl,
+            Long canonicalProductId,
+            String canonicalProductName,
+            Long supplierStoreId,
+            String supplierName,
+            String storeName,
+            BigDecimal distanceKm,
+            boolean openNow,
+            String opensAt,
+            Integer preparationMinutes,
+            BigDecimal averageRating,
+            int ratingCount) {
     }
 }

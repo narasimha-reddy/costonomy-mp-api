@@ -3,6 +3,7 @@ package com.costonomy.mp.discovery.web;
 import com.costonomy.mp.common.api.ApiResponse;
 import com.costonomy.mp.discovery.service.RecommendationService;
 import com.costonomy.mp.discovery.service.SearchService;
+import com.costonomy.mp.discovery.service.StorefrontService;
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import com.costonomy.mp.identity.security.ActorContext;
 import io.swagger.v3.oas.annotations.Operation;
@@ -24,6 +25,7 @@ public class DiscoveryController {
 
     private final RecommendationService recommendations;
     private final SearchService search;
+    private final StorefrontService storefront;
 
     @GetMapping("/search/suggestions")
     @Operation(
@@ -42,17 +44,64 @@ public class DiscoveryController {
 
     @GetMapping("/search/suppliers")
     @Operation(
-            summary = "Search suppliers by name",
+            summary = "Suppliers that deliver to an outlet, nearest first",
             description = """
-                    Secondary to product search by design (doc 01 §25) — a restaurant
-                    looks for paneer, not for a paneer supplier. Only suppliers that can
-                    currently trade are returned. Pass `outletId` to get distance and
-                    whether each store actually delivers there.
+                    With `q` this is a search by name; without it, the directory of who
+                    can deliver here — which is what a restaurant browsing for a supplier
+                    actually wants, and what this endpoint could not previously answer.
+
+                    Membership is the store's **own** declared radius or pincode list, so
+                    a supplier who says they deliver 15km is not hidden by someone else's
+                    idea of near. `radiusKm` narrows that; anything it excludes is counted
+                    in `beyondRadius` rather than disappearing.
+
+                    Only stores that can currently trade are returned.
                     """)
-    public ApiResponse<List<DiscoveryDtos.SupplierSearchResult>> suppliers(
+    public ApiResponse<DiscoveryDtos.SupplierSearchPage> suppliers(
+            @RequestParam(value = "q", required = false) String query,
+            @RequestParam(required = false) Long outletId,
+            @RequestParam(required = false) BigDecimal radiusKm) {
+        return ApiResponse.ok(storefront.searchSuppliers(query, outletId, radiusKm));
+    }
+
+    @GetMapping("/search/skus")
+    @Operation(
+            summary = "Search supplier SKUs directly",
+            description = """
+                    The other half of product search. `/search/products` answers "what is
+                    curd" — one row per canonical product; this answers "what curd can I
+                    buy right now", one row per supplier's pack, with its price and
+                    picture.
+
+                    Matches the supplier's SKU name, the brand and the canonical product,
+                    because a kitchen types what it calls the thing. Only offers that are
+                    purchasable from a store serving this outlet are returned.
+
+                    Needs at least two characters.
+                    """)
+    public ApiResponse<List<DiscoveryDtos.StorefrontSku>> skus(
             @RequestParam("q") String query,
-            @RequestParam(required = false) Long outletId) {
-        return ApiResponse.ok(search.searchSuppliers(query, outletId));
+            @RequestParam(required = false) Long outletId,
+            @RequestParam(required = false) Integer limit) {
+        return ApiResponse.ok(storefront.searchSkus(query, outletId, limit));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/catalog")
+    @Operation(
+            summary = "What one supplier store sells",
+            description = """
+                    The restaurant-facing view of a supplier's shelf, reached by tapping a
+                    supplier in search.
+
+                    Deliberately not filtered by serviceability: the restaurant asked for
+                    this store, and an empty shelf would be a worse answer than the shelf
+                    with its distance on it. `outletId` supplies that distance.
+                    """)
+    public ApiResponse<List<DiscoveryDtos.StorefrontSku>> storeCatalog(
+            @PathVariable Long storeId,
+            @RequestParam(required = false) Long outletId,
+            @RequestParam(value = "q", required = false) String query) {
+        return ApiResponse.ok(storefront.storeCatalog(storeId, outletId, query));
     }
 
     @GetMapping("/products/{id}/recommendations")

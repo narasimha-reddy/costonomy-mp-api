@@ -13,6 +13,7 @@ import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.discovery.domain.RankingWeights;
 import com.costonomy.mp.discovery.domain.ScoredOffer;
 import com.costonomy.mp.discovery.domain.Serviceability;
+import com.costonomy.mp.discovery.domain.SupplierPerformance;
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -168,7 +169,8 @@ public class RecommendationService {
         var results = ranked.stream()
                 .map(scored -> toResponse(scored, offerById.get(scored.offerId()),
                         skuById.get(scored.supplierSkuId()),
-                        stores.get(scored.supplierStoreId()), brandNames, quantity))
+                        stores.get(scored.supplierStoreId()), brandNames, quantity,
+                        product.getImageUrl(), performance.get(scored.supplierStoreId())))
                 .toList();
 
         return new DiscoveryDtos.ProductRecommendation(
@@ -205,7 +207,8 @@ public class RecommendationService {
 
     private DiscoveryDtos.RecommendedOffer toResponse(
             ScoredOffer scored, SupplierOffer offer, SupplierSku sku,
-            DiscoveryDirectory.StoreInfo store, Map<Long, String> brandNames, BigDecimal quantity) {
+            DiscoveryDirectory.StoreInfo store, Map<Long, String> brandNames, BigDecimal quantity,
+            String canonicalImageUrl, SupplierPerformance storePerformance) {
 
         BigDecimal itemTotal = offer.getSellingPrice().multiply(quantity);
         BigDecimal gstAmount = itemTotal.multiply(offer.getGstRate())
@@ -222,7 +225,18 @@ public class RecommendationService {
                 offer.getAvailability(), offer.getAvailableQuantity(),
                 scored.coversFullQuantity(),
                 scored.etaMinutes(), scored.distanceKm(), store.responseSlaSeconds(),
-                scored.explanations(), scored.score(), scored.componentScores());
+                scored.explanations(), scored.score(), scored.componentScores(),
+                // The supplier's own photograph of their pack when they uploaded
+                // one — it is what will arrive — and the platform's picture of the
+                // product otherwise. Blank is not a URL.
+                blankToNull(sku.getImageUrl()) != null
+                        ? sku.getImageUrl() : blankToNull(canonicalImageUrl),
+                storePerformance == null ? null : storePerformance.averageRating().orElse(null),
+                storePerformance == null ? 0 : storePerformance.ratingCount());
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
     }
 
     private static DiscoveryDtos.ProductRecommendation unserved(

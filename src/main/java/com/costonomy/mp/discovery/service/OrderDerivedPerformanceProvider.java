@@ -57,6 +57,7 @@ public class OrderDerivedPerformanceProvider implements SupplierPerformanceProvi
         var fillRates = fillRates(supplierStoreIds, placeholders);
         var onTimeRates = onTimeRates(supplierStoreIds, placeholders);
         var averageRatings = averageRatings(supplierStoreIds, placeholders);
+        var ratingCounts = ratingCounts(supplierStoreIds, placeholders);
 
         jdbc.query("""
                 select supplier_store_id,
@@ -96,7 +97,8 @@ public class OrderDerivedPerformanceProvider implements SupplierPerformanceProvi
                             // look *more* reliable, because rejections would dilute
                             // the denominator.
                             ratio(cancelled, committed),
-                            averageRatings.getOrDefault(storeId, Optional.empty())));
+                            averageRatings.getOrDefault(storeId, Optional.empty()),
+                            ratingCounts.getOrDefault(storeId, 0)));
                 },
                 supplierStoreIds.toArray());
 
@@ -194,6 +196,23 @@ public class OrderDerivedPerformanceProvider implements SupplierPerformanceProvi
                 },
                 storeIds.toArray());
         return averages;
+    }
+
+    /** How many published ratings each average was computed from. */
+    private Map<Long, Integer> ratingCounts(List<Long> storeIds, String placeholders) {
+        Map<Long, Integer> counts = new HashMap<>();
+        jdbc.query("""
+                select supplier_store_id, count(*)
+                  from rating
+                 where supplier_store_id in (%s)
+                   and moderation_status = 'PUBLISHED'
+                 group by supplier_store_id
+                """.formatted(placeholders),
+                rs -> {
+                    counts.put(rs.getLong(1), rs.getInt(2));
+                },
+                storeIds.toArray());
+        return counts;
     }
 
     /** A ratio of two decimal quantities, empty when there is nothing to divide by. */

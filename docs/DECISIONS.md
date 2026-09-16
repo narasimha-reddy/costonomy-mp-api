@@ -2586,6 +2586,77 @@ worth recording if it says from where.
 ---
 
 
+## D-087 — Search asks three questions, and the pack is the one being answered
+**Raised 2026-09-17 · Settled 2026-09-17**
+
+Search returned one list: canonical products, "from ₹X", tap to compare. That is
+the marketplace's central idea and it is the right default — but it is not the
+only question a kitchen asks, and the other two had no answer at all.
+
+**Products** — what is curd, and who has it. One row per canonical product,
+every supplier collapsed into a lowest price. The comparison the platform exists
+for.
+
+**Packs** — what curd can I buy right now. One row per supplier's SKU, with
+*their* price, *their* pack and *their* photograph. A cook who already knows the
+brand was being made to go through a canonical product to reach it.
+
+**Suppliers** — who can deliver to me at all. This is the one the app genuinely
+could not ask: `/search/suppliers` required two characters, so there was no way
+to answer "who is out there" for a restaurant that does not yet know any supplier
+by name. It now lists with an empty box.
+
+### Distance orders; the supplier's own radius excludes
+The obvious reading of "suppliers within 10km" is a 10km filter. It is the wrong
+rule. Whether a store serves an outlet is **the store's own declared radius or
+pincode list** — they set it, in their own settings — so a fixed cut on top would
+hide a supplier who has said they deliver 15km and does. Membership is
+serviceability; distance is the sort order. `radiusKm` narrows the list, and what
+it excludes comes back as `beyondRadius` so the app can say "2 more deliver here"
+rather than presenting a filtered list as the whole answer.
+
+The old endpoint also returned unserviceable suppliers with `serviceable: false`,
+which the app had no way to render except as a row you cannot buy from. They are
+now simply not results.
+
+### A pack tap and a product tap land in the same place
+Tapping a SKU asks "who else sells this, and for how much" — which is exactly the
+canonical comparison. Resolving the SKU to its product and going there is not a
+shortcut; it is the answer. A separate "similar products" screen would be a
+different question, and nobody asked it.
+
+### The SKU leads the comparison, not the supplier
+`OfferCard` opened with the supplier's name in bold. But what is being chosen
+between is the pack — this brand, this size, this price — and the supplier is how
+it arrives. Two packs from one supplier looked like the same row twice. The card
+now opens with the picture, the SKU and the pack, and carries the supplier
+beneath with its rating and distance.
+
+Rating is exposed for the first time (`averageRating` with `ratingCount`) — it
+was computed and fed the ranking, but never shown. It renders **only when it
+exists**: most stores have none, and "0.0 ★" would read as a bad supplier rather
+than an unrated one (doc 07 §4). The count is shown beside it because 5.0 from
+one order and 4.6 from two hundred are not the same claim.
+
+### One row shape behind all of it
+`StorefrontSku` serves SKU search, a store's catalog and the comparison. Three
+near-identical DTOs would have drifted, and the three screens are the same rows
+sliced differently.
+
+A store's catalog is deliberately **not** filtered by serviceability: the
+restaurant asked for that supplier by name, and an empty shelf answers a question
+they did not ask. Whether an order can be placed is settled at checkout, by the
+server, which is the only thing that can settle it.
+
+### No category chips
+The reference design carries subcategory facets under the search box. Left out on
+purpose for now: our canonical catalog is small enough that a term already
+narrows it further than a facet would, and a chip row that is usually one chip
+wide is scaffolding with nothing to hold.
+
+---
+
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

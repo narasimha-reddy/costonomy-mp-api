@@ -4,7 +4,6 @@ import com.costonomy.mp.catalog.domain.CanonicalProduct;
 import com.costonomy.mp.catalog.domain.Normalization;
 import com.costonomy.mp.catalog.repository.CanonicalProductAliasRepository;
 import com.costonomy.mp.catalog.repository.CanonicalProductRepository;
-import com.costonomy.mp.discovery.domain.Serviceability;
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
@@ -12,8 +11,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,58 +79,5 @@ public class SearchService {
                 normalized);
 
         return suggestions.values().stream().limit(MAX_SUGGESTIONS).toList();
-    }
-
-    /**
-     * Supplier search. Doc 04 §8.
-     *
-     * <p>Secondary to product search by design — doc 01 §25: a restaurant looks for
-     * paneer, not for a paneer supplier. This exists for the case where they
-     * already know who they want to buy from.
-     *
-     * <p>Only tradeable stores are returned. When an outlet is given, each result
-     * carries the distance and whether that store actually delivers there, so the
-     * client never offers a supplier that would fail at checkout.
-     */
-    @Transactional(readOnly = true)
-    public List<DiscoveryDtos.SupplierSearchResult> searchSuppliers(String query, Long outletId) {
-        String term = query == null ? "" : query.trim().toLowerCase();
-        if (term.length() < 2) {
-            return List.of();
-        }
-
-        var outlet = outletId == null ? null : directory.outlet(outletId).orElse(null);
-
-        List<DiscoveryDtos.SupplierSearchResult> results = new ArrayList<>();
-        jdbc.query("""
-                select s.id, o.display_name, s.name, s.city, s.latitude, s.longitude,
-                       (select count(*) from supplier_sku k
-                         where k.supplier_store_id = s.id and k.status = 'ACTIVE') as product_count
-                  from supplier_store s
-                  join supplier_organization o on o.id = s.supplier_organization_id
-                 where s.status = 'ACTIVE'
-                   and o.lifecycle_status = 'ACTIVE'
-                   and (lower(o.display_name) like concat('%', ?, '%')
-                        or lower(s.name) like concat('%', ?, '%'))
-                 order by o.display_name
-                 limit 25
-                """,
-                rs -> {
-                    BigDecimal latitude = rs.getBigDecimal(5);
-                    BigDecimal longitude = rs.getBigDecimal(6);
-                    Double distance = outlet == null ? null : Serviceability.distanceKm(
-                            outlet.latitude(), outlet.longitude(), latitude, longitude);
-
-                    results.add(new DiscoveryDtos.SupplierSearchResult(
-                            rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                            Serviceability.round(distance),
-                            // Without an outlet there is nothing to be serviceable
-                            // *to*, so the flag is true rather than a false claim.
-                            outlet == null || distance == null || distance <= 25.0,
-                            rs.getInt(7)));
-                },
-                term, term);
-
-        return results;
     }
 }
