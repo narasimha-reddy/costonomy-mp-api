@@ -34,7 +34,7 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 17)   # Lombok breaks silently on n
 mvn spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
-- API: `http://localhost:8080/costonomy-mp-api`
+- API: `http://localhost:7070/costonomy-mp-api`
 - Swagger: `/swagger-ui.html` · OpenAPI: `/api-docs`
 - Every OTP is `123456` locally, and every provider is a mock.
 
@@ -56,7 +56,7 @@ Local development needs no external provider and no MySQL install: OTP, payment
 and delivery all run on mocks, and integration tests bring their own MySQL 8 via
 Testcontainers. You do need Docker running for `mvn verify`.
 
-Once running: `http://localhost:8080/costonomy-mp-api/swagger-ui.html`
+Once running: `http://localhost:7070/costonomy-mp-api/swagger-ui.html`
 
 ## Status
 

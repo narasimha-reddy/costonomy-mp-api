@@ -12,8 +12,8 @@ its verification, and there is no admin account on a fresh local database to do
 the reviewing. That single step is a direct UPDATE, and it is marked below.
 
 Usage:
-    python3 tools/seed-local.py                 # against localhost:8080
-    API=http://localhost:8080 python3 tools/seed-local.py
+    python3 tools/seed-local.py                 # against localhost:7070
+    API=http://localhost:7070 python3 tools/seed-local.py
 """
 
 import json
@@ -24,7 +24,7 @@ import time
 import urllib.error
 import urllib.request
 
-API = os.environ.get("API", "http://localhost:8080") + "/costonomy-mp-api/api/v1"
+API = os.environ.get("API", "http://localhost:7070") + "/costonomy-mp-api/api/v1"
 MYSQL_CONTAINER = os.environ.get("MYSQL_CONTAINER", "jobs-mysql")
 MYSQL_DB = os.environ.get("MYSQL_DATABASE", "costonomy_mp")
 OTP = os.environ.get("OTP", "123456")
@@ -327,7 +327,7 @@ def main():
     # fails on its own warm-up.
     try:
         urllib.request.urlopen(
-            os.environ.get("API", "http://localhost:8080")
+            os.environ.get("API", "http://localhost:7070")
             + "/costonomy-mp-api/actuator/health", timeout=5)
     except urllib.error.HTTPError:
         pass  # DOWN is still an answer — something is listening.

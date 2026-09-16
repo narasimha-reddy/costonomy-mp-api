@@ -1667,7 +1667,7 @@ both.
 **2026-09-15 · Settled**
 
 `react-native-maps` has no web implementation, and the restaurant app is checked
-in a browser on :7001. A `MandiMap.web.tsx` that said "map unavailable" would
+in a browser on :7071. A `MandiMap.web.tsx` that said "map unavailable" would
 make REST-ORDER-TRACK-01 the one screen nobody could actually look at.
 
 **Decision: the web build renders the same facts without the tiles** — distance
