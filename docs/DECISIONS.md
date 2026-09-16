@@ -1985,6 +1985,25 @@ money is secured, there is nothing to act on. The colour now means *this one is 
 credit*, which is the fact a supplier acts on, and violet can never be mistaken
 for a status.
 
+### Credit reads the same way
+A supplier deciding on credit is deciding about a restaurant, and the card showed
+only the outlet's own name — whatever that restaurant chose to call it. It now
+carries the identical block: **outlet, then restaurant · locality · distance**.
+`PartyHeading` is shared by the order cards and the credit cards rather than
+copied, because "who and where" is one question and two implementations of one
+answer drift.
+
+`AgreementResponse` therefore gains `restaurantName`, `outletLocality`,
+`outletCity` and `distanceKm`, exactly as the order responses did.
+
+**Due leaves the portfolio card and stays on the detail screen.** Not to save
+room: on a card it sits directly under Utilized and reads as a second, separate
+debt, when on a live agreement with nothing overdue it is the same money said
+twice. The detail screen has space to show due *and* overdue together, where the
+relationship — overdue is a subset of due, never an addition to it — is visible
+rather than implied. The two explanatory hints go with it for the same reason,
+and the card is roughly half its former height.
+
 ### The layout bug this exposed
 The first attempt put all three text lines in a column beside the status chip.
 That narrowed *every* line by the chip's width, and the first casualty was the
@@ -2343,6 +2362,59 @@ Nothing checks that a SKU's pack unit is *compatible* with its canonical product
 base unit — a supplier can still list Paneer in `LTR`. That needs a dimension on
 each unit (weight, volume, count) and a rule about which conversions are
 meaningful, and it is a larger decision than this one.
+
+---
+
+## D-083 — A notification carries the side it was written for, and points at a screen
+**2026-09-16 · Settled**
+
+Tapping any notification went to the home screen. Three separate faults, and each
+one would have been enough on its own.
+
+### The destinations were all restaurant routes
+`destinationFor` mapped every target type to `/restaurant/...`. A supplier tapping
+"New order" was sent to a restaurant URL they hold no grant on, bounced by the
+route guard, and landed on their home screen — which is why *every* notification
+looked like it did nothing.
+
+**Decision: the notification states its audience; the viewer's role is not
+consulted.** Routing by the viewer would fix the common case and still fail for
+anyone who is both a supplier and a restaurant, because they have no single role
+to route by. The server already decided who it was writing to.
+
+### The audience cannot be derived from the event type
+The first attempt looked the event up in the rule catalogue. **`SupplierOrderExpired`
+has a rule for each side** — the restaurant is told their order expired, the
+supplier that they missed it — so `findFirst()` mislabelled one of the two copies,
+and a mislabelled copy sends its reader to the other side's URL.
+
+**Decision: `notification.audience` is a stored column, written by the relay**,
+which is the only place that knows which rule produced which row. Deriving it was
+cheaper and was wrong; the backfill splits the ambiguous event by whether the
+recipient holds a supplier grant.
+
+### The target was the aggregate, and no screen is keyed by it
+`targetId` was `envelope.aggregateId()`. For a delivery event that is the
+**delivery** id, and neither side has a screen keyed by one — the restaurant
+tracks `/tracking/{orderId}` and the supplier opens `/orders/{orderId}`. So a
+notification about delivery 2 opened **order 2**: a different restaurant's order,
+behind a link that looked like it worked. Disputes had the same shape.
+
+**Decision: a rule may name the payload field holding its target**, and the
+delivery and dispute rules name `supplierOrderId`. It falls back to the aggregate
+when the field is missing, because a payload that changed shape should still
+produce an inbox row.
+
+V21 backfills the notifications already sent. An inbox row that opens the wrong
+order is worse than one that opens nothing: the first is a link someone follows
+and believes.
+
+### The general rule
+**A notification is a pointer, and a pointer has to name something the reader can
+open.** Three things have to be true at once — the right resource, the right side,
+and a screen that exists for that pair — and this failed all three while looking,
+from the inbox, exactly like a working feature. `DISPUTE` was also simply missing
+from the client's switch, which is the mildest version of the same problem.
 
 ---
 

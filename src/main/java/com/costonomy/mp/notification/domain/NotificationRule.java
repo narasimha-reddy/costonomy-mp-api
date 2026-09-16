@@ -32,7 +32,25 @@ public record NotificationRule(
         List<NotificationChannel> channels,
         String title,
         String body,
-        String targetType) {
+        String targetType,
+        /**
+         * The payload field holding what the notification should open, when that
+         * is not the event's own aggregate.
+         *
+         * <p>A delivery event's aggregate is the delivery, but every screen either
+         * side has for it is keyed by the order — so a notification pointing at
+         * the delivery id opens {@code /tracking/2} when it meant order 5, which
+         * is a different restaurant's order. Null means the aggregate is right,
+         * which it is for most events.
+         */
+        String targetIdField) {
+
+    /** Most events point at their own aggregate. */
+    public NotificationRule(String eventType, Audience audience, NotificationCategory category,
+                            boolean critical, List<NotificationChannel> channels,
+                            String title, String body, String targetType) {
+        this(eventType, audience, category, critical, channels, title, body, targetType, null);
+    }
 
     /** Which side of a transaction is being told. */
     public enum Audience {

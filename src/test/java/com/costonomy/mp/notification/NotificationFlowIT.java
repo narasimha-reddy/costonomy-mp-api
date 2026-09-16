@@ -100,6 +100,87 @@ class NotificationFlowIT extends AbstractIntegrationTest {
         return api.get(token, "/api/v1/notifications").at("/data");
     }
 
+    // ── Where a notification leads ───────────────────────────────────────
+
+    @Nested
+    @DisplayName("targets")
+    class Targets {
+
+        @Test
+        @DisplayName("a delivery notification points at the order, not the delivery")
+        void deliveryPointsAtTheOrder() throws Exception {
+            var buyer = newBuyer();
+
+            // Aggregate 77 is the delivery; the order it carries is 5. Neither side
+            // has a screen keyed by a delivery — the restaurant tracks
+            // /tracking/{orderId} and the supplier opens /orders/{orderId} — so a
+            // notification pointing at 77 opened order 77: someone else's order,
+            // behind a link that looked like it worked.
+            publish("DeliveryDelivered", "Delivery", 77, Map.of(
+                    "outletId", buyer.outletId(), "deliveryId", 77,
+                    "supplierOrderId", 5, "status", "DELIVERED",
+                    "description", "Arrived"));
+
+            var first = inbox(buyer.token()).get("notifications").get(0);
+            assertThat(first.get("targetType").asText()).isEqualTo("DELIVERY");
+            assertThat(first.get("targetId").asLong()).isEqualTo(5);
+        }
+
+        @Test
+        @DisplayName("every notification says which side it was written for")
+        void audienceIsStated() throws Exception {
+            var buyer = newBuyer();
+
+            // The client cannot work this out. Routing by the *viewer's* role sends
+            // a supplier to a restaurant URL, and someone who is both has no single
+            // role to route by — which is how every notification came to open the
+            // home screen instead of the thing it named.
+            publish("DeliveryDelivered", "Delivery", 78, Map.of(
+                    "outletId", buyer.outletId(), "deliveryId", 78,
+                    "supplierOrderId", 6, "status", "DELIVERED",
+                    "description", "Arrived"));
+
+            assertThat(inbox(buyer.token()).get("notifications").get(0)
+                    .get("audience").asText()).isEqualTo("OUTLET");
+        }
+
+        @Test
+        @DisplayName("an event told to both sides labels each copy correctly")
+        void bothSidesAreLabelledSeparately() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller();
+
+            // SupplierOrderExpired is the one event with a rule per side: the
+            // restaurant is told their order expired, the supplier that they missed
+            // it. Deriving the audience from the event type returns whichever rule
+            // is declared first, so one of these two copies is always mislabelled —
+            // and a mislabelled copy sends its reader to the other side's URL.
+            publish("SupplierOrderExpired", "SupplierOrder", 91, Map.of(
+                    "outletId", buyer.outletId(), "supplierStoreId", seller.storeId(),
+                    "orderNumber", "MP-TEST-000091", "supplierName", "ABC Foods"));
+
+            assertThat(inbox(buyer.token()).get("notifications").get(0)
+                    .get("audience").asText()).isEqualTo("OUTLET");
+            assertThat(inbox(seller.token()).get("notifications").get(0)
+                    .get("audience").asText()).isEqualTo("SUPPLIER_STORE");
+        }
+
+        @Test
+        @DisplayName("a missing target field falls back to the aggregate rather than dropping the event")
+        void missingTargetFieldFallsBack() throws Exception {
+            var buyer = newBuyer();
+
+            // The payload changed shape. An inbox row that opens the wrong thing is
+            // still better than an event nobody is ever told about.
+            publish("DeliveryDelivered", "Delivery", 79, Map.of(
+                    "outletId", buyer.outletId(), "deliveryId", 79,
+                    "status", "DELIVERED", "description", "Arrived"));
+
+            var first = inbox(buyer.token()).get("notifications").get(0);
+            assertThat(first.get("targetId").asLong()).isEqualTo(79);
+        }
+    }
+
     // ── Who gets told ────────────────────────────────────────────────────
 
     @Nested

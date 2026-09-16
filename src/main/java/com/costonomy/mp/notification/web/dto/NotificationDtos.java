@@ -29,6 +29,17 @@ public final class NotificationDtos {
             String body,
             String targetType,
             Long targetId,
+            /**
+             * Which side of the trade was told: {@code OUTLET} or
+             * {@code SUPPLIER_STORE}.
+             *
+             * <p>Sent because the client cannot work it out. A screen that routes
+             * by *the viewer's* role sends a supplier to a restaurant URL, and
+             * someone who is both a supplier and a restaurant has no role to route
+             * by at all. The notification already knew who it was for — this stops
+             * that being thrown away.
+             */
+            String audience,
             boolean critical,
             boolean read,
             Instant createdAt) {

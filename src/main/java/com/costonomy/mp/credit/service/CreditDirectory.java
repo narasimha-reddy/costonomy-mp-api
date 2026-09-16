@@ -48,34 +48,57 @@ public class CreditDirectory {
             String storeName,
             Long supplierOrganizationId,
             String supplierName,
-            boolean tradeable) {
+            boolean tradeable,
+            /** The store's position, so a caller can measure the leg to an outlet. */
+            BigDecimal latitude,
+            BigDecimal longitude) {
     }
 
     public StoreInfo store(Long supplierStoreId) {
         var rows = jdbc.query("""
-                select s.id, s.name, o.id, o.display_name, s.status, o.lifecycle_status
+                select s.id, s.name, o.id, o.display_name, s.status, o.lifecycle_status,
+                       s.latitude, s.longitude
                   from supplier_store s
                   join supplier_organization o on o.id = s.supplier_organization_id
                  where s.id = ?
                 """,
                 (rs, row) -> new StoreInfo(rs.getLong(1), rs.getString(2), rs.getLong(3),
                         rs.getString(4),
-                        "ACTIVE".equals(rs.getString(5)) && "ACTIVE".equals(rs.getString(6))),
+                        "ACTIVE".equals(rs.getString(5)) && "ACTIVE".equals(rs.getString(6)),
+                        rs.getBigDecimal(7), rs.getBigDecimal(8)),
                 supplierStoreId);
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    public record OutletInfo(Long outletId, String outletName, Long restaurantId, String restaurantName) {
+    /**
+     * @param locality the landmark where one was given, else the street line —
+     *                 the same shape an incoming order carries, so a supplier
+     *                 reads "who and where" identically wherever a restaurant
+     *                 appears
+     */
+    public record OutletInfo(
+            Long outletId,
+            String outletName,
+            Long restaurantId,
+            String restaurantName,
+            String locality,
+            String city,
+            BigDecimal latitude,
+            BigDecimal longitude) {
     }
 
     public OutletInfo outlet(Long outletId) {
         var rows = jdbc.query("""
-                select o.id, o.name, r.id, r.name
+                select o.id, o.name, r.id, r.name, o.landmark, o.address_line1, o.city,
+                       o.latitude, o.longitude
                   from outlet o join restaurant r on r.id = o.restaurant_id
                  where o.id = ?
                 """,
                 (rs, row) -> new OutletInfo(rs.getLong(1), rs.getString(2),
-                        rs.getLong(3), rs.getString(4)),
+                        rs.getLong(3), rs.getString(4),
+                        rs.getString(5) != null ? rs.getString(5) : rs.getString(6),
+                        rs.getString(7),
+                        rs.getBigDecimal(8), rs.getBigDecimal(9)),
                 outletId);
         return rows.isEmpty() ? null : rows.get(0);
     }

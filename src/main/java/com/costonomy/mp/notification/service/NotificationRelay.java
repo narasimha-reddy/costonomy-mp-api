@@ -103,7 +103,10 @@ public class NotificationRelay {
         notification.setTitle(rule.title());
         notification.setBody(rule.render(fields));
         notification.setTargetType(rule.targetType());
-        notification.setTargetId(envelope.aggregateId());
+        notification.setTargetId(targetIdFor(rule, envelope, fields));
+        // The rule that produced this row is the only thing that knows which
+        // side it was written for, and one event has a rule for each.
+        notification.setAudience(rule.audience().name());
         notification.setCritical(rule.critical());
 
         Notification saved;
@@ -132,6 +135,39 @@ public class NotificationRelay {
     }
 
     /** One delivery row per destination: a user with two phones gets two pushes. */
+    /**
+     * What this notification should open.
+     *
+     * <p>The event's own aggregate, unless the rule names a payload field instead.
+     * A delivery event's aggregate is the delivery, and neither side has a screen
+     * keyed by one — so those rules point at the order, and a notification that
+     * says "a driver is collecting your order" opens that order.
+     *
+     * <p>Falls back to the aggregate rather than failing: a missing or unreadable
+     * field means the payload changed shape, and an inbox row that opens the wrong
+     * thing is still better than an event that is never delivered.
+     */
+    private Long targetIdFor(NotificationRule rule,
+                             OutboxPublisher.DomainEventEnvelope envelope,
+                             Map<String, String> fields) {
+        if (rule.targetIdField() == null) {
+            return envelope.aggregateId();
+        }
+        String raw = fields.get(rule.targetIdField());
+        if (raw == null || raw.isBlank()) {
+            log.warn("{} names target field {} but the payload has none",
+                    rule.eventType(), rule.targetIdField());
+            return envelope.aggregateId();
+        }
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            log.warn("{} target field {} is not a number: {}",
+                    rule.eventType(), rule.targetIdField(), raw);
+            return envelope.aggregateId();
+        }
+    }
+
     private void queue(Notification notification, Long userId, NotificationChannel channel) {
         if (channel == NotificationChannel.PUSH) {
             var devices = audience.devicesOf(userId);

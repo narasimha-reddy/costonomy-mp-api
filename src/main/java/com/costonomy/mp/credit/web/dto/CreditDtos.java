@@ -86,6 +86,17 @@ public final class CreditDtos {
             Long id,
             Long outletId,
             String outletName,
+            /**
+             * Who and where, in the shape an incoming order already uses.
+             * <p>A supplier deciding on credit is deciding about a restaurant, and
+             * the outlet's own name — whatever they chose to call it — is not
+             * enough to know who is asking or how far away they are.
+             */
+            String restaurantName,
+            String outletLocality,
+            String outletCity,
+            /** Kilometres from this store to the outlet, or null when unlocated. */
+            BigDecimal distanceKm,
             Long supplierStoreId,
             String storeName,
             String supplierName,

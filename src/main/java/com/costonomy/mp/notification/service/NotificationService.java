@@ -72,6 +72,7 @@ public class NotificationService {
                 notification.getId(), notification.getCategory(), notification.getEventType(),
                 notification.getTitle(), notification.getBody(),
                 notification.getTargetType(), notification.getTargetId(),
+                notification.getAudience(),
                 Boolean.TRUE.equals(notification.getCritical()),
                 notification.getReadAt() != null, notification.getCreatedAt());
     }

@@ -153,38 +153,38 @@ public final class NotificationRules {
         add(rules, new NotificationRule("DriverAssigned", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
                 "Driver on the way",
-                "A driver is collecting your order.", "DELIVERY"));
+                "A driver is collecting your order.", "DELIVERY", "supplierOrderId"));
 
         add(rules, new NotificationRule("DeliveryDelivered", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
                 "Delivered",
-                "Your order has arrived. Check it in when you're ready.", "DELIVERY"));
+                "Your order has arrived. Check it in when you're ready.", "DELIVERY", "supplierOrderId"));
 
         add(rules, new NotificationRule("DeliveryProviderUnavailable", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
                 "Delivery problem",
-                "We couldn't find a delivery partner for your order. {description}", "DELIVERY"));
+                "We couldn't find a delivery partner for your order. {description}", "DELIVERY", "supplierOrderId"));
 
         add(rules, new NotificationRule("DeliveryReassigned", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
                 "New driver",
-                "Your delivery partner is being reassigned.", "DELIVERY"));
+                "Your delivery partner is being reassigned.", "DELIVERY", "supplierOrderId"));
 
         // ── Trust ────────────────────────────────────────────────────────
         add(rules, new NotificationRule("DisputeCreated", SUPPLIER_STORE, MARKETPLACE, true,
                 List.of(IN_APP, PUSH),
                 "Dispute raised",
-                "A restaurant raised a {category} dispute on order {disputeNumber}.", "DISPUTE"));
+                "A restaurant raised a {category} dispute on order {disputeNumber}.", "DISPUTE", "supplierOrderId"));
 
         add(rules, new NotificationRule("DisputeResponded", OUTLET, MARKETPLACE, true,
                 List.of(IN_APP, PUSH),
                 "Dispute answered",
-                "Your supplier responded to dispute {disputeNumber}.", "DISPUTE"));
+                "Your supplier responded to dispute {disputeNumber}.", "DISPUTE", "supplierOrderId"));
 
         add(rules, new NotificationRule("DisputeResolved", SUPPLIER_STORE, MARKETPLACE, false,
                 List.of(IN_APP),
                 "Dispute resolved",
-                "Dispute {disputeNumber} was closed.", "DISPUTE"));
+                "Dispute {disputeNumber} was closed.", "DISPUTE", "supplierOrderId"));
 
         add(rules, new NotificationRule("ReceivingCompleted", SUPPLIER_STORE, ORDERS, false,
                 List.of(IN_APP),

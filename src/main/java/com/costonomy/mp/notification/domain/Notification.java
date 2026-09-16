@@ -49,6 +49,17 @@ public class Notification extends BaseEntity {
     @Column(name = "target_type", length = 64)
     private String targetType;
 
+    /**
+     * Which side of the trade was told: {@code OUTLET} or {@code SUPPLIER_STORE}.
+     *
+     * <p>Stored, not derived. {@code SupplierOrderExpired} has a rule for each
+     * side, so the event type alone cannot say which one wrote this row — and the
+     * client cannot work it out either, because someone who is both a supplier and
+     * a restaurant has no single role to route by.
+     */
+    @Column(name = "audience", length = 32)
+    private String audience;
+
     @Column(name = "target_id")
     private Long targetId;
 

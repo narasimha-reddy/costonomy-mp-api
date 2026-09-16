@@ -11,12 +11,14 @@ import com.costonomy.mp.common.outbox.OutboxService;
 import com.costonomy.mp.credit.domain.*;
 import com.costonomy.mp.credit.repository.*;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
+import com.costonomy.mp.discovery.domain.Serviceability;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -576,6 +578,23 @@ public class CreditAgreementService {
         throw new NotFoundException("CreditAgreement", agreementId);
     }
 
+    /**
+     * The leg from the store to the outlet, in kilometres to one decimal.
+     *
+     * <p>Null when either end has no coordinates. An outlet that was never
+     * located has no distance, and rounding an unknown to "0.0 km" would tell a
+     * supplier the restaurant is next door (doc 07 §4).
+     */
+    private BigDecimal distanceKm(CreditDirectory.StoreInfo store,
+                                  CreditDirectory.OutletInfo outlet) {
+        if (store == null || outlet == null) {
+            return null;
+        }
+        Double km = Serviceability.distanceKm(
+                store.latitude(), store.longitude(), outlet.latitude(), outlet.longitude());
+        return km == null ? null : BigDecimal.valueOf(km).setScale(1, RoundingMode.HALF_UP);
+    }
+
     private CreditDtos.AgreementResponse toResponse(CreditAgreement agreement, CreditRequest request) {
         var store = directory.store(agreement.getSupplierStoreId());
         var outlet = directory.outlet(agreement.getOutletId());
@@ -586,6 +605,10 @@ public class CreditAgreementService {
         return new CreditDtos.AgreementResponse(
                 agreement.getId(), agreement.getOutletId(),
                 outlet == null ? null : outlet.outletName(),
+                outlet == null ? null : outlet.restaurantName(),
+                outlet == null ? null : outlet.locality(),
+                outlet == null ? null : outlet.city(),
+                distanceKm(store, outlet),
                 agreement.getSupplierStoreId(),
                 store == null ? null : store.storeName(),
                 store == null ? null : store.supplierName(),
