@@ -211,6 +211,27 @@ public final class ProcurementDtos {
             Long supplierStoreId,
             String supplierName,
             String storeName,
+            /**
+             * Where the order is going.
+             * <p>The order number identifies the order to a system; the outlet and
+             * the restaurant identify it to a person, which is what a card has to
+             * do. Carried here as well as on {@link IncomingOrderResponse} because
+             * a restaurant with several outlets reads its own orders by outlet too.
+             */
+            Long outletId,
+            String outletName,
+            String restaurantName,
+            /** Landmark, else the street line. Where the van actually goes. */
+            String outletLocality,
+            String outletCity,
+            /**
+             * Kilometres from the supplier's store to the outlet, one decimal.
+             * <p>Great-circle, so it is the leg as the crow flies rather than a
+             * driving distance — enough to judge whether an order is worth taking
+             * inside a sixty-second window, and honestly {@code null} when either
+             * end has no coordinates rather than a fabricated zero (doc 06 §8).
+             */
+            BigDecimal distanceKm,
             SupplierOrderStatus status,
             /** The authoritative deadline. The client counts down to this, not to a local timer. */
             Instant acceptanceDeadline,
@@ -275,6 +296,10 @@ public final class ProcurementDtos {
             Long outletId,
             String outletName,
             String restaurantName,
+            String outletLocality,
+            String outletCity,
+            /** Kilometres from this store to the outlet, or null when unknown. */
+            BigDecimal distanceKm,
             SupplierOrderStatus status,
             Instant acceptanceDeadline,
             Integer responseSlaSeconds,
@@ -282,6 +307,15 @@ public final class ProcurementDtos {
             BigDecimal subtotal,
             BigDecimal gstAmount,
             BigDecimal totalAmount,
+            /**
+             * What the supplier committed to, below {@code totalAmount} after a
+             * partial acceptance and zero before any answer.
+             * <p>Without it a client listing accepted orders can only show the
+             * requested total, which overstates a partial acceptance — and a
+             * supplier reading their own workload off that figure is reading a
+             * number they never agreed to.
+             */
+            BigDecimal acceptedAmount,
             String paymentMethod,
             List<SupplierOrderItemResponse> items) {
     }

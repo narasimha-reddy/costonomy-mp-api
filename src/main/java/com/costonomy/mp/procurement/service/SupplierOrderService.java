@@ -198,9 +198,10 @@ public class SupplierOrderService {
                 order.getId(), order.getOrderNumber(), order.getOutletId(),
                 outlet == null ? null : outlet.outletName(),
                 outlet == null ? null : outlet.restaurantName(),
+                full.outletLocality(), full.outletCity(), full.distanceKm(),
                 order.getStatus(), order.getAcceptanceDeadline(), order.getResponseSlaSeconds(),
                 remaining, order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
-                order.getPaymentMethod(), full.items());
+                order.getAcceptedAmount(), order.getPaymentMethod(), full.items());
     }
 
     @Transactional(readOnly = true)

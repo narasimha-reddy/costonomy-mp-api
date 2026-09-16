@@ -1,6 +1,7 @@
 package com.costonomy.mp.procurement.service;
 
 import com.costonomy.mp.catalog.repository.CanonicalProductRepository;
+import com.costonomy.mp.discovery.domain.Serviceability;
 import com.costonomy.mp.catalog.repository.SupplierSkuRepository;
 import com.costonomy.mp.procurement.domain.Procurement;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
@@ -11,6 +12,8 @@ import com.costonomy.mp.procurement.web.dto.ProcurementDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +41,7 @@ public class SupplierOrderMapper {
         var items = supplierOrderItems.findBySupplierOrderId(order.getId());
         var store = directory.stores(List.of(order.getSupplierStoreId()))
                 .get(order.getSupplierStoreId());
+        var outlet = directory.outletSummary(order.getOutletId());
 
         Map<Long, String> productNames = new HashMap<>();
         products.findAllById(items.stream()
@@ -52,6 +56,12 @@ public class SupplierOrderMapper {
                 order.getId(), order.getOrderNumber(), order.getSupplierStoreId(),
                 store == null ? null : store.supplierName(),
                 store == null ? null : store.storeName(),
+                order.getOutletId(),
+                outlet == null ? null : outlet.outletName(),
+                outlet == null ? null : outlet.restaurantName(),
+                outlet == null ? null : outlet.locality(),
+                outlet == null ? null : outlet.city(),
+                distanceKm(store, outlet),
                 order.getStatus(), order.getAcceptanceDeadline(), order.getResponseSlaSeconds(),
                 order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
                 order.getAcceptedAmount(), order.getPaymentMethod(), order.getPaymentStatus(),
@@ -64,6 +74,23 @@ public class SupplierOrderMapper {
                                 item.getUnit(), item.getUnitPriceSnapshot(),
                                 item.getGstRateSnapshot(), item.getLineTotal(), item.getStatus()))
                         .toList());
+    }
+
+    /**
+     * The leg from the store to the outlet, in kilometres to one decimal.
+     *
+     * <p>Null when either end has no coordinates — an outlet that was never
+     * located has no distance, and rounding an unknown to "0.0 km" would tell a
+     * supplier the order is next door (doc 07 §4: never fabricate a signal).
+     */
+    private BigDecimal distanceKm(ProcurementDirectory.StoreInfo store,
+                                  ProcurementDirectory.OutletSummary outlet) {
+        if (store == null || outlet == null) {
+            return null;
+        }
+        Double km = Serviceability.distanceKm(
+                store.latitude(), store.longitude(), outlet.latitude(), outlet.longitude());
+        return km == null ? null : BigDecimal.valueOf(km).setScale(1, RoundingMode.HALF_UP);
     }
 
     /**

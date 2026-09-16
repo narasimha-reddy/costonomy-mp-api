@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -105,6 +106,22 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NoHandlerFoundException.class)
     public ResponseEntity<ApiResponse<Void>> handleNoHandler(NoHandlerFoundException ex) {
         log.warn("No handler for {} {}", ex.getHttpMethod(), ex.getRequestURL());
+        return respond(ErrorCode.RESOURCE_NOT_FOUND, ErrorCode.RESOURCE_NOT_FOUND.defaultMessage(), Map.of());
+    }
+
+    /**
+     * A URL that matches no controller.
+     *
+     * <p>Spring only raises {@link NoHandlerFoundException} when
+     * {@code throw-exception-if-no-handler-found} is set; otherwise an unmatched
+     * path falls through to the static resource resolver, which throws this
+     * instead — and unmapped, it reached the catch-all as a **500**. A client
+     * calling a path that does not exist was told our server had failed and that
+     * retrying might help, when the only thing that could help was fixing the URL.
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNoResource(NoResourceFoundException ex) {
+        log.warn("No handler for {}", ex.getResourcePath());
         return respond(ErrorCode.RESOURCE_NOT_FOUND, ErrorCode.RESOURCE_NOT_FOUND.defaultMessage(), Map.of());
     }
 

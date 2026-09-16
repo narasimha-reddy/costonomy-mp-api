@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.*;
 
 /**
@@ -29,7 +30,10 @@ public class ProcurementDirectory {
             String storeName,
             String supplierName,
             boolean tradeable,
-            Integer responseSlaSeconds) {
+            Integer responseSlaSeconds,
+            /** The store's own position, so a caller can measure the leg to an outlet. */
+            BigDecimal latitude,
+            BigDecimal longitude) {
     }
 
     public Map<Long, StoreInfo> stores(List<Long> storeIds) {
@@ -41,7 +45,7 @@ public class ProcurementDirectory {
         Map<Long, StoreInfo> result = new HashMap<>();
         jdbc.query("""
                 select s.id, s.name, o.display_name, s.status, o.lifecycle_status,
-                       s.response_sla_seconds
+                       s.response_sla_seconds, s.latitude, s.longitude
                   from supplier_store s
                   join supplier_organization o on o.id = s.supplier_organization_id
                  where s.id in (%s)
@@ -53,21 +57,42 @@ public class ProcurementDirectory {
                     result.put(rs.getLong(1), new StoreInfo(
                             rs.getLong(1), rs.getString(2), rs.getString(3),
                             "ACTIVE".equals(rs.getString(4)) && "ACTIVE".equals(rs.getString(5)),
-                            rs.getInt(6)));
+                            rs.getInt(6), rs.getBigDecimal(7), rs.getBigDecimal(8)));
                 },
                 storeIds.toArray());
         return result;
     }
 
-    public record OutletSummary(String outletName, String restaurantName) {
+    /**
+     * @param locality the landmark where one was given, else the street line —
+     *                 the supplier is dispatching a van, and "Indiranagar Main
+     *                 Road" answers that question where an outlet's own name,
+     *                 which is whatever the restaurant chose to call it, may not
+     */
+    public record OutletSummary(
+            String outletName,
+            String restaurantName,
+            String locality,
+            String city,
+            BigDecimal latitude,
+            BigDecimal longitude) {
     }
 
-    /** Names for the supplier's view of an incoming order (doc 05 §25). */
+    /** Names and whereabouts for the supplier's view of an incoming order (doc 05 §25). */
     public OutletSummary outletSummary(Long outletId) {
-        var rows = jdbc.query(
-                "select o.name, r.name from outlet o "
-                        + "join restaurant r on r.id = o.restaurant_id where o.id = ?",
-                (rs, i) -> new OutletSummary(rs.getString(1), rs.getString(2)), outletId);
+        var rows = jdbc.query("""
+                select o.name, r.name, o.landmark, o.address_line1, o.city,
+                       o.latitude, o.longitude
+                  from outlet o
+                  join restaurant r on r.id = o.restaurant_id
+                 where o.id = ?
+                """,
+                (rs, i) -> new OutletSummary(
+                        rs.getString(1), rs.getString(2),
+                        rs.getString(3) != null ? rs.getString(3) : rs.getString(4),
+                        rs.getString(5),
+                        rs.getBigDecimal(6), rs.getBigDecimal(7)),
+                outletId);
         return rows.isEmpty() ? null : rows.get(0);
     }
 

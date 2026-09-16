@@ -1928,6 +1928,94 @@ apart.
 
 ---
 
+## D-076 — An order card leads with the place, not the order number
+**2026-09-16 · Settled**
+
+Every order card led with `MP-260915-000004`. Nobody recognises that string. A
+supplier scanning a list of incoming orders is asking three things — who is this
+for, where is it going, and what is on it — and the number answered none of them.
+
+**Decision: the card is ordered by what the reader is actually asking.**
+
+1. **The outlet**, which on the supplier's side is where the van goes.
+2. **The counterparty, the locality and the distance** — "Spice Garden · 100 Feet
+   Road · 5.1 km". The locality is the landmark where one exists, else the street
+   line, because an outlet's own name is whatever the restaurant chose to call it.
+3. **The goods, by name.** "3 items" tells a supplier nothing they can decide on;
+   the decision is about *which* goods. Three names fit a line at phone width, and
+   the overflow count is what is **hidden**, not the total — six items shown three
+   at a time reads `+3`.
+4. **The order number and the payment method**, on a line of their own.
+
+On the restaurant's side the counterparty is the supplier, so that leads and the
+outlet moves down — the same principle, the other party.
+
+**The payment method is colour-coded, and neither colour is red.** Prepaid money
+is secured; a credit order is a receivable against a limit the supplier granted.
+Green and amber say which. Nothing has gone wrong in either case.
+
+**Distance is null when either end is unlocated**, never zero. Doc 07 §4 — an
+outlet that was never given coordinates has no distance, and "0 km" would tell a
+supplier the order is next door.
+
+One shared component, so the four places an order appears cannot drift apart.
+
+### The layout bug this exposed
+The first attempt put all three text lines in a column beside the status chip.
+That narrowed *every* line by the chip's width, and the first casualty was the
+end of the secondary line — the payment method. Only the title shares a row with
+the chip now.
+
+---
+
+## D-077 — `IncomingOrderResponse` is not `SupplierOrderResponse`
+**2026-09-16 · Settled**
+
+The supplier's pending and active endpoints return `IncomingOrderResponse`. The
+mobile client typed both as `SupplierOrder`. The compiler was happy — the fields
+it used all existed on the type it had named — and the app read
+`order.acceptedAmount`, which that response did not carry.
+
+The effect: a **partially accepted order showed the full requested total.** Order
+`MP-260915-000004` was 2 of 4 accepted, worth ₹809.34, and the supplier's own
+list showed ₹1,618.68 — a figure they had explicitly declined to commit to.
+
+**Decision: `IncomingOrder` is its own model, mirroring its own DTO**, and
+`acceptedAmount` is now on the response so the number can be rendered rather than
+inferred. This is D-061 again, and the same lesson: a model is written by reading
+the DTO it mirrors, never by finding a type that compiles.
+
+The general rule this makes explicit: **two responses describing the same row
+from opposite sides of a trade are two contracts, not one.** The supplier's view
+carries the buyer and a countdown; the restaurant's carries the seller and a
+payment status. Sharing a model between them means every screen silently reads
+fields that may not arrive.
+
+---
+
+## D-078 — An unmatched URL is 404, including the ones Spring does not route
+**2026-09-16 · Settled**
+
+`GET /api/v1/search` — a path that does not exist — returned **500
+INTERNAL_ERROR**, telling the caller our server had failed and that retrying
+might help, when the only thing that could help was fixing the URL.
+
+The cause is that `NoHandlerFoundException`, which the handler did map, is only
+raised when `throw-exception-if-no-handler-found` is set. Otherwise an unmatched
+path falls through to the static resource resolver, which raises
+`NoResourceFoundException` instead — unmapped, so it reached the catch-all.
+
+**Decision: both are mapped to `RESOURCE_NOT_FOUND`.**
+
+The test is an integration test and it authenticates, because unauthenticated the
+security filter answers 401 before the dispatcher ever looks for a handler. That
+is correct behaviour and it is also why the bug survived: it only appears past
+the filter, which is exactly where every real client is. A unit test over the
+error catalogue could not have caught it — the mapping that was missing lives in
+the dispatcher, not in the enum.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 
