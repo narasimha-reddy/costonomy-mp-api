@@ -349,6 +349,117 @@ def seed_credit_request(token, outlet_id, supplier_term):
 OPERATOR_PHONE = "+919876599001"
 
 
+# Canonical product imagery.
+#
+# Platform-owned (doc 01 §7): the picture belongs to the product every supplier
+# maps onto, not to one supplier's SKU, so two suppliers' paneer show the same
+# paneer and the comparison stays a comparison.
+#
+# Every URL was looked at before it was written down. What that rejected is the
+# point of saying so: a cooked dish standing in for its raw ingredient, a branded
+# pack (which would advantage that brand's supplier), a duck leg returned for
+# "mutton", peanut butter returned for "groundnut oil". **Jaggery has no entry** —
+# nothing in the source was unambiguously jaggery rather than confectionery, and
+# a wrong picture on a product a restaurant orders from is worse than none.
+#
+# These are development seed images hot-linked from Unsplash's CDN under the
+# Unsplash Licence (free, commercial use, no attribution required; none are
+# Unsplash+). Production wants owned, consistently-lit photography — a marketplace
+# where every product is shot differently looks like a marketplace with one
+# product photographed badly.
+PRODUCT_IMAGES = {
+    "Dishwash Liquid":
+        "https://images.unsplash.com/photo-1590610994353-7b0e7546e681?auto=format&fit=crop&w=320&h=320&q=70",
+    "Floor Cleaner":
+        "https://images.unsplash.com/photo-1563453392212-326f5e854473?auto=format&fit=crop&w=320&h=320&q=70",
+    "Hand Wash":
+        "https://images.unsplash.com/photo-1725940889761-35d90aead72d?auto=format&fit=crop&w=320&h=320&q=70",
+    "Paneer":
+        "https://images.unsplash.com/photo-1661349008073-136bed6e6788?auto=format&fit=crop&w=320&h=320&q=70",
+    "Fresh Cream":
+        "https://images.unsplash.com/photo-1633893215271-f7e1fca081ad?auto=format&fit=crop&w=320&h=320&q=70",
+    "Processed Cheese":
+        "https://images.unsplash.com/photo-1683314573422-649a3c6ad784?auto=format&fit=crop&w=320&h=320&q=70",
+    "Curd":
+        "https://images.unsplash.com/photo-1571212515416-fef01fc43637?auto=format&fit=crop&w=320&h=320&q=70",
+    "Butter":
+        "https://images.unsplash.com/photo-1662490880638-db5aa5ed08eb?auto=format&fit=crop&w=320&h=320&q=70",
+    "Toned Milk":
+        "https://images.unsplash.com/photo-1634141510639-d691d86f47be?auto=format&fit=crop&w=320&h=320&q=70",
+    "Basmati Rice":
+        "https://images.unsplash.com/photo-1586201375761-83865001e31c?auto=format&fit=crop&w=320&h=320&q=70",
+    "Sona Masoori Rice":
+        "https://images.unsplash.com/photo-1586201375761-83865001e31c?auto=format&fit=crop&w=320&h=320&q=70",
+    "Refined Wheat Flour":
+        "https://images.unsplash.com/photo-1714842981153-ffeaf74e7a1a?auto=format&fit=crop&w=320&h=320&q=70",
+    "Whole Wheat Flour":
+        "https://images.unsplash.com/photo-1627485937980-221c88ac04f9?auto=format&fit=crop&w=320&h=320&q=70",
+    "Toor Dal":
+        "https://images.unsplash.com/photo-1612869538502-b5baa439abd7?auto=format&fit=crop&w=320&h=320&q=70",
+    "Chana Dal":
+        "https://images.unsplash.com/photo-1701166175567-2f55dd40e662?auto=format&fit=crop&w=320&h=320&q=70",
+    "Chicken Curry Cut":
+        "https://images.unsplash.com/photo-1624364543842-b0472614eb68?auto=format&fit=crop&w=320&h=320&q=70",
+    "Chicken Boneless":
+        "https://images.unsplash.com/photo-1682991136736-a2b44623eeba?auto=format&fit=crop&w=320&h=320&q=70",
+    "Mutton Curry Cut":
+        "https://images.unsplash.com/photo-1600180786608-28d06391d25c?auto=format&fit=crop&w=320&h=320&q=70",
+    "Refined Sunflower Oil":
+        "https://images.unsplash.com/photo-1552592074-ea7a91b851b3?auto=format&fit=crop&w=320&h=320&q=70",
+    "Groundnut Oil":
+        "https://images.unsplash.com/photo-1611608927037-4e8da6aa170e?auto=format&fit=crop&w=320&h=320&q=70",
+    "Ghee":
+        "https://images.unsplash.com/photo-1736752346246-61f4daedfde0?auto=format&fit=crop&w=320&h=320&q=70",
+    "Aluminium Foil Container":
+        "https://images.unsplash.com/photo-1779939855736-ff7b1dffcb42?auto=format&fit=crop&w=320&h=320&q=70",
+    "Paper Carry Bag":
+        "https://images.unsplash.com/photo-1544816155-12df9643f363?auto=format&fit=crop&w=320&h=320&q=70",
+    "Red Chilli Powder":
+        "https://images.unsplash.com/photo-1607672632458-9eb56696346b?auto=format&fit=crop&w=320&h=320&q=70",
+    "Turmeric Powder":
+        "https://images.unsplash.com/photo-1615485500834-bc10199bc727?auto=format&fit=crop&w=320&h=320&q=70",
+    "Coriander Powder":
+        "https://images.unsplash.com/photo-1704650312022-ed1a76dbed1b?auto=format&fit=crop&w=320&h=320&q=70",
+    "Garam Masala":
+        "https://images.unsplash.com/photo-1592457711340-2412dc07b733?auto=format&fit=crop&w=320&h=320&q=70",
+    "Sugar":
+        "https://images.unsplash.com/photo-1634612831148-03a8550e1d52?auto=format&fit=crop&w=320&h=320&q=70",
+    "Onion":
+        "https://images.unsplash.com/photo-1580201092675-a0a6a6cafbb1?auto=format&fit=crop&w=320&h=320&q=70",
+    "Tomato":
+        "https://images.unsplash.com/photo-1607305387299-a3d9611cd469?auto=format&fit=crop&w=320&h=320&q=70",
+    "Potato":
+        "https://images.unsplash.com/photo-1518977676601-b53f82aba655?auto=format&fit=crop&w=320&h=320&q=70",
+    "Ginger":
+        "https://images.unsplash.com/photo-1630623093145-f606591c2546?auto=format&fit=crop&w=320&h=320&q=70",
+    "Garlic":
+        "https://images.unsplash.com/photo-1540148426945-6cf22a6b2383?auto=format&fit=crop&w=320&h=320&q=70"
+}
+
+
+def seed_product_images():
+    """Give every canonical product a face, through the ops API.
+
+    Not SQL: setting a canonical image is an operator action with an audit
+    trail, and using the endpoint here is what proves the endpoint works.
+    """
+    token = login(OPERATOR_PHONE)
+    products = {p["name"]: p["id"] for p in call("/products?size=200", token=token)}
+
+    set_count = 0
+    for name, url in PRODUCT_IMAGES.items():
+        pid = products.get(name)
+        if pid is None:
+            print(f"  no canonical product named {name!r} — skipped")
+            continue
+        call(f"/admin/catalog/products/{pid}/image",
+             {"imageUrl": url, "reason": "Local seed imagery"}, token=token, method="PUT")
+        set_count += 1
+    missing = sorted(set(products) - set(PRODUCT_IMAGES))
+    print(f"  {set_count} product images set"
+          + (f"; no image for {', '.join(missing)}" if missing else ""))
+
+
 def seed_operator():
     """A local operations account, so delivery simulation is reachable.
 
@@ -399,6 +510,7 @@ def main():
         seed_credit_request(token, outlet_id, spec["credit_from"])
 
     seed_operator()
+    seed_product_images()
 
     print("\nDone. Sign in on the app with any number; the OTP is", OTP)
 

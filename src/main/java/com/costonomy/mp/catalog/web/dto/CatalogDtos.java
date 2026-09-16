@@ -123,7 +123,23 @@ public final class CatalogDtos {
             String brandName,
             BigDecimal packSize,
             String packUnit,
+            /**
+             * This SKU's own picture — the supplier's pack, as they sell it.
+             * <p>Usually null. Most suppliers never photograph their packs, which
+             * is why {@link #canonicalProductImageUrl} exists beside it.
+             */
             String imageUrl,
+            /**
+             * The canonical product's picture, so a listing has a face even when
+             * the supplier has not given it one.
+             * <p>Free to include — the product is already loaded for its name —
+             * and it is what makes "the SKU's image, else the product's" a
+             * decision the client can take without a second request. The two are
+             * kept separate rather than merged server-side: a screen showing a
+             * supplier what they have uploaded must be able to tell the
+             * difference between their picture and the platform's.
+             */
+            String canonicalProductImageUrl,
             String status,
             BigDecimal sellingPrice,
             BigDecimal gstRate,

@@ -344,6 +344,14 @@ public final class ProcurementDtos {
             Long id,
             Long canonicalProductId,
             String productName,
+            /**
+             * The canonical product's picture, or null when it has none.
+             * <p>Platform-owned (doc 01 §7): the image belongs to the product every
+             * supplier maps onto, not to any one supplier's SKU, so two suppliers'
+             * paneer show the same paneer. Carried on the line because a client
+             * rendering an order must not make one request per item to draw it.
+             */
+            String productImageUrl,
             String skuName,
             BigDecimal requestedQuantity,
             /** Null until the supplier answers; zero means they declined this line. */

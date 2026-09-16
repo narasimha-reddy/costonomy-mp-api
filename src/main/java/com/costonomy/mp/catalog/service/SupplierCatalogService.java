@@ -85,7 +85,7 @@ public class SupplierCatalogService {
         sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
         sku.setPackSize(request.packSize());
         sku.setPackUnit(request.packUnit());
-        sku.setImageUrl(request.imageUrl());
+        sku.setImageUrl(blankToNull(request.imageUrl()));
 
         try {
             skus.saveAndFlush(sku);
@@ -128,7 +128,11 @@ public class SupplierCatalogService {
         if (request.brandName() != null) sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
         if (request.packSize() != null) sku.setPackSize(request.packSize());
         if (request.packUnit() != null) sku.setPackUnit(request.packUnit());
-        if (request.imageUrl() != null) sku.setImageUrl(request.imageUrl());
+        // blankToNull, as for skuCode: an empty string is how a supplier takes
+        // their own photo back down, and it has to store as absent. Stored as ""
+        // the field is present-but-empty, and every client falling back with
+        // `sku.imageUrl ?? canonical` would render nothing at all.
+        if (request.imageUrl() != null) sku.setImageUrl(blankToNull(request.imageUrl()));
         if (request.status() != null) sku.setStatus(request.status());
 
         try {
@@ -252,13 +256,15 @@ public class SupplierCatalogService {
         var product = products.findById(sku.getCanonicalProductId()).orElse(null);
         String productName = product == null ? null : product.getName();
         Long categoryId = product == null ? null : product.getCategoryId();
+        String productImage = product == null ? null : product.getImageUrl();
         String brandName = sku.getBrandId() == null ? null
                 : directory.brandNames(List.of(sku.getBrandId())).get(sku.getBrandId());
 
         return new CatalogDtos.SkuResponse(
                 sku.getId(), sku.getSupplierStoreId(), sku.getCanonicalProductId(), productName,
                 categoryId, sku.getSkuCode(), sku.getName(), brandName,
-                sku.getPackSize(), sku.getPackUnit(), sku.getImageUrl(), sku.getStatus(),
+                sku.getPackSize(), sku.getPackUnit(), sku.getImageUrl(), productImage,
+                sku.getStatus(),
                 offer.map(SupplierOffer::getSellingPrice).orElse(null),
                 offer.map(SupplierOffer::getGstRate).orElse(null),
                 offer.map(SupplierOffer::getAvailability).orElse(null),

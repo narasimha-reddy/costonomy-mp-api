@@ -44,9 +44,14 @@ public class SupplierOrderMapper {
         var outlet = directory.outletSummary(order.getOutletId());
 
         Map<Long, String> productNames = new HashMap<>();
+        Map<Long, String> productImages = new HashMap<>();
         products.findAllById(items.stream()
                         .map(SupplierOrderItem::getCanonicalProductId).distinct().toList())
-                .forEach(product -> productNames.put(product.getId(), product.getName()));
+                .forEach(product -> {
+                    productNames.put(product.getId(), product.getName());
+                    // Free: the product is already loaded for its name.
+                    productImages.put(product.getId(), product.getImageUrl());
+                });
 
         Map<Long, String> skuNames = new HashMap<>();
         skus.findAllById(items.stream().map(SupplierOrderItem::getSupplierSkuId).toList())
@@ -69,6 +74,7 @@ public class SupplierOrderMapper {
                         .map(item -> new ProcurementDtos.SupplierOrderItemResponse(
                                 item.getId(), item.getCanonicalProductId(),
                                 productNames.get(item.getCanonicalProductId()),
+                                productImages.get(item.getCanonicalProductId()),
                                 skuNames.get(item.getSupplierSkuId()),
                                 item.getRequestedQuantity(), item.getAcceptedQuantity(),
                                 item.getUnit(), item.getUnitPriceSnapshot(),

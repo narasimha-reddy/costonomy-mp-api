@@ -2087,6 +2087,101 @@ every one of these happened.
 
 ---
 
+## D-080 — A product's picture is platform-owned, and a wrong one is worse than none
+**2026-09-16 · Settled**
+
+`canonical_product.image_url` has existed since V6 and `ProductResponse.imageUrl`
+has always carried it. Nothing ever set it, and no order response carried it, so
+every screen that could have shown a product showed a name.
+
+**Decision: the image stays on the canonical product and is never added to the
+SKU.** Doc 01 §7 — the canonical product is the axis every comparison turns on, so
+two suppliers' paneer must show the same paneer. A per-SKU image would let a
+supplier win a comparison with better photography, which is the one thing ranking
+is not allowed to be about. Setting it is an ops action (`PUT
+/admin/catalog/products/{id}/image`, `CATALOG_MODERATE` at `PLATFORM`), audited,
+and **a blank url clears it** — taking a wrong picture down must be as easy as
+putting one up.
+
+The image is carried on `SupplierOrderItemResponse` rather than fetched: a client
+drawing a six-line order must not make six requests to do it. It costs nothing —
+the mapper already loads the product for its name.
+
+### Curation is the hard part, not the plumbing
+Every one of the 34 seeded URLs was rendered and looked at before it was written
+down. What that rejected is the argument for doing it:
+
+- **a cooked dish for its raw ingredient** — the first "paneer" result was paneer
+  *tikka masala*;
+- **a duck leg** returned for "mutton";
+- **peanut butter** returned for "groundnut oil";
+- **branded packs** — a Kerrygold block for "Butter" would put one brand on the
+  product every brand maps onto;
+- **the same photograph on two different products**, which is a miscomparison
+  drawn rather than stated.
+
+**Jaggery has no image at all.** Nothing in the source was unambiguously jaggery
+rather than confectionery, and on a marketplace a restaurant orders from, a
+plausible-but-wrong picture is worse than an obviously absent one. The seed prints
+what it left out.
+
+For the same reason `ProductThumb` renders **one** neutral glyph for every
+product with no picture, rather than deriving a stand-in from the category. A
+category-derived icon puts a leaf on a bag of rice: it says "possibly this" where
+the honest statement is "no picture". Load failures fall to the same tile, so a
+dead URL looks like a product without a photo rather than an app that is broken.
+
+### A SKU may have its own picture; the canonical one is the floor
+A supplier sells a pack, and their pack is a real thing a restaurant recognises
+on a shelf. `supplier_sku.image_url` has always existed and both write requests
+have always accepted it; nothing ever showed it.
+
+**Decision: the SKU image overrides, the canonical image is the fallback, and
+which one is showing depends on what the screen is talking about.**
+
+| Screen | Shows |
+|---|---|
+| `/supplier/catalog` | the SKU's picture, else the product's — this is the listing as a restaurant will see it |
+| `/supplier/catalog/new` | always the canonical one; the supplier's pack does not exist yet |
+| `/supplier/catalog/{id}` | canonical beside "Listed against", the SKU's own beside their price |
+
+The editor keeps them apart deliberately. It is the one screen where a supplier
+needs to see the difference between their photograph and the platform's, and a
+single merged image would make "you have not added one" indistinguishable from
+"you have".
+
+`SkuResponse` therefore carries **both** `imageUrl` and `canonicalProductImageUrl`
+rather than one resolved field. Resolving server-side would be less data and would
+destroy exactly the distinction the editor is built on.
+
+**A blank url clears a SKU image**, through `blankToNull` — the same treatment
+`skuCode` already gets. Stored as `""` the field is present-but-empty, and every
+client falling back with `sku.imageUrl ?? canonical` would render nothing at all:
+`??` only falls back on null. The clients use `||` as well, because a contract
+that depends on one operator choice in one file is not a contract.
+
+### Two defects this shook out
+**`old_state` and `new_state` are `varchar(64)` and hold state-machine states.**
+Auditing an image change through them truncated the column and failed the whole
+request with `CONCURRENT_MODIFICATION` — a message about a race that never
+happened. A URL is not a state; `recordChange` and its JSON snapshots are where a
+value of any length belongs.
+
+**`acceptedAmount` is zero on every order nobody accepted**, so a screen reading
+it unconditionally showed an expired ₹10,587.97 order as **₹0.00** — as if it had
+been worth nothing, when what it lacked was an answer. `orderValue()` now returns
+the committed figure only once there is a commitment. This is D-074's shape again:
+a number that is correct in one state is not thereby correct in all of them.
+
+### Not settled
+These are development seed images hot-linked from Unsplash's CDN under the
+Unsplash Licence (free, commercial use, no attribution; none are Unsplash+).
+Production wants owned, consistently-lit photography and an upload path — a
+marketplace where every product is shot differently looks like a marketplace with
+one product photographed badly. No decision has been made about hosting.
+
+---
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 

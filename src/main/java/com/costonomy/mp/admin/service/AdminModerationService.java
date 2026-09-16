@@ -178,6 +178,49 @@ public class AdminModerationService {
                 productId, rows.get(0), name, reason, "ADMIN");
     }
 
+    /**
+     * Set or clear a canonical product's picture. Doc 01 §7, doc 05 §29.
+     *
+     * <p>An ops operation rather than a supplier one, for the same reason the
+     * product itself is: the image is the face of the thing every supplier's SKU
+     * maps onto, and two suppliers' paneer must show the same paneer or the
+     * comparison the marketplace exists for stops being a comparison.
+     *
+     * <p>A blank URL <b>clears</b> it rather than being rejected. A wrong picture
+     * on a food product is worse than none — a restaurant orders from it — so
+     * taking one down has to be as easy as putting one up, and the app renders a
+     * neutral fallback for a product with no image.
+     */
+    public void setCanonicalProductImage(Long actorId, Long productId, String imageUrl,
+                                         String reason) {
+        accessControl.require(actorId, Permissions.CATALOG_MODERATE, ScopeType.PLATFORM, null);
+
+        var rows = jdbc.queryForList(
+                "select image_url from canonical_product where id = ?", String.class, productId);
+        if (rows.isEmpty()) {
+            throw new NotFoundException("CanonicalProduct", productId);
+        }
+
+        String cleaned = imageUrl == null || imageUrl.isBlank() ? null : imageUrl.trim();
+
+        jdbc.update("""
+                update canonical_product
+                   set image_url = ?, version = version + 1, updated_at = now(6)
+                 where id = ?
+                """, cleaned, productId);
+
+        // recordChange, not record: old_state and new_state are varchar(64) and
+        // hold state-machine states. A URL is not a state, and putting one there
+        // truncated the column and failed the whole request. The before/after
+        // snapshots are JSON and are where a value of any length belongs.
+        auditService.recordChange(actorId,
+                cleaned == null ? "CANONICAL_PRODUCT_IMAGE_CLEARED" : "CANONICAL_PRODUCT_IMAGE_SET",
+                "CANONICAL_PRODUCT", productId,
+                Map.of("imageUrl", String.valueOf(rows.get(0))),
+                Map.of("imageUrl", String.valueOf(cleaned)),
+                reason);
+    }
+
     // ── Disputes ─────────────────────────────────────────────────────────
 
     /**

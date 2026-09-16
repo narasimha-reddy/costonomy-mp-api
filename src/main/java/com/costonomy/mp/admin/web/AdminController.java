@@ -111,6 +111,19 @@ public class AdminController {
         return ApiResponse.ok(Map.of("renamed", true));
     }
 
+    @PutMapping("/catalog/products/{id}/image")
+    @Operation(summary = "Set or clear a canonical product's picture",
+            description = "Platform-owned, like the product itself — two suppliers' paneer "
+                    + "must show the same paneer. An empty url clears it, because a wrong "
+                    + "picture on a food product is worse than none.")
+    public ApiResponse<Map<String, Object>> setProductImage(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> request) {
+        moderation.setCanonicalProductImage(ActorContext.requireUserId(), id,
+                request.get("imageUrl"), request.getOrDefault("reason", "Catalog imagery"));
+        return ApiResponse.ok(Map.of("updated", true));
+    }
+
     // ── Orders ───────────────────────────────────────────────────────────
 
     @GetMapping("/orders")
