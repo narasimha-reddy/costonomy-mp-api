@@ -2502,6 +2502,54 @@ stores get the default written — is a smaller blast radius and a weaker promis
 
 ---
 
+## D-085 — The store leads the header, and a sheet closes from inside it
+**Raised 2026-09-16 · Settled 2026-09-16**
+
+### The header names where you are, not who you are
+A supplier with more than one store works in one of them at a time. The header
+had the business as the headline and the store as a grey line beneath it, which
+answers the question nobody asks. They are swapped: the store is the title, the
+business the caption. The storefront icon went with the swap — once the title is
+a store, a glyph saying "this is a store" is decoration in the one place on
+screen where width is scarce.
+
+`storeLabel()` strips a repeated business prefix, so "Metro Fresh Supplies
+Koramangala" under "Metro Fresh Supplies" reads as "Koramangala" rather than
+truncating to "Metro Fresh Supp…" — the same eleven characters that were already
+on the line below. It falls back to the full name when the remainder is under two
+characters, because "Metro Fresh Supplies 2" must not become "2".
+
+The title is the switcher, and only when there is something to switch between.
+
+### Section titles are scaffolding, so they stop competing with content
+"New orders" at 16px semibold in the primary text colour was the same weight,
+near the same size and the same colour as the card titles under it, so the label
+and the thing labelled looked equally important. Section titles are now 11px,
+letterspaced, uppercase and secondary — unmistakably a heading — and carry the
+count, which is the fact a supplier actually wants from a section header.
+
+### A bottom sheet's scrim is not a button
+It was one, on the reasoning that tapping away is how people close a sheet and
+that the gesture deserves an accessible name. But the scrim is the sheet's
+*ancestor*, so every control inside every sheet in the app rendered as a button
+inside a button: invalid on web, and a screen reader offering two nested controls
+where there is one surface. It surfaced on the store switcher and was never
+about the store switcher.
+
+**Decision: the scrim closes on a tap and says nothing, and the sheet carries a
+close button.** The tap-away is a sighted convenience; the button is the route
+that is announced, focusable and reachable. That is the swap the accessible name
+was standing in for, and it is better than what it replaced — every sheet now has
+a visible way out, rather than requiring you to work out that the dimmed area is
+tappable.
+
+The sheet still has to swallow taps so they do not reach the scrim, but it does
+that by claiming the responder rather than by being a `Pressable`, which was the
+same nesting one layer down.
+
+---
+
+
 ## D-017 — The requirement lifecycle includes SOURCING
 **Raised 2026-09-14 · Settled 2026-09-14** (was OPEN-003)
 
