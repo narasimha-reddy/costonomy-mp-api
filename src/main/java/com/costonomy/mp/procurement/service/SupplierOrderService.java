@@ -113,6 +113,14 @@ public class SupplierOrderService {
      * "forgot" — a distinction the restaurant needs, because the shortfall returns
      * to their requirement either way but the reason does not.
      */
+    /**
+     * What a partial acceptance would come to. No key, because nothing happens.
+     */
+    public ProcurementDtos.PartialAcceptPreview previewPartialAccept(
+            Long actorId, Long orderId, ProcurementDtos.PartialAcceptRequest request) {
+        return transitions.previewPartialAccept(actorId, orderId, request);
+    }
+
     public ProcurementDtos.SupplierOrderResponse partialAccept(
             Long actorId, Long orderId, ProcurementDtos.PartialAcceptRequest request,
             String idempotencyKey) {

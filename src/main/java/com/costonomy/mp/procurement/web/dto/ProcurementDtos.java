@@ -277,6 +277,36 @@ public final class ProcurementDtos {
             @Size(max = 500) String reason) {
     }
 
+    /**
+     * What a partial acceptance would come to, without making one.
+     *
+     * <p>The supplier reduces a line and needs to see the order's value follow.
+     * That value is money, so guardrail 3 puts it here rather than in the app —
+     * and it is computed by the same {@link com.costonomy.mp.procurement.domain.Pricing}
+     * calls the acceptance itself uses, so the preview and the outcome cannot
+     * disagree about the last paisa.
+     *
+     * @param anyAccepted false when every line is zero, which the real endpoint
+     *                    records as a rejection rather than as a partial
+     *                    acceptance of nothing — so the app can stop someone
+     *                    declining an order from a button labelled "accept".
+     */
+    public record PartialAcceptPreview(
+            List<PartialAcceptLine> lines,
+            BigDecimal acceptedValue,
+            BigDecimal acceptedGst,
+            BigDecimal acceptedTotal,
+            boolean anyAccepted) {
+    }
+
+    public record PartialAcceptLine(
+            Long supplierOrderItemId,
+            BigDecimal acceptedQuantity,
+            BigDecimal lineValue,
+            BigDecimal lineGst,
+            BigDecimal lineTotal) {
+    }
+
     public record RejectOrderRequest(
             @NotBlank(message = "Choose a reason")
             String reason,

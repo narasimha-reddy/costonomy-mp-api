@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -102,6 +103,59 @@ public class SupplierOrderTransitions {
         order.setAcceptedAmount(order.getTotalAmount());
 
         return finishAcceptance(order, items, actorId, "SupplierOrderAccepted");
+    }
+
+    /**
+     * What a partial acceptance would be worth, without performing one.
+     *
+     * <p>Reads, prices, returns. Nothing is written and no state moves — which is
+     * why it takes no idempotency key and asks only for the permission to answer
+     * the order, the same one the acceptance asks for: someone who could not
+     * accept has no business pricing it either.
+     *
+     * <p>Lines the caller did not answer are priced at zero rather than refused.
+     * This runs while a supplier is still moving a stepper, and a preview that
+     * returned 400 for an incomplete answer would be a preview of nothing.
+     */
+    @Transactional(readOnly = true)
+    public ProcurementDtos.PartialAcceptPreview previewPartialAccept(
+            Long actorId, Long orderId, ProcurementDtos.PartialAcceptRequest request) {
+
+        loadForSupplier(actorId, orderId, Permissions.ORDER_PARTIAL_ACCEPT);
+
+        Map<Long, BigDecimal> answers = new HashMap<>();
+        request.items().forEach(item ->
+                answers.put(item.supplierOrderItemId(), item.acceptedQuantity()));
+
+        BigDecimal acceptedValue = BigDecimal.ZERO;
+        BigDecimal acceptedGst = BigDecimal.ZERO;
+        boolean anyAccepted = false;
+        var lines = new ArrayList<ProcurementDtos.PartialAcceptLine>();
+
+        for (SupplierOrderItem item : orderItems.findBySupplierOrderId(orderId)) {
+            BigDecimal accepted = answers.getOrDefault(item.getId(), BigDecimal.ZERO);
+            // Clamped rather than rejected: the real call refuses more than was
+            // requested, and a preview should show the ceiling rather than an error.
+            if (accepted.signum() < 0) {
+                accepted = BigDecimal.ZERO;
+            } else if (accepted.compareTo(item.getRequestedQuantity()) > 0) {
+                accepted = item.getRequestedQuantity();
+            }
+
+            var lineValue = Pricing.lineItemValue(item.getUnitPriceSnapshot(), accepted);
+            var lineGst = Pricing.lineGst(lineValue, item.getGstRateSnapshot());
+            acceptedValue = acceptedValue.add(lineValue);
+            acceptedGst = acceptedGst.add(lineGst);
+            anyAccepted = anyAccepted || accepted.signum() > 0;
+
+            lines.add(new ProcurementDtos.PartialAcceptLine(
+                    item.getId(), accepted, lineValue, lineGst,
+                    Pricing.lineTotal(lineValue, lineGst)));
+        }
+
+        return new ProcurementDtos.PartialAcceptPreview(
+                lines, acceptedValue, acceptedGst,
+                Pricing.lineTotal(acceptedValue, acceptedGst), anyAccepted);
     }
 
     @Transactional

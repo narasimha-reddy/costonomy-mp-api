@@ -96,6 +96,31 @@ public class SupplierOrderController {
         return ApiResponse.ok(supplierOrders.accept(ActorContext.requireUserId(), id, idempotencyKey));
     }
 
+    @PostMapping("/supplier-orders/{id}/partial-accept/preview")
+    @Operation(
+            summary = "What a partial acceptance would come to",
+            description = """
+                    Prices a set of reduced quantities without accepting anything. Nothing
+                    is written, no state moves, and no idempotency key is needed.
+
+                    Priced by the same code as the acceptance itself, so this figure and
+                    the one on the order afterwards cannot differ.
+
+                    Unanswered lines count as zero and anything above the requested
+                    quantity is clamped, because this is called while a supplier is still
+                    adjusting and a preview that refused an incomplete answer would be a
+                    preview of nothing.
+
+                    `anyAccepted` is false when every line is zero — which the real
+                    endpoint records as a rejection, not an acceptance of nothing.
+                    """)
+    public ApiResponse<ProcurementDtos.PartialAcceptPreview> previewPartialAccept(
+            @PathVariable Long id,
+            @RequestBody ProcurementDtos.PartialAcceptRequest request) {
+        return ApiResponse.ok(supplierOrders.previewPartialAccept(
+                ActorContext.requireUserId(), id, request));
+    }
+
     @PostMapping("/supplier-orders/{id}/partial-accept")
     @Operation(
             summary = "Accept reduced quantities",
