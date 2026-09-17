@@ -43,6 +43,26 @@ public class StorefrontService {
     private static final int MAX_LIMIT = 100;
     private static final int MIN_TERM = 2;
 
+    /**
+     * Whether a store stocks something buyable matching the term.
+     *
+     * <p>Takes three bound parameters, all the same term. Requires a live offer as
+     * well as a live SKU: a supplier who has listed paneer but withdrawn the price
+     * cannot sell you paneer, and should not be the answer to a search for it.
+     */
+    private static final String STOCKS_MATCHING = """
+            from supplier_sku k
+              join canonical_product cp on cp.id = k.canonical_product_id
+              join supplier_offer f on f.supplier_sku_id = k.id
+                   and f.status = 'ACTIVE'
+                   and (f.effective_to is null or f.effective_to > now())
+              left join brand b on b.id = k.brand_id
+             where k.supplier_store_id = s.id
+               and k.status = 'ACTIVE'
+               and (lower(k.name) like concat('%', ?, '%')
+                    or lower(cp.name) like concat('%', ?, '%')
+                    or lower(b.name) like concat('%', ?, '%'))""";
+
     private final JdbcTemplate jdbc;
     private final DiscoveryDirectory directory;
     private final SupplierPerformanceProvider performance;
@@ -109,6 +129,17 @@ public class StorefrontService {
      * deliver here, which is a question the app had no way to ask — the old
      * endpoint required two characters and returned nothing below that.
      *
+     * <p><b>A term searches what they sell, not only what they are called.</b>
+     * "pan" means paneer, and a restaurant typing it wants whoever stocks paneer —
+     * matching supplier names alone answered a question nobody asked, because you
+     * cannot search for a supplier by name unless you already know the name. So a
+     * supplier qualifies by stocking something purchasable that matches, and
+     * {@code matchingProductCount} says how much, so the row can explain itself.
+     *
+     * <p>Names still match, because the other half of the same screen is "find the
+     * supplier I already deal with" — and the credit request screen asks for a
+     * supplier by name and nothing else.
+     *
      * @param radiusKm optional tighter cut. Suppliers beyond it are counted in
      *                 {@code beyondRadius} rather than silently dropped.
      */
@@ -120,35 +151,57 @@ public class StorefrontService {
 
         var outlet = outletId == null ? null : directory.outlet(outletId).orElse(null);
 
+        var args = new ArrayList<Object>();
+
         var sql = new StringBuilder("""
                 select s.id, o.display_name, s.name, s.city, s.latitude, s.longitude,
                        (select count(*) from supplier_sku k
-                         where k.supplier_store_id = s.id and k.status = 'ACTIVE') as product_count
+                         where k.supplier_store_id = s.id and k.status = 'ACTIVE') as product_count,
+                """);
+
+        // Counted in the select and tested again in the where, rather than counted
+        // once and filtered on the alias: MySQL cannot see a select alias in a
+        // where clause, and HAVING without a GROUP BY is a subtler thing to read
+        // than the same predicate written twice.
+        if (filtered) {
+            sql.append("       (select count(*) ").append(STOCKS_MATCHING).append(") as matching_count\n");
+            args.add(term);
+            args.add(term);
+            args.add(term);
+        } else {
+            sql.append("       0 as matching_count\n");
+        }
+
+        sql.append("""
                   from supplier_store s
                   join supplier_organization o on o.id = s.supplier_organization_id
                  where s.status = 'ACTIVE'
                    and o.lifecycle_status = 'ACTIVE'
                 """);
-        var args = new ArrayList<Object>();
+
         if (filtered) {
-            sql.append("""
-                       and (lower(o.display_name) like concat('%', ?, '%')
-                            or lower(s.name) like concat('%', ?, '%'))
-                    """);
+            sql.append("   and (lower(o.display_name) like concat('%', ?, '%')\n")
+               .append("        or lower(s.name) like concat('%', ?, '%')\n")
+               .append("        or exists (select 1 ").append(STOCKS_MATCHING).append("))\n");
+            args.add(term);
+            args.add(term);
+            args.add(term);
             args.add(term);
             args.add(term);
         }
         sql.append(" order by o.display_name limit 100");
 
         record Row(Long storeId, String supplierName, String storeName, String city,
-                   BigDecimal latitude, BigDecimal longitude, int productCount) {
+                   BigDecimal latitude, BigDecimal longitude, int productCount,
+                   int matchingCount) {
         }
 
         List<Row> rows = new ArrayList<>();
         jdbc.query(sql.toString(),
                 rs -> {
                     rows.add(new Row(rs.getLong(1), rs.getString(2), rs.getString(3),
-                            rs.getString(4), rs.getBigDecimal(5), rs.getBigDecimal(6), rs.getInt(7)));
+                            rs.getString(4), rs.getBigDecimal(5), rs.getBigDecimal(6),
+                            rs.getInt(7), rs.getInt(8)));
                 },
                 args.toArray());
 
@@ -181,6 +234,7 @@ public class StorefrontService {
             sized.add(new Sized(new DiscoveryDtos.SupplierSearchResult(
                     row.storeId(), row.supplierName(), row.storeName(), row.city(),
                     Serviceability.round(distance), true, row.productCount(),
+                    row.matchingCount(),
                     metrics == null ? null : metrics.averageRating().orElse(null),
                     metrics == null ? 0 : metrics.ratingCount(),
                     store == null || store.openNow(),

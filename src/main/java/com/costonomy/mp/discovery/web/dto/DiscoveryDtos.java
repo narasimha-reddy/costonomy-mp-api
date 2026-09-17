@@ -88,6 +88,14 @@ public final class DiscoveryDtos {
             BigDecimal distanceKm,
             boolean serviceable,
             Integer productCount,
+            /**
+             * How many of this store's buyable items matched the search term.
+             *
+             * <p>Zero when there was no term, and zero for a store that matched on
+             * its name alone. It is what lets a row say why it is in the list —
+             * "stocks 4 matching items" rather than leaving a restaurant to guess.
+             */
+            int matchingProductCount,
             /** Null when nobody has rated this store. Never zero standing in for that. */
             BigDecimal averageRating,
             int ratingCount,

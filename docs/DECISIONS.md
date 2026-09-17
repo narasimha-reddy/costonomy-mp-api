@@ -2619,6 +2619,26 @@ The old endpoint also returned unserviceable suppliers with `serviceable: false`
 which the app had no way to render except as a row you cannot buy from. They are
 now simply not results.
 
+### A supplier search is a search for what they sell
+Matching supplier names was the obvious implementation and close to useless: you
+cannot search for a supplier by name unless you already know the name, which is
+the opposite of the problem the tab exists to solve. Typing "pan" means paneer.
+
+A supplier now qualifies by **stocking something buyable that matches** — SKU
+name, brand or canonical product, the same three columns pack search reads — and
+`matchingProductCount` comes back with them so the row says why it is there:
+"1 matching item" rather than a bare catalog total, which is the number a
+restaurant is actually choosing on.
+
+Stocking it is not enough; it has to be sellable. The predicate requires a live
+offer as well as a live SKU, because a supplier who listed paneer and withdrew
+the price cannot sell you paneer.
+
+**Names still match**, as the second half of an OR. The other question that
+screen answers is "find the supplier I already deal with", and the credit request
+screen asks for a supplier by name and nothing else — making this products-only
+would have quietly broken it.
+
 ### A pack tap and a product tap land in the same place
 Tapping a SKU asks "who else sells this, and for how much" — which is exactly the
 canonical comparison. Resolving the SKU to its product and going there is not a

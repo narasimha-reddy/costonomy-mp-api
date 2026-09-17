@@ -242,14 +242,57 @@ class StorefrontIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("a term finds whoever stocks it, not only whoever is named it")
+        void findsByWhatTheyStock() throws Exception {
+            var outlet = newOutlet();
+            long product = TestCatalog.freshProduct(jdbc, "paneer");
+            jdbc.update("update canonical_product set name = ?, normalized_name = ? where id = ?",
+                    tag(product), tag(product).toLowerCase(), product);
+
+            var stocks = newStore("Gupta Provisions", NEARBY_LAT, NEARBY_LON);
+            newStore("Sharma Traders", NEARBY_LAT, NEARBY_LON);
+            // Its SKU code shares nothing with the term; only the product matches.
+            stock(stocks, product, "GP-" + product, "410");
+
+            var page = directory(outlet, "&q=" + tag(product));
+            var suppliers = page.get("suppliers");
+
+            assertThat(suppliers.findValuesAsText("supplierName"))
+                    .containsExactly("Gupta Provisions");
+            // And the row can say why it is here.
+            assertThat(suppliers.get(0).get("matchingProductCount").asInt()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("stocking it is not enough — it has to be buyable")
+        void withdrawnOfferDoesNotCount() throws Exception {
+            var outlet = newOutlet();
+            long product = TestCatalog.freshProduct(jdbc, "paneer");
+            jdbc.update("update canonical_product set name = ?, normalized_name = ? where id = ?",
+                    tag(product), tag(product).toLowerCase(), product);
+
+            var store = newStore("Gupta Provisions", NEARBY_LAT, NEARBY_LON);
+            long skuId = stock(store, product, "GP-" + product, "410");
+            // The price is withdrawn; they list it and cannot sell it.
+            jdbc.update("update supplier_offer set status = 'INACTIVE' where supplier_sku_id = ?", skuId);
+
+            assertThat(directory(outlet, "&q=" + tag(product)).get("suppliers")
+                    .findValuesAsText("supplierName")).doesNotContain("Gupta Provisions");
+        }
+
+        @Test
         @DisplayName("a term filters by name")
         void filtersByName() throws Exception {
             var outlet = newOutlet();
             newStore("Gupta Provisions", NEARBY_LAT, NEARBY_LON);
             newStore("Sharma Traders", NEARBY_LAT, NEARBY_LON);
 
-            assertThat(directory(outlet, "&q=gupta").get("suppliers").findValuesAsText("supplierName"))
-                    .containsExactly("Gupta Provisions");
+            // Still matched by name, because the other half of that screen is
+            // "find the supplier I already deal with".
+            var matched = directory(outlet, "&q=gupta").get("suppliers");
+            assertThat(matched.findValuesAsText("supplierName")).containsExactly("Gupta Provisions");
+            // Nothing they sell matched, so the row will not claim otherwise.
+            assertThat(matched.get(0).get("matchingProductCount").asInt()).isZero();
         }
     }
 
