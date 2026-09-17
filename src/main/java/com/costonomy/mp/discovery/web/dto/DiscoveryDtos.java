@@ -1,6 +1,7 @@
 package com.costonomy.mp.discovery.web.dto;
 
 import com.costonomy.mp.discovery.domain.ExplanationCode;
+import com.costonomy.mp.procurement.domain.Pricing;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -56,11 +57,27 @@ public final class DiscoveryDtos {
             BigDecimal averageRating,
             int ratingCount,
             /**
-             * Pack price divided by pack size — "₹98.00 per KG" beside "₹2,450".
+             * One pack, with GST — what a restaurant actually pays for it.
+             *
+             * <p>{@code unitPrice} is the supplier's price before tax, which is
+             * the figure the order is built from and the wrong one to lead a card
+             * with: it sat beside a line total that *did* include GST, so the same
+             * card showed two numbers on two different bases.
+             *
+             * <p>Computed through {@link Pricing}, the same path the cart and the
+             * invoice take, so this figure and the line total for one pack cannot
+             * disagree in the last paisa.
+             */
+            BigDecimal unitPriceInclusiveGst,
+            /**
+             * What one base unit costs, with GST — "₹404.67 per KG".
              *
              * <p>What makes two offers comparable when one is a 1 kg pack and the
-             * other a 25 kg sack, which is the whole job of this screen. Computed
-             * here rather than in the app: guardrail 3 puts every money
+             * other a 25 kg sack, which is the whole job of this screen. Inclusive
+             * for the same reason as above: two figures on one card, on two
+             * different tax bases, is a comparison nobody can make.
+             *
+             * <p>Computed here rather than in the app: guardrail 3 puts every money
              * calculation on the server, and a client dividing rupees is exactly
              * the arithmetic that rule exists to prevent.
              *

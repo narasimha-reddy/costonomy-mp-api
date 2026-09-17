@@ -14,6 +14,7 @@ import com.costonomy.mp.discovery.domain.RankingWeights;
 import com.costonomy.mp.discovery.domain.ScoredOffer;
 import com.costonomy.mp.common.domain.Serviceability;
 import com.costonomy.mp.discovery.domain.SupplierPerformance;
+import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -234,8 +235,22 @@ public class RecommendationService {
                         ? sku.getImageUrl() : blankToNull(canonicalImageUrl),
                 storePerformance == null ? null : storePerformance.averageRating().orElse(null),
                 storePerformance == null ? 0 : storePerformance.ratingCount(),
-                pricePerBaseUnit(offer.getSellingPrice(), sku.getPackSize(),
+                packInclusiveOfGst(offer),
+                pricePerBaseUnit(packInclusiveOfGst(offer), sku.getPackSize(),
                         sku.getPackUnit(), baseUnit));
+    }
+
+    /**
+     * One pack with its GST, through the same arithmetic the cart uses.
+     *
+     * <p>Not {@code sellingPrice × 1.05} computed here: {@link Pricing} rounds the
+     * line value before applying the rate, and a second implementation of that
+     * would differ from the invoice in the last paisa — which is precisely the
+     * divergence `Pricing` exists to prevent.
+     */
+    private static BigDecimal packInclusiveOfGst(SupplierOffer offer) {
+        BigDecimal value = Pricing.lineItemValue(offer.getSellingPrice(), BigDecimal.ONE);
+        return Pricing.lineTotal(value, Pricing.lineGst(value, offer.getGstRate()));
     }
 
     /**
