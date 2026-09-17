@@ -51,6 +51,49 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 17)
 
 Integration tests need Docker running (Testcontainers, real MySQL 8).
 
+### The development loop
+
+`spring-boot-devtools` is a `provided` dependency, so it is on the classpath when
+you run from source and in no artifact. A recompile then restarts the app in
+about five seconds instead of the ten a cold boot costs, and the process keeps
+its port — so a browser session survives the restart, which is most of the
+saving.
+
+It is **off by default**: `application.properties` sets
+`spring.devtools.restart.enabled=false`, and your own gitignored
+`application-local.properties` turns it on:
+
+```properties
+spring.devtools.restart.enabled=true
+spring.devtools.livereload.enabled=false
+```
+
+Then a change is picked up by recompiling in a second terminal — devtools watches
+`target/classes`, not the source tree:
+
+```
+mvn -o -q compile
+```
+
+**Run the integration test you are changing, not all of them.** A full
+`mvn verify` is about five minutes; one class is about fifty seconds, of which
+forty is the MySQL container and the Spring context and only eight is the tests:
+
+```
+mvn -o verify -Dit.test=StorefrontIT
+```
+
+Run the whole suite before committing, not between edits.
+
+**Testcontainers reuse is deliberately not enabled**, though it would save that
+forty seconds every run. Two things break. `TestCatalog.freshProduct` numbers its
+products from a counter that restarts with the JVM, so a second run against a
+surviving database inserts a duplicate name and then fails its own
+`queryForObject` lookup with two rows where it expects one. And `MigrationIT`
+asserts that every migration applies *to a clean database* — against a reused one
+Flyway applies nothing and the test passes while checking nothing, which is the
+failure doc 10 §8 exists to prevent.
+
 ## Stack
 
 Follows `costonomy-api` (`~/Documents/GitHub/costonomy-api`) — inspect it before

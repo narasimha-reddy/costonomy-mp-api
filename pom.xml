@@ -165,6 +165,25 @@
 		</dependency>
 
 		<!-- ── Tooling ─────────────────────────────────────────────────── -->
+		<!--
+			Hot restart for local development: a changed class is reloaded in about
+			three seconds instead of the fifteen a full `spring-boot:run` costs.
+
+			`provided` rather than `optional`, because this module packages a WAR and
+			an optional dependency is still copied into WEB-INF/lib. Provided keeps it
+			on the local run and test classpath and out of the artifact entirely, which
+			is a stronger guarantee than relying on the repackager to strip it.
+
+			Restart is switched off by default in application.properties and enabled
+			only under the `local` profile, so devtools cannot alter behaviour anywhere
+			it might reach by accident.
+		-->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-devtools</artifactId>
+			<scope>provided</scope>
+		</dependency>
+
 		<dependency>
 			<groupId>org.projectlombok</groupId>
 			<artifactId>lombok</artifactId>
