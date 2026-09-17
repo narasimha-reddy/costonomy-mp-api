@@ -60,8 +60,9 @@ public class CatalogController {
     public ApiResponse<List<CatalogDtos.ProductResponse>> products(
             @RequestParam(required = false) Long categoryId,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(catalog.listProducts(categoryId, page, size));
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) Long outletId) {
+        return ApiResponse.ok(catalog.listProducts(categoryId, page, size, outletId));
     }
 
     @GetMapping("/search/products")
@@ -71,15 +72,23 @@ public class CatalogController {
                     Product-first search (§23A.11). Matches the product's name and its
                     configured aliases — "dahi" finds Curd because that alias exists,
                     not because the matcher guessed.
+
+                    Pass `outletId` and the "N suppliers" and "from ₹X" figures count
+                    only suppliers that deliver there. Without it they are
+                    platform-wide, which is a different and usually larger number.
                     """)
-    public ApiResponse<List<CatalogDtos.ProductResponse>> search(@RequestParam("q") String query) {
-        return ApiResponse.ok(catalog.searchProducts(query));
+    public ApiResponse<List<CatalogDtos.ProductResponse>> search(
+            @RequestParam("q") String query,
+            @RequestParam(required = false) Long outletId) {
+        return ApiResponse.ok(catalog.searchProducts(query, outletId));
     }
 
     @GetMapping("/products/{id}")
     @Operation(summary = "Get a product")
-    public ApiResponse<CatalogDtos.ProductResponse> product(@PathVariable Long id) {
-        return ApiResponse.ok(catalog.getProduct(id));
+    public ApiResponse<CatalogDtos.ProductResponse> product(
+            @PathVariable Long id,
+            @RequestParam(required = false) Long outletId) {
+        return ApiResponse.ok(catalog.getProduct(id, outletId));
     }
 
     @GetMapping("/products/{id}/offers")

@@ -296,7 +296,86 @@ class StorefrontIT extends AbstractIntegrationTest {
         }
     }
 
+    // ── "N suppliers" on a product card ──────────────────────────────────
+
+    @Nested
+    @DisplayName("product supplier counts")
+    class ProductCounts {
+
+        @Test
+        @DisplayName("counts only suppliers that can trade and can deliver here")
+        void countsOnlyBuyableOffers() throws Exception {
+            long product = TestCatalog.freshProduct(jdbc, "paneer");
+            var outlet = newOutlet();
+
+            var near = newStore("Near Foods", NEARBY_LAT, NEARBY_LON);
+            stock(near, product, code("NEAR", product), "410");
+
+            // Five hundred kilometres away: real, tradeable, and no use to you.
+            stock(newStore("Chennai Foods", FAR_LAT, FAR_LON), product, code("FAR", product), "300");
+
+            // Next door, but its organisation has not been through verification,
+            // so it cannot accept an order and must not be offered as one.
+            var pending = newStore("Pending Foods", NEARBY_LAT, NEARBY_LON);
+            stock(pending, product, code("PEND", product), "250");
+            jdbc.update("update supplier_organization set lifecycle_status = 'VERIFICATION_PENDING' "
+                    + "where id = ?", pending.supplierId());
+
+            var card = product(outlet, product);
+            assertThat(card.get("offerCount").asInt()).isEqualTo(1);
+            // ...and the "from ₹X" is the cheapest you can actually buy, not the
+            // cheapest that exists — ₹250 and ₹300 are both unavailable to you.
+            assertThat(card.get("lowestPrice").asDouble()).isEqualTo(410.0);
+        }
+
+        @Test
+        @DisplayName("without an outlet the count is platform-wide, but still only of suppliers that can trade")
+        void withoutAnOutletDistanceCannotApply() throws Exception {
+            long product = TestCatalog.freshProduct(jdbc, "paneer");
+
+            stock(newStore("Near Foods", NEARBY_LAT, NEARBY_LON), product, code("NEAR", product), "410");
+            stock(newStore("Chennai Foods", FAR_LAT, FAR_LON), product, code("FAR", product), "300");
+
+            var suspended = newStore("Gone Foods", NEARBY_LAT, NEARBY_LON);
+            stock(suspended, product, code("GONE", product), "200");
+            jdbc.update("update supplier_organization set lifecycle_status = 'SUSPENDED' where id = ?",
+                    suspended.supplierId());
+
+            // There is no outlet to measure from, so distance cannot exclude
+            // anyone — but a suspended supplier is excluded anywhere.
+            var card = api.get(api.loginFresh(), "/api/v1/products/" + product).at("/data");
+            assertThat(card.get("offerCount").asInt()).isEqualTo(2);
+            assertThat(card.get("lowestPrice").asDouble()).isEqualTo(300.0);
+        }
+
+        @Test
+        @DisplayName("search results carry the same count as the product screen")
+        void searchAgreesWithTheProductScreen() throws Exception {
+            long product = TestCatalog.freshProduct(jdbc, "paneer");
+            jdbc.update("update canonical_product set name = ?, normalized_name = ? where id = ?",
+                    tag(product), tag(product).toLowerCase(), product);
+
+            var outlet = newOutlet();
+            stock(newStore("Near Foods", NEARBY_LAT, NEARBY_LON), product, code("NEAR", product), "410");
+            stock(newStore("Chennai Foods", FAR_LAT, FAR_LON), product, code("FAR", product), "300");
+
+            var found = api.get(outlet.token(), "/api/v1/search/products?q=" + tag(product)
+                    + "&outletId=" + outlet.outletId()).at("/data");
+
+            assertThat(found).hasSize(1);
+            assertThat(found.get(0).get("offerCount").asInt())
+                    .isEqualTo(product(outlet, product).get("offerCount").asInt())
+                    .isEqualTo(1);
+        }
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
+
+    private JsonNode product(Outlet outlet, long productId) throws Exception {
+        return api.get(outlet.token(),
+                "/api/v1/products/" + productId + "?outletId=" + outlet.outletId()).at("/data");
+    }
+
 
     /**
      * A term no other test in this class can match.

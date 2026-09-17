@@ -1,7 +1,7 @@
 package com.costonomy.mp.procurement.service;
 
 import com.costonomy.mp.catalog.repository.CanonicalProductRepository;
-import com.costonomy.mp.discovery.domain.Serviceability;
+import com.costonomy.mp.common.domain.Serviceability;
 import com.costonomy.mp.catalog.repository.SupplierSkuRepository;
 import com.costonomy.mp.procurement.domain.Procurement;
 import com.costonomy.mp.procurement.domain.SupplierOrder;

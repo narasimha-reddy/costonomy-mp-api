@@ -1,6 +1,6 @@
 package com.costonomy.mp.discovery.service;
 
-import com.costonomy.mp.discovery.domain.Serviceability;
+import com.costonomy.mp.common.domain.Serviceability;
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;

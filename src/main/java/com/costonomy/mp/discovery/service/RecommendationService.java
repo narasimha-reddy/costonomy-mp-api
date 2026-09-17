@@ -12,7 +12,7 @@ import com.costonomy.mp.common.config.AppConfigService;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.discovery.domain.RankingWeights;
 import com.costonomy.mp.discovery.domain.ScoredOffer;
-import com.costonomy.mp.discovery.domain.Serviceability;
+import com.costonomy.mp.common.domain.Serviceability;
 import com.costonomy.mp.discovery.domain.SupplierPerformance;
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import lombok.RequiredArgsConstructor;

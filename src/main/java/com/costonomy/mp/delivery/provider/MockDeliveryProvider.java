@@ -1,6 +1,6 @@
 package com.costonomy.mp.delivery.provider;
 
-import com.costonomy.mp.discovery.domain.Serviceability;
+import com.costonomy.mp.common.domain.Serviceability;
 import lombok.extern.slf4j.Slf4j;
 
 import java.math.BigDecimal;

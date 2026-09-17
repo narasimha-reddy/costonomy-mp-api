@@ -1,6 +1,6 @@
-package com.costonomy.mp.discovery;
+package com.costonomy.mp.common;
 
-import com.costonomy.mp.discovery.domain.Serviceability;
+import com.costonomy.mp.common.domain.Serviceability;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

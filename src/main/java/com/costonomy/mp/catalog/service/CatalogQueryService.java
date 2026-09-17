@@ -3,6 +3,7 @@ package com.costonomy.mp.catalog.service;
 import com.costonomy.mp.catalog.domain.*;
 import com.costonomy.mp.catalog.repository.*;
 import com.costonomy.mp.catalog.web.dto.CatalogDtos;
+import com.costonomy.mp.common.domain.Serviceability;
 import com.costonomy.mp.common.error.NotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
@@ -14,6 +15,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * The canonical catalog, as a restaurant sees it.
@@ -26,6 +28,9 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class CatalogQueryService {
+
+    /** Assumed reach for a store that never declared one. Matches the feed's. */
+    private static final BigDecimal DEFAULT_RADIUS_KM = BigDecimal.valueOf(25);
 
     private static final int MAX_SEARCH_RESULTS = 50;
 
@@ -54,13 +59,14 @@ public class CatalogQueryService {
     }
 
     @Transactional(readOnly = true)
-    public List<CatalogDtos.ProductResponse> listProducts(Long categoryId, int page, int size) {
+    public List<CatalogDtos.ProductResponse> listProducts(Long categoryId, int page, int size,
+                                                          Long outletId) {
         var pageable = PageRequest.of(Math.max(0, page), Math.min(100, Math.max(1, size)));
         var found = categoryId == null
                 ? products.findByStatus("ACTIVE", pageable)
                 : products.findByStatusAndCategoryId("ACTIVE", categoryId, pageable);
 
-        return found.getContent().stream().map(this::toProductResponse).toList();
+        return describe(found.getContent(), outletId);
     }
 
     /**
@@ -70,21 +76,21 @@ public class CatalogQueryService {
      * paneer, then compares who sells it — not the other way round.
      */
     @Transactional(readOnly = true)
-    public List<CatalogDtos.ProductResponse> searchProducts(String term) {
+    public List<CatalogDtos.ProductResponse> searchProducts(String term, Long outletId) {
         String normalized = Normalization.normalize(term);
         if (normalized.isBlank()) {
             return List.of();
         }
-        return products.searchByPrefix(normalized, PageRequest.of(0, MAX_SEARCH_RESULTS)).stream()
-                .map(this::toProductResponse)
-                .toList();
+        return describe(
+                products.searchByPrefix(normalized, PageRequest.of(0, MAX_SEARCH_RESULTS)),
+                outletId);
     }
 
     @Transactional(readOnly = true)
-    public CatalogDtos.ProductResponse getProduct(Long productId) {
+    public CatalogDtos.ProductResponse getProduct(Long productId, Long outletId) {
         var product = products.findById(productId)
                 .orElseThrow(() -> new NotFoundException("CanonicalProduct", productId));
-        return toProductResponse(product);
+        return describe(List.of(product), outletId).get(0);
     }
 
     /**
@@ -148,16 +154,89 @@ public class CatalogQueryService {
                 .toList();
     }
 
-    private CatalogDtos.ProductResponse toProductResponse(CanonicalProduct product) {
+    /**
+     * How many suppliers a restaurant could actually buy each product from, and
+     * for how little.
+     *
+     * <p><b>Counted the way the comparison screen counts.</b> These two figures
+     * are on every card, and until now they came from the offer rows alone: an
+     * offer under a store that was suspended, or under an organisation still
+     * awaiting verification, was counted as a supplier you could order from. The
+     * card said four and the product screen then showed three.
+     *
+     * <p>With an {@code outletId} it also drops suppliers who do not deliver
+     * there, which is what "3 suppliers" was always taken to mean. Without one —
+     * an unauthenticated browse, or a caller that has no outlet in hand — the
+     * figure is the platform-wide one, and says so by omission rather than by
+     * pretending to be local.
+     *
+     * <p>Batched: a page of thirty products is one offer query and one store
+     * query, not sixty.
+     */
+    private List<CatalogDtos.ProductResponse> describe(List<CanonicalProduct> found, Long outletId) {
+        if (found.isEmpty()) {
+            return List.of();
+        }
+
+        var productIds = found.stream().map(CanonicalProduct::getId).toList();
+        var offersByProduct = offers.findPurchasableForProducts(productIds).stream()
+                .collect(Collectors.groupingBy(SupplierOffer::getCanonicalProductId));
+
+        var storeIds = offersByProduct.values().stream()
+                .flatMap(List::stream)
+                .map(SupplierOffer::getSupplierStoreId)
+                .distinct()
+                .toList();
+        var stores = directory.storeInfo(storeIds);
+        var outlet = directory.outlet(outletId).orElse(null);
+
+        return found.stream()
+                .map(product -> {
+                    var buyable = offersByProduct.getOrDefault(product.getId(), List.of()).stream()
+                            .filter(offer -> {
+                                var store = stores.get(offer.getSupplierStoreId());
+                                return store != null && store.active()
+                                        && (outlet == null || serves(store, outlet));
+                            })
+                            .toList();
+
+                    BigDecimal lowest = buyable.stream()
+                            .map(SupplierOffer::getSellingPrice)
+                            .min(Comparator.naturalOrder())
+                            .orElse(null);
+
+                    return toProductResponse(product, buyable.size(), lowest);
+                })
+                .toList();
+    }
+
+    /**
+     * Whether a store delivers to an outlet. Doc 07 §13.
+     *
+     * <p>Deliberately the same rule as the recommendation feed: a declared pincode
+     * list overrides geography entirely, then the store's own radius, and a store
+     * whose address has not been geocoded is included rather than made invisible
+     * by a gap in our data.
+     */
+    private boolean serves(CatalogDirectory.StoreInfo store, CatalogDirectory.OutletInfo outlet) {
+        if (!store.serviceablePincodes().isEmpty()) {
+            return outlet.pincode() != null && store.serviceablePincodes().contains(outlet.pincode());
+        }
+        Double distance = Serviceability.distanceKm(
+                outlet.latitude(), outlet.longitude(), store.latitude(), store.longitude());
+        if (distance == null) {
+            return true;
+        }
+        BigDecimal radius = store.maxDeliveryRadiusKm() == null
+                ? DEFAULT_RADIUS_KM : store.maxDeliveryRadiusKm();
+        return BigDecimal.valueOf(distance).compareTo(radius) <= 0;
+    }
+
+    private CatalogDtos.ProductResponse toProductResponse(
+            CanonicalProduct product, int offerCount, BigDecimal lowestPrice) {
         var productAliases = aliases.findByCanonicalProductId(product.getId()).stream()
                 .map(CanonicalProductAlias::getAlias)
                 .toList();
-
-        var purchasable = offers.findPurchasableForProduct(product.getId());
-        BigDecimal lowest = purchasable.stream()
-                .map(SupplierOffer::getSellingPrice)
-                .min(Comparator.naturalOrder())
-                .orElse(null);
 
         String categoryName = product.getCategoryId() == null ? null
                 : categories.findById(product.getCategoryId())
@@ -166,7 +245,7 @@ public class CatalogQueryService {
         return new CatalogDtos.ProductResponse(
                 product.getId(), product.getName(), product.getCategoryId(), categoryName,
                 product.getDescription(), product.getBaseUnit(), product.getBasePackSize(),
-                product.getImageUrl(), productAliases, purchasable.size(), lowest);
+                product.getImageUrl(), productAliases, offerCount, lowestPrice);
     }
 
     /** Resolve or create a brand by name. Shared with import. */

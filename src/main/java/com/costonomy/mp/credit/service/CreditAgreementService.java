@@ -11,7 +11,7 @@ import com.costonomy.mp.common.outbox.OutboxService;
 import com.costonomy.mp.credit.domain.*;
 import com.costonomy.mp.credit.repository.*;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
-import com.costonomy.mp.discovery.domain.Serviceability;
+import com.costonomy.mp.common.domain.Serviceability;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;

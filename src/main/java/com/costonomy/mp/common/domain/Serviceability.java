@@ -1,4 +1,4 @@
-package com.costonomy.mp.discovery.domain;
+package com.costonomy.mp.common.domain;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
