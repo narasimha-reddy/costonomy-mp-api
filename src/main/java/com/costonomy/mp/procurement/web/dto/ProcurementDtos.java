@@ -241,6 +241,15 @@ public final class ProcurementDtos {
             BigDecimal gstAmount,
             BigDecimal totalAmount,
             BigDecimal acceptedAmount,
+            /**
+             * {@code acceptedAmount} split the way the ordered total is split, so a
+             * screen showing subtotal and GST can show the accepted ones beside
+             * them rather than mixing two different orders' figures.
+             *
+             * <p>Zero before the supplier answers, like {@code acceptedAmount}.
+             */
+            BigDecimal acceptedSubtotal,
+            BigDecimal acceptedGst,
             String paymentMethod,
             String paymentStatus,
             List<SupplierOrderItemResponse> items) {
@@ -393,6 +402,20 @@ public final class ProcurementDtos {
             BigDecimal unitPrice,
             BigDecimal gstRate,
             BigDecimal lineTotal,
+            /**
+             * What this line is worth at the quantity the supplier committed to.
+             *
+             * <p>Null until they answer. Equal to {@code lineTotal} when they took
+             * the line in full, zero when they declined it, and something between
+             * when they reduced it — which is the figure that has to be shown,
+             * because `lineTotal` is what was asked for and nobody is paying that.
+             *
+             * <p>Derived rather than stored: the accepted quantity and the
+             * snapshotted price are both on the row, so recomputing cannot drift,
+             * and it runs through {@link com.costonomy.mp.procurement.domain.Pricing}
+             * like every other rupee.
+             */
+            BigDecimal acceptedLineTotal,
             String status) {
     }
 }

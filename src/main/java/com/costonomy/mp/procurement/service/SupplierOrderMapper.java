@@ -4,6 +4,7 @@ import com.costonomy.mp.catalog.repository.CanonicalProductRepository;
 import com.costonomy.mp.common.domain.Serviceability;
 import com.costonomy.mp.catalog.repository.SupplierSkuRepository;
 import com.costonomy.mp.procurement.domain.Procurement;
+import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
 import com.costonomy.mp.procurement.domain.SupplierOrderItem;
 import com.costonomy.mp.procurement.repository.SupplierOrderItemRepository;
@@ -70,7 +71,8 @@ public class SupplierOrderMapper {
                 order.getStatus(), order.getAcceptanceDeadline(), order.getResponseSlaSeconds(),
                 order.getCreatedAt(),
                 order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
-                order.getAcceptedAmount(), order.getPaymentMethod(), order.getPaymentStatus(),
+                order.getAcceptedAmount(), acceptedSubtotal(items), acceptedGst(items),
+                order.getPaymentMethod(), order.getPaymentStatus(),
                 items.stream()
                         .map(item -> new ProcurementDtos.SupplierOrderItemResponse(
                                 item.getId(), item.getCanonicalProductId(),
@@ -79,8 +81,45 @@ public class SupplierOrderMapper {
                                 skuNames.get(item.getSupplierSkuId()),
                                 item.getRequestedQuantity(), item.getAcceptedQuantity(),
                                 item.getUnit(), item.getUnitPriceSnapshot(),
-                                item.getGstRateSnapshot(), item.getLineTotal(), item.getStatus()))
+                                item.getGstRateSnapshot(), item.getLineTotal(),
+                                acceptedLineTotal(item), item.getStatus()))
                         .toList());
+    }
+
+    /**
+     * What a line is worth at the quantity the supplier committed to.
+     *
+     * <p>Null until they answer — absent is not zero, and a client showing ₹0.00
+     * against an unanswered line would be reporting a refusal that has not
+     * happened. Computed through {@link Pricing} from the accepted quantity and
+     * the snapshotted price, which is the same arithmetic the acceptance used, so
+     * the two cannot disagree.
+     */
+    private static BigDecimal acceptedLineTotal(SupplierOrderItem item) {
+        if (item.getAcceptedQuantity() == null) {
+            return null;
+        }
+        var value = Pricing.lineItemValue(item.getUnitPriceSnapshot(), item.getAcceptedQuantity());
+        return Pricing.lineTotal(value, Pricing.lineGst(value, item.getGstRateSnapshot()));
+    }
+
+    /** The accepted total before tax. Zero while the order is unanswered. */
+    private static BigDecimal acceptedSubtotal(List<SupplierOrderItem> items) {
+        return items.stream()
+                .filter(item -> item.getAcceptedQuantity() != null)
+                .map(item -> Pricing.lineItemValue(
+                        item.getUnitPriceSnapshot(), item.getAcceptedQuantity()))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /** GST on the accepted lines, summed per line as the acceptance summed it. */
+    private static BigDecimal acceptedGst(List<SupplierOrderItem> items) {
+        return items.stream()
+                .filter(item -> item.getAcceptedQuantity() != null)
+                .map(item -> Pricing.lineGst(
+                        Pricing.lineItemValue(item.getUnitPriceSnapshot(), item.getAcceptedQuantity()),
+                        item.getGstRateSnapshot()))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     /**
