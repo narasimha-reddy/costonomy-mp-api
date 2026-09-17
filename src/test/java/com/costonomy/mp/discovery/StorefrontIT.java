@@ -281,6 +281,30 @@ class StorefrontIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("out of stock is not a matching item")
+        void outOfStockDoesNotCount() throws Exception {
+            var outlet = newOutlet();
+            long product = TestCatalog.freshProduct(jdbc, "paneer");
+            jdbc.update("update canonical_product set name = ?, normalized_name = ? where id = ?",
+                    tag(product), tag(product).toLowerCase(), product);
+
+            var stocked = newStore("Gupta Provisions", NEARBY_LAT, NEARBY_LON);
+            var empty = newStore("Sharma Traders", NEARBY_LAT, NEARBY_LON);
+            stock(stocked, product, "GP-" + product, "410");
+            long soldOut = stock(empty, product, "ST-" + product, "400");
+            jdbc.update("update supplier_offer set availability = 'OUT_OF_STOCK' "
+                    + "where supplier_sku_id = ?", soldOut);
+
+            var suppliers = directory(outlet, "&q=" + tag(product)).get("suppliers");
+
+            // Sharma carries it and cannot sell it today, so they are not an
+            // answer to "who has this" — the pack list still shows the row.
+            assertThat(suppliers.findValuesAsText("supplierName"))
+                    .containsExactly("Gupta Provisions");
+            assertThat(suppliers.get(0).get("matchingProductCount").asInt()).isEqualTo(1);
+        }
+
+        @Test
         @DisplayName("a term filters by name")
         void filtersByName() throws Exception {
             var outlet = newOutlet();

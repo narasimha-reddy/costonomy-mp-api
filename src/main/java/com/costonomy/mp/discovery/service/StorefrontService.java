@@ -44,17 +44,27 @@ public class StorefrontService {
     private static final int MIN_TERM = 2;
 
     /**
-     * Whether a store stocks something buyable matching the term.
+     * Whether a store stocks something matching the term that you could buy today.
      *
-     * <p>Takes three bound parameters, all the same term. Requires a live offer as
-     * well as a live SKU: a supplier who has listed paneer but withdrawn the price
-     * cannot sell you paneer, and should not be the answer to a search for it.
+     * <p>Takes three bound parameters, all the same term.
+     *
+     * <p>Three conditions, and each rules out a supplier who cannot actually sell
+     * it: the SKU is live, the offer is live and unexpired — a listing with the
+     * price withdrawn is not a price — and it is <b>in stock</b>.
+     *
+     * <p>The availability check is the one that is easy to leave out and the one
+     * that shows. "1 matching item" beside a supplier is a promise you can buy it
+     * from them; against an out-of-stock offer it sends a restaurant into a
+     * catalog to find a greyed-out Add button. The pack list still shows that row,
+     * marked out of stock, because "they carry it and are out today" is worth
+     * knowing — it is only worthless as a reason to pick the supplier.
      */
     private static final String STOCKS_MATCHING = """
             from supplier_sku k
               join canonical_product cp on cp.id = k.canonical_product_id
               join supplier_offer f on f.supplier_sku_id = k.id
                    and f.status = 'ACTIVE'
+                   and f.availability = 'AVAILABLE'
                    and (f.effective_to is null or f.effective_to > now())
               left join brand b on b.id = k.brand_id
              where k.supplier_store_id = s.id

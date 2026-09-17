@@ -2630,9 +2630,17 @@ name, brand or canonical product, the same three columns pack search reads — a
 "1 matching item" rather than a bare catalog total, which is the number a
 restaurant is actually choosing on.
 
-Stocking it is not enough; it has to be sellable. The predicate requires a live
-offer as well as a live SKU, because a supplier who listed paneer and withdrew
-the price cannot sell you paneer.
+Stocking it is not enough; it has to be sellable **today**. The predicate requires
+a live SKU, a live unexpired offer, and stock: a supplier who listed paneer and
+withdrew the price cannot sell you paneer, and neither can one who is out of it.
+
+That last condition is what keeps the three tabs telling the same story. Without
+it a search for curd read "2 suppliers" on Products and listed three on
+Suppliers, for the same item — because Products requires `AVAILABLE` and the
+supplier count did not. The pack list still shows an out-of-stock row, greyed,
+with its Add disabled: "they carry it and are out today" is worth knowing. It is
+only worthless as a reason to choose that supplier, which is exactly what a count
+beside their name is.
 
 **Names still match**, as the second half of an OR. The other question that
 screen answers is "find the supplier I already deal with", and the credit request
