@@ -54,7 +54,21 @@ public final class DiscoveryDtos {
             String imageUrl,
             /** Null when nobody has rated this store. Absent stays absent (doc 07 §4). */
             BigDecimal averageRating,
-            int ratingCount) {
+            int ratingCount,
+            /**
+             * Pack price divided by pack size — "₹98.00 per KG" beside "₹2,450".
+             *
+             * <p>What makes two offers comparable when one is a 1 kg pack and the
+             * other a 25 kg sack, which is the whole job of this screen. Computed
+             * here rather than in the app: guardrail 3 puts every money
+             * calculation on the server, and a client dividing rupees is exactly
+             * the arithmetic that rule exists to prevent.
+             *
+             * <p>Null when the pack is not measured in the product's own unit — a
+             * price "per PKT" where the product is sold per KG says nothing, and a
+             * number that says nothing is worse on a comparison screen than a gap.
+             */
+            BigDecimal pricePerBaseUnit) {
     }
 
     /**

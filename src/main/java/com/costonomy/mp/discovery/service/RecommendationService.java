@@ -170,7 +170,8 @@ public class RecommendationService {
                 .map(scored -> toResponse(scored, offerById.get(scored.offerId()),
                         skuById.get(scored.supplierSkuId()),
                         stores.get(scored.supplierStoreId()), brandNames, quantity,
-                        product.getImageUrl(), performance.get(scored.supplierStoreId())))
+                        product.getImageUrl(), performance.get(scored.supplierStoreId()),
+                        product.getBaseUnit()))
                 .toList();
 
         return new DiscoveryDtos.ProductRecommendation(
@@ -208,7 +209,7 @@ public class RecommendationService {
     private DiscoveryDtos.RecommendedOffer toResponse(
             ScoredOffer scored, SupplierOffer offer, SupplierSku sku,
             DiscoveryDirectory.StoreInfo store, Map<Long, String> brandNames, BigDecimal quantity,
-            String canonicalImageUrl, SupplierPerformance storePerformance) {
+            String canonicalImageUrl, SupplierPerformance storePerformance, String baseUnit) {
 
         BigDecimal itemTotal = offer.getSellingPrice().multiply(quantity);
         BigDecimal gstAmount = itemTotal.multiply(offer.getGstRate())
@@ -232,7 +233,25 @@ public class RecommendationService {
                 blankToNull(sku.getImageUrl()) != null
                         ? sku.getImageUrl() : blankToNull(canonicalImageUrl),
                 storePerformance == null ? null : storePerformance.averageRating().orElse(null),
-                storePerformance == null ? 0 : storePerformance.ratingCount());
+                storePerformance == null ? 0 : storePerformance.ratingCount(),
+                pricePerBaseUnit(offer.getSellingPrice(), sku.getPackSize(),
+                        sku.getPackUnit(), baseUnit));
+    }
+
+    /**
+     * What one base unit costs, so a 1 kg pack and a 25 kg sack can be compared.
+     *
+     * <p>Only when the pack is measured in the product's own unit. "₹410 per PKT"
+     * where the product is sold by the kilo is not a unit price, and printing one
+     * anyway would make two incomparable offers look comparable.
+     */
+    private static BigDecimal pricePerBaseUnit(BigDecimal packPrice, BigDecimal packSize,
+                                               String packUnit, String baseUnit) {
+        if (packPrice == null || packSize == null || packSize.signum() <= 0
+                || packUnit == null || !packUnit.equalsIgnoreCase(baseUnit)) {
+            return null;
+        }
+        return packPrice.divide(packSize, 2, RoundingMode.HALF_UP);
     }
 
     private static String blankToNull(String value) {
