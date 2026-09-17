@@ -1,5 +1,6 @@
 package com.costonomy.mp.procurement.web.dto;
 
+import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import com.costonomy.mp.procurement.domain.ApprovalStatus;
 import com.costonomy.mp.procurement.domain.ProcurementStatus;
 import com.costonomy.mp.procurement.domain.RequirementStatus;
@@ -377,8 +378,14 @@ public final class ProcurementDtos {
             String productName,
             BigDecimal remainingQuantity,
             String unit,
-            /** Ranked offers that can still serve the shortfall. Empty when none can. */
-            List<Object> offers,
+            /**
+             * Ranked offers that can still serve the shortfall. Empty when none can.
+             *
+             * <p>Typed, because it always held {@code RecommendedOffer} and a client
+             * cannot mirror {@code List<Object>} — D-061 asks a model to follow the
+             * DTO field for field, and this field said nothing to follow.
+             */
+            List<DiscoveryDtos.RecommendedOffer> offers,
             String unservedReason) {
     }
 
