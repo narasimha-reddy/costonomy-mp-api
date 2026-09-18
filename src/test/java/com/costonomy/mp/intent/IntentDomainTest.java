@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -110,13 +111,83 @@ class IntentDomainTest {
     }
 
     @Nested
+    @DisplayName("rolling lines up to the whole request")
+    class RollUp {
+
+        @Test
+        @DisplayName("everything in full is fulfilled; everything refused is not")
+        void extremes() {
+            assertThat(IntentFulfilment.roll(List.of(
+                    IntentFulfilment.FULFILLED, IntentFulfilment.FULFILLED)))
+                    .isEqualTo(IntentFulfilment.FULFILLED);
+            assertThat(IntentFulfilment.roll(List.of(
+                    IntentFulfilment.NOT_FULFILLED, IntentFulfilment.NOT_FULFILLED)))
+                    .isEqualTo(IntentFulfilment.NOT_FULFILLED);
+        }
+
+        @Test
+        @DisplayName("one refused line among filled ones is partial, not refused")
+        void mixed() {
+            assertThat(IntentFulfilment.roll(List.of(
+                    IntentFulfilment.FULFILLED, IntentFulfilment.NOT_FULFILLED)))
+                    .isEqualTo(IntentFulfilment.PARTIALLY_FULFILLED);
+            assertThat(IntentFulfilment.roll(List.of(
+                    IntentFulfilment.FULFILLED, IntentFulfilment.PARTIALLY_FULFILLED)))
+                    .isEqualTo(IntentFulfilment.PARTIALLY_FULFILLED);
+        }
+
+        // The supplier is still typing. Calling this partial would show the
+        // restaurant a shortfall on a line nobody has answered yet, and the
+        // request would appear to change its own answer as the form was filled in.
+        @Test
+        @DisplayName("one unanswered line makes the whole request awaiting")
+        void anyAwaitingWins() {
+            assertThat(IntentFulfilment.roll(List.of(
+                    IntentFulfilment.FULFILLED, IntentFulfilment.AWAITING)))
+                    .isEqualTo(IntentFulfilment.AWAITING);
+            assertThat(IntentFulfilment.roll(List.of(
+                    IntentFulfilment.NOT_FULFILLED, IntentFulfilment.AWAITING)))
+                    .isEqualTo(IntentFulfilment.AWAITING);
+        }
+
+        @Test
+        @DisplayName("an empty request is awaiting, not fulfilled")
+        void emptyIsAwaiting() {
+            // allMatch on an empty stream is true, so a careless implementation
+            // reports an empty draft as FULFILLED — and the restaurant's
+            // "everything arrived" filter fills up with requests holding nothing.
+            assertThat(IntentFulfilment.roll(List.of())).isEqualTo(IntentFulfilment.AWAITING);
+        }
+
+        /**
+         * Units differ across lines, which is why there is no total to compare.
+         * 20 KG of rice fully offered and 5 LTR of oil refused is partial — and
+         * summing 20 against 20 + 5 would have called it partial for the wrong
+         * reason, or fulfilled if the refused line happened to be the large one.
+         */
+        @Test
+        @DisplayName("mixed units roll up without ever being summed")
+        void unitsNeverSummed() {
+            var rice = IntentFulfilment.of(new BigDecimal("20"), new BigDecimal("20"));
+            var oil = IntentFulfilment.of(new BigDecimal("5"), BigDecimal.ZERO);
+            assertThat(IntentFulfilment.roll(List.of(rice, oil)))
+                    .isEqualTo(IntentFulfilment.PARTIALLY_FULFILLED);
+
+            var bigRefused = IntentFulfilment.of(new BigDecimal("500"), BigDecimal.ZERO);
+            var smallFilled = IntentFulfilment.of(new BigDecimal("1"), new BigDecimal("1"));
+            assertThat(IntentFulfilment.roll(List.of(bigRefused, smallFilled)))
+                    .isEqualTo(IntentFulfilment.PARTIALLY_FULFILLED);
+        }
+    }
+
+    @Nested
     @DisplayName("the order-creation window")
     class Window {
 
         @Test
-        @DisplayName("defaults to five minutes and follows configuration")
+        @DisplayName("defaults to thirty minutes and follows configuration")
         void configurable() {
-            assertThat(policy(Map.of()).orderCreationWindowSeconds()).isEqualTo(300);
+            assertThat(policy(Map.of()).orderCreationWindowSeconds()).isEqualTo(1800);
             assertThat(policy(Map.of("intent.orderCreationWindowSeconds", 600))
                     .orderCreationWindowSeconds()).isEqualTo(600);
         }
@@ -136,8 +207,8 @@ class IntentDomainTest {
         @DisplayName("a deadline is the accepting instant plus the window frozen with it")
         void deadlineFromSnapshot() {
             var acceptedAt = Instant.parse("2026-09-18T10:00:00Z");
-            assertThat(policy(Map.of()).orderCreationDeadline(acceptedAt, 300))
-                    .isEqualTo(Instant.parse("2026-09-18T10:05:00Z"));
+            assertThat(policy(Map.of()).orderCreationDeadline(acceptedAt, 1800))
+                    .isEqualTo(Instant.parse("2026-09-18T10:30:00Z"));
         }
 
         /**
@@ -154,8 +225,8 @@ class IntentDomainTest {
             intent.setOrderCreationDeadline(
                     policy(Map.of()).orderCreationDeadline(acceptedAt, 300));
 
-            var widened = policy(Map.of("intent.orderCreationWindowSeconds", 600));
-            assertThat(widened.orderCreationWindowSeconds()).isEqualTo(600);
+            var widened = policy(Map.of("intent.orderCreationWindowSeconds", 3600));
+            assertThat(widened.orderCreationWindowSeconds()).isEqualTo(3600);
             // The intent's own deadline is untouched by the new setting.
             assertThat(intent.getOrderCreationDeadline())
                     .isEqualTo(Instant.parse("2026-09-18T10:05:00Z"));

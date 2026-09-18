@@ -25,7 +25,15 @@ public class CreditReservation extends BaseEntity {
     @Column(name = "supplier_order_id", nullable = false)
     private Long supplierOrderId;
 
-    @Column(name = "procurement_id", nullable = false)
+    /**
+     * The checkout this reservation belonged to, or null when the order came from
+     * an intent.
+     *
+     * <p>Nullable since V25, for the same reason as {@code Payment}: credit is
+     * reserved per supplier order, and an intent-built order has no cart behind
+     * it.
+     */
+    @Column(name = "procurement_id")
     private Long procurementId;
 
     @Enumerated(EnumType.STRING)

@@ -58,26 +58,51 @@ public class OrderReleaseService {
         }
 
         Instant now = Instant.now();
-        order.setStatus(SupplierOrderStatus.PENDING_ACCEPTANCE);
-        // The clock starts now, not at submission.
-        order.setAcceptanceDeadline(now.plusSeconds(order.getResponseSlaSeconds()));
+
+        // Where it goes depends on whether anyone still has to agree to it, and
+        // that is a fact about the order rather than about who is calling.
+        //
+        // It has to be read off the order, not passed in. Release is triggered
+        // from wherever funding lands first — the confirm call, a provider
+        // webhook, or the reconciliation sweep — and none of those know or should
+        // know how the order was built. An earlier version took the target as an
+        // argument and the webhook path quietly kept the old default, so an
+        // already-accepted order was sent back to the supplier to accept again.
+        //
+        // A null procurement means it came from an intent (V23), where the
+        // supplier committed to these quantities at these prices before any money
+        // moved. There is nothing left to accept, so no countdown starts — one
+        // against an order nobody needs to answer would expire an agreed order.
+        boolean awaitsAcceptance = order.getProcurementId() != null;
+        SupplierOrderStatus target = awaitsAcceptance
+                ? SupplierOrderStatus.PENDING_ACCEPTANCE
+                : SupplierOrderStatus.CONFIRMED;
+
+        order.setStatus(target);
+        // The clock starts now, not at submission — and only when somebody still
+        // has to answer.
+        order.setAcceptanceDeadline(
+                awaitsAcceptance ? now.plusSeconds(order.getResponseSlaSeconds()) : null);
         order.setPaymentStatus("AUTHORIZED");
         orders.save(order);
 
         auditService.record(null, null, "SUPPLIER_ORDER_RELEASED", "SUPPLIER_ORDER",
-                order.getId(), SupplierOrderStatus.DRAFT.name(),
-                SupplierOrderStatus.PENDING_ACCEPTANCE.name(),
+                order.getId(), SupplierOrderStatus.DRAFT.name(), target.name(),
                 "Payment secured", "SYSTEM");
 
+        var payload = new java.util.HashMap<String, Object>();
+        payload.put("orderNumber", order.getOrderNumber());
+        payload.put("supplierStoreId", order.getSupplierStoreId());
+        payload.put("outletId", order.getOutletId());
+        if (order.getAcceptanceDeadline() != null) {
+            payload.put("acceptanceDeadline", order.getAcceptanceDeadline().toString());
+        }
         outbox.publish("SupplierOrderReleased", "SUPPLIER_ORDER", order.getId(),
-                Map.of("orderNumber", order.getOrderNumber(),
-                        "supplierStoreId", order.getSupplierStoreId(),
-                        "outletId", order.getOutletId(),
-                        "acceptanceDeadline", order.getAcceptanceDeadline().toString()),
-                null, now);
+                payload, null, now);
 
-        log.info("Released order {} to supplier {} — deadline {}",
-                order.getOrderNumber(), order.getSupplierStoreId(), order.getAcceptanceDeadline());
+        log.info("Released order {} to supplier {} as {} — deadline {}",
+                order.getOrderNumber(), order.getSupplierStoreId(), target,
+                order.getAcceptanceDeadline());
         return true;
     }
 

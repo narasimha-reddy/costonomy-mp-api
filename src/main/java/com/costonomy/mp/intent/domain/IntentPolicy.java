@@ -15,10 +15,17 @@ import java.time.Instant;
  *
  * <ul>
  *   <li><b>Order creation</b> — how long the restaurant has after the supplier
- *       accepts. Short, because the supplier has committed stock to it.</li>
+ *       accepts. Bounded, because the supplier has committed stock to it.</li>
  *   <li><b>Response</b> — how long the supplier has to answer at all.</li>
- *   <li><b>Acceptance validity</b> — how long a submitted answer stands.</li>
  * </ul>
+ *
+ * <p><b>There is no separate "acceptance validity".</b> An acceptance stands for
+ * exactly as long as an order can be created from it, so
+ * {@code intent_acceptance.expires_at} is set to the intent's
+ * {@code order_creation_deadline} rather than computed from a second setting. Two
+ * clocks that must agree are two clocks that will eventually disagree, and the
+ * disagreement would read as "your offer is still valid" on one screen and
+ * "this request expired" on the other.
  *
  * <p><b>The order-creation window is snapshotted onto the intent at acceptance,
  * never re-read.</b> Reading it at order time would make the deadline a function
@@ -31,14 +38,21 @@ import java.time.Instant;
 @RequiredArgsConstructor
 public class IntentPolicy {
 
-    /** Five minutes. The supplier is holding stock against this answer. */
-    static final int DEFAULT_ORDER_CREATION_WINDOW_SECONDS = 300;
+    /**
+     * Thirty minutes.
+     *
+     * <p>Two pressures set this. The supplier has committed stock and should not
+     * hold it all day, which argues for a short window. But the restaurant is not
+     * waiting at the phone — an acceptance can land hours after the request, and
+     * the window starts when the supplier answers, not when the restaurant looks.
+     * A five-minute window would expire most requests before anyone read the
+     * notification, and the restaurant would learn that accepted requests
+     * routinely evaporate.
+     */
+    static final int DEFAULT_ORDER_CREATION_WINDOW_SECONDS = 30 * 60;
 
     /** A working day to answer a request. */
     static final int DEFAULT_RESPONSE_WINDOW_SECONDS = 24 * 60 * 60;
-
-    /** An answer stands for an hour unless ordered against. */
-    static final int DEFAULT_ACCEPTANCE_VALIDITY_SECONDS = 60 * 60;
 
     /** Floor and ceiling, so a mistyped configuration cannot make a window absurd. */
     static final int MIN_ORDER_CREATION_WINDOW_SECONDS = 60;
@@ -65,12 +79,6 @@ public class IntentPolicy {
     public Duration responseWindow() {
         return Duration.ofSeconds(Math.max(60,
                 config.getInt("intent.responseWindowSeconds", DEFAULT_RESPONSE_WINDOW_SECONDS)));
-    }
-
-    public Duration acceptanceValidity() {
-        return Duration.ofSeconds(Math.max(60,
-                config.getInt("intent.acceptanceValiditySeconds",
-                        DEFAULT_ACCEPTANCE_VALIDITY_SECONDS)));
     }
 
     /**

@@ -10,9 +10,10 @@ public interface IntentOrderLinkRepository extends JpaRepository<IntentOrderLink
 
     Optional<IntentOrderLink> findByIntentId(Long intentId);
 
+    /** The other direction: which request an order came from. */
     Optional<IntentOrderLink> findBySupplierOrderId(Long supplierOrderId);
 
+    /** Batched, so a list of requests costs one query rather than one each. */
     List<IntentOrderLink> findByIntentIdIn(List<Long> intentIds);
 
-    boolean existsByIntentId(Long intentId);
 }

@@ -52,7 +52,12 @@ public enum SupplierOrderStatus {
 
     public Set<SupplierOrderStatus> allowedTransitions() {
         return switch (this) {
-            case DRAFT -> Set.of(PENDING_ACCEPTANCE, CANCELLED);
+            // CONFIRMED as well as PENDING_ACCEPTANCE: an order created from an
+            // accepted intent has already been agreed to, and routing it through
+            // PENDING_ACCEPTANCE would ask the supplier to accept what they just
+            // accepted. PENDING_ACCEPTANCE remains for orders still created the
+            // old way, and goes when that path does.
+            case DRAFT -> Set.of(PENDING_ACCEPTANCE, CONFIRMED, CANCELLED);
             case PENDING_ACCEPTANCE -> Set.of(
                     CONFIRMED, PARTIALLY_ACCEPTED, REJECTED, EXPIRED, CANCELLED);
             case CONFIRMED, PARTIALLY_ACCEPTED -> Set.of(PREPARING, CANCELLED);

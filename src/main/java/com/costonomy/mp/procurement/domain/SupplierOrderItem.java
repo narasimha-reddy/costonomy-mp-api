@@ -26,7 +26,13 @@ public class SupplierOrderItem extends BaseEntity {
     @Column(name = "supplier_order_id", nullable = false)
     private Long supplierOrderId;
 
-    @Column(name = "procurement_item_id", nullable = false)
+    /**
+     * The cart line this came from, or null when the order came from an intent.
+     *
+     * <p>Nullable since V24. An intent-built order has no cart behind it; its
+     * origin is recorded in {@code intent_order_link} instead.
+     */
+    @Column(name = "procurement_item_id")
     private Long procurementItemId;
 
     /** Carried through so an accepted quantity credits back to the need it served. */

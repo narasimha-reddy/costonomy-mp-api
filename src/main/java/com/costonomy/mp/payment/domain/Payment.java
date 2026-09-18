@@ -22,7 +22,15 @@ public class Payment extends BaseEntity {
     @Column(name = "supplier_order_id", nullable = false)
     private Long supplierOrderId;
 
-    @Column(name = "procurement_id", nullable = false)
+    /**
+     * The checkout this payment belonged to, or null when the order came from an
+     * intent.
+     *
+     * <p>Nullable since V25. A payment is per supplier order (D-010); this groups
+     * the payments of one multi-supplier checkout, and an intent-built order has
+     * no checkout to group with — one request is one supplier is one order.
+     */
+    @Column(name = "procurement_id")
     private Long procurementId;
 
     @Column(name = "outlet_id", nullable = false)

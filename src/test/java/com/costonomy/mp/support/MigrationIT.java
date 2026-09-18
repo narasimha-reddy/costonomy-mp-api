@@ -173,6 +173,14 @@ class MigrationIT extends AbstractIntegrationTest {
                         "delivery_provider_attempt",
                         "delivery_event",
                         "delivery_location",
+                        // The one-to-one boundary between a request and the order
+                        // it became. Written once, at the moment the order is
+                        // created, and never again: an updated_at here would mean
+                        // a request could be re-pointed at a different order, and
+                        // uk_intent_order_link_intent exists precisely so it
+                        // cannot. Which request produced which order is a fact
+                        // about the past.
+                        "intent_order_link",
                         // Realtime's projection and its handshake tickets. Both are
                         // written once and read by cursor; a row that changed after
                         // the fact would change what a client already replayed.

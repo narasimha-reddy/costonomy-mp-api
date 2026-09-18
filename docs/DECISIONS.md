@@ -2698,3 +2698,149 @@ place — "we have submitted this to a supplier and are waiting" is genuinely no
 A requirement returns to `SOURCING` from `PARTIALLY_FULFILLED` when the shortfall
 is submitted to another supplier, which is the loop guardrail 14 exists to keep
 open.
+
+## D-088 — The request is the basket, and money starts at the order
+**Raised 2026-09-18 · Settled 2026-09-18**
+
+The migration spec separates what a restaurant wants from what a supplier will
+supply from the commercial transaction. Executing it meant deciding where the
+basket lives, and the answer shapes everything else.
+
+**Decision: an intent *is* the basket, one per supplier.** Adding a pack finds or
+opens a `DRAFT` intent for that pack's store; the cart screen becomes a card per
+supplier; "Send request" flips them to `OPEN`. The split into one-supplier
+requests happens while the restaurant shops rather than at checkout, which is
+what keeps the intent → order boundary one-to-one without anybody having to think
+about it. `uk_intent_order_link_intent` makes that boundary a database
+constraint rather than a convention.
+
+`Procurement` stays for orders already placed through it. Nothing new is created
+there.
+
+### What this fixes
+The old flow took payment, then let the supplier reduce quantities. Money moved
+against a promise nobody had made, and the order the restaurant paid for was not
+the order it received — which is what produced the misleading-totals and
+partial-acceptance defects fixed in D-085 and its neighbours. Here the supplier
+commits first and payment is last, so there is no partial acceptance to display
+because there is nothing to reduce after the fact.
+
+### Lifecycle status is not fulfilment
+`IntentStatus` says where a request is; `IntentFulfilment` says how much of it was
+agreed to, **derived** from accepted against requested quantities and never
+stored. An intent can be `ORDERED` and only a third filled, and the restaurant's
+filter is asking the second question. One stored value for both would force a
+choice between a wrong status and a wrong filter.
+
+**"Fulfilled" means accepted** — the supplier has committed. Not delivered, not
+received; receiving has its own three quantities for that (doc 03 §11).
+
+Fulfilment rolls up **per line, never by summing quantities**. Lines are in each
+SKU's own pack unit, so 20 KG of rice and 5 LTR of oil have no meaningful total,
+and summing them would make fulfilment depend on which units were in the basket.
+
+### The acceptance is a quote with a deadline
+There is no price-change flow at order creation, and no separate "acceptance
+validity" clock. An acceptance stands for exactly as long as an order can be
+created from it, so `intent_acceptance.expires_at` is set to the intent's
+`order_creation_deadline` rather than computed from a second setting — two clocks
+that must agree are two clocks that will eventually disagree, and the
+disagreement reads as "your offer is still valid" on one screen and "this expired"
+on the other.
+
+Inside the window the quoted price holds. The supplier is protected by the window
+being short; the restaurant by the price not moving inside it. A supplier who
+repriced their catalogue after committing does not get to reprice a live
+commitment. The old cart needed a price-change confirmation because it collected
+money against prices nobody had agreed to yet.
+
+**The window is snapshotted onto the intent at acceptance, never re-read.**
+Re-reading would make every deadline a function of today's configuration: raise
+the setting and yesterday's expired intents come back to life, lower it and a
+restaurant loses a window it was told it had.
+
+**Default 30 minutes**, clamped to [60s, 24h]. Five minutes was the first choice
+and was wrong: the window starts when the supplier answers, not when the
+restaurant looks, and an acceptance can land hours after the request. Most
+requests would have expired before anyone read the notification, and restaurants
+would learn that accepted requests routinely evaporate.
+
+### The restaurant may take less, never more
+`0 ≤ ordered ≤ offered` at order creation. Nothing is clamped silently — a
+quantity above what was offered is an error, because the client showed somebody a
+number and quietly ordering less is how a kitchen ends up short without being
+told.
+
+### An order from an intent arrives already accepted
+Its lines carry `acceptedQuantity` equal to what was ordered, and it is released
+to `CONFIRMED` rather than `PENDING_ACCEPTANCE`. Routing it through
+`PENDING_ACCEPTANCE` would ask the supplier to accept what they just accepted,
+and the acceptance countdown would expire an order that was already agreed.
+
+Guardrail 16 is unchanged: the order is still created `DRAFT` and still released
+only once funding is secured. What changed is where it goes next.
+
+**`OrderReleaseService` reads the destination off the order, and must.** The first
+attempt took it as an argument from the caller. That looked clean and was wrong:
+release is triggered from wherever funding lands first — the confirm call, a
+provider webhook, or the reconciliation sweep — and none of those know how the
+order was built. Only the create path passed `CONFIRMED`, so for a prepaid order
+(where nothing is secured at creation) the webhook path quietly kept the old
+default and sent an already-accepted order back to the supplier to accept again.
+An integration test caught it; nothing about the code read as wrong.
+
+The discriminator is `procurement_id IS NULL` — a local fact on the order saying
+which flow built it. It also stays correct when the cart flow goes: every order
+is then intent-built, every `procurement_id` is null, and every order confirms.
+
+### Permissions are reused, not added
+Building a request needs `PROCUREMENT_CREATE`, sending and ordering
+`PROCUREMENT_SUBMIT`, cancelling `ORDER_CANCEL`, viewing `ORDER_VIEW`. On the
+supplier side the *shape of the answer* picks the permission: in full needs
+`ORDER_ACCEPT`, short needs `ORDER_PARTIAL_ACCEPT`, declining everything needs
+`ORDER_REJECT`.
+
+No new permission codes, because the capability is the same capability — the
+intent replaces the cart, so whoever could build a cart should build a request.
+Reusing them also keeps `AccessControlIT` and `PermissionCatalogIT` meaningful
+without a migration seeding rows that mean the same as rows already there. The
+supplier split is worth keeping: a store can let a warehouse hand confirm what is
+in stock without also letting them turn business away.
+
+### Answer every line, or be refused
+A response must cover every line; offering zero declines one. An omitted line read
+as zero would turn a client dropping a row into a refusal the supplier never made,
+and the restaurant would be told a product was unavailable when nobody said so.
+
+Suppliers send **no prices**. Each line is priced from that store's live `ACTIVE`
+offer through `Pricing`. A price changes by superseding an offer (D-012), never by
+answering a request differently — otherwise the price compared on the product
+screen and the price charged could differ with nothing to reconcile them.
+
+### Two expiries, not one
+`EXPIRED` is the supplier never answering. `ORDER_CREATION_EXPIRED` is the
+supplier answering and the restaurant letting the window lapse. Conflating them
+would blame the supplier for the restaurant's delay, and the supplier's response
+rate is built from the difference.
+
+### Schema notes
+The cart assumption turned out to be baked into the schema in **four** places,
+found one at a time as each failed:
+
+- V23 — `supplier_order.procurement_id`, made nullable with the new tables.
+- V24 — `supplier_order_item.procurement_item_id` was still `NOT NULL`, so the
+  order header was portable and its lines were not, and inserting an intent-built
+  order's items would have failed.
+- V25 — `payment.procurement_id` and `credit_reservation.procurement_id`, both
+  `NOT NULL`. This one got as far as arranging payment before failing, which is
+  the worst place to discover it.
+
+Nothing is lost by relaxing them. Payment and credit are both per supplier order
+(D-010), and the column is a convenience for grouping one multi-supplier
+checkout — which an intent-built order has nothing to group with, since one
+request is one supplier is one order. `intent_order_link` records where the order
+came from, and each line still carries its canonical product and supplier SKU,
+which is what receiving, disputes and settlement actually read. Every foreign key
+stays; a null is exempt, so cart-built orders keep exactly the guarantees they
+had.
+

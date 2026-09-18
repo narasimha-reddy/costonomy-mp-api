@@ -1,0 +1,17 @@
+-- An order line no longer needs a cart line behind it.
+--
+-- V23 made `supplier_order.procurement_id` nullable so an order could come from
+-- an intent instead of a cart, but stopped at the header: every *line* still
+-- pointed at a `procurement_item`, NOT NULL. An order created from an accepted
+-- intent has no cart and therefore no cart lines, so inserting its items would
+-- have failed on this column — the header was portable and the lines were not.
+--
+-- The line's origin is not lost. `intent_order_link` records which intent and
+-- which acceptance an order came from, and each order line still carries its
+-- canonical product and supplier SKU, which is what receiving, disputes and
+-- settlement actually read. What goes away is only the pointer to a row that,
+-- for these orders, was never created.
+--
+-- The foreign key stays. A null is exempt from it, so cart-built orders keep the
+-- same referential guarantee they had.
+ALTER TABLE supplier_order_item MODIFY COLUMN procurement_item_id BIGINT NULL;

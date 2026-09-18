@@ -19,7 +19,14 @@ import java.time.Instant;
 @NoArgsConstructor
 public class SupplierOrder extends BaseEntity {
 
-    @Column(name = "procurement_id", nullable = false)
+    /**
+     * The cart this came from, or null when it came from an intent.
+     *
+     * <p>Nullable since V23. An order created from an accepted intent has no
+     * procurement behind it — the intent is the basket — and the link to its
+     * origin lives in {@code intent_order_link} instead.
+     */
+    @Column(name = "procurement_id")
     private Long procurementId;
 
     @Column(name = "supplier_store_id", nullable = false)
