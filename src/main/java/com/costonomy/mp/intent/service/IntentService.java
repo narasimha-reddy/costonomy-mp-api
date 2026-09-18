@@ -288,12 +288,17 @@ public class IntentService {
      * The basket: one draft per supplier this outlet has shopped from.
      *
      * <p>Ordered newest first, which puts the supplier just added at the top.
+     *
+     * <p>Returns a basket rather than a bare list so the total across every
+     * supplier comes from the server. A kitchen sending three requests wants to
+     * know what it is about to ask for in total, and the client must not add
+     * money up itself.
      */
     @Transactional(readOnly = true)
-    public List<IntentDtos.IntentResponse> drafts(Long actorId, Long outletId) {
+    public IntentDtos.BasketResponse drafts(Long actorId, Long outletId) {
         accessControl.requireScoped(actorId, Permissions.PROCUREMENT_CREATE,
                 ScopeType.OUTLET, outletId, "Outlet");
-        return mapper.toResponses(
+        return mapper.toBasket(
                 intents.findByOutletIdAndStatus(outletId, IntentStatus.DRAFT));
     }
 

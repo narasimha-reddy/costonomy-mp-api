@@ -53,8 +53,15 @@ public class IntentController {
                     three drafts, and the cart screen is a card each. The split happens
                     while they shop rather than at checkout, which is what keeps one
                     request to one order.
+
+                    Carries **indicative** amounts per line, per supplier and for the
+                    basket, priced from each supplier's current listing. They show a
+                    kitchen what it is about to ask for and commit nobody: the
+                    supplier's reply decides both quantity and price. A line whose SKU
+                    has no live offer is priced as null and `indicativeComplete` goes
+                    false, so a total is never quietly missing an item.
                     """)
-    public ApiResponse<List<IntentDtos.IntentResponse>> drafts(@PathVariable Long outletId) {
+    public ApiResponse<IntentDtos.BasketResponse> drafts(@PathVariable Long outletId) {
         return ApiResponse.ok(intents.drafts(ActorContext.requireUserId(), outletId));
     }
 

@@ -125,6 +125,26 @@ public final class IntentDtos {
     // ── Responses ────────────────────────────────────────────────────────
 
     /**
+     * The whole basket: every unsent request, and what the lot would come to.
+     *
+     * <p>A wrapper rather than a bare list because the basket-wide total has to
+     * come from the server. Summing the per-supplier totals on the client would
+     * be arithmetic on money, which is the one thing guardrail 3 forbids — and it
+     * is exactly the kind of sum that quietly disagrees with the server's own
+     * rounding.
+     */
+    public record BasketResponse(
+            List<IntentResponse> requests,
+            int supplierCount,
+            int itemCount,
+            BigDecimal indicativeValue,
+            BigDecimal indicativeGst,
+            BigDecimal indicativeTotal,
+            /** False when any line anywhere in the basket could not be priced. */
+            boolean indicativeComplete) {
+    }
+
+    /**
      * An intent, whichever side is looking at it.
      *
      * <p>{@code status} is where it is in its life; {@code fulfilment} is how much
@@ -173,6 +193,19 @@ public final class IntentDtos {
             /** True only while an order may still be created from this. */
             boolean withinOrderWindow,
             List<IntentItemResponse> items,
+            /**
+             * What this whole request would cost at today's listed prices, and
+             * whether every line in it could be priced.
+             *
+             * <p>Draft-only, like the line figures it sums. {@code indicativeComplete}
+             * false means at least one line has no live offer, so the total is
+             * short of the real thing and the screen must say so rather than
+             * presenting a confident number that is quietly missing an item.
+             */
+            BigDecimal indicativeValue,
+            BigDecimal indicativeGst,
+            BigDecimal indicativeTotal,
+            boolean indicativeComplete,
             AcceptanceResponse acceptance,
             /** The order this became, if it became one. */
             Long supplierOrderId,
@@ -207,7 +240,22 @@ public final class IntentDtos {
             BigDecimal lineGst,
             BigDecimal lineTotal,
             BigDecimal gstRate,
-            String supplierNotes) {
+            String supplierNotes,
+            /**
+             * What this line would cost at the supplier's current listed price.
+             *
+             * <p>Only populated while the request is a draft, and only to show a
+             * kitchen what it is about to ask for. It is <b>not</b> a commitment
+             * by anybody: the supplier's reply decides both the quantity and the
+             * price, and once they have replied the offered figures above are the
+             * real ones and these are gone.
+             *
+             * <p>Null when the SKU has no live offer — out of stock, or delisted
+             * since it was added. Absent rather than zero, because a missing
+             * price is not a free product.
+             */
+            BigDecimal indicativeUnitPrice,
+            BigDecimal indicativeLineTotal) {
     }
 
     /** The supplier's commercial statement. Non-financial until an order exists. */
