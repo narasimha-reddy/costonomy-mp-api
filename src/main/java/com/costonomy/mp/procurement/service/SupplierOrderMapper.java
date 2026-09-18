@@ -2,7 +2,7 @@ package com.costonomy.mp.procurement.service;
 
 import com.costonomy.mp.catalog.repository.CanonicalProductRepository;
 import com.costonomy.mp.common.domain.Serviceability;
-import com.costonomy.mp.catalog.repository.SupplierSkuRepository;
+import com.costonomy.mp.catalog.service.SkuDirectory;
 import com.costonomy.mp.procurement.domain.Procurement;
 import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
@@ -34,7 +34,7 @@ public class SupplierOrderMapper {
 
     private final SupplierOrderRepository supplierOrders;
     private final SupplierOrderItemRepository supplierOrderItems;
-    private final SupplierSkuRepository skus;
+    private final SkuDirectory skuDirectory;
     private final CanonicalProductRepository products;
     private final ProcurementDirectory directory;
 
@@ -54,9 +54,11 @@ public class SupplierOrderMapper {
                     productImages.put(product.getId(), product.getImageUrl());
                 });
 
-        Map<Long, String> skuNames = new HashMap<>();
-        skus.findAllById(items.stream().map(SupplierOrderItem::getSupplierSkuId).toList())
-                .forEach(sku -> skuNames.put(sku.getId(), sku.getName()));
+        // The same descriptor the request screens use, so a pack reads
+        // identically whether somebody is looking at the request or the order
+        // that came out of it.
+        var descriptors = skuDirectory.describe(
+                items.stream().map(SupplierOrderItem::getSupplierSkuId).toList());
 
         return new ProcurementDtos.SupplierOrderResponse(
                 order.getId(), order.getOrderNumber(), order.getSupplierStoreId(),
@@ -78,7 +80,7 @@ public class SupplierOrderMapper {
                                 item.getId(), item.getCanonicalProductId(),
                                 productNames.get(item.getCanonicalProductId()),
                                 productImages.get(item.getCanonicalProductId()),
-                                skuNames.get(item.getSupplierSkuId()),
+                                descriptors.get(item.getSupplierSkuId()),
                                 item.getRequestedQuantity(), item.getAcceptedQuantity(),
                                 item.getUnit(), item.getUnitPriceSnapshot(),
                                 item.getGstRateSnapshot(), item.getLineTotal(),

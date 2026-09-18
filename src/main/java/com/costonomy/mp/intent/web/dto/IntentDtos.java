@@ -1,5 +1,6 @@
 package com.costonomy.mp.intent.web.dto;
 
+import com.costonomy.mp.catalog.service.SkuDirectory;
 import com.costonomy.mp.intent.domain.IntentAcceptanceStatus;
 import com.costonomy.mp.intent.domain.IntentFulfilment;
 import com.costonomy.mp.intent.domain.IntentStatus;
@@ -226,10 +227,14 @@ public final class IntentDtos {
             Long id,
             Long supplierSkuId,
             Long canonicalProductId,
-            String productName,
-            String skuName,
-            String packLabel,
-            String imageUrl,
+            /**
+             * How the pack is described, in the one shape every screen uses.
+             *
+             * <p>Was a loose {@code skuName} plus a pre-joined pack label, which
+             * left each screen to decide what a pack looks like — and they
+             * disagreed. {@code SkuDirectory} owns the shape now.
+             */
+            SkuDirectory.SkuDescriptor sku,
             BigDecimal requestedQuantity,
             String unit,
             String notes,

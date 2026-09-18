@@ -5,6 +5,7 @@ import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.catalog.repository.SupplierOfferRepository;
 import com.costonomy.mp.catalog.repository.SupplierSkuRepository;
+import com.costonomy.mp.catalog.service.SkuDirectory;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
@@ -67,7 +68,7 @@ public class IntentService {
     private final SupplierSkuRepository skus;
     private final SupplierOfferRepository offers;
     private final IntentMapper mapper;
-    private final IntentDirectory intentDirectory;
+    private final SkuDirectory skuDirectory;
     private final IntentPolicy policy;
     private final ProcurementDirectory directory;
     private final AccessControlService accessControl;
@@ -346,7 +347,7 @@ public class IntentService {
     /** Lines whose supplier has repriced since they were added. */
     private List<IntentDtos.PriceChange> repricedLines(List<IntentItem> lines) {
         var changes = new ArrayList<IntentDtos.PriceChange>();
-        var labels = intentDirectory.skus(lines.stream()
+        var labels = skuDirectory.describe(lines.stream()
                 .map(IntentItem::getSupplierSkuId).toList());
 
         for (IntentItem line : lines) {
@@ -483,6 +484,8 @@ public class IntentService {
                 source.orderCreationDeadline(), source.orderCreationWindowSeconds(),
                 source.cancelledAt(), source.expiredAt(), source.createdAt(), source.serverTime(),
                 source.editable(), source.withinOrderWindow(), source.items(),
+                source.agreedValue(), source.agreedGst(), source.agreedTotal(),
+                source.pricedComplete(), source.priceChanged(),
                 null, source.supplierOrderId(), source.supplierOrderNumber());
     }
 

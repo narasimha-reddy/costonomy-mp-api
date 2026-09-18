@@ -15,6 +15,7 @@ import com.costonomy.mp.intent.repository.IntentOrderLinkRepository;
 import com.costonomy.mp.intent.web.dto.IntentDtos;
 import com.costonomy.mp.catalog.domain.SupplierOffer;
 import com.costonomy.mp.catalog.repository.SupplierOfferRepository;
+import com.costonomy.mp.catalog.service.SkuDirectory;
 import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
 import com.costonomy.mp.procurement.service.ProcurementDirectory;
@@ -48,7 +49,7 @@ public class IntentMapper {
     private final IntentAcceptanceRepository acceptances;
     private final IntentAcceptanceItemRepository acceptanceItems;
     private final IntentOrderLinkRepository links;
-    private final IntentDirectory directory;
+    private final SkuDirectory skuDirectory;
     private final ProcurementDirectory stores;
     private final SupplierOrderRepository supplierOrders;
     private final SupplierOfferRepository offers;
@@ -90,7 +91,7 @@ public class IntentMapper {
 
         var orderNumbers = orderNumbers(linkByIntent.values());
 
-        var labels = directory.skus(itemsByIntent.values().stream()
+        var labels = skuDirectory.describe(itemsByIntent.values().stream()
                 .flatMap(List::stream).map(IntentItem::getSupplierSkuId).distinct().toList());
 
         var storeInfo = stores.stores(intents.stream()
@@ -179,10 +180,7 @@ public class IntentMapper {
                         item.getId(),
                         item.getSupplierSkuId(),
                         item.getCanonicalProductId(),
-                        label == null ? null : label.productName(),
-                        label == null ? null : label.skuName(),
-                        label == null ? null : label.packLabel(),
-                        label == null ? null : label.imageUrl(),
+                        label,
                         item.getRequestedQuantity(),
                         item.getUnit(),
                         item.getNotes(),

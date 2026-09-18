@@ -4,6 +4,7 @@ import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.catalog.repository.SupplierOfferRepository;
+import com.costonomy.mp.catalog.service.SkuDirectory;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
@@ -71,7 +72,7 @@ public class IntentResponder {
     private final IntentAcceptanceRepository acceptances;
     private final IntentAcceptanceItemRepository acceptanceItems;
     private final SupplierOfferRepository offers;
-    private final IntentDirectory directory;
+    private final SkuDirectory skuDirectory;
     private final IntentMapper mapper;
     private final IntentPolicy policy;
     private final AccessControlService accessControl;
@@ -258,7 +259,7 @@ public class IntentResponder {
     private List<IntentAcceptanceItem> priceLines(
             Intent intent, List<IntentItem> lines, Map<Long, IntentDtos.RespondLine> answers) {
 
-        var labels = directory.skus(lines.stream().map(IntentItem::getSupplierSkuId).toList());
+        var labels = skuDirectory.describe(lines.stream().map(IntentItem::getSupplierSkuId).toList());
 
         List<IntentAcceptanceItem> priced = new ArrayList<>(lines.size());
         for (IntentItem line : lines) {
@@ -358,7 +359,7 @@ public class IntentResponder {
                 ScopeType.SUPPLIER_STORE, intent.getSupplierStoreId(), "Intent");
 
         var lines = intentItems.findByIntentIdOrderByIdAsc(intentId);
-        var labels = directory.skus(lines.stream().map(IntentItem::getSupplierSkuId).toList());
+        var labels = skuDirectory.describe(lines.stream().map(IntentItem::getSupplierSkuId).toList());
 
         Map<Long, BigDecimal> wanted = new HashMap<>();
         if (request != null && request.lines() != null) {

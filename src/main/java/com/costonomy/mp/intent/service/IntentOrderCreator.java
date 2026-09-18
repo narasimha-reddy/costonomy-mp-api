@@ -3,6 +3,7 @@ package com.costonomy.mp.intent.service;
 import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
+import com.costonomy.mp.catalog.service.SkuDirectory;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
@@ -81,7 +82,7 @@ public class IntentOrderCreator {
     private final OrderNumberGenerator orderNumbers;
     private final OrderFunding funding;
     private final OrderReleaseService orderRelease;
-    private final IntentDirectory directory;
+    private final SkuDirectory skuDirectory;
     private final ProcurementDirectory stores;
     private final AccessControlService accessControl;
     private final AuditService auditService;
@@ -118,7 +119,7 @@ public class IntentOrderCreator {
             Long actorId, Long intentId, IntentDtos.CreateOrderRequest request) {
 
         var plan = plan(actorId, intentId, request);
-        var labels = directory.skus(plan.lines().stream()
+        var labels = skuDirectory.describe(plan.lines().stream()
                 .map(line -> line.item().getSupplierSkuId()).toList());
 
         var lines = plan.lines().stream()

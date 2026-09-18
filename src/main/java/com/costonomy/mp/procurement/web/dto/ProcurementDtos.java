@@ -1,5 +1,7 @@
 package com.costonomy.mp.procurement.web.dto;
 
+import com.costonomy.mp.catalog.service.SkuDirectory;
+
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import com.costonomy.mp.procurement.domain.ApprovalStatus;
 import com.costonomy.mp.procurement.domain.ProcurementStatus;
@@ -401,7 +403,8 @@ public final class ProcurementDtos {
              * rendering an order must not make one request per item to draw it.
              */
             String productImageUrl,
-            String skuName,
+            /** The same pack description the request screens use. */
+            SkuDirectory.SkuDescriptor sku,
             BigDecimal requestedQuantity,
             /** Null until the supplier answers; zero means they declined this line. */
             BigDecimal acceptedQuantity,
