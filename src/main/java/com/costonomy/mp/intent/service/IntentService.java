@@ -13,6 +13,7 @@ import com.costonomy.mp.common.outbox.OutboxService;
 import com.costonomy.mp.intent.domain.Intent;
 import com.costonomy.mp.intent.domain.IntentFulfilment;
 import com.costonomy.mp.intent.domain.IntentItem;
+import com.costonomy.mp.intent.domain.IntentPolicy;
 import com.costonomy.mp.intent.domain.IntentStatus;
 import com.costonomy.mp.intent.repository.IntentItemRepository;
 import com.costonomy.mp.intent.repository.IntentRepository;
@@ -65,6 +66,7 @@ public class IntentService {
     private final SupplierSkuRepository skus;
     private final SupplierOfferRepository offers;
     private final IntentMapper mapper;
+    private final IntentPolicy policy;
     private final ProcurementDirectory directory;
     private final AccessControlService accessControl;
     private final AuditService auditService;
@@ -254,8 +256,15 @@ public class IntentService {
         }
 
         Instant now = Instant.now();
+        int windowSeconds = policy.responseWindowSecondsFor(store.responseSlaSeconds());
+
         transition(intent, IntentStatus.OPEN, actorId);
         intent.setSentAt(now);
+        // The supplier's clock starts here, on their own promise. Frozen onto the
+        // request so changing the store's SLA later cannot move a deadline that
+        // both sides are already watching.
+        intent.setResponseWindowSeconds(windowSeconds);
+        intent.setResponseDeadline(policy.responseDeadline(now, windowSeconds));
         intent.setRequestedDeliveryTime(request.requestedDeliveryTime());
         if (request.notes() != null) {
             intent.setNotes(request.notes());
@@ -266,7 +275,8 @@ public class IntentService {
                 Map.of("reference", intent.getReference(),
                         "outletId", intent.getOutletId(),
                         "supplierStoreId", intent.getSupplierStoreId(),
-                        "itemCount", lines.size()),
+                        "itemCount", lines.size(),
+                        "responseDeadline", intent.getResponseDeadline().toString()),
                 actorId, now);
 
         return mapper.toResponse(intent);
@@ -350,7 +360,8 @@ public class IntentService {
                 source.id(), source.reference(), source.outletId(), source.supplierStoreId(),
                 source.storeName(), source.supplierName(), source.status(), source.fulfilment(),
                 source.source(), source.clonedFromId(), source.requestedDeliveryTime(),
-                source.notes(), source.sentAt(), source.acceptedAt(),
+                source.notes(), source.sentAt(), source.responseDeadline(),
+                source.responseWindowSeconds(), source.acceptedAt(),
                 source.orderCreationDeadline(), source.orderCreationWindowSeconds(),
                 source.cancelledAt(), source.expiredAt(), source.createdAt(), source.serverTime(),
                 source.editable(), source.withinOrderWindow(), source.items(),

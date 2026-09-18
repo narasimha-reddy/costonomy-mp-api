@@ -2844,3 +2844,68 @@ which is what receiving, disputes and settlement actually read. Every foreign ke
 stays; a null is exempt, so cart-built orders keep exactly the guarantees they
 had.
 
+## D-089 — The supplier's clock belongs to the request, not the order
+**Raised 2026-09-18 · Settled 2026-09-18**
+
+D-088 moved the supplier's commitment from the order to the request, and the
+response SLA did not follow it. The result was backwards in both directions:
+`supplier_store.response_sla_seconds` — the supplier's own promise about how
+quickly they reply — was still being snapshotted onto an order that, under the
+new flow, arrives already accepted and needs no answer at all; while the
+**request**, which is the thing a supplier now actually has to answer, expired
+on a global default that ignored their configuration entirely.
+
+**Decision: the store's SLA is the request's deadline.** It is snapshotted onto
+`intent.response_deadline` at send time, from `sent_at` plus the store's window,
+for the same reason the order-creation window is snapshotted at acceptance: a
+supplier changing their SLA must not move a deadline both sides are already
+watching, and a deadline recomputed from today's configuration would resurrect
+expired requests every time somebody widened the setting.
+
+`IntentResponder` checks it rather than trusting the sweep, so "a supplier
+cannot answer an expired request" is true at every instant and not merely within
+thirty seconds of one. The job remains housekeeping.
+
+### Clamped, and the floor is the part that matters
+`supplier_store.response_sla_seconds` defaults to **60**, a figure chosen for a
+supplier watching an order queue. A request can arrive overnight. Left
+unclamped, every request to a store that never configured an SLA would expire a
+minute after it was sent, and the restaurant would conclude that suppliers never
+reply rather than that a default was wrong. Floor 5 minutes, ceiling 7 days; a
+store with nothing configured falls back to the platform default rather than to
+the column's.
+
+### Its own error code
+`INTENT_EXPIRED`, not the `SUPPLIER_ORDER_EXPIRED` it would otherwise borrow. A
+client matching on codes would tell a supplier their *order* expired when what
+lapsed was a request they had not answered — the accurate-but-useless report
+D-018 exists to prevent.
+
+### Both clocks are now visible, to the right person
+The supplier sees a countdown to reply; the restaurant sees the same deadline as
+"usually replies within", so a kitchen can decide whether to wait or go
+elsewhere instead of refreshing a screen that says only "waiting". Once the
+request is answered the clock changes hands and becomes the restaurant's window
+to order. Only one is ever live.
+
+`MandiCountdown` grew an `action` label for this. It said "to respond"
+unconditionally, which is somebody else's job when a restaurant is counting down
+its own window.
+
+The supplier's "New orders" section no longer claims a response window, because
+there is nothing there to respond to.
+
+### A migration lesson worth keeping
+The first version added the columns, backfilled the requests already in flight,
+and added a validating CHECK — in one migration. It applied perfectly to an
+empty database and **failed against one with data**: the constraint was
+validated without seeing the backfill written immediately above it, Flyway
+recorded the migration as failed, and the application refused to start until the
+history row was removed and the half-applied columns dropped.
+
+The replay used to check migrations runs against a clean database, where a
+backfill is a no-op — so it could not have caught this, and did not. Split into
+V26 (columns and backfill) and V27 (constraint and index), each migration acts
+on data the previous one has committed. **A migration that backfills must be
+tested against representative data, and a validating constraint belongs in a
+later migration than the backfill it depends on.**

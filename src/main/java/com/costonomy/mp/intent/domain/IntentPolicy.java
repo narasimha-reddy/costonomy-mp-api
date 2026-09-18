@@ -4,7 +4,6 @@ import com.costonomy.mp.common.config.AppConfigService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.time.Instant;
 
 /**
@@ -76,9 +75,35 @@ public class IntentPolicy {
                 Math.max(MIN_ORDER_CREATION_WINDOW_SECONDS, configured));
     }
 
-    public Duration responseWindow() {
-        return Duration.ofSeconds(Math.max(60,
-                config.getInt("intent.responseWindowSeconds", DEFAULT_RESPONSE_WINDOW_SECONDS)));
+    /** A window shorter than this expires before anyone reads the notification. */
+    static final int MIN_RESPONSE_WINDOW_SECONDS = 5 * 60;
+    static final int MAX_RESPONSE_WINDOW_SECONDS = 7 * 24 * 60 * 60;
+
+    /**
+     * How long this store has to answer a request, from its own SLA.
+     *
+     * <p><b>The store's promise is the deadline.</b> A supplier who advertises a
+     * thirty-minute reply is held to thirty minutes; one who has configured
+     * nothing falls back to the platform default rather than to the column's own
+     * default, which is 60 seconds and was chosen for a supplier watching an
+     * order queue, not for a request that may arrive overnight.
+     *
+     * <p>Clamped at both ends. The floor stops a misconfigured store expiring
+     * every request before the push notification has landed — which would read as
+     * "nobody ever replies" rather than as a bad setting. The ceiling stops a
+     * request hanging around for a month.
+     */
+    public int responseWindowSecondsFor(Integer storeSlaSeconds) {
+        int configured = storeSlaSeconds == null || storeSlaSeconds <= 0
+                ? config.getInt("intent.responseWindowSeconds", DEFAULT_RESPONSE_WINDOW_SECONDS)
+                : storeSlaSeconds;
+        return Math.min(MAX_RESPONSE_WINDOW_SECONDS,
+                Math.max(MIN_RESPONSE_WINDOW_SECONDS, configured));
+    }
+
+    /** The deadline to store, from the instant the request was sent. */
+    public Instant responseDeadline(Instant sentAt, int windowSeconds) {
+        return sentAt.plusSeconds(windowSeconds);
     }
 
     /**

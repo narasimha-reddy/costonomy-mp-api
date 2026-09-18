@@ -67,6 +67,16 @@ public enum ErrorCode {
     IDEMPOTENT_REQUEST_IN_PROGRESS(HttpStatus.CONFLICT,
             "That request is still being processed."),
 
+    // ── Requests (409) ───────────────────────────────────────────────────
+    //
+    // Its own code rather than SUPPLIER_ORDER_EXPIRED, which is what it would
+    // otherwise be borrowing. A client matching on codes to decide what to show
+    // would tell a supplier their *order* expired when what lapsed was a request
+    // they had not answered yet — and D-018 exists to stop exactly that kind of
+    // accurate-but-useless report.
+    INTENT_EXPIRED(HttpStatus.CONFLICT,
+            "This request can no longer be answered."),
+
     // ── Supplier orders (409, 422) ───────────────────────────────────────
     SUPPLIER_ORDER_EXPIRED(HttpStatus.CONFLICT,
             "This order can no longer be accepted."),

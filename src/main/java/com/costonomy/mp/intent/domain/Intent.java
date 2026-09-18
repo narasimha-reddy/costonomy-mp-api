@@ -75,6 +75,20 @@ public class Intent extends BaseEntity {
     private Instant sentAt;
 
     /** When the supplier answered. The authoritative start of the order window. */
+    /**
+     * The window the supplier promised, frozen when the request was sent.
+     *
+     * <p>Snapshotted rather than re-read for the same reason as the
+     * order-creation window: a store changing its SLA must not move the deadline
+     * on a request already in flight.
+     */
+    @Column(name = "response_window_seconds")
+    private Integer responseWindowSeconds;
+
+    /** When this request stops being answerable. Null until it is sent. */
+    @Column(name = "response_deadline")
+    private Instant responseDeadline;
+
     @Column(name = "accepted_at")
     private Instant acceptedAt;
 
@@ -98,6 +112,17 @@ public class Intent extends BaseEntity {
     private Instant expiredAt;
 
     /** Whether an order may still be created, by the clock alone. */
+    /**
+     * Whether the supplier can still answer.
+     *
+     * <p>An unsent request has no deadline and is <b>not</b> answerable — there
+     * is nothing to answer yet — so absent reads as closed here, exactly as it
+     * does for the order window.
+     */
+    public boolean withinResponseWindow(Instant now) {
+        return responseDeadline != null && !now.isAfter(responseDeadline);
+    }
+
     public boolean withinOrderWindow(Instant now) {
         return orderCreationDeadline != null && !now.isAfter(orderCreationDeadline);
     }

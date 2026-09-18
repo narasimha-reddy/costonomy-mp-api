@@ -134,8 +134,13 @@ public final class IntentDtos {
      * second question (§4).
      *
      * <p>{@code serverTime} is the instant this response was built, so a client
-     * can count down to {@code orderCreationDeadline} against the clock that will
-     * actually enforce it rather than against the phone's.
+     * can count down to either deadline against the clock that will actually
+     * enforce it rather than against the phone's.
+     *
+     * <p>Two deadlines, and they belong to different people.
+     * {@code responseDeadline} is the supplier's — how long they have to answer.
+     * {@code orderCreationDeadline} is the restaurant's — how long they have to
+     * order once answered. Only one is ever live at a time.
      */
     public record IntentResponse(
             Long id,
@@ -151,6 +156,12 @@ public final class IntentDtos {
             Instant requestedDeliveryTime,
             String notes,
             Instant sentAt,
+            /**
+             * When the supplier's chance to answer runs out, and the window it
+             * came from. Both are the store's own promise, frozen at send.
+             */
+            Instant responseDeadline,
+            Integer responseWindowSeconds,
             Instant acceptedAt,
             Instant orderCreationDeadline,
             Integer orderCreationWindowSeconds,

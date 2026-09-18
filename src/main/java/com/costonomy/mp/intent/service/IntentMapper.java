@@ -143,6 +143,8 @@ public class IntentMapper {
                     intent.getRequestedDeliveryTime(),
                     intent.getNotes(),
                     intent.getSentAt(),
+                    intent.getResponseDeadline(),
+                    intent.getResponseWindowSeconds(),
                     intent.getAcceptedAt(),
                     intent.getOrderCreationDeadline(),
                     intent.getAcceptedOrderCreationWindowSeconds(),

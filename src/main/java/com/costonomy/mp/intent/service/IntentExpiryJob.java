@@ -45,7 +45,6 @@ public class IntentExpiryJob {
 
     private final IntentRepository intents;
     private final IntentTransitions transitions;
-    private final com.costonomy.mp.intent.domain.IntentPolicy policy;
 
     @Scheduled(fixedDelayString = "${costonomy.mp.intents.expiry-poll-interval:PT30S}")
     @SchedulerLock(name = "intent-expiry", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
@@ -54,10 +53,11 @@ public class IntentExpiryJob {
         expireUnordered();
     }
 
-    /** Sent, never answered, past the response window. */
+    /** Sent, never answered, past the deadline the store promised. */
     private void expireUnanswered() {
-        var cutoff = Instant.now().minus(policy.responseWindow());
-        int expired = sweep(intents.findStaleOpen(cutoff).stream().map(intent -> intent.getId()).toList(),
+        int expired = sweep(
+                intents.findStaleOpen(Instant.now()).stream()
+                        .map(intent -> intent.getId()).toList(),
                 IntentStatus.EXPIRED);
         if (expired > 0) {
             log.info("Intent expiry sweep: {} requests went unanswered", expired);

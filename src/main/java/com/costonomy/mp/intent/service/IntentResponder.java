@@ -107,6 +107,16 @@ public class IntentResponder {
                     });
         }
 
+        // The deadline, checked here rather than trusted from the sweep. The job
+        // runs every thirty seconds; this makes "a supplier cannot answer a
+        // request that has expired" true at every instant in between, which is
+        // the same division of labour SupplierOrderTransitions has with its
+        // timeout job.
+        if (!intent.withinResponseWindow(Instant.now())) {
+            throw new BusinessException(ErrorCode.INTENT_EXPIRED,
+                    "The time to answer this request has passed.");
+        }
+
         var lines = intentItems.findByIntentIdOrderByIdAsc(intentId);
         var answers = index(request, lines);
 

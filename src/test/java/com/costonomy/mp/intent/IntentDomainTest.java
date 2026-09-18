@@ -235,6 +235,37 @@ class IntentDomainTest {
         }
 
         @Test
+        @DisplayName("the supplier's window comes from their own SLA")
+        void responseWindowFollowsTheStore() {
+            // A store promising thirty minutes is held to thirty minutes.
+            assertThat(policy(Map.of()).responseWindowSecondsFor(1800)).isEqualTo(1800);
+        }
+
+        /**
+         * The floor matters more than it looks. `supplier_store.response_sla_seconds`
+         * defaults to 60, a figure chosen for a supplier watching an order queue —
+         * and a request can arrive overnight. Left unclamped, every request to a
+         * store that never configured an SLA would expire a minute after it was
+         * sent, and the restaurant would conclude that suppliers never reply.
+         */
+        @Test
+        @DisplayName("a 60-second store SLA is raised to something answerable")
+        void responseWindowIsFloored() {
+            assertThat(policy(Map.of()).responseWindowSecondsFor(60)).isEqualTo(300);
+            assertThat(policy(Map.of()).responseWindowSecondsFor(0)).isEqualTo(24 * 60 * 60);
+            assertThat(policy(Map.of()).responseWindowSecondsFor(null)).isEqualTo(24 * 60 * 60);
+        }
+
+        @Test
+        @DisplayName("an unsent request cannot be answered")
+        void absentResponseDeadlineIsClosed() {
+            // Absent reads as closed, not open: there is nothing to answer yet,
+            // and treating it as answerable would let a supplier reply to a
+            // basket the restaurant is still filling.
+            assertThat(new Intent().withinResponseWindow(Instant.now())).isFalse();
+        }
+
+        @Test
         @DisplayName("an intent with no deadline is outside the window, not inside it")
         void absentDeadlineIsClosed() {
             // An unanswered intent has no window. Treating absent as open would

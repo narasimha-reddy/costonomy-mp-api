@@ -41,13 +41,19 @@ public interface IntentRepository extends JpaRepository<Intent, Long> {
     List<Intent> findForStore(@Param("storeId") Long storeId,
                               @Param("statuses") List<IntentStatus> statuses);
 
-    /** Sent but unanswered past their expiry. Swept by the expiry job. */
+    /**
+     * Sent, unanswered, and past the deadline their store promised.
+     *
+     * <p>Reads the stored deadline rather than measuring back from a global
+     * window: each request carries the window that was in force when it was sent,
+     * so a store widening its SLA cannot revive requests that already lapsed.
+     */
     @Query("""
             select i from Intent i
             where i.status = 'OPEN'
-              and i.sentAt < :cutoff
+              and i.responseDeadline < :now
             """)
-    List<Intent> findStaleOpen(@Param("cutoff") Instant cutoff);
+    List<Intent> findStaleOpen(@Param("now") Instant now);
 
     /** Answered, unordered, and out of time. */
     @Query("""
