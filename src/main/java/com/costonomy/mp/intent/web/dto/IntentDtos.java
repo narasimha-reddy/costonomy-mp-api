@@ -263,6 +263,14 @@ public final class IntentDtos {
              * price is not a free product.
              */
             BigDecimal agreedUnitPrice,
+            /**
+             * The same price with its GST added — what a unit actually costs.
+             *
+             * <p>Computed here rather than in the app, which is not allowed to do
+             * money arithmetic, and which would otherwise be multiplying by
+             * {@code 1 + rate/100} and landing a paisa off the line totals.
+             */
+            BigDecimal agreedUnitPriceInclusiveGst,
             BigDecimal agreedGstRate,
             BigDecimal agreedLineValue,
             BigDecimal agreedLineGst,

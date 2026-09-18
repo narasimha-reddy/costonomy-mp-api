@@ -410,6 +410,8 @@ public final class ProcurementDtos {
             BigDecimal acceptedQuantity,
             String unit,
             BigDecimal unitPrice,
+            /** The same price with its GST added. See {@code Pricing.inclusiveOfGst}. */
+            BigDecimal unitPriceInclusiveGst,
             BigDecimal gstRate,
             BigDecimal lineTotal,
             /**

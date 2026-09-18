@@ -195,6 +195,7 @@ public class IntentMapper {
                         answer == null ? null : answer.getGstRate(),
                         answer == null ? null : answer.getNotes(),
                         askPrice,
+                        Pricing.inclusiveOfGst(askPrice, askGstRate),
                         askGstRate,
                         lineValue,
                         lineGstAmount,

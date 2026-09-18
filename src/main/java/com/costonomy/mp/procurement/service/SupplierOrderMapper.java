@@ -83,6 +83,8 @@ public class SupplierOrderMapper {
                                 descriptors.get(item.getSupplierSkuId()),
                                 item.getRequestedQuantity(), item.getAcceptedQuantity(),
                                 item.getUnit(), item.getUnitPriceSnapshot(),
+                                Pricing.inclusiveOfGst(item.getUnitPriceSnapshot(),
+                                        item.getGstRateSnapshot()),
                                 item.getGstRateSnapshot(), item.getLineTotal(),
                                 acceptedLineTotal(item), item.getStatus()))
                         .toList());
