@@ -22,7 +22,10 @@ import com.costonomy.mp.procurement.service.ProcurementDirectory;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import com.costonomy.mp.common.domain.Serviceability;
+
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.ArrayList;
@@ -119,6 +122,18 @@ public class IntentMapper {
         var storeInfo = stores.stores(intents.stream()
                 .map(Intent::getSupplierStoreId).distinct().toList());
 
+        // Who is asking, for the supplier's view. One lookup per outlet rather
+        // than per request: a store's list is usually several requests from the
+        // same few kitchens.
+        Map<Long, ProcurementDirectory.OutletSummary> outlets = new HashMap<>();
+        intents.stream().map(Intent::getOutletId).distinct()
+                .forEach(outletId -> {
+                    var summary = stores.outletSummary(outletId);
+                    if (summary != null) {
+                        outlets.put(outletId, summary);
+                    }
+                });
+
         // Live offers, for drafts only. A draft tracks the current price so the
         // basket shows something real and can spot a reprice; once sent, the
         // line's own snapshot is the price and the catalogue is irrelevant to it.
@@ -142,6 +157,7 @@ public class IntentMapper {
         List<IntentDtos.IntentResponse> responses = new ArrayList<>(intents.size());
         for (Intent intent : intents) {
             var store = storeInfo.get(intent.getSupplierStoreId());
+            var outlet = outlets.get(intent.getOutletId());
             var acceptance = acceptanceByIntent.get(intent.getId());
             var link = linkByIntent.get(intent.getId());
 
@@ -230,6 +246,11 @@ public class IntentMapper {
                     intent.getId(),
                     intent.getReference(),
                     intent.getOutletId(),
+                    outlet == null ? null : outlet.outletName(),
+                    outlet == null ? null : outlet.restaurantName(),
+                    outlet == null ? null : outlet.locality(),
+                    outlet == null ? null : outlet.city(),
+                    distanceKm(store, outlet),
                     intent.getSupplierStoreId(),
                     store == null ? null : store.storeName(),
                     store == null ? null : store.supplierName(),
@@ -335,5 +356,21 @@ public class IntentMapper {
                 requests, requests.size(), itemCount,
                 Pricing.money(value), Pricing.money(gst),
                 Pricing.money(value.add(gst)), complete, changed);
+    }
+
+    /**
+     * Store to outlet, straight line.
+     *
+     * <p>The same measure the order card shows, so a supplier reads one distance
+     * for a request and the order it becomes rather than two that disagree.
+     */
+    private BigDecimal distanceKm(ProcurementDirectory.StoreInfo store,
+                                  ProcurementDirectory.OutletSummary outlet) {
+        if (store == null || outlet == null) {
+            return null;
+        }
+        Double km = Serviceability.distanceKm(
+                store.latitude(), store.longitude(), outlet.latitude(), outlet.longitude());
+        return km == null ? null : BigDecimal.valueOf(km).setScale(1, RoundingMode.HALF_UP);
     }
 }

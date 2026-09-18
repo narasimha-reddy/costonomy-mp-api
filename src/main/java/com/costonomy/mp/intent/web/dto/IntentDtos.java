@@ -179,6 +179,19 @@ public final class IntentDtos {
             Long id,
             String reference,
             Long outletId,
+            /**
+             * Who is asking, for the supplier's side of the card.
+             *
+             * <p>A supplier deciding whether to hold stock is deciding for a
+             * particular kitchen in a particular place — the same question the
+             * order card answers with party and distance, one step earlier.
+             */
+            String outletName,
+            String restaurantName,
+            String outletLocality,
+            String outletCity,
+            /** Store to outlet, straight line, one decimal. Null without coordinates. */
+            BigDecimal distanceKm,
             Long supplierStoreId,
             String storeName,
             String supplierName,
