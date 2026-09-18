@@ -228,6 +228,7 @@ public class IntentMapper {
                     intent.getCreatedAt(),
                     serverTime,
                     intent.getStatus().isEditable(),
+                    intent.getStatus().isQuantityEditable(),
                     intent.withinOrderWindow(serverTime),
                     lines,
                     Pricing.money(agreedValue),

@@ -69,4 +69,25 @@ public enum IntentStatus {
     public boolean isEditable() {
         return this == DRAFT;
     }
+
+    /**
+     * Whether a line's quantity may still be changed.
+     *
+     * <p>Wider than {@link #isEditable()} on purpose. That one governs the shape
+     * of a request — adding a line, removing one, sending it — and stays
+     * {@code DRAFT}-only: a supplier pricing a list should not have lines appear
+     * and vanish underneath them.
+     *
+     * <p>A quantity is different. A kitchen that realises it needs four crates
+     * rather than two has no way to say so today except withdrawing and starting
+     * again, which loses the request and the supplier's clock with it. While the
+     * request is still {@code OPEN} nobody has committed anything — the supplier
+     * has not answered, no stock is held, no price exists — so the only cost of
+     * a change is that the supplier reads a number they had already seen. Once
+     * they answer, {@code RESPONSES_RECEIVED} freezes everything, which is where
+     * this enum always said the freeze belonged.
+     */
+    public boolean isQuantityEditable() {
+        return this == DRAFT || this == OPEN;
+    }
 }

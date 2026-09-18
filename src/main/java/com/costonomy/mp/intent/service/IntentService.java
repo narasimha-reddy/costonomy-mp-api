@@ -7,6 +7,9 @@ import com.costonomy.mp.catalog.repository.SupplierOfferRepository;
 import com.costonomy.mp.catalog.repository.SupplierSkuRepository;
 import com.costonomy.mp.catalog.service.SkuDirectory;
 import com.costonomy.mp.common.audit.AuditService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
+
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
@@ -51,10 +54,19 @@ import java.util.Map;
  * twenty requests and owe nothing. Money starts in
  * {@link IntentOrderService} and only there.
  *
- * <p><b>A sent request is frozen.</b> {@code isEditable()} is true only for
- * {@code DRAFT}, and every mutator checks it. Once a supplier is pricing a
- * request, changing it underneath them would have them commit stock against a
- * list that no longer exists.
+ * <p><b>A sent request is frozen in shape, not in quantity.</b>
+ * {@code isEditable()} is true only for {@code DRAFT}, and every structural
+ * mutator — add, remove, send — checks it: once a supplier is pricing a request,
+ * having lines appear and vanish underneath them would leave them committing
+ * stock against a list that no longer exists.
+ *
+ * <p>{@link #updateItem} is the one exception, and it checks the narrower
+ * {@code isQuantityEditable()} instead, which also allows {@code OPEN}. Nothing
+ * is committed while a request is open — no answer, no held stock, no price — so
+ * a kitchen correcting two crates to four costs the supplier a re-read, where
+ * the alternative costs them the whole request and their remaining clock. See
+ * D-088 in DECISIONS.md. The supplier's deadline is deliberately not extended by
+ * an edit; that would let a restaurant hold a supplier indefinitely.
  */
 @Service
 @RequiredArgsConstructor
@@ -73,6 +85,14 @@ public class IntentService {
     private final ProcurementDirectory directory;
     private final AccessControlService accessControl;
     private final AuditService auditService;
+
+    /**
+     * Only for {@link #updateItem}'s forced version bump on a sent request. A
+     * quantity write touches the line, not the intent, so without this the
+     * intent's {@code @Version} never moves and a supplier answering
+     * concurrently never collides.
+     */
+    private final EntityManager entityManager;
     private final OutboxService outbox;
 
     // ── Building ─────────────────────────────────────────────────────────
@@ -153,14 +173,39 @@ public class IntentService {
         var item = intentItems.findById(itemId)
                 .orElseThrow(() -> new NotFoundException("IntentItem", itemId));
         var intent = loadForWrite(actorId, item.getIntentId(), Permissions.PROCUREMENT_CREATE);
-        requireEditable(intent);
+        requireQuantityEditable(intent);
+
+        boolean sent = intent.getStatus() == IntentStatus.OPEN;
 
         if (quantity.signum() <= 0) {
+            if (sent) {
+                // A stepper at zero means "remove the line", which is the right
+                // reading in a basket. On a live request it would let a
+                // restaurant empty a list a supplier is holding open, leaving a
+                // request with nothing in it and a clock still running. Dropping
+                // the whole request is what withdrawing is for, and it tells the
+                // supplier so.
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "A sent request must keep at least this line. "
+                                + "Withdraw the request instead of emptying it.");
+            }
             return removeLine(intent, item);
         }
 
         item.setRequestedQuantity(quantity);
         intentItems.save(item);
+
+        if (sent) {
+            // The quantity lives on the line, so writing it leaves the intent
+            // itself untouched and its @Version unmoved — a supplier answering
+            // in the same instant would read a stale list and still commit.
+            // Forcing the increment puts both writers on one version, so
+            // whichever loses gets CONCURRENT_MODIFICATION rather than silently
+            // pricing quantities that changed underneath them. This is the
+            // "already approved?" re-check, enforced by the database rather than
+            // by a second read that a race can still slip between.
+            entityManager.lock(intent, LockModeType.OPTIMISTIC_FORCE_INCREMENT);
+        }
         return mapper.toResponse(intent);
     }
 
@@ -610,6 +655,27 @@ public class IntentService {
         if (!intent.getStatus().isEditable()) {
             throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
                     "This request has already been sent and can't be changed.");
+        }
+    }
+
+    /**
+     * Quantities stay changeable a state longer than the rest of a request —
+     * see {@link IntentStatus#isQuantityEditable()}. The message names the state
+     * the caller is actually in, because "can't be changed" on a request the
+     * supplier answered thirty seconds ago reads as a bug to whoever hits it.
+     */
+    private void requireQuantityEditable(Intent intent) {
+        if (!intent.getStatus().isQuantityEditable()) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    switch (intent.getStatus()) {
+                        case RESPONSES_RECEIVED ->
+                                "The supplier has already answered this request, "
+                                        + "so its quantities are fixed.";
+                        case ORDERED -> "An order has been created from this request.";
+                        case CANCELLED -> "This request was withdrawn.";
+                        case EXPIRED -> "This request expired before it was answered.";
+                        default -> "This request can no longer be changed.";
+                    });
         }
     }
 

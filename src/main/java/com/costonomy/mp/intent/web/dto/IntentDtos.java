@@ -193,6 +193,16 @@ public final class IntentDtos {
             Instant createdAt,
             Instant serverTime,
             boolean editable,
+            /**
+             * Whether a line's quantity may still be changed — true through
+             * {@code OPEN}, where {@code editable} is already false.
+             *
+             * <p>Separate from {@code editable} because the two differ by a
+             * state: the shape of a sent request is fixed, its quantities are
+             * not, until the supplier answers. A client showing an edit control
+             * reads this one.
+             */
+            boolean quantityEditable,
             /** True only while an order may still be created from this. */
             boolean withinOrderWindow,
             List<IntentItemResponse> items,

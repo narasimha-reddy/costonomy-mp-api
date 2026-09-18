@@ -413,11 +413,73 @@ class IntentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("is frozen once sent")
-        void sentIsFrozen() throws Exception {
+        @DisplayName("takes a new quantity while it is still open")
+        void quantityChangesWhileOpen() throws Exception {
             var open = sendRequest(5);
-            // 409: the request is in a state that does not allow the change.
+
+            // Nothing is committed while a request is open — no answer, no held
+            // stock, no price — so a kitchen may still correct what it asked for.
+            assertThat(api.patchStatus(open.buyer().token(),
+                    "/api/v1/intent-items/" + open.itemId(), Map.of("quantity", 9)))
+                    .isEqualTo(200);
+
+            var seen = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(seen.at("/data/items/0/requestedQuantity").asDouble()).isEqualTo(9.0);
+            assertThat(seen.at("/data/status").asText()).isEqualTo("OPEN");
+            assertThat(seen.at("/data/quantityEditable").asBoolean()).isTrue();
+            // Still not editable in shape: the two flags differ by a state.
+            assertThat(seen.at("/data/editable").asBoolean()).isFalse();
+        }
+
+        @Test
+        @DisplayName("keeps the supplier's original deadline when a quantity changes")
+        void editDoesNotExtendTheSupplierClock() throws Exception {
+            var open = sendRequest(5);
+            var before = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId())
+                    .at("/data/responseDeadline").asText();
+
+            api.patchStatus(open.buyer().token(),
+                    "/api/v1/intent-items/" + open.itemId(), Map.of("quantity", 9));
+
+            // Extending it on edit would let a restaurant hold a supplier
+            // indefinitely by editing in a loop.
+            assertThat(api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId())
+                    .at("/data/responseDeadline").asText())
+                    .isEqualTo(before);
+        }
+
+        @Test
+        @DisplayName("cannot be emptied by stepping a line to zero")
+        void sentRequestCannotBeEmptied() throws Exception {
+            var open = sendRequest(5);
+            // Zero means "remove the line" in a basket. On a live request that
+            // would leave a supplier holding an empty list with a clock still
+            // running — withdrawing is what says so properly.
+            // ErrorCode.VALIDATION_ERROR -> BAD_REQUEST.
+            assertThat(api.patchStatus(open.buyer().token(),
+                    "/api/v1/intent-items/" + open.itemId(), Map.of("quantity", 0)))
+                    .isEqualTo(400);
+        }
+
+        @Test
+        @DisplayName("is frozen in shape once sent")
+        void sentIsFrozenInShape() throws Exception {
+            var open = sendRequest(5);
+            // Quantities moved to isQuantityEditable(); everything structural
+            // still checks isEditable(), which remains DRAFT-only.
             // ErrorCode.INVALID_STATE_TRANSITION -> CONFLICT.
+            assertThat(api.postStatus(open.buyer().token(),
+                    "/api/v1/intents/" + open.intentId() + "/send", Map.of()))
+                    .isEqualTo(409);
+        }
+
+        @Test
+        @DisplayName("is frozen in quantity once the supplier has answered")
+        void frozenOnceAnswered() throws Exception {
+            var open = sendRequest(5);
+            answer(open, 5);
+            // RESPONSES_RECEIVED is where this enum always said the freeze
+            // belonged: the supplier has now priced a specific list.
             assertThat(api.patchStatus(open.buyer().token(),
                     "/api/v1/intent-items/" + open.itemId(), Map.of("quantity", 9)))
                     .isEqualTo(409);
