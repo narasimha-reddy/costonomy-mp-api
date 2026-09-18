@@ -18,6 +18,7 @@ import com.costonomy.mp.intent.domain.IntentStatus;
 import com.costonomy.mp.intent.repository.IntentItemRepository;
 import com.costonomy.mp.intent.repository.IntentRepository;
 import com.costonomy.mp.intent.web.dto.IntentDtos;
+import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.procurement.service.ProcurementDirectory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -66,6 +67,7 @@ public class IntentService {
     private final SupplierSkuRepository skus;
     private final SupplierOfferRepository offers;
     private final IntentMapper mapper;
+    private final IntentDirectory intentDirectory;
     private final IntentPolicy policy;
     private final ProcurementDirectory directory;
     private final AccessControlService accessControl;
@@ -127,6 +129,11 @@ public class IntentService {
             item.setRequestedQuantity(request.quantity());
             item.setUnit(sku.getPackUnit());
             item.setNotes(request.notes());
+            // The price as it stands now. On a draft this is the baseline a
+            // reprice is measured against; sending re-confirms it and locks it.
+            item.setSupplierOfferId(offer.getId());
+            item.setUnitPriceSnapshot(Pricing.money(offer.getSellingPrice()));
+            item.setGstRateSnapshot(offer.getGstRate());
             intentItems.save(item);
         }
 
@@ -280,6 +287,112 @@ public class IntentService {
                 actorId, now);
 
         return mapper.toResponse(intent);
+    }
+
+    /**
+     * Send the whole basket — one request per supplier, in one action. §7.
+     *
+     * <p><b>Repriced requests are held, not blocked.</b> One supplier's
+     * overnight price rise should not stall the other two, so the unaffected
+     * requests go immediately and the changed ones come back in {@code held}
+     * with old and new for each line. §23A.16: a price that moved is shown and
+     * agreed to, never absorbed — and never silently applied either, which is
+     * what sending them anyway would amount to.
+     *
+     * <p>Accepting the changes re-snapshots each line at the current price and
+     * sends. From that point the price is locked: the supplier's reply confirms
+     * it or declines the line, and the order is created on the same figure.
+     */
+    @Transactional
+    public IntentDtos.SendBasketResponse sendAll(
+            Long actorId, Long outletId, IntentDtos.SendBasketRequest request) {
+
+        accessControl.requireScoped(actorId, Permissions.PROCUREMENT_SUBMIT,
+                ScopeType.OUTLET, outletId, "Outlet");
+
+        var drafts = intents.findByOutletIdAndStatus(outletId, IntentStatus.DRAFT);
+        if (drafts.isEmpty()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "There's nothing to send.");
+        }
+
+        var sent = new ArrayList<IntentDtos.IntentResponse>();
+        var held = new ArrayList<IntentDtos.HeldRequest>();
+
+        for (Intent draft : drafts) {
+            var lines = intentItems.findByIntentIdOrderByIdAsc(draft.getId());
+            if (lines.isEmpty()) {
+                continue;
+            }
+
+            var changes = repricedLines(lines);
+            if (!changes.isEmpty() && !request.acceptPriceChanges()) {
+                var store = directory.stores(List.of(draft.getSupplierStoreId()))
+                        .get(draft.getSupplierStoreId());
+                held.add(new IntentDtos.HeldRequest(draft.getId(), draft.getReference(),
+                        store == null ? null : store.storeName(), changes));
+                continue;
+            }
+
+            // Agreed, so the line now carries the price it will be answered at.
+            lines.forEach(this::lockPrice);
+            sent.add(send(actorId, draft.getId(),
+                    new IntentDtos.SendRequest(request.requestedDeliveryTime(), request.notes())));
+        }
+
+        return new IntentDtos.SendBasketResponse(sent, held);
+    }
+
+    /** Lines whose supplier has repriced since they were added. */
+    private List<IntentDtos.PriceChange> repricedLines(List<IntentItem> lines) {
+        var changes = new ArrayList<IntentDtos.PriceChange>();
+        var labels = intentDirectory.skus(lines.stream()
+                .map(IntentItem::getSupplierSkuId).toList());
+
+        for (IntentItem line : lines) {
+            var live = offers.findBySupplierSkuIdAndStatus(line.getSupplierSkuId(), "ACTIVE")
+                    .orElse(null);
+            if (live == null || line.getUnitPriceSnapshot() == null) {
+                // No live offer is a different problem, reported at send time by
+                // the store check rather than as a price change.
+                continue;
+            }
+            if (!Pricing.differs(live.getSellingPrice(), line.getUnitPriceSnapshot())
+                    && !Pricing.differs(live.getGstRate(), line.getGstRateSnapshot())) {
+                continue;
+            }
+
+            var label = labels.get(line.getSupplierSkuId());
+            changes.add(new IntentDtos.PriceChange(
+                    line.getId(),
+                    label == null ? null : label.productName(),
+                    line.getUnitPriceSnapshot(),
+                    Pricing.money(live.getSellingPrice()),
+                    lineTotal(line.getUnitPriceSnapshot(), line.getGstRateSnapshot(),
+                            line.getRequestedQuantity()),
+                    lineTotal(Pricing.money(live.getSellingPrice()), live.getGstRate(),
+                            line.getRequestedQuantity())));
+        }
+        return changes;
+    }
+
+    /** Re-snapshot a line at the price it is about to be sent at. */
+    private void lockPrice(IntentItem line) {
+        offers.findBySupplierSkuIdAndStatus(line.getSupplierSkuId(), "ACTIVE")
+                .ifPresent(live -> {
+                    line.setSupplierOfferId(live.getId());
+                    line.setUnitPriceSnapshot(Pricing.money(live.getSellingPrice()));
+                    line.setGstRateSnapshot(live.getGstRate());
+                    intentItems.save(line);
+                });
+    }
+
+    private BigDecimal lineTotal(BigDecimal unitPrice, BigDecimal gstRate, BigDecimal quantity) {
+        if (unitPrice == null || gstRate == null) {
+            return null;
+        }
+        var value = Pricing.lineItemValue(unitPrice, quantity);
+        return Pricing.lineTotal(value, Pricing.lineGst(value, gstRate));
     }
 
     // ── Reads ────────────────────────────────────────────────────────────

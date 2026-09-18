@@ -99,6 +99,32 @@ public class IntentController {
 
     // ── Sending and following ────────────────────────────────────────────
 
+    @PostMapping("/outlets/{outletId}/intent-drafts/send")
+    @Operation(
+            summary = "Send the whole basket",
+            description = """
+                    One action, one request per supplier. Requests whose prices have
+                    not moved go immediately; any that have been repriced since the
+                    items were added are **held** and returned in `held` with old and
+                    new for each line. Re-send with `acceptPriceChanges: true` to
+                    agree to them.
+
+                    Holding rather than blocking is deliberate: one supplier's
+                    overnight price rise should not stall the other two.
+
+                    Sending **locks** each line's price. The supplier's reply then
+                    confirms that price or declines the line, and the order is created
+                    on the same figure.
+                    """)
+    public ApiResponse<IntentDtos.SendBasketResponse> sendBasket(
+            @PathVariable Long outletId,
+            @Valid @RequestBody(required = false) IntentDtos.SendBasketRequest request) {
+        return ApiResponse.ok(intents.sendAll(ActorContext.requireUserId(), outletId,
+                request == null
+                        ? new IntentDtos.SendBasketRequest(false, null, null)
+                        : request));
+    }
+
     @PostMapping("/intents/{id}/send")
     @Operation(
             summary = "Send a request to its supplier",

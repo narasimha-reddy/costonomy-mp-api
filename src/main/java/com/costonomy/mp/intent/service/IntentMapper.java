@@ -96,10 +96,9 @@ public class IntentMapper {
         var storeInfo = stores.stores(intents.stream()
                 .map(Intent::getSupplierStoreId).distinct().toList());
 
-        // Indicative prices, and only for drafts. A sent request already has the
-        // supplier's real figures on it, and showing a catalogue price next to a
-        // quoted one would invite the reader to compare two numbers that answer
-        // different questions.
+        // Live offers, for drafts only. A draft tracks the current price so the
+        // basket shows something real and can spot a reprice; once sent, the
+        // line's own snapshot is the price and the catalogue is irrelevant to it.
         var draftIds = intents.stream()
                 .filter(intent -> intent.getStatus() == IntentStatus.DRAFT)
                 .map(Intent::getId)
@@ -126,29 +125,51 @@ public class IntentMapper {
             var lines = new ArrayList<IntentDtos.IntentItemResponse>();
             var lineFulfilments = new ArrayList<IntentFulfilment>();
             boolean draft = intent.getStatus() == IntentStatus.DRAFT;
-            BigDecimal indicativeValue = BigDecimal.ZERO;
-            BigDecimal indicativeGst = BigDecimal.ZERO;
-            boolean indicativeComplete = draft;
+            BigDecimal agreedValue = BigDecimal.ZERO;
+            BigDecimal agreedGst = BigDecimal.ZERO;
+            boolean pricedComplete = true;
+            boolean anyPriceChanged = false;
 
             for (IntentItem item : itemsByIntent.getOrDefault(intent.getId(), List.of())) {
                 var label = labels.get(item.getSupplierSkuId());
                 var answer = answerByItem.get(item.getId());
 
+                // A draft asks at today's price; a sent request asks at the price
+                // locked when it went out.
                 var offer = draft ? liveOffers.get(item.getSupplierSkuId()) : null;
-                BigDecimal unitPrice = null;
-                BigDecimal lineTotal = null;
-                if (offer != null) {
-                    unitPrice = Pricing.money(offer.getSellingPrice());
-                    var value = Pricing.lineItemValue(unitPrice, item.getRequestedQuantity());
-                    var gst = Pricing.lineGst(value, offer.getGstRate());
-                    lineTotal = Pricing.lineTotal(value, gst);
-                    indicativeValue = indicativeValue.add(value);
-                    indicativeGst = indicativeGst.add(gst);
-                } else if (draft) {
+                BigDecimal askPrice = draft
+                        ? (offer == null ? null : Pricing.money(offer.getSellingPrice()))
+                        : item.getUnitPriceSnapshot();
+                BigDecimal askGstRate = draft
+                        ? (offer == null ? null : offer.getGstRate())
+                        : item.getGstRateSnapshot();
+
+                BigDecimal lineValue = null;
+                BigDecimal lineGstAmount = null;
+                BigDecimal lineTotalAmount = null;
+                boolean changed = false;
+                BigDecimal previousUnitPrice = null;
+
+                if (askPrice != null && askGstRate != null) {
+                    lineValue = Pricing.lineItemValue(askPrice, item.getRequestedQuantity());
+                    lineGstAmount = Pricing.lineGst(lineValue, askGstRate);
+                    lineTotalAmount = Pricing.lineTotal(lineValue, lineGstAmount);
+                    agreedValue = agreedValue.add(lineValue);
+                    agreedGst = agreedGst.add(lineGstAmount);
+
+                    // Only meaningful on a draft: on a sent request the snapshot
+                    // *is* the price, so it cannot differ from itself.
+                    if (draft && item.getUnitPriceSnapshot() != null
+                            && Pricing.differs(askPrice, item.getUnitPriceSnapshot())) {
+                        changed = true;
+                        anyPriceChanged = true;
+                        previousUnitPrice = item.getUnitPriceSnapshot();
+                    }
+                } else {
                     // One unpriceable line makes the whole total short of the
                     // truth, and a total that is quietly missing an item is worse
                     // than one the screen admits is incomplete.
-                    indicativeComplete = false;
+                    pricedComplete = false;
                 }
                 var fulfilment = IntentFulfilment.of(item.getRequestedQuantity(),
                         answer == null ? null : answer.getOfferedQuantity());
@@ -175,8 +196,13 @@ public class IntentMapper {
                         answer == null ? null : answer.getLineTotal(),
                         answer == null ? null : answer.getGstRate(),
                         answer == null ? null : answer.getNotes(),
-                        unitPrice,
-                        lineTotal));
+                        askPrice,
+                        askGstRate,
+                        lineValue,
+                        lineGstAmount,
+                        lineTotalAmount,
+                        changed,
+                        previousUnitPrice));
             }
 
             responses.add(new IntentDtos.IntentResponse(
@@ -205,10 +231,11 @@ public class IntentMapper {
                     intent.getStatus().isEditable(),
                     intent.withinOrderWindow(serverTime),
                     lines,
-                    draft ? Pricing.money(indicativeValue) : null,
-                    draft ? Pricing.money(indicativeGst) : null,
-                    draft ? Pricing.money(indicativeValue.add(indicativeGst)) : null,
-                    indicativeComplete,
+                    Pricing.money(agreedValue),
+                    Pricing.money(agreedGst),
+                    Pricing.money(agreedValue.add(agreedGst)),
+                    pricedComplete,
+                    anyPriceChanged,
                     toAcceptance(acceptance),
                     link == null ? null : link.getSupplierOrderId(),
                     link == null ? null : orderNumbers.get(link.getSupplierOrderId())));
@@ -268,18 +295,21 @@ public class IntentMapper {
         boolean complete = true;
         int itemCount = 0;
 
+        boolean changed = false;
+
         for (var request : requests) {
-            value = value.add(request.indicativeValue() == null
-                    ? BigDecimal.ZERO : request.indicativeValue());
-            gst = gst.add(request.indicativeGst() == null
-                    ? BigDecimal.ZERO : request.indicativeGst());
-            complete = complete && request.indicativeComplete();
+            value = value.add(request.agreedValue() == null
+                    ? BigDecimal.ZERO : request.agreedValue());
+            gst = gst.add(request.agreedGst() == null
+                    ? BigDecimal.ZERO : request.agreedGst());
+            complete = complete && request.pricedComplete();
+            changed = changed || request.priceChanged();
             itemCount += request.items().size();
         }
 
         return new IntentDtos.BasketResponse(
                 requests, requests.size(), itemCount,
                 Pricing.money(value), Pricing.money(gst),
-                Pricing.money(value.add(gst)), complete);
+                Pricing.money(value.add(gst)), complete, changed);
     }
 }

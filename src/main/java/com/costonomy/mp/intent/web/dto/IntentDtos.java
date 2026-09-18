@@ -137,11 +137,13 @@ public final class IntentDtos {
             List<IntentResponse> requests,
             int supplierCount,
             int itemCount,
-            BigDecimal indicativeValue,
-            BigDecimal indicativeGst,
-            BigDecimal indicativeTotal,
+            BigDecimal agreedValue,
+            BigDecimal agreedGst,
+            BigDecimal agreedTotal,
             /** False when any line anywhere in the basket could not be priced. */
-            boolean indicativeComplete) {
+            boolean pricedComplete,
+            /** True when any line anywhere has been repriced since it was added. */
+            boolean priceChanged) {
     }
 
     /**
@@ -194,18 +196,19 @@ public final class IntentDtos {
             boolean withinOrderWindow,
             List<IntentItemResponse> items,
             /**
-             * What this whole request would cost at today's listed prices, and
-             * whether every line in it could be priced.
+             * What this request comes to at the price it is asked at.
              *
-             * <p>Draft-only, like the line figures it sums. {@code indicativeComplete}
-             * false means at least one line has no live offer, so the total is
-             * short of the real thing and the screen must say so rather than
-             * presenting a confident number that is quietly missing an item.
+             * <p>{@code pricedComplete} false means at least one line has no
+             * price, so the total is short of the whole and the screen must say
+             * so rather than presenting a confident number that is quietly
+             * missing an item. {@code priceChanged} means at least one line has
+             * been repriced since it was added, and sending will stop to ask.
              */
-            BigDecimal indicativeValue,
-            BigDecimal indicativeGst,
-            BigDecimal indicativeTotal,
-            boolean indicativeComplete,
+            BigDecimal agreedValue,
+            BigDecimal agreedGst,
+            BigDecimal agreedTotal,
+            boolean pricedComplete,
+            boolean priceChanged,
             AcceptanceResponse acceptance,
             /** The order this became, if it became one. */
             Long supplierOrderId,
@@ -242,20 +245,32 @@ public final class IntentDtos {
             BigDecimal gstRate,
             String supplierNotes,
             /**
-             * What this line would cost at the supplier's current listed price.
+             * The price this line is asked at, and what it comes to.
              *
-             * <p>Only populated while the request is a draft, and only to show a
-             * kitchen what it is about to ask for. It is <b>not</b> a commitment
-             * by anybody: the supplier's reply decides both the quantity and the
-             * price, and once they have replied the offered figures above are the
-             * real ones and these are gone.
+             * <p>Real, not an estimate. While the request is a draft this is the
+             * supplier's current listed price; sending the request locks it, and
+             * the supplier's reply then confirms that price or declines the line.
+             * The order is created on the same figure, so it is the one number
+             * that runs from basket to invoice.
              *
              * <p>Null when the SKU has no live offer — out of stock, or delisted
              * since it was added. Absent rather than zero, because a missing
              * price is not a free product.
              */
-            BigDecimal indicativeUnitPrice,
-            BigDecimal indicativeLineTotal) {
+            BigDecimal agreedUnitPrice,
+            BigDecimal agreedGstRate,
+            BigDecimal agreedLineValue,
+            BigDecimal agreedLineGst,
+            BigDecimal agreedLineTotal,
+            /**
+             * The supplier has repriced since this line was added.
+             *
+             * <p>Draft-only, and the reason the send flow stops to ask: a figure
+             * somebody put in a basket yesterday must not quietly become a
+             * different one when they send it.
+             */
+            boolean priceChanged,
+            BigDecimal previousUnitPrice) {
     }
 
     /** The supplier's commercial statement. Non-financial until an order exists. */
@@ -271,6 +286,49 @@ public final class IntentDtos {
             String notes,
             Instant submittedAt,
             Instant expiresAt) {
+    }
+
+    /** Send every draft in the basket, one request per supplier. */
+    public record SendBasketRequest(
+            /**
+             * Confirmation that the caller has seen the repricing.
+             *
+             * <p>Absent or false, a repriced request is held back rather than
+             * sent — §23A.16: a price that moved is shown, old and new, and
+             * requires the user's agreement. Never absorbed.
+             */
+            boolean acceptPriceChanges,
+            Instant requestedDeliveryTime,
+            @Size(max = 1000) String notes) {
+    }
+
+    /**
+     * What went, and what is waiting on a decision.
+     *
+     * <p>Requests with no price change are sent immediately and the repriced
+     * ones are held, so one supplier's overnight price rise does not stall the
+     * other two. {@code held} is empty on the happy path.
+     */
+    public record SendBasketResponse(
+            List<IntentResponse> sent,
+            List<HeldRequest> held) {
+    }
+
+    public record HeldRequest(
+            Long intentId,
+            String reference,
+            String storeName,
+            List<PriceChange> changes) {
+    }
+
+    /** Old and new, both, so §23A.16 can show what moved. */
+    public record PriceChange(
+            Long intentItemId,
+            String productName,
+            BigDecimal previousUnitPrice,
+            BigDecimal currentUnitPrice,
+            BigDecimal previousLineTotal,
+            BigDecimal currentLineTotal) {
     }
 
     /**

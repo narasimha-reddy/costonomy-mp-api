@@ -39,6 +39,24 @@ public class IntentItem extends BaseEntity {
     @Column(name = "unit", nullable = false, length = 32)
     private String unit;
 
+    /**
+     * The offer this line is priced from, and the price itself.
+     *
+     * <p>Set when the line is added — as the baseline for spotting a change —
+     * and re-confirmed when the request is sent, after which it is the price the
+     * supplier's reply confirms or declines. From that moment it does not move:
+     * the whole point of showing a real figure in the basket is that it is the
+     * one that ends up on the order.
+     */
+    @Column(name = "supplier_offer_id")
+    private Long supplierOfferId;
+
+    @Column(name = "unit_price_snapshot", precision = 19, scale = 4)
+    private BigDecimal unitPriceSnapshot;
+
+    @Column(name = "gst_rate_snapshot", precision = 9, scale = 4)
+    private BigDecimal gstRateSnapshot;
+
     @Column(name = "notes", length = 500)
     private String notes;
 

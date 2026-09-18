@@ -2909,3 +2909,57 @@ V26 (columns and backfill) and V27 (constraint and index), each migration acts
 on data the previous one has committed. **A migration that backfills must be
 tested against representative data, and a validating constraint belongs in a
 later migration than the backfill it depends on.**
+
+## D-090 — The basket price is real, and sending locks it
+**Raised 2026-09-18 · Settled 2026-09-18**
+
+D-088 kept prices off the intent entirely: the supplier's reply set them, so
+anything the basket displayed was a guess and had to be labelled one. Shown to a
+restaurant, that read as "approximately ₹3,936.66" — a hedge on the one figure
+they were about to commit to, and the wrong answer to a real need. A kitchen with
+a budget cannot send a request blind, and the price is not a secret: it is the
+same listing they compared on the product screen a moment earlier.
+
+**Decision: the price lives on the line and is locked when the request is sent.**
+`intent_item` carries `unit_price_snapshot`, `gst_rate_snapshot` and the offer
+they came from (V28). A draft tracks the supplier's current price; sending
+re-confirms it and freezes it; the supplier's reply confirms that price or
+declines the line; the order is created on the same figure. One number from
+basket to invoice, which is what makes it safe to show without a tilde.
+
+This is still not "financial" in the sense V23 meant — no payment, no
+reservation, no commission, no GMV. A price on a line is a quote, and a quote
+nobody orders against costs nobody anything.
+
+### The supplier cannot reprice a request in flight
+`IntentResponder` prices from the snapshot, not from today's catalogue.
+Re-reading it would hand the supplier a unilateral change between the asking and
+the answering, and make the figure the restaurant confirmed a lie. A supplier who
+no longer wants to sell at it declines the line — an answer they can always give,
+and far better than a silent reprice nobody agreed to. Verified: with the
+catalogue moved to ₹500 after sending, the reply came back at the locked ₹425.
+
+Catalogue changes still supersede as D-012 requires; they apply to the next
+request rather than to one already sent.
+
+### Repriced requests are held, not blocked
+One action sends the whole basket. Requests whose prices have not moved go
+immediately; repriced ones come back in `held` with old and new for each line,
+and re-sending with `acceptPriceChanges` agrees to them. One supplier's overnight
+price rise should not stall the other two, and §23A.16 is satisfied either way: a
+price that moved is shown and agreed to, never absorbed — and never silently
+applied, which is what sending them anyway would amount to.
+
+The drift is also flagged on the line itself in the basket, so somebody scanning
+it sees which item moved without having to press send to find out.
+
+### A missing price is not a zero
+A line whose SKU has no live offer is priced `null` and the screen says "No
+price"; the request's total then reports itself incomplete. Zero would read as
+free, and a total quietly missing an item is worse than one that admits it.
+
+### The basket total comes from the server
+`GET /outlets/{id}/intent-drafts` returns a basket rather than a bare list.
+Summing the per-supplier totals in the client would be arithmetic on money — the
+one thing guardrail 3 forbids — and a client-side sum of already-rounded figures
+is exactly the kind that lands a paisa from the server's own.

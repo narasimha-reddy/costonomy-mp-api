@@ -310,8 +310,8 @@ class IntentFlowIT extends AbstractIntegrationTest {
 
             // The basket's estimate is the sum of the cards', and it is the
             // server that adds it up — 3 × 410 and 4 × 120, each plus 5%.
-            assertThat(drafts.at("/data/indicativeTotal").asDouble()).isEqualTo(1795.50);
-            assertThat(drafts.at("/data/indicativeComplete").asBoolean()).isTrue();
+            assertThat(drafts.at("/data/agreedTotal").asDouble()).isEqualTo(1795.50);
+            assertThat(drafts.at("/data/pricedComplete").asBoolean()).isTrue();
         }
 
         @Test
@@ -342,9 +342,9 @@ class IntentFlowIT extends AbstractIntegrationTest {
             assertThat(after.at("/data/items").size()).isEqualTo(1);
             assertThat(after.at("/data/items/0/requestedQuantity").asDouble()).isEqualTo(5);
             // Priced from the live offer: 5 × 410 = 2050, plus 5% = 2152.50.
-            assertThat(after.at("/data/items/0/indicativeLineTotal").asDouble())
+            assertThat(after.at("/data/items/0/agreedLineTotal").asDouble())
                     .isEqualTo(2152.50);
-            assertThat(after.at("/data/indicativeTotal").asDouble()).isEqualTo(2152.50);
+            assertThat(after.at("/data/agreedTotal").asDouble()).isEqualTo(2152.50);
         }
 
         @Test

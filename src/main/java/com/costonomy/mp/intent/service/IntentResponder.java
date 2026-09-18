@@ -243,24 +243,22 @@ public class IntentResponder {
     }
 
     /**
-     * Price every line from the store's live offer.
+     * Price every line from what the request was sent at.
      *
-     * <p>A line offered with no live offer behind it is refused rather than priced
-     * at zero or at the last price seen: the supplier is committing to supply
-     * something their own catalogue says they do not sell, and the honest answer
-     * is to send them to fix the catalogue. A line offered as <i>zero</i> needs no
-     * price at all, so a delisted pack can still be declined — which is the one
-     * answer a supplier must always be able to give.
+     * <p><b>The locked price, not today's catalogue.</b> The restaurant saw a
+     * real figure in their basket, confirmed any reprice, and sent on that basis;
+     * re-pricing here would make that figure a lie and hand the supplier a
+     * unilateral change between the asking and the answering. A supplier who no
+     * longer wants to sell at it declines the line, which is an answer they can
+     * always give — and far better than a silent reprice nobody agreed to.
+     *
+     * <p>A line with no snapshot cannot be priced at all, and is refused rather
+     * than guessed at.
      */
     private List<IntentAcceptanceItem> priceLines(
             Intent intent, List<IntentItem> lines, Map<Long, IntentDtos.RespondLine> answers) {
 
         var labels = directory.skus(lines.stream().map(IntentItem::getSupplierSkuId).toList());
-        var liveOffers = new HashMap<Long, com.costonomy.mp.catalog.domain.SupplierOffer>();
-        for (IntentItem line : lines) {
-            offers.findBySupplierSkuIdAndStatus(line.getSupplierSkuId(), "ACTIVE")
-                    .ifPresent(offer -> liveOffers.put(line.getSupplierSkuId(), offer));
-        }
 
         List<IntentAcceptanceItem> priced = new ArrayList<>(lines.size());
         for (IntentItem line : lines) {
@@ -276,21 +274,22 @@ public class IntentResponder {
                                         line.getUnit(), offered.toPlainString()));
             }
 
-            var offer = liveOffers.get(line.getSupplierSkuId());
             boolean declined = offered.signum() == 0;
 
-            if (!declined && (offer == null || !offer.isPurchasable())) {
+            if (!declined && line.getUnitPriceSnapshot() == null) {
                 var label = labels.get(line.getSupplierSkuId());
                 throw new BusinessException(ErrorCode.SKU_UNAVAILABLE,
-                        ("%s isn't listed as available in your catalogue. Update the listing, "
-                                + "or offer zero to decline it.")
+                        ("%s was sent without a price, so it cannot be supplied. "
+                                + "Offer zero to decline it.")
                                 .formatted(label == null ? "That product" : label.productName()));
             }
 
-            BigDecimal unitPrice = offer == null
-                    ? BigDecimal.ZERO : Pricing.money(offer.getSellingPrice());
-            BigDecimal gstRate = offer == null
-                    ? BigDecimal.ZERO : offer.getGstRate();
+            // Declining needs no price, so a line whose price never arrived can
+            // still be refused — the one answer that must always be available.
+            BigDecimal unitPrice = line.getUnitPriceSnapshot() == null
+                    ? BigDecimal.ZERO : line.getUnitPriceSnapshot();
+            BigDecimal gstRate = line.getGstRateSnapshot() == null
+                    ? BigDecimal.ZERO : line.getGstRateSnapshot();
 
             var item = new IntentAcceptanceItem();
             item.setIntentItemId(line.getId());
