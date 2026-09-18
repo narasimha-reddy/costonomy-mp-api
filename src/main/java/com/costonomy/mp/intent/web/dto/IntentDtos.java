@@ -83,6 +83,17 @@ public final class IntentDtos {
     public record RespondRequest(
             @NotEmpty @Valid List<RespondLine> lines,
             /**
+             * <b>Not asked for, and not shown.</b> A supplier says what they can
+             * supply, not when it lands: delivery is quoted when a courier is
+             * assigned (doc 06 §4), so an estimate typed here would be a promise
+             * made by somebody who does not control it — and the restaurant would
+             * read it as one.
+             *
+             * <p>Kept on the contract because own-delivery suppliers may state
+             * their own timing later, and because a client still sending it does
+             * no harm.
+             */
+            /**
              * The revision the supplier was looking at when they decided.
              *
              * <p>Optional, because an older client may not send it — but when it
