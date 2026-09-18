@@ -76,6 +76,15 @@ public enum ErrorCode {
     // accurate-but-useless report.
     INTENT_EXPIRED(HttpStatus.CONFLICT,
             "This request can no longer be answered."),
+    /**
+     * The request moved while somebody was reading it.
+     *
+     * <p>Its own code rather than CONCURRENT_MODIFICATION, which is what D-018
+     * calls accurate and useless: this one tells the supplier what to do about
+     * it, which is to look again.
+     */
+    INTENT_CHANGED(HttpStatus.CONFLICT,
+            "This request changed while you were reading it."),
 
     // ── Supplier orders (409, 422) ───────────────────────────────────────
     SUPPLIER_ORDER_EXPIRED(HttpStatus.CONFLICT,

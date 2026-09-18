@@ -82,6 +82,16 @@ public final class IntentDtos {
      */
     public record RespondRequest(
             @NotEmpty @Valid List<RespondLine> lines,
+            /**
+             * The revision the supplier was looking at when they decided.
+             *
+             * <p>Optional, because an older client may not send it — but when it
+             * is present and stale the response is refused rather than applied.
+             * A supplier accepting 4 KG of something the restaurant cut to 2 an
+             * instant earlier would be committing stock nobody asked for, and
+             * would find out at delivery.
+             */
+            Long expectedRevision,
             Integer etaMinutes,
             @Size(max = 32) String deliveryMode,
             @Size(max = 1000) String notes) {
@@ -203,6 +213,16 @@ public final class IntentDtos {
              * reads this one.
              */
             boolean quantityEditable,
+            /**
+             * What revision of this request the reader is looking at.
+             *
+             * <p>The intent's own {@code @Version}, which a quantity edit or a
+             * line removal force-bumps precisely so it tracks the *content* and
+             * not just the row. A supplier sends it back when they accept, and
+             * the server refuses if it has moved — so nobody commits stock
+             * against a list that changed while they were reading it.
+             */
+            long revision,
             /** True only while an order may still be created from this. */
             boolean withinOrderWindow,
             List<IntentItemResponse> items,

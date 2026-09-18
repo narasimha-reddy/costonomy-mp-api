@@ -108,6 +108,22 @@ public class IntentResponder {
                     });
         }
 
+        // The request as the supplier last read it, or a refusal.
+        //
+        // A restaurant may change quantities while a request is open (D-088), so
+        // the list a supplier is looking at can move under them. Accepting 4 KG
+        // of something cut to 2 an instant earlier would commit stock nobody
+        // asked for, and the supplier would find out at delivery. The revision is
+        // the intent's own version, which quantity edits and line removals
+        // force-bump so that it tracks the content rather than just the row.
+        if (request != null && request.expectedRevision() != null
+                && intent.getVersion() != null
+                && !request.expectedRevision().equals(intent.getVersion())) {
+            throw new BusinessException(ErrorCode.INTENT_CHANGED,
+                    "This request changed while you were reading it. "
+                            + "Have another look before you accept.");
+        }
+
         // The deadline, checked here rather than trusted from the sweep. The job
         // runs every thirty seconds; this makes "a supplier cannot answer a
         // request that has expired" true at every instant in between, which is

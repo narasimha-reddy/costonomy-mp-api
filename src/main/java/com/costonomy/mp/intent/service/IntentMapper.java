@@ -55,10 +55,32 @@ public class IntentMapper {
     private final SupplierOfferRepository offers;
 
     public IntentDtos.IntentResponse toResponse(Intent intent) {
-        return toResponses(List.of(intent)).get(0);
+        return toResponses(List.of(intent), Map.of()).get(0);
+    }
+
+    /**
+     * The same, for a caller that has just forced this intent's version up.
+     *
+     * <p>{@code OPTIMISTIC_FORCE_INCREMENT} applies at commit, so every read
+     * inside the writing transaction — including the one building this response —
+     * still sees the old number. Reporting it would hand the caller a revision
+     * that was stale the moment it arrived: they would send it straight back and
+     * be refused by the very check their own edit had triggered.
+     *
+     * <p>The increment is exactly one and the transaction has to commit for this
+     * response to be sent at all, so the arithmetic is safe.
+     */
+    public IntentDtos.IntentResponse toResponseAfterForcedBump(Intent intent) {
+        long next = (intent.getVersion() == null ? 0L : intent.getVersion()) + 1L;
+        return toResponses(List.of(intent), Map.of(intent.getId(), next)).get(0);
     }
 
     public List<IntentDtos.IntentResponse> toResponses(List<Intent> intents) {
+        return toResponses(intents, Map.of());
+    }
+
+    private List<IntentDtos.IntentResponse> toResponses(
+            List<Intent> intents, Map<Long, Long> revisionOverrides) {
         if (intents.isEmpty()) {
             return List.of();
         }
@@ -229,6 +251,8 @@ public class IntentMapper {
                     serverTime,
                     intent.getStatus().isEditable(),
                     intent.getStatus().isQuantityEditable(),
+                    revisionOverrides.getOrDefault(intent.getId(),
+                            intent.getVersion() == null ? 0L : intent.getVersion()),
                     intent.withinOrderWindow(serverTime),
                     lines,
                     Pricing.money(agreedValue),

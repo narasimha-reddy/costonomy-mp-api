@@ -60,7 +60,8 @@ import java.util.Map;
  * having lines appear and vanish underneath them would leave them committing
  * stock against a list that no longer exists.
  *
- * <p>{@link #updateItem} is the one exception, and it checks the narrower
+ * <p>{@link #updateItem} and {@link #removeItem} are the exceptions, and they
+ * check the narrower
  * {@code isQuantityEditable()} instead, which also allows {@code OPEN}. Nothing
  * is committed while a request is open — no answer, no held stock, no price — so
  * a kitchen correcting two crates to four costs the supplier a re-read, where
@@ -205,6 +206,11 @@ public class IntentService {
             // "already approved?" re-check, enforced by the database rather than
             // by a second read that a race can still slip between.
             entityManager.lock(intent, LockModeType.OPTIMISTIC_FORCE_INCREMENT);
+            // The forced bump lands at commit, so the response has to be told
+            // about it — otherwise the caller is handed the revision it had
+            // *before* its own edit, sends that back, and is refused by the very
+            // check its edit triggered.
+            return mapper.toResponseAfterForcedBump(intent);
         }
         return mapper.toResponse(intent);
     }
@@ -214,7 +220,28 @@ public class IntentService {
         var item = intentItems.findById(itemId)
                 .orElseThrow(() -> new NotFoundException("IntentItem", itemId));
         var intent = loadForWrite(actorId, item.getIntentId(), Permissions.PROCUREMENT_CREATE);
-        requireEditable(intent);
+        requireQuantityEditable(intent);
+
+        boolean sent = intent.getStatus() == IntentStatus.OPEN;
+        if (sent) {
+            // The same rule updateItem applies to a stepper at zero, and for the
+            // same reason: a request may shrink while a supplier is reading it,
+            // but it may not become empty. An empty request is a clock running
+            // against nothing, and withdrawing is what says so to the supplier.
+            if (intentItems.countByIntentId(intent.getId()) <= 1) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "A sent request must keep at least one line. "
+                                + "Withdraw the request instead of emptying it.");
+            }
+            // Same forced bump as a quantity edit: removing a line touches the
+            // line, not the intent, so without this a supplier answering
+            // concurrently would never collide with the removal.
+            entityManager.lock(intent, LockModeType.OPTIMISTIC_FORCE_INCREMENT);
+            intentItems.delete(item);
+            intentItems.flush();
+            return mapper.toResponseAfterForcedBump(intent);
+        }
+
         return removeLine(intent, item);
     }
 

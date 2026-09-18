@@ -286,6 +286,71 @@ class IntentFlowIT extends AbstractIntegrationTest {
                     .at("/data/offeredTotal").asDouble();
         }
 
+        /**
+         * The supplier committing to a list that moved under them.
+         *
+         * <p>A restaurant may change quantities while a request is open, so the
+         * list on a supplier's screen can go stale. Accepting 2 KG of something
+         * cut to 1 an instant earlier commits stock nobody asked for, and the
+         * supplier finds out at delivery.
+         */
+        @Test
+        @DisplayName("an acceptance against a stale revision is refused")
+        void staleAcceptanceRefused() throws Exception {
+            var open = sendRequest(3);
+            long seen = api.get(open.seller().token(), "/api/v1/intents/" + open.intentId())
+                    .at("/data/revision").asLong();
+
+            // The restaurant changes its mind while the supplier is reading.
+            api.patchStatus(open.buyer().token(), "/api/v1/intent-items/" + open.itemId(),
+                    Map.of("quantity", 5));
+
+            assertThat(respondStatus(open.seller().token(), open.intentId(),
+                    Map.of("expectedRevision", seen,
+                            "lines", List.of(Map.of(
+                                    "intentItemId", open.itemId(), "offeredQuantity", 3)))))
+                    .isEqualTo(409);
+
+            // And nothing was written: the request is still waiting.
+            assertThat(api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId())
+                    .at("/data/status").asText()).isEqualTo("OPEN");
+        }
+
+        /**
+         * The revision an edit hands back has to be usable straight away.
+         *
+         * <p>The forced version bump lands at commit, so the response is built
+         * from a stale number unless it is corrected — and a restaurant's own
+         * edit would then hand its supplier a revision that is refused on sight.
+         * Asserting the property rather than the integer, because the integer is
+         * an implementation detail and the usability is the requirement.
+         */
+        @Test
+        @DisplayName("the revision an edit returns is accepted immediately")
+        void editReturnsAUsableRevision() throws Exception {
+            var open = sendRequest(3);
+
+            long afterEdit = patchQuantity(open, 4).at("/data/revision").asLong();
+
+            var response = respond(open.seller().token(), open.intentId(),
+                    Map.of("expectedRevision", afterEdit,
+                            "lines", List.of(Map.of(
+                                    "intentItemId", open.itemId(), "offeredQuantity", 4))));
+            assertThat(response.at("/data/status").asText())
+                    .as("revision from the edit was rejected: %s", response)
+                    .isEqualTo("RESPONSES_RECEIVED");
+        }
+
+        private com.fasterxml.jackson.databind.JsonNode patchQuantity(
+                OpenRequest open, int quantity) throws Exception {
+            return json.readTree(mvc.perform(MockMvcRequestBuilders
+                            .patch("/api/v1/intent-items/" + open.itemId())
+                            .header("Authorization", "Bearer " + open.buyer().token())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("quantity", quantity))))
+                    .andReturn().getResponse().getContentAsString());
+        }
+
         @Test
         @DisplayName("cannot offer more than was asked for")
         void cannotOverOffer() throws Exception {
