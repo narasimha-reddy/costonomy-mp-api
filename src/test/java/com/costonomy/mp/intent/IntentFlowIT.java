@@ -20,6 +20,11 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,6 +44,7 @@ class IntentFlowIT extends AbstractIntegrationTest {
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private MockPaymentProvider paymentProvider;
+    @Autowired private com.costonomy.mp.intent.service.IntentExpiryJob expiryJob;
 
     private ApiClient api;
 
@@ -409,6 +415,125 @@ class IntentFlowIT extends AbstractIntegrationTest {
             // conversation already happened.
             assertThat(api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId())
                     .at("/data/status").asText()).isEqualTo("ORDERED");
+        }
+    }
+
+    @Nested
+    @DisplayName("two things happening at once")
+    class Concurrency {
+
+        /**
+         * The money path, and doc 10 §2's mandatory case.
+         *
+         * <p>Two order creations on one request, released together. Exactly one
+         * order must exist afterwards — a second would be a second real charge
+         * against a supplier who committed stock once.
+         *
+         * <p>Both calls carry <b>different</b> idempotency keys on purpose. A
+         * client that crashes and retries usually generates a fresh one, so the
+         * header cannot be what makes this safe; {@code uk_intent_order_link_intent}
+         * is. Testing it with one shared key would test the idempotency table and
+         * call it a concurrency test.
+         */
+        @Test
+        @DisplayName("two order creations produce one order")
+        void duplicateOrderCreation() throws Exception {
+            var open = sendRequest(6);
+            answer(open, 6);
+
+            var first = new AtomicReference<String>();
+            var second = new AtomicReference<String>();
+
+            race(
+                () -> first.set(quietly(() ->
+                    createOrder(open.buyer().token(), open.intentId(), Map.of()).toString())),
+                () -> second.set(quietly(() ->
+                    createOrder(open.buyer().token(), open.intentId(), Map.of()).toString())));
+
+            // Exactly one order, whatever each call reported. Doc 10 §2 asks only
+            // that one outcome lands, not which caller sees it.
+            assertThat(ordersFor(open.buyer().outletId()))
+                .as("first=%s second=%s", first.get(), second.get())
+                .isEqualTo(1);
+
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from intent_order_link where intent_id = ?",
+                    Integer.class, open.intentId())).isEqualTo(1);
+        }
+
+        /**
+         * A supplier answering as the expiry sweep closes the same request.
+         *
+         * <p>Either outcome is correct — what must not happen is an intent that
+         * is EXPIRED and carries a submitted acceptance, because the restaurant
+         * would be shown an offer against a request the system has closed.
+         */
+        @Test
+        @DisplayName("answering while expiring leaves one coherent outcome")
+        void answerAgainstExpiry() throws Exception {
+            var open = sendRequest(4);
+
+            // Wind the send back past the response window so the sweep will take it.
+            jdbc.update("update intent set sent_at = date_sub(now(6), interval 30 day) "
+                    + "where id = ?", open.intentId());
+
+            race(
+                () -> quietly(() -> {
+                    expiryJob.sweep();
+                    return "swept";
+                }),
+                () -> quietly(() -> respond(open.seller().token(), open.intentId(),
+                        Map.of("lines", List.of(Map.of(
+                                "intentItemId", open.itemId(), "offeredQuantity", 4)))).toString()));
+
+            var status = jdbc.queryForObject(
+                    "select status from intent where id = ?", String.class, open.intentId());
+            int acceptances = jdbc.queryForObject(
+                    "select count(*) from intent_acceptance where intent_id = ? and status = 'SUBMITTED'",
+                    Integer.class, open.intentId());
+
+            assertThat(status).isIn("OPEN", "EXPIRED", "RESPONSES_RECEIVED");
+            if ("EXPIRED".equals(status)) {
+                assertThat(acceptances)
+                    .as("an expired request must not be showing a live offer")
+                    .isZero();
+            } else if ("RESPONSES_RECEIVED".equals(status)) {
+                assertThat(acceptances).isEqualTo(1);
+            }
+        }
+
+        /** Both threads released together, so they contend on the database. */
+        private void race(Runnable first, Runnable second) throws Exception {
+            var start = new CountDownLatch(1);
+            var done = new CountDownLatch(2);
+            var pool = Executors.newFixedThreadPool(2);
+
+            for (Runnable task : List.of(first, second)) {
+                pool.submit(() -> {
+                    try {
+                        start.await();
+                        task.run();
+                    } catch (Throwable ignored) {
+                        // Each task already records its own outcome; a thrown
+                        // exception here is one of the two legitimate losers.
+                    } finally {
+                        done.countDown();
+                    }
+                });
+            }
+
+            start.countDown();
+            assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+            pool.shutdownNow();
+        }
+
+        /** Run it, and keep whatever happened — a refusal is a result here. */
+        private String quietly(Callable<String> call) {
+            try {
+                return call.call();
+            } catch (Exception e) {
+                return e.getClass().getSimpleName() + ": " + e.getMessage();
+            }
         }
     }
 
