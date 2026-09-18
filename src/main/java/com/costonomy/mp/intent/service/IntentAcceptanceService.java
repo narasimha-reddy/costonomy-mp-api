@@ -70,6 +70,12 @@ public class IntentAcceptanceService {
                 () -> responder.respond(actorId, intentId, request));
     }
 
+    /** What a reply would come to. Read-only, so no idempotency key. */
+    public IntentDtos.RespondPreviewResponse preview(
+            Long actorId, Long intentId, IntentDtos.RespondRequest request) {
+        return responder.preview(actorId, intentId, request);
+    }
+
     /** The home carousel: the newest requests worth looking at. */
     public List<IntentDtos.IntentResponse> carousel(Long actorId, Long storeId) {
         return responder.forStore(actorId, storeId, ACTIONABLE, CAROUSEL_LIMIT);

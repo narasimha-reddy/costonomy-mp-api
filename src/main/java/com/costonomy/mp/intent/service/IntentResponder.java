@@ -340,6 +340,71 @@ public class IntentResponder {
                 ScopeType.SUPPLIER_STORE, intent.getSupplierStoreId(), "Intent");
     }
 
+    /**
+     * What this reply would come to, without sending it.
+     *
+     * <p>Read-only, and deliberately forgiving: an over-large quantity is
+     * clamped to what was asked for rather than refused, because a supplier
+     * dragging a stepper wants a number back, not an error. The strict checks
+     * belong on {@link #respond}, which is where the commitment is made.
+     */
+    @Transactional(readOnly = true)
+    public IntentDtos.RespondPreviewResponse preview(
+            Long actorId, Long intentId, IntentDtos.RespondRequest request) {
+
+        var intent = intents.findById(intentId)
+                .orElseThrow(() -> new NotFoundException("Intent", intentId));
+        accessControl.requireScoped(actorId, Permissions.ORDER_VIEW,
+                ScopeType.SUPPLIER_STORE, intent.getSupplierStoreId(), "Intent");
+
+        var lines = intentItems.findByIntentIdOrderByIdAsc(intentId);
+        var labels = directory.skus(lines.stream().map(IntentItem::getSupplierSkuId).toList());
+
+        Map<Long, BigDecimal> wanted = new HashMap<>();
+        if (request != null && request.lines() != null) {
+            request.lines().forEach(line ->
+                    wanted.put(line.intentItemId(), line.offeredQuantity()));
+        }
+
+        var previewLines = new ArrayList<IntentDtos.RespondPreviewLine>(lines.size());
+        BigDecimal value = BigDecimal.ZERO;
+        BigDecimal gst = BigDecimal.ZERO;
+
+        for (IntentItem line : lines) {
+            var requested = line.getRequestedQuantity();
+            var asked = wanted.getOrDefault(line.getId(), requested);
+            // Clamped, not rejected — see above.
+            var offered = asked == null || asked.signum() < 0
+                    ? BigDecimal.ZERO
+                    : asked.min(requested);
+
+            var unitPrice = line.getUnitPriceSnapshot();
+            var gstRate = line.getGstRateSnapshot();
+            BigDecimal lineValue = null;
+            BigDecimal lineGst = null;
+            BigDecimal lineTotal = null;
+
+            if (unitPrice != null && gstRate != null) {
+                lineValue = Pricing.lineItemValue(unitPrice, offered);
+                lineGst = Pricing.lineGst(lineValue, gstRate);
+                lineTotal = Pricing.lineTotal(lineValue, lineGst);
+                value = value.add(lineValue);
+                gst = gst.add(lineGst);
+            }
+
+            var label = labels.get(line.getSupplierSkuId());
+            previewLines.add(new IntentDtos.RespondPreviewLine(
+                    line.getId(),
+                    label == null ? null : label.productName(),
+                    requested, offered, line.getUnit(),
+                    unitPrice, gstRate, lineValue, lineGst, lineTotal));
+        }
+
+        return new IntentDtos.RespondPreviewResponse(
+                intentId, previewLines,
+                Pricing.money(value), Pricing.money(gst), Pricing.money(value.add(gst)));
+    }
+
     /** Batched projections for the supplier's own list screens. */
     @Transactional(readOnly = true)
     public List<IntentDtos.IntentResponse> forStore(

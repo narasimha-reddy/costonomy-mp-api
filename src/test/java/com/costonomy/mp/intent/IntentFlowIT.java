@@ -251,6 +251,41 @@ class IntentFlowIT extends AbstractIntegrationTest {
             assertThat(seen.at("/data/acceptance").isNull()).isTrue();
         }
 
+        /**
+         * The figure a supplier watches while deciding.
+         *
+         * <p>Worth a test of its own because the app is not allowed to compute
+         * it: if this endpoint is wrong, the supplier accepts against a number
+         * nobody checked.
+         */
+        @Test
+        @DisplayName("prices a reply before it is sent, and clamps rather than refusing")
+        void previewFollowsTheQuantity() throws Exception {
+            var open = sendRequest(3);
+
+            // Paneer at 410: 3 -> 1291.50, 2 -> 861.00, 0 -> nothing.
+            assertThat(previewTotal(open, 3)).isEqualTo(1291.50);
+            assertThat(previewTotal(open, 2)).isEqualTo(861.00);
+            assertThat(previewTotal(open, 0)).isEqualTo(0.00);
+
+            // Above what was asked, the preview clamps instead of erroring —
+            // a supplier dragging a stepper needs a number back, and `respond`
+            // is where the same input is properly refused.
+            assertThat(previewTotal(open, 9)).isEqualTo(1291.50);
+            assertThat(respondStatus(open.seller().token(), open.intentId(),
+                    Map.of("lines", List.of(Map.of(
+                            "intentItemId", open.itemId(), "offeredQuantity", 9)))))
+                    .isEqualTo(422);
+        }
+
+        private double previewTotal(OpenRequest open, int offered) throws Exception {
+            return api.post(open.seller().token(),
+                    "/api/v1/intents/" + open.intentId() + "/respond/preview",
+                    Map.of("lines", List.of(Map.of(
+                            "intentItemId", open.itemId(), "offeredQuantity", offered))))
+                    .at("/data/offeredTotal").asDouble();
+        }
+
         @Test
         @DisplayName("cannot offer more than was asked for")
         void cannotOverOffer() throws Exception {
@@ -361,6 +396,20 @@ class IntentFlowIT extends AbstractIntegrationTest {
             assertThat(api.get(buyer.token(),
                     "/api/v1/outlets/" + buyer.outletId() + "/intent-drafts")
                     .at("/data/requests").size()).isZero();
+        }
+
+        @Test
+        @DisplayName("carries the price it was sent at, before any reply")
+        void sentCarriesItsPrice() throws Exception {
+            var open = sendRequest(3);
+            var seen = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+
+            // No acceptance yet, and still a real figure: this is what the
+            // supplier will confirm, which is why the basket can show it
+            // without hedging.
+            assertThat(seen.at("/data/acceptance").isNull()).isTrue();
+            assertThat(seen.at("/data/items/0/agreedUnitPrice").asDouble()).isEqualTo(410.00);
+            assertThat(seen.at("/data/agreedTotal").asDouble()).isEqualTo(1291.50);
         }
 
         @Test

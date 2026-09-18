@@ -68,6 +68,24 @@ public class SupplierIntentController {
         return ApiResponse.ok(acceptances.list(ActorContext.requireUserId(), storeId, status));
     }
 
+    @PostMapping("/intents/{id}/respond/preview")
+    @Operation(
+            summary = "What this reply would come to",
+            description = """
+                    Writes nothing. Prices the quantities you pass against the price
+                    the request was sent at, so a supplier moving a stepper sees the
+                    figure change without the app multiplying money itself.
+
+                    Forgiving where `respond` is strict: an omitted line is priced at
+                    the full requested quantity and an over-large one is clamped, because
+                    this is a number being explored rather than a commitment.
+                    """)
+    public ApiResponse<IntentDtos.RespondPreviewResponse> previewRespond(
+            @PathVariable Long id,
+            @RequestBody(required = false) IntentDtos.RespondRequest request) {
+        return ApiResponse.ok(acceptances.preview(ActorContext.requireUserId(), id, request));
+    }
+
     @PostMapping("/intents/{id}/respond")
     @Operation(
             summary = "Say what this store will supply",

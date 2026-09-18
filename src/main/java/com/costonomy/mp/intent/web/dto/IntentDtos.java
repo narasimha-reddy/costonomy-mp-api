@@ -288,6 +288,39 @@ public final class IntentDtos {
             Instant expiresAt) {
     }
 
+    /**
+     * What a reply would come to, before sending it.
+     *
+     * <p>Exists because the supplier moves a stepper and the total has to follow,
+     * and the app is not allowed to multiply a price by a quantity itself
+     * (guardrail 3). So the arithmetic round-trips — the same trade the order
+     * flow's partial-acceptance preview made.
+     *
+     * <p>Writes nothing. Quantities above what was asked for are clamped rather
+     * than refused: this is a figure being explored, and an error in place of a
+     * number would leave the supplier with nothing to read.
+     */
+    public record RespondPreviewResponse(
+            Long intentId,
+            List<RespondPreviewLine> lines,
+            BigDecimal offeredValue,
+            BigDecimal offeredGst,
+            BigDecimal offeredTotal) {
+    }
+
+    public record RespondPreviewLine(
+            Long intentItemId,
+            String productName,
+            BigDecimal requestedQuantity,
+            BigDecimal offeredQuantity,
+            String unit,
+            BigDecimal unitPrice,
+            BigDecimal gstRate,
+            BigDecimal lineValue,
+            BigDecimal lineGst,
+            BigDecimal lineTotal) {
+    }
+
     /** Send every draft in the basket, one request per supplier. */
     public record SendBasketRequest(
             /**
