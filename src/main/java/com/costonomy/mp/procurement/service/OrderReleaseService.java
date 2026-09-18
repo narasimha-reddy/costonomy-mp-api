@@ -97,8 +97,13 @@ public class OrderReleaseService {
         if (order.getAcceptanceDeadline() != null) {
             payload.put("acceptanceDeadline", order.getAcceptanceDeadline().toString());
         }
-        outbox.publish("SupplierOrderReleased", "SUPPLIER_ORDER", order.getId(),
-                payload, null, now);
+        // Two events, because the supplier is being told two different things.
+        // "Released" has always meant "this needs your answer, and the clock has
+        // started". An order built from an accepted request needs no answer --
+        // notifying it as one told a supplier to go and accept an order they had
+        // already agreed to, with a countdown that does not exist.
+        outbox.publish(awaitsAcceptance ? "SupplierOrderReleased" : "SupplierOrderConfirmed",
+                "SUPPLIER_ORDER", order.getId(), payload, null, now);
 
         log.info("Released order {} to supplier {} as {} — deadline {}",
                 order.getOrderNumber(), order.getSupplierStoreId(), target,

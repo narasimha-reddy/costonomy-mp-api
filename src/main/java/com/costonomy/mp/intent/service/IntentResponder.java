@@ -171,7 +171,19 @@ public class IntentResponder {
                 from.name(), IntentStatus.RESPONSES_RECEIVED.name(),
                 "offered %s".formatted(acceptance.getOfferedTotal().toPlainString()), "API");
 
-        outbox.publish("IntentAnswered", "INTENT", intent.getId(),
+        // Two events, because they are two different things to be told.
+        //
+        // A reply with something in it is good news on a clock: order inside the
+        // window. A reply with nothing in it is the supplier saying no, and the
+        // kitchen has to source those goods from somebody else today -- which is
+        // what earns it an SMS, exactly as an outright order rejection did.
+        // Publishing one event for both would force the notification to either
+        // cry wolf on every reply or stay quiet on the refusals.
+        boolean nothingOffered = priced.stream()
+                .allMatch(line -> line.getOfferedQuantity().signum() == 0);
+
+        outbox.publish(nothingOffered ? "IntentDeclined" : "IntentAnswered",
+                "INTENT", intent.getId(),
                 Map.of("reference", intent.getReference(),
                         "outletId", intent.getOutletId(),
                         "supplierStoreId", intent.getSupplierStoreId(),

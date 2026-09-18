@@ -120,8 +120,14 @@ class NotificationRulesTest {
                     .distinct()
                     .toList();
 
+            // The two Intent events are the successors of the two order ones,
+            // not additions to them: under D-088 a supplier answers a request
+            // rather than an order, so "they said no" and "they never answered"
+            // now happen one step earlier. Both still cost the kitchen its day,
+            // which is the test this list has always applied.
             assertThat(smsEvents).containsExactlyInAnyOrder(
                     "SupplierOrderRejected", "SupplierOrderExpired",
+                    "IntentDeclined", "IntentExpired",
                     "PaymentFailed", "CreditOverdue");
         }
 

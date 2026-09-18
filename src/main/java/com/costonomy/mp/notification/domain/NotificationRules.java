@@ -96,6 +96,79 @@ public final class NotificationRules {
                 "Order expired",
                 "Order {orderNumber} expired without an answer.", "SUPPLIER_ORDER"));
 
+        // Paid for, and already agreed to. Nothing to accept and no countdown --
+        // the supplier committed to these quantities when they answered the
+        // request, so the only thing left is to prepare it.
+        add(rules, new NotificationRule("SupplierOrderConfirmed", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Order confirmed",
+                "Order {orderNumber} is paid for and ready to prepare.", "SUPPLIER_ORDER"));
+
+        // ── Requests ─────────────────────────────────────────────────────
+        //
+        // The one notification in this file that decides whether the feature
+        // works at all. A request sits doing nothing until its supplier answers,
+        // and a supplier who is not told has no reason to open the app — so an
+        // unnotified request is a request that expires. Critical for that reason,
+        // not because the money is large: there is no money yet.
+        add(rules, new NotificationRule("IntentSent", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "New request",
+                "A restaurant is asking what you can supply. Request {reference}.",
+                "INTENT"));
+
+        // The restaurant's window to order starts the moment this is sent, and
+        // it is short. Missing it means the supplier held stock for nothing.
+        add(rules, new NotificationRule("IntentAnswered", OUTLET, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Supplier replied",
+                "{reference}: your supplier replied. Order within the window to confirm it.",
+                "INTENT"));
+
+        add(rules, new NotificationRule("IntentOrdered", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Order confirmed",
+                "{reference} became order {orderNumber}. It is yours to prepare.",
+                "SUPPLIER_ORDER", "supplierOrderId"));
+
+        // The supplier said no to everything. Commercially this is the old
+        // "order rejected", and it costs the kitchen the same day, so it carries
+        // the same SMS.
+        add(rules, new NotificationRule("IntentDeclined", OUTLET, ORDERS, true,
+                List.of(IN_APP, PUSH, SMS),
+                "Nothing available",
+                "{reference}: your supplier can't supply any of it. Find another supplier.",
+                "INTENT"));
+
+        // Nobody answered. The kitchen still needs these goods today, which is
+        // why this one is worth an SMS and the two below are not.
+        add(rules, new NotificationRule("IntentExpired", OUTLET, ORDERS, true,
+                List.of(IN_APP, PUSH, SMS),
+                "No reply in time",
+                "{reference}: your supplier didn't reply. Try another supplier.",
+                "INTENT"));
+
+        // Distinct from the above, and deliberately so: the supplier did their
+        // part here. Telling them their reply "expired" would read as a
+        // reprimand, so it says what it means — the stock is theirs again.
+        add(rules, new NotificationRule("IntentOrderWindowExpired", SUPPLIER_STORE, ORDERS, false,
+                List.of(IN_APP),
+                "Request closed",
+                "{reference} wasn't ordered in time. The stock you held is free again.",
+                "INTENT"));
+
+        add(rules, new NotificationRule("IntentOrderWindowExpired", OUTLET, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Reply expired",
+                "{reference}: the time to order from that reply has passed. Ask again.",
+                "INTENT"));
+
+        add(rules, new NotificationRule("IntentCancelled", SUPPLIER_STORE, ORDERS, false,
+                List.of(IN_APP),
+                "Request withdrawn",
+                "{reference} was withdrawn by the restaurant. No reply needed.",
+                "INTENT"));
+
         // ── Approvals ────────────────────────────────────────────────────
         add(rules, new NotificationRule("ProcurementApprovalRequested", OUTLET, APPROVALS, true,
                 List.of(IN_APP, PUSH),
