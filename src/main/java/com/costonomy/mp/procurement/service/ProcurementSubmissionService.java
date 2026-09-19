@@ -55,48 +55,15 @@ import java.util.*;
 @Slf4j
 public class ProcurementSubmissionService {
 
-    private final ProcurementRepository procurements;
     private final SupplierOrderRepository supplierOrders;
     private final SupplierOrderMapper mapper;
     private final AccessControlService accessControl;
-    private final IdempotencyService idempotency;
-    private final ProcurementSubmitter submitter;
-
-    /**
-     * Submit, at most once per idempotency key.
-     *
-     * <p>Deliberately <b>not</b> {@code @Transactional}. The idempotency claim has
-     * to commit in its own transaction before the work runs (see
-     * {@code IdempotencyStore}), and the work itself runs in
-     * {@link ProcurementSubmitter} — a separate bean, because a
-     * {@code @Transactional} method invoked through {@code this} does not pass
-     * through Spring's proxy and the annotation is silently ignored. Calling
-     * {@code doSubmit} from the lambda below would have left the whole submission
-     * — several supplier orders and their items — running without a transaction.
-     */
-    public ProcurementDtos.SubmitResponse submit(
-            Long actorId, Long procurementId, String idempotencyKey) {
-
-        return idempotency.execute(actorId, "procurement.submit", idempotencyKey,
-                Map.of("procurementId", procurementId),
-                ProcurementDtos.SubmitResponse.class,
-                () -> submitter.submit(actorId, procurementId));
-    }
 
     // ── Reads ────────────────────────────────────────────────────────────
-
-    @Transactional(readOnly = true)
-    public List<ProcurementDtos.SupplierOrderResponse> ordersForProcurement(
-            Long actorId, Long procurementId) {
-
-        var procurement = procurements.findById(procurementId)
-                .orElseThrow(() -> new NotFoundException("Procurement", procurementId));
-        accessControl.requireScoped(actorId, Permissions.ORDER_VIEW,
-                ScopeType.OUTLET, procurement.getOutletId(), "Procurement");
-
-        return supplierOrders.findByProcurementId(procurementId).stream()
-                .map(mapper::toResponse).toList();
-    }
+    //
+    // Submission is gone with the cart (D-091). Orders are created by
+    // IntentOrderCreator, from a request the supplier already accepted; what
+    // remains here is reading them back.
 
     @Transactional(readOnly = true)
     public List<ProcurementDtos.SupplierOrderResponse> ordersForOutlet(Long actorId, Long outletId) {

@@ -101,11 +101,32 @@ public class SupplierOrder extends BaseEntity {
     @Column(name = "payment_status", nullable = false, length = 32)
     private String paymentStatus = "PENDING";
 
-    @Column(name = "credit_status", length = 32)
-    private String creditStatus;
+    /**
+     * How the goods travel. D-091.
+     *
+     * <p>Chosen by the restaurant at order creation, because the restaurant pays
+     * the fee — and because the fee is part of what is charged, so it has to be
+     * settled before the payment intent exists. It is also an argument to
+     * {@link SupplierOrderStatus#allowedTransitions(DeliveryMode)}: where this
+     * order goes after {@code READY_FOR_PICKUP} depends on who is carrying it.
+     */
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(name = "delivery_mode", nullable = false, length = 32)
+    private DeliveryMode deliveryMode = DeliveryMode.PICKUP;
 
-    @Column(name = "delivery_mode", length = 32)
-    private String deliveryMode;
+    /**
+     * Who cancelled, when this order was. Null otherwise.
+     *
+     * <p>An attribute rather than a status per actor — see {@link CancelledBy}.
+     */
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(name = "cancelled_by", length = 32)
+    private CancelledBy cancelledBy;
+
+    @Column(name = "cancellation_reason", length = 500)
+    private String cancellationReason;
 
     /**
      * Whether the deadline has passed, against a supplied clock.

@@ -6,6 +6,8 @@ import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import com.costonomy.mp.procurement.domain.ApprovalStatus;
 import com.costonomy.mp.procurement.domain.ProcurementStatus;
 import com.costonomy.mp.procurement.domain.RequirementStatus;
+import com.costonomy.mp.procurement.domain.CancelledBy;
+import com.costonomy.mp.procurement.domain.DeliveryMode;
 import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
@@ -255,6 +257,23 @@ public final class ProcurementDtos {
             BigDecimal acceptedGst,
             String paymentMethod,
             String paymentStatus,
+            /**
+             * How the goods travel, and what the carriage costs. D-091.
+             *
+             * <p>On the wire because the screen's actions depend on it: who may
+             * move the order, and whether "ready" means a van is leaving or that
+             * there are crates waiting on a counter.
+             */
+            DeliveryMode deliveryMode,
+            BigDecimal deliveryFee,
+            /**
+             * Whose decision ended it, on a cancelled order. Null otherwise.
+             *
+             * <p>This is what replaced {@code REJECTED}: one ending, with the
+             * actor recorded, rather than a status per party.
+             */
+            CancelledBy cancelledBy,
+            String cancellationReason,
             List<SupplierOrderItemResponse> items) {
     }
 

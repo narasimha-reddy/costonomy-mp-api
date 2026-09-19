@@ -222,7 +222,6 @@ public class IntentMapper {
                         item.getRequestedQuantity(),
                         item.getUnit(),
                         item.getNotes(),
-                        item.getStatus(),
                         fulfilment,
                         answer == null ? null : answer.getOfferedQuantity(),
                         answer == null ? null : answer.getAvailability(),
@@ -307,7 +306,7 @@ public class IntentMapper {
                 acceptance.getOfferedTotal(),
                 acceptance.getDeliveryFee(),
                 acceptance.getEtaMinutes(),
-                acceptance.getDeliveryMode(),
+                acceptance.getDeliveryModes(),
                 acceptance.getNotes(),
                 acceptance.getSubmittedAt(),
                 acceptance.getExpiresAt());

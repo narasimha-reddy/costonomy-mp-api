@@ -73,18 +73,27 @@ public class OrderReleaseService {
         // supplier committed to these quantities at these prices before any money
         // moved. There is nothing left to accept, so no countdown starts — one
         // against an order nobody needs to answer would expire an agreed order.
-        boolean awaitsAcceptance = order.getProcurementId() != null;
-        SupplierOrderStatus target = awaitsAcceptance
-                ? SupplierOrderStatus.PENDING_ACCEPTANCE
-                : SupplierOrderStatus.CONFIRMED;
+        // D-091 finished the job: there is no second acceptance at all now, so a
+        // funded order is confirmed whatever created it, and no acceptance clock
+        // starts. One against an order nobody needs to answer would expire an
+        // order both sides had already agreed to and been paid for.
+        SupplierOrderStatus target = SupplierOrderStatus.CONFIRMED;
 
         order.setStatus(target);
-        // The clock starts now, not at submission — and only when somebody still
-        // has to answer.
-        order.setAcceptanceDeadline(
-                awaitsAcceptance ? now.plusSeconds(order.getResponseSlaSeconds()) : null);
+        order.setAcceptanceDeadline(null);
         order.setPaymentStatus("AUTHORIZED");
         orders.save(order);
+
+        // Capture, now that the order is confirmed. D-091 moved this: it used to
+        // fire when the supplier accepted, and there is no longer an acceptance
+        // to fire on — the supplier committed on the request, so confirmation is
+        // the moment their commitment becomes an order.
+        //
+        // Doc 01 §14 is unchanged: only the accepted commercial value is taken,
+        // and under the new flow the accepted amount is known at creation
+        // because the order was built from what the supplier offered. Without
+        // this, every payment authorised and none was ever captured.
+        funding.onOrderAccepted(order.getId(), order.getAcceptedAmount());
 
         auditService.record(null, null, "SUPPLIER_ORDER_RELEASED", "SUPPLIER_ORDER",
                 order.getId(), SupplierOrderStatus.DRAFT.name(), target.name(),
@@ -102,7 +111,10 @@ public class OrderReleaseService {
         // started". An order built from an accepted request needs no answer --
         // notifying it as one told a supplier to go and accept an order they had
         // already agreed to, with a countdown that does not exist.
-        outbox.publish(awaitsAcceptance ? "SupplierOrderReleased" : "SupplierOrderConfirmed",
+        // One event now: every released order is confirmed. "Released" used to
+        // mean "this needs your answer, and the clock has started", which after
+        // D-091 is never true.
+        outbox.publish("SupplierOrderConfirmed",
                 "SUPPLIER_ORDER", order.getId(), payload, null, now);
 
         log.info("Released order {} to supplier {} as {} — deadline {}",

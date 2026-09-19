@@ -50,14 +50,14 @@ public class DeliveryQuotingService {
      *                              that just cancelled (doc 06 §7)
      */
     @Transactional
-    public Outcome gather(Delivery delivery, BigDecimal orderValue,
+    public Outcome gather(Delivery delivery, BigDecimal orderValue, BigDecimal weightGrams,
                           Integer requiredEtaMinutes, List<String> excludedProviderCodes) {
 
         var request = new DeliveryProvider.QuoteRequest(
                 delivery.getSupplierOrderId(),
                 delivery.getPickupLatitude(), delivery.getPickupLongitude(),
                 delivery.getDropLatitude(), delivery.getDropLongitude(),
-                orderValue, requiredEtaMinutes);
+                orderValue, weightGrams, requiredEtaMinutes);
 
         List<DeliveryQuote> recorded = new ArrayList<>();
         List<DeliverySelection.Candidate> candidates = new ArrayList<>();

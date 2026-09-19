@@ -546,16 +546,28 @@ public class IntentService {
         return response;
     }
 
+    /**
+     * The same response with the supplier's unsubmitted answer withheld.
+     *
+     * <p>Every field is restated because a record has no copy-with, and that is
+     * exactly how this drifted: fields were added to {@code IntentResponse} and
+     * this positional call was not updated, so it stopped compiling. Anything
+     * added to the record has to be added here too.
+     */
     private IntentDtos.IntentResponse withoutAcceptance(IntentDtos.IntentResponse source) {
         return new IntentDtos.IntentResponse(
-                source.id(), source.reference(), source.outletId(), source.supplierStoreId(),
-                source.storeName(), source.supplierName(), source.status(), source.fulfilment(),
+                source.id(), source.reference(), source.outletId(),
+                source.outletName(), source.restaurantName(), source.outletLocality(),
+                source.outletCity(), source.distanceKm(),
+                source.supplierStoreId(), source.storeName(), source.supplierName(),
+                source.status(), source.fulfilment(),
                 source.source(), source.clonedFromId(), source.requestedDeliveryTime(),
                 source.notes(), source.sentAt(), source.responseDeadline(),
                 source.responseWindowSeconds(), source.acceptedAt(),
                 source.orderCreationDeadline(), source.orderCreationWindowSeconds(),
                 source.cancelledAt(), source.expiredAt(), source.createdAt(), source.serverTime(),
-                source.editable(), source.withinOrderWindow(), source.items(),
+                source.editable(), source.quantityEditable(), source.revision(),
+                source.withinOrderWindow(), source.items(),
                 source.agreedValue(), source.agreedGst(), source.agreedTotal(),
                 source.pricedComplete(), source.priceChanged(),
                 null, source.supplierOrderId(), source.supplierOrderNumber());

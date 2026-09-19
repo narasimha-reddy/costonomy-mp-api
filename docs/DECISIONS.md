@@ -2963,3 +2963,181 @@ free, and a total quietly missing an item is worse than one that admits it.
 Summing the per-supplier totals in the client would be arithmetic on money — the
 one thing guardrail 3 forbids — and a client-side sum of already-rounded figures
 is exactly the kind that lands a paisa from the server's own.
+
+---
+
+## D-091 — The order stops asking, and the restaurant chooses how goods travel
+**Raised 2026-09-19 · Settled 2026-09-19**
+
+D-088 moved the supplier's commitment to the request. The order lifecycle never
+followed, so it still carried the whole vocabulary of a system where the supplier
+decided at order time: `PENDING_ACCEPTANCE`, `PARTIALLY_ACCEPTED`, `REJECTED` and
+`EXPIRED` remained legal states, four of the twelve, all of them unreachable from
+the live flow and all of them still handled by every switch, chip map and
+dashboard query in both repos.
+
+At the same time the one thing the order genuinely did need to decide — how the
+goods get from the store to the kitchen — was modelled as two nullable
+`delivery_mode` columns with **no defined values anywhere in main or test**, set
+by the supplier on acceptance and never copied onto the order.
+
+**Decision: trim the lifecycle to what can happen, and give the mode to the
+party that pays for it.**
+
+### Eight statuses, and no second acceptance
+
+```
+DRAFT → CONFIRMED → PREPARING → READY_FOR_PICKUP → OUT_FOR_DELIVERY
+      → DELIVERED → COMPLETED,  with CANCELLED
+```
+
+An order arrives `CONFIRMED` because the supplier already said yes to the
+request. Their two actions are *start preparing* and *cancel* — there is no
+acknowledgement step, because a status that exists only to be clicked through
+adds a way for a paid order to stall and answers no question the request did not
+already answer.
+
+`PARTIALLY_ACCEPTED` goes because partial acceptance now happens on the request:
+the supplier offers less, the restaurant orders what was offered, and the
+shortfall stays visible on the request rather than being encoded as a flavour of
+order. `REJECTED` and `EXPIRED` go with the acceptance step that produced them.
+
+D-088's own note said `PENDING_ACCEPTANCE` "remains for orders still created the
+old way, and goes when that path does". This is that.
+
+### A supplier who cannot fulfil cancels, and the record says who
+
+The escape hatch after `CONFIRMED` is cancellation, not rejection, because money
+has already moved — the difference between the two is a refund. One `CANCELLED`
+status carries `cancelled_by` (`RESTAURANT` / `SUPPLIER` / `SYSTEM`) and a
+reason.
+
+Deliberately **not** two statuses, which is the opposite of the call D-089 made
+when it kept `EXPIRED` and `ORDER_CREATION_EXPIRED` apart. The distinction there
+was between two *different things happening*: a supplier ignoring a request and a
+restaurant not using a reply. Here one thing happens — the order is cancelled —
+and only the actor differs. An attribute separates actors; a status separates
+events, and a reliability metric reads `cancelled_by` just as well as it reads a
+status name while every switch stays at eight cases.
+
+### The mode is the restaurant's, and it is priced before payment
+
+`PICKUP`, `SUPPLIER_DELIVERY`, `COSTONOMY_DELIVERY`, typed, `NOT NULL` on the
+order.
+
+The restaurant chooses, because the restaurant pays the delivery fee, and it
+chooses **at order creation** — the fee is part of what is charged, so the mode
+must be fixed before the payment intent exists. A supplier therefore no longer
+names one mode on acceptance; they declare which modes they can serve, bounded by
+`supplier_delivery_policy.own_delivery_enabled` and `costonomy_delivery_enabled`.
+
+### `allowedTransitions()` stops being a function of status alone
+
+This is the structural consequence and the reason the change is worth a decision
+rather than a commit message. `READY_FOR_PICKUP` goes to `COMPLETED` under
+`PICKUP` and to `OUT_FOR_DELIVERY` otherwise, so the mode is now an argument.
+
+Authorisation branches with it. §23A.38 — *a supplier cannot claim pickup or
+delivery on a courier's behalf* — is correct under `COSTONOMY_DELIVERY` and
+**wrong under `SUPPLIER_DELIVERY`**, where the supplier is the courier. Under
+`PICKUP` the restaurant moves the order, which no order transition previously
+allowed.
+
+| From → To | PICKUP | SUPPLIER_DELIVERY | COSTONOMY_DELIVERY |
+|---|---|---|---|
+| `READY_FOR_PICKUP →` | restaurant → `COMPLETED` | supplier → `OUT_FOR_DELIVERY` | courier event only |
+| `OUT_FOR_DELIVERY → DELIVERED` | n/a | supplier | courier event only |
+| `DELIVERED → COMPLETED` | n/a | restaurant | restaurant |
+
+Cancellation stays closed from `READY_FOR_PICKUP` onward. Doc 01 §13 is unchanged
+by any of this: once goods have left, the path is return or dispute.
+
+### Capture moved to confirmation
+
+Payment capture fired when the supplier accepted. With no acceptance left it
+fired nowhere at all, and every payment authorised while none was ever captured —
+caught by `PaymentFlowIT` rather than by reading the diff, which is the argument
+for keeping those suites pointed at a real order.
+
+It now fires from `OrderReleaseService` at confirmation. Doc 01 §14 is unchanged:
+only the accepted commercial value is taken, and under this flow the accepted
+amount is known at creation because the order was built from what the supplier
+offered. The timing is the same in substance — money was always taken when the
+supplier's commitment became firm — and that moment is now earlier by the length
+of a response window that no longer exists.
+
+Credit follows the same path: reserve and draw land together, where they used to
+be separated by the acceptance.
+
+### A pickup order is still received
+
+Collection goes through `ReceivingService`, the same path a delivered order
+takes, rather than a single button that marks the order complete. A pickup order
+that skipped receiving could never record a shortfall, and a discrepancy noticed
+in the van would have no route except a dispute raised against no recorded
+quantity.
+
+### The delivery fee is quoted, stored, and binding
+
+`COSTONOMY_DELIVERY` needs a number before a provider has been chosen, and
+provider bidding is internal (doc 06 §10) — the restaurant sees one fee and never
+a quote. So the fee comes from a quote endpoint that resolves both endpoints,
+weighs the lines, and prices the run.
+
+**It takes ids, not coordinates.** The caller sends the request; the server
+resolves `outlet` and `supplier_store` to their own latitudes and longitudes.
+Accepting an origin from the client would let a caller quote a one-kilometre
+delivery and receive a twenty-kilometre one, and guardrail 3 puts the arithmetic
+on the server regardless.
+
+The quote is **stored and referenced by id** at order creation, not recomputed.
+A fee recomputed between the screen that showed it and the charge that collected
+it is a silent reprice, which §23A.16 forbids; an expired or mismatched quote
+surfaces as a price change, shown old and new, and confirmed.
+
+It returns fee and ETA and nothing else. Vehicle type and the provider responses
+that produced it are internal: they determine the platform's cost, not the
+restaurant's price.
+
+A provider outage cannot block every order, so the quote degrades to a configured
+rate card and records that it did.
+
+### Weight is missing from the catalogue, and mostly derivable
+
+The quote needs weight and `supplier_sku` has none. Of the seventy-five SKUs in
+the development catalogue, fifty-seven carry mass directly (`KG` pack units, and
+`PKT` with a `GM` measure), twelve are volumes that need an assumed density, and
+six are counts — `PC` — that carry no weight information at all.
+
+So `weight_grams` goes on `supplier_sku`, nullable, with the derivation as a
+documented fallback rather than the source of truth. Guessing a vehicle from a
+density assumption is acceptable for a litre of oil and is not acceptable for a
+tenth of the catalogue.
+
+### Four things this leaves open
+
+- **A supplier cancelling a credit order leaves the debt standing.** Rejection
+  used to happen before the draw, so releasing the hold was the whole reversal.
+  Confirming a credit order as it is created utilises it and raises the invoice,
+  so by the time a supplier backs out the money is drawn and
+  `CreditLedgerService.release` returns early — the reservation no longer holds
+  exposure. This is the same shape as prepaid, where cancelling after capture
+  needs a refund rather than a release; credit's equivalent is a credit note and
+  it does not exist yet. `CreditFlowIT` asserts the current behaviour explicitly
+  rather than hiding it.
+
+- A `READY_FOR_PICKUP` pickup order nobody collects has no expiry path, and
+  cancellation is already closed by then.
+- `latitude` and `longitude` are nullable on both `outlet` and `supplier_store`.
+  `COSTONOMY_DELIVERY` is withheld when either is missing rather than estimated
+  from a pincode.
+- `intent_acceptance.eta_minutes` is unused now that the supplier no longer
+  enters a delivery duration. The ETA belongs to the store's preparation time
+  plus the quote's travel estimate.
+
+### Dead columns removed in passing
+
+`supplier_order.credit_status` and `intent_item.status` were both declared,
+defaulted, and never written or read by anything in `src/main`. `intent_item.status`
+was on the wire as well, so every client received a constant it could have
+branched on.

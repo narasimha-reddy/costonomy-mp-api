@@ -69,4 +69,15 @@ public class IntentOrderService {
                 fingerprint, IntentDtos.CreateOrderResponse.class,
                 () -> creator.create(actorId, intentId, request));
     }
+
+    /**
+     * What our delivery would cost for this request. D-091.
+     *
+     * <p>No idempotency key: quoting is a read with a receipt. Asking twice gives
+     * two quotes and spends neither, and the order that follows names the one it
+     * is paying.
+     */
+    public IntentDtos.DeliveryQuoteResponse deliveryQuote(Long actorId, Long intentId) {
+        return creator.deliveryQuote(actorId, intentId);
+    }
 }

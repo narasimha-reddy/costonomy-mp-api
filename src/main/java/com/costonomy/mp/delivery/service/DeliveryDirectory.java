@@ -4,7 +4,10 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import com.costonomy.mp.delivery.domain.ConsignmentWeight;
+
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * Facts from other modules that delivery needs to read.
@@ -105,4 +108,58 @@ public class DeliveryDirectory {
                 supplierStoreId);
         return rows.isEmpty() ? DeliveryPolicy.DEFAULT : rows.get(0);
     }
+
+    // ── What is being carried ───────────────────────────────────────────
+
+    /**
+     * The lines of a request, as weighable rows. D-091.
+     *
+     * <p>Quantities are the requested ones: a quote is taken before the order
+     * exists, so there is nothing else to weigh — and the restaurant orders what
+     * the supplier offered, which is at most this.
+     */
+    public List<ConsignmentWeight.Line> intentLines(Long intentId) {
+        return jdbc.query("""
+                select i.requested_quantity, s.weight_grams, s.pack_size, s.pack_unit,
+                       s.measure_value, s.measure_unit
+                  from intent_item i
+                  join supplier_sku s on s.id = i.supplier_sku_id
+                 where i.intent_id = ?
+                """,
+                (rs, row) -> new ConsignmentWeight.Line(
+                        rs.getBigDecimal(1), rs.getBigDecimal(2), rs.getBigDecimal(3),
+                        rs.getString(4), rs.getBigDecimal(5), rs.getString(6)),
+                intentId);
+    }
+
+    /**
+     * What an order's accepted quantities weigh.
+     *
+     * <p>Accepted, not requested: by booking time the supplier has committed, and
+     * a courier is carrying what is in the van.
+     */
+    public BigDecimal consignmentWeightGrams(Long supplierOrderId) {
+        var lines = jdbc.query("""
+                select coalesce(i.accepted_quantity, i.requested_quantity),
+                       s.weight_grams, s.pack_size, s.pack_unit,
+                       s.measure_value, s.measure_unit
+                  from supplier_order_item i
+                  join supplier_sku s on s.id = i.supplier_sku_id
+                 where i.supplier_order_id = ?
+                """,
+                (rs, row) -> new ConsignmentWeight.Line(
+                        rs.getBigDecimal(1), rs.getBigDecimal(2), rs.getBigDecimal(3),
+                        rs.getString(4), rs.getBigDecimal(5), rs.getString(6)),
+                supplierOrderId);
+        return ConsignmentWeight.of(lines, DEFAULT_PIECE_GRAMS).grams();
+    }
+
+    /**
+     * What to assume a countable pack weighs when nothing says.
+     *
+     * <p>Half a kilo: heavy enough that a large order of them does not quote as a
+     * bike run, light enough not to price every crate as a truck. The real fix is
+     * {@code supplier_sku.weight_grams}, not a better constant.
+     */
+    public static final BigDecimal DEFAULT_PIECE_GRAMS = BigDecimal.valueOf(500);
 }

@@ -22,6 +22,10 @@ import com.costonomy.mp.intent.repository.IntentItemRepository;
 import com.costonomy.mp.intent.repository.IntentOrderLinkRepository;
 import com.costonomy.mp.intent.repository.IntentRepository;
 import com.costonomy.mp.intent.web.dto.IntentDtos;
+import com.costonomy.mp.delivery.service.DeliveryDirectory;
+import com.costonomy.mp.delivery.service.DeliveryFeeQuoteService;
+import com.costonomy.mp.procurement.domain.DeliveryMode;
+import com.costonomy.mp.procurement.domain.OrderItemStatus;
 import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
 import com.costonomy.mp.procurement.domain.SupplierOrderItem;
@@ -87,6 +91,9 @@ public class IntentOrderCreator {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
+    /** What a Costonomy delivery costs, and what the store is willing to carry. */
+    private final DeliveryFeeQuoteService deliveryQuotes;
+    private final DeliveryDirectory deliveryPolicies;
 
     /** What the caller asked to order, resolved against what was offered. */
     private record Plan(
@@ -113,6 +120,36 @@ public class IntentOrderCreator {
     }
 
     // ── Preview ──────────────────────────────────────────────────────────
+
+    /**
+     * What our delivery would cost for this request.
+     *
+     * <p>Quoted against the accepted lines' weight and the real distance between
+     * the two addresses, both resolved here. Stored, so that creating the order
+     * spends this figure rather than a freshly computed one — the restaurant is
+     * charged the number they were shown.
+     */
+    @Transactional
+    public IntentDtos.DeliveryQuoteResponse deliveryQuote(Long actorId, Long intentId) {
+        var intent = intents.findById(intentId)
+                .orElseThrow(() -> new NotFoundException("Intent", intentId));
+
+        accessControl.requireScoped(actorId, Permissions.PROCUREMENT_SUBMIT,
+                ScopeType.OUTLET, intent.getOutletId(), "Intent");
+
+        // The goods' value, for a provider that prices insurance on it. The
+        // delivery fee itself is not in this figure -- that is what is being asked.
+        var acceptance = acceptances.findByIntentId(intentId).orElse(null);
+        BigDecimal orderValue = acceptance == null || acceptance.getOfferedTotal() == null
+                ? BigDecimal.ZERO : acceptance.getOfferedTotal();
+
+        var fee = deliveryQuotes.quote(intentId, intent.getOutletId(),
+                intent.getSupplierStoreId(), orderValue);
+
+        return new IntentDtos.DeliveryQuoteResponse(fee.quoteReference(), fee.amount(),
+                fee.currency(), fee.etaMinutes(), fee.distanceKm(), fee.expiresAt());
+    }
+
 
     @Transactional(readOnly = true)
     public IntentDtos.OrderPreviewResponse preview(
@@ -198,6 +235,22 @@ public class IntentOrderCreator {
 
         Instant now = Instant.now();
 
+        // How the goods travel, and what that costs. D-091.
+        //
+        // Settled before the order exists because the fee is part of what is
+        // charged: a payment intent raised for the goods alone would collect the
+        // wrong amount, and adding the delivery afterwards would charge somebody
+        // twice for one order.
+        // Required here, unlike on the preview. Defaulting would pick how
+        // somebody's goods travel on their behalf, and under two of the three
+        // modes that is a charge they did not agree to.
+        if (request.deliveryMode() == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Choose how this order should reach you.");
+        }
+        DeliveryMode mode = request.deliveryMode();
+        BigDecimal deliveryFee = deliveryFeeFor(mode, intent, request, now);
+
         var order = new SupplierOrder();
         // No procurement: the intent was the basket. The link to where this came
         // from is intent_order_link, written below.
@@ -214,13 +267,23 @@ public class IntentOrderCreator {
         order.setPaymentStatus("PENDING");
         order.setSubtotal(Pricing.money(plan.subtotal()));
         order.setGstAmount(Pricing.money(plan.gst()));
-        order.setDeliveryFee(BigDecimal.ZERO);
-        order.setTotalAmount(Pricing.money(plan.total()));
+        order.setDeliveryMode(mode);
+        order.setDeliveryFee(Pricing.money(deliveryFee));
+        // The goods plus the carriage. What the restaurant pays is one figure, and
+        // it is this one -- the fee cannot be collected later without charging
+        // twice for a single order.
+        order.setTotalAmount(Pricing.money(plan.total().add(deliveryFee)));
         // Equal to the total, not zero: the supplier already accepted these
         // quantities, so the accepted value is known at creation. In the old flow
         // this stayed zero until a supplier answered.
-        order.setAcceptedAmount(Pricing.money(plan.total()));
+        order.setAcceptedAmount(Pricing.money(plan.total().add(deliveryFee)));
         supplierOrders.saveAndFlush(order);
+
+        if (mode == DeliveryMode.COSTONOMY_DELIVERY) {
+            // Marks the quote spent, now that there is an order to attach it to.
+            deliveryQuotes.consume(request.deliveryQuoteReference(), intent.getId(),
+                    intent.getOutletId(), intent.getSupplierStoreId(), order.getId(), now);
+        }
 
         for (PlannedLine line : plan.lines()) {
             if (line.quantity().signum() == 0) {
@@ -244,7 +307,7 @@ public class IntentOrderCreator {
             item.setLineItemValue(line.lineValue());
             item.setLineGst(line.lineGst());
             item.setLineTotal(line.lineTotal());
-            item.setStatus("ACCEPTED");
+            item.setStatus(OrderItemStatus.ACCEPTED);
             supplierOrderItems.save(item);
         }
 
@@ -402,6 +465,58 @@ public class IntentOrderCreator {
         return new Plan(intent, acceptance, lines,
                 Pricing.money(subtotal), Pricing.money(gst),
                 Pricing.money(subtotal.add(gst)), blockers);
+    }
+
+    /**
+     * What the chosen mode costs, and whether the store can serve it at all.
+     *
+     * <p>Three sources, one per mode, and none of them the client's:
+     *
+     * <ul>
+     *   <li><b>Pickup</b> is free — the restaurant fetches it.</li>
+     *   <li><b>Supplier delivery</b> is the store's own configured fee, subject to
+     *       their minimum order value. A supplier who quotes their own delivery is
+     *       quoting their own delivery; it never becomes the platform's figure.</li>
+     *   <li><b>Costonomy delivery</b> is a stored quote, spent by reference.
+     *       Recomputing it here would let the price move between the screen that
+     *       showed it and the charge that collected it.</li>
+     * </ul>
+     */
+    private BigDecimal deliveryFeeFor(DeliveryMode mode, com.costonomy.mp.intent.domain.Intent intent,
+                                      IntentDtos.CreateOrderRequest request, Instant now) {
+
+        var policy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
+
+        return switch (mode) {
+            case PICKUP -> BigDecimal.ZERO;
+
+            case SUPPLIER_DELIVERY -> {
+                if (!policy.ownDeliveryEnabled()) {
+                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                            "This supplier doesn't deliver. Choose pickup or our delivery.");
+                }
+                yield policy.ownDeliveryFee() == null ? BigDecimal.ZERO : policy.ownDeliveryFee();
+            }
+
+            case COSTONOMY_DELIVERY -> {
+                if (!policy.costonomyDeliveryEnabled()) {
+                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                            "We can't deliver from this supplier. Choose pickup, or ask "
+                                    + "them to deliver.");
+                }
+                if (request.deliveryQuoteReference() == null) {
+                    // Not defaulted to zero and not quoted on the fly: a delivery
+                    // whose price nobody saw is a charge nobody agreed to.
+                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                            "Check the delivery fee before ordering.");
+                }
+                // Read, not spent. The order does not exist yet, and a quote
+                // spent here would be found already spent when the order it
+                // paid for came to claim it.
+                yield deliveryQuotes.priceFor(request.deliveryQuoteReference(), intent.getId(),
+                        intent.getOutletId(), intent.getSupplierStoreId(), now);
+            }
+        };
     }
 
     private IntentDtos.CreateOrderResponse response(

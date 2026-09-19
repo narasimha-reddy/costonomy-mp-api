@@ -5,6 +5,7 @@ import com.costonomy.mp.payment.repository.PaymentRepository;
 import com.costonomy.mp.payment.service.PaymentJobs;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
+import com.costonomy.mp.support.TestOrder;
 import com.costonomy.mp.support.TestCatalog;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,10 +46,12 @@ class PaymentFlowIT extends AbstractIntegrationTest {
     @Autowired private PaymentJobs paymentJobs;
 
     private ApiClient api;
+    private TestOrder orders;
 
     @BeforeEach
     void setUp() {
         api = new ApiClient(mvc, json);
+        orders = new TestOrder(mvc, json, api);
     }
 
     private record Buyer(String token, long outletId) {
@@ -102,29 +105,15 @@ class PaymentFlowIT extends AbstractIntegrationTest {
                 Map.of("canonicalProductId", productId, "skuCode", "PNR-" + productId,
                         "name", "Paneer", "packSize", 1, "packUnit", "KG",
                         "sellingPrice", unitPrice, "gstRate", "0")).at("/data/id").asLong();
-        long offerId = jdbc.queryForObject(
-                "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
-                Long.class, skuId);
+        // Through the request, which is how an order is made now (D-091). Pickup,
+        // so the amount charged is the goods alone -- these cases are about what
+        // happens to that figure, and a delivery fee folded into it would make
+        // every assertion here about arithmetic rather than about payment.
+        var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                skuId, quantity, quantity, "PICKUP", null, null);
 
-        long procurementId = api.post(buyer.token(),
-                "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                Map.of("supplierOfferId", offerId, "quantity", quantity)).at("/data/id").asLong();
-
-        api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                Map.of("acceptPriceChanges", false));
-
-        String body = mvc.perform(MockMvcRequestBuilders
-                        .post("/api/v1/procurements/" + procurementId + "/submit")
-                        .header("Authorization", "Bearer " + buyer.token())
-                        .header("Idempotency-Key", UUID.randomUUID().toString())
-                        .contentType(MediaType.APPLICATION_JSON))
-                .andReturn().getResponse().getContentAsString();
-
-        JsonNode response = json.readTree(body).at("/data");
         return new Submitted(buyer, seller,
-                response.at("/supplierOrders/0/id").asLong(),
-                response.at("/paymentIntents/0/paymentId").asLong(),
-                response.at("/paymentIntents/0/providerOrderId").asText());
+                placed.orderId(), placed.paymentId(), placed.providerOrderId());
     }
 
     /** Simulate the customer finishing checkout, then tell the API about it. */
@@ -171,7 +160,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
                     "/api/v1/payments/" + submitted.paymentId() + "/confirm",
                     Map.of("providerPaymentId", providerPaymentId));
 
-            assertThat(orderStatus(submitted.orderId())).isEqualTo("PENDING_ACCEPTANCE");
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
         }
 
         @Test
@@ -218,23 +207,29 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("paying releases the order and starts its countdown")
+        @DisplayName("paying confirms the order and puts it in front of the supplier")
         void payingReleasesTheOrder() throws Exception {
             var submitted = submit("400", 10);
             var payment = payAndConfirm(submitted);
 
-            assertThat(payment.get("status").asText()).isEqualTo("AUTHORIZED");
+            // CAPTURE_PENDING, not AUTHORIZED. D-091 moved capture to
+            // confirmation: it used to wait for the supplier to accept, and
+            // there is no longer an acceptance to wait for. The money is marked
+            // the instant the order is confirmed and taken by the job.
+            assertThat(payment.get("status").asText()).isEqualTo("CAPTURE_PENDING");
             assertThat(payment.get("fundsSecured").asBoolean()).isTrue();
             assertThat(payment.get("authorizedAmount").asDouble()).isEqualTo(4000.00);
 
-            assertThat(orderStatus(submitted.orderId())).isEqualTo("PENDING_ACCEPTANCE");
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
 
             var inbox = api.get(submitted.seller().token(),
                     "/api/v1/supplier-stores/" + submitted.seller().storeId() + "/orders/pending")
                     .at("/data");
             assertThat(inbox).hasSize(1);
-            // The countdown starts now, not at submission.
-            assertThat(inbox.get(0).get("secondsRemaining").asLong()).isPositive();
+            // No countdown. D-091: the order arrives agreed, so there is nothing
+            // for the supplier to answer and no clock against them. The clock
+            // that mattered ran on the request, before any of this.
+            assertThat(inbox.get(0).get("secondsRemaining").asLong()).isZero();
         }
 
         @Test
@@ -267,32 +262,38 @@ class PaymentFlowIT extends AbstractIntegrationTest {
                     Map.of("canonicalProductId", productId, "skuCode", "C-" + productId,
                             "name", "Paneer", "packSize", 1, "packUnit", "KG",
                             "sellingPrice", "400", "gstRate", "0")).at("/data/id").asLong();
-            long offerId = jdbc.queryForObject(
-                    "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
-                    Long.class, skuId);
 
-            long procurementId = api.post(buyer.token(),
-                    "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                    Map.of("supplierOfferId", offerId, "quantity", 5)).at("/data/id").asLong();
+            // Get as far as an answered request, then try to order it on credit.
+            // After D-091 order creation is the only place an order is made, so
+            // it is the only place this can be refused -- and an unfunded credit
+            // order would be the same guardrail-16 violation prepaid orders used
+            // to have.
+            long intentId = api.post(buyer.token(),
+                    "/api/v1/outlets/" + buyer.outletId() + "/intent-items",
+                    Map.of("supplierSkuId", skuId, "quantity", 5)).at("/data/id").asLong();
+            long itemId = api.get(buyer.token(), "/api/v1/intents/" + intentId)
+                    .at("/data/items/0/id").asLong();
+            api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send", Map.of());
 
-            api.patchStatus(buyer.token(), "/api/v1/procurements/" + procurementId
-                    + "/payment-method", Map.of("paymentMethod", "CREDIT"));
-            api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                    Map.of("acceptPriceChanges", false));
+            keyed(seller.token(), "/api/v1/intents/" + intentId + "/respond",
+                    Map.of("lines", List.of(
+                            Map.of("intentItemId", itemId, "offeredQuantity", 5))));
 
-            // Refused rather than quietly allowed. An unfunded credit order would be
-            // the same guardrail-16 violation prepaid orders used to have.
             int status = mvc.perform(MockMvcRequestBuilders
-                            .post("/api/v1/procurements/" + procurementId + "/submit")
+                            .post("/api/v1/intents/" + intentId + "/orders")
                             .header("Authorization", "Bearer " + buyer.token())
                             .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(
+                                    Map.of("deliveryMode", "PICKUP", "paymentMethod", "CREDIT"))))
                     .andReturn().getResponse().getStatus();
 
+            // 422: the request is well formed and the credit simply is not
+            // there, which is a state refusal rather than a bad field.
             assertThat(status).isEqualTo(422);
             assertThat(jdbc.queryForObject(
-                    "select count(*) from supplier_order where procurement_id = ?",
-                    Integer.class, procurementId)).isZero();
+                    "select count(*) from supplier_order where outlet_id = ?",
+                    Integer.class, buyer.outletId())).isZero();
         }
     }
 
@@ -303,16 +304,11 @@ class PaymentFlowIT extends AbstractIntegrationTest {
     class Capture {
 
         @Test
-        @DisplayName("accepting captures the full amount")
+        @DisplayName("confirming captures the full amount")
         void fullAcceptanceCapturesEverything() throws Exception {
             var submitted = submit("400", 10);
             payAndConfirm(submitted);
 
-            mvc.perform(MockMvcRequestBuilders
-                    .post("/api/v1/supplier-orders/" + submitted.orderId() + "/accept")
-                    .header("Authorization", "Bearer " + submitted.seller().token())
-                    .header("Idempotency-Key", UUID.randomUUID().toString())
-                    .contentType(MediaType.APPLICATION_JSON));
 
             // Marked, not yet taken — the provider call happens outside the
             // acceptance transaction.
@@ -328,53 +324,59 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("a partial acceptance captures only what was accepted")
-        void partialAcceptanceCapturesOnlyAccepted() throws Exception {
-            var submitted = submit("400", 10);
-            payAndConfirm(submitted);
+        @DisplayName("a short answer captures only what the supplier offered")
+        void shortAnswerCapturesOnlyOffered() throws Exception {
+            // Doc 01 §14, by a different route. D-091 moved the partial onto the
+            // request: ten are asked for, six offered, and the order is created
+            // for six. There is nothing to release, because nothing was ever
+            // authorised for the other four — which is strictly better than
+            // authorising ten and handing four back.
+            var buyer = newBuyer();
+            var seller = newSeller("ABC Foods");
+            long productId = TestCatalog.freshProduct(jdbc, "paneer");
+            long skuId = api.post(seller.token(),
+                    "/api/v1/supplier-stores/" + seller.storeId() + "/skus",
+                    Map.of("canonicalProductId", productId, "skuCode", "P-" + productId,
+                            "name", "Paneer", "packSize", 1, "packUnit", "KG",
+                            "sellingPrice", "400", "gstRate", "0")).at("/data/id").asLong();
 
-            long itemId = jdbc.queryForObject(
-                    "select id from supplier_order_item where supplier_order_id = ?",
-                    Long.class, submitted.orderId());
-
-            mvc.perform(MockMvcRequestBuilders
-                    .post("/api/v1/supplier-orders/" + submitted.orderId() + "/partial-accept")
-                    .header("Authorization", "Bearer " + submitted.seller().token())
-                    .header("Idempotency-Key", UUID.randomUUID().toString())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(json.writeValueAsString(Map.of("items", List.of(Map.of(
-                            "supplierOrderItemId", itemId, "acceptedQuantity", 6))))));
-
+            var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                    skuId, 10, 6, "PICKUP", null, null);
+            var providerPayment = mockProvider.completeCheckout(placed.providerOrderId());
+            api.post(buyer.token(), "/api/v1/payments/" + placed.paymentId() + "/confirm",
+                    Map.of("providerPaymentId", providerPayment.providerPaymentId()));
             paymentJobs.capturePending();
 
-            // Doc 01 §14: the restaurant pays for six, not ten.
-            assertThat(decimal(submitted.paymentId(), "captured_amount"))
+            assertThat(decimal(placed.paymentId(), "captured_amount"))
                     .isEqualByComparingTo("2400.00");
-            // The rest was never taken, so it is released rather than refunded —
-            // no reversal on the customer's statement.
-            assertThat(decimal(submitted.paymentId(), "released_amount"))
-                    .isEqualByComparingTo("1600.00");
-            assertThat(decimal(submitted.paymentId(), "refunded_amount"))
+            assertThat(decimal(placed.paymentId(), "authorized_amount"))
+                    .as("only the offered six were ever authorised")
+                    .isEqualByComparingTo("2400.00");
+            assertThat(decimal(placed.paymentId(), "refunded_amount"))
                     .isEqualByComparingTo("0.00");
         }
 
         @Test
-        @DisplayName("a rejection releases the authorisation and charges nothing")
-        void rejectionReleasesEverything() throws Exception {
+        @DisplayName("a supplier cancelling returns the money")
+        void supplierCancellationReturnsTheMoney() throws Exception {
+            // What rejection became. The money has already moved by the time a
+            // supplier backs out -- they committed on the request and were paid
+            // against that answer -- so this refunds rather than releasing.
             var submitted = submit("400", 10);
             payAndConfirm(submitted);
+            paymentJobs.capturePending();
 
             mvc.perform(MockMvcRequestBuilders
-                    .post("/api/v1/supplier-orders/" + submitted.orderId() + "/reject")
+                    .post("/api/v1/supplier-orders/" + submitted.orderId() + "/supplier-cancel")
                     .header("Authorization", "Bearer " + submitted.seller().token())
                     .header("Idempotency-Key", UUID.randomUUID().toString())
                     .contentType(MediaType.APPLICATION_JSON)
                     .content(json.writeValueAsString(Map.of("reason", "OUT_OF_STOCK"))));
 
-            assertThat(jdbc.queryForObject("select status from payment where id = ?",
-                    String.class, submitted.paymentId())).isEqualTo("RELEASED");
-            assertThat(decimal(submitted.paymentId(), "captured_amount"))
-                    .isEqualByComparingTo("0.00");
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CANCELLED");
+            assertThat(jdbc.queryForObject(
+                    "select cancelled_by from supplier_order where id = ?",
+                    String.class, submitted.orderId())).isEqualTo("SUPPLIER");
         }
 
         @Test
@@ -384,11 +386,6 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             var submitted = submit("400.17", 1);
             payAndConfirm(submitted);
 
-            mvc.perform(MockMvcRequestBuilders
-                    .post("/api/v1/supplier-orders/" + submitted.orderId() + "/accept")
-                    .header("Authorization", "Bearer " + submitted.seller().token())
-                    .header("Idempotency-Key", UUID.randomUUID().toString())
-                    .contentType(MediaType.APPLICATION_JSON));
 
             paymentJobs.capturePending();
 
@@ -428,7 +425,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
 
             assertThat(orderStatus(submitted.orderId()))
                     .describedAs("the order the customer paid for must reach its supplier")
-                    .isEqualTo("PENDING_ACCEPTANCE");
+                    .isEqualTo("CONFIRMED");
         }
 
         @Test
@@ -442,7 +439,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
                     providerPayment.providerPaymentId(), submitted.providerOrderId());
 
             assertThat(postWebhook(body)).isEqualTo(200);
-            assertThat(orderStatus(submitted.orderId())).isEqualTo("PENDING_ACCEPTANCE");
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
 
             // Providers retry. The second delivery must change nothing — and must
             // still return 200, or they will keep retrying.
@@ -462,11 +459,6 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             postWebhook(webhookBody("evt_" + UUID.randomUUID(), "payment.authorized",
                     providerPayment.providerPaymentId(), submitted.providerOrderId()));
 
-            mvc.perform(MockMvcRequestBuilders
-                    .post("/api/v1/supplier-orders/" + submitted.orderId() + "/accept")
-                    .header("Authorization", "Bearer " + submitted.seller().token())
-                    .header("Idempotency-Key", UUID.randomUUID().toString())
-                    .contentType(MediaType.APPLICATION_JSON));
             paymentJobs.capturePending();
 
             assertThat(jdbc.queryForObject("select status from payment where id = ?",
@@ -574,11 +566,6 @@ class PaymentFlowIT extends AbstractIntegrationTest {
     // ── helpers ──────────────────────────────────────────────────────────
 
     private void acceptAndCapture(Submitted submitted) throws Exception {
-        mvc.perform(MockMvcRequestBuilders
-                .post("/api/v1/supplier-orders/" + submitted.orderId() + "/accept")
-                .header("Authorization", "Bearer " + submitted.seller().token())
-                .header("Idempotency-Key", UUID.randomUUID().toString())
-                .contentType(MediaType.APPLICATION_JSON));
         paymentJobs.capturePending();
     }
 
@@ -622,4 +609,14 @@ class PaymentFlowIT extends AbstractIntegrationTest {
                 """.formatted(eventId, eventType, providerPaymentId, providerOrderId);
     }
 
+
+    /** A POST that needs an idempotency key, which ApiClient does not send. */
+    private JsonNode keyed(String token, String path, Object body) throws Exception {
+        return json.readTree(mvc.perform(MockMvcRequestBuilders.post(path)
+                        .header("Authorization", "Bearer " + token)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(body)))
+                .andReturn().getResponse().getContentAsString());
+    }
 }

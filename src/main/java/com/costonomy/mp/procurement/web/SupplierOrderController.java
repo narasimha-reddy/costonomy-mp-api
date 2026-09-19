@@ -5,6 +5,7 @@ import com.costonomy.mp.identity.security.ActorContext;
 import com.costonomy.mp.procurement.service.AlternativeSourcingService;
 import com.costonomy.mp.procurement.service.SupplierOrderService;
 import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
+import com.costonomy.mp.procurement.domain.CancelledBy;
 import com.costonomy.mp.procurement.web.dto.ProcurementDtos;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -78,90 +79,10 @@ public class SupplierOrderController {
                 ActorContext.requireUserId(), storeId, statuses, from, to));
     }
 
-    @PostMapping("/supplier-orders/{id}/accept")
-    @Operation(
-            summary = "Accept in full",
-            description = """
-                    Fails with `SUPPLIER_ORDER_EXPIRED` if the response window has closed —
-                    including when the timeout job has not yet swept, because the deadline
-                    is the authority, not the job.
-
-                    If a timeout wins the race, that is what you are told: accepting a
-                    moment too late reports expiry, not a concurrency error.
-                    """)
-    public ApiResponse<ProcurementDtos.SupplierOrderResponse> accept(
-            @PathVariable Long id,
-            @Parameter(description = "Client-generated key, required for this operation")
-            @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey) {
-        return ApiResponse.ok(supplierOrders.accept(ActorContext.requireUserId(), id, idempotencyKey));
-    }
-
-    @PostMapping("/supplier-orders/{id}/partial-accept/preview")
-    @Operation(
-            summary = "What a partial acceptance would come to",
-            description = """
-                    Prices a set of reduced quantities without accepting anything. Nothing
-                    is written, no state moves, and no idempotency key is needed.
-
-                    Priced by the same code as the acceptance itself, so this figure and
-                    the one on the order afterwards cannot differ.
-
-                    Unanswered lines count as zero and anything above the requested
-                    quantity is clamped, because this is called while a supplier is still
-                    adjusting and a preview that refused an incomplete answer would be a
-                    preview of nothing.
-
-                    `anyAccepted` is false when every line is zero — which the real
-                    endpoint records as a rejection, not an acceptance of nothing.
-                    """)
-    public ApiResponse<ProcurementDtos.PartialAcceptPreview> previewPartialAccept(
-            @PathVariable Long id,
-            @RequestBody ProcurementDtos.PartialAcceptRequest request) {
-        return ApiResponse.ok(supplierOrders.previewPartialAccept(
-                ActorContext.requireUserId(), id, request));
-    }
-
-    @PostMapping("/supplier-orders/{id}/partial-accept")
-    @Operation(
-            summary = "Accept reduced quantities",
-            description = """
-                    Every line must be answered, **including with zero** — an omitted line
-                    is ambiguous between declined and forgotten, and the restaurant needs
-                    to know which.
-
-                    Totals are recalculated from the accepted quantities at the prices
-                    already agreed. Only that value is ever captured from the restaurant.
-
-                    Zero on every line is recorded as a rejection, not as a partial
-                    acceptance of nothing.
-
-                    The shortfall stays on the requirement, ready to be sourced elsewhere.
-                    """)
-    public ApiResponse<ProcurementDtos.SupplierOrderResponse> partialAccept(
-            @PathVariable Long id,
-            @Valid @RequestBody ProcurementDtos.PartialAcceptRequest request,
-            @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey) {
-        return ApiResponse.ok(supplierOrders.partialAccept(
-                ActorContext.requireUserId(), id, request, idempotencyKey));
-    }
-
-    @PostMapping("/supplier-orders/{id}/reject")
-    @Operation(
-            summary = "Decline an order",
-            description = """
-                    Requires one of the listed reasons: OUT_OF_STOCK, UNABLE_TO_DELIVER,
-                    STORE_CLOSED, PRICE_ISSUE, BELOW_MINIMUM_ORDER, OTHER.
-
-                    Recorded separately from a timeout: declining is a decision, not
-                    answering is a failure to respond, and they mean different things.
-                    """)
-    public ApiResponse<ProcurementDtos.SupplierOrderResponse> reject(
-            @PathVariable Long id,
-            @Valid @RequestBody ProcurementDtos.RejectOrderRequest request,
-            @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey) {
-        return ApiResponse.ok(supplierOrders.reject(
-                ActorContext.requireUserId(), id, request, idempotencyKey));
-    }
+    // No accept, partial-accept or reject. D-091: the supplier committed on the
+    // request, so an order arrives agreed and paid for. What they can still do is
+    // prepare it, move it, or cancel it -- and a cancellation refunds, which is
+    // what makes it different from the rejection this replaced.
 
     @PostMapping("/supplier-orders/{id}/preparing")
     @Operation(summary = "Mark an accepted order as being prepared")
@@ -190,14 +111,67 @@ public class SupplierOrderController {
     @PostMapping("/supplier-orders/{id}/cancel")
     @Operation(
             summary = "Cancel an order",
-            description = "Restaurant side. Free before acceptance, conditional after, "
-                    + "impossible once the goods have left.")
+            description = "Restaurant side. Impossible once the goods have left.")
     public ApiResponse<ProcurementDtos.SupplierOrderResponse> cancel(
             @PathVariable Long id,
             @RequestBody(required = false) ProcurementDtos.RejectRequest request,
             @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey) {
         return ApiResponse.ok(supplierOrders.cancel(ActorContext.requireUserId(), id,
-                request == null ? null : request.reason(), idempotencyKey));
+                request == null ? null : request.reason(),
+                CancelledBy.RESTAURANT, idempotencyKey));
+    }
+
+    @PostMapping("/supplier-orders/{id}/supplier-cancel")
+    @Operation(
+            summary = "Cancel an order, as the supplier",
+            description = """
+                    The supplier's way out of an order they can no longer fulfil, and the
+                    replacement for the rejection D-091 removed.
+
+                    It is a cancellation rather than a rejection because the money has
+                    already moved: the supplier agreed on the request and the restaurant
+                    paid against that answer, so backing out refunds. The order records
+                    `cancelledBy = SUPPLIER`, which is what a reliability figure reads.
+
+                    Impossible once the goods have left — the path then is return or
+                    dispute (doc 01 §13).
+                    """)
+    public ApiResponse<ProcurementDtos.SupplierOrderResponse> supplierCancel(
+            @PathVariable Long id,
+            @RequestBody(required = false) ProcurementDtos.RejectRequest request,
+            @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey) {
+        return ApiResponse.ok(supplierOrders.cancel(ActorContext.requireUserId(), id,
+                request == null ? null : request.reason(),
+                CancelledBy.SUPPLIER, idempotencyKey));
+    }
+
+    @PostMapping("/supplier-orders/{id}/out-for-delivery")
+    @Operation(
+            summary = "Mark out for delivery",
+            description = """
+                    Only when the supplier is carrying the order themselves
+                    (`SUPPLIER_DELIVERY`). Under `COSTONOMY_DELIVERY` the courier's events
+                    move the order and this is refused — §23A.38, a supplier cannot claim
+                    movement on a courier's behalf. Under `PICKUP` nothing is delivered at
+                    all.
+                    """)
+    public ApiResponse<ProcurementDtos.SupplierOrderResponse> outForDelivery(
+            @PathVariable Long id,
+            @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey) {
+        return ApiResponse.ok(supplierOrders.markOutForDelivery(
+                ActorContext.requireUserId(), id, idempotencyKey));
+    }
+
+    @PostMapping("/supplier-orders/{id}/delivered")
+    @Operation(
+            summary = "Mark delivered",
+            description = "Supplier-carried orders only, for the same reason as "
+                    + "out-for-delivery. The restaurant then confirms what arrived.")
+    public ApiResponse<ProcurementDtos.SupplierOrderResponse> delivered(
+            @PathVariable Long id,
+            @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey) {
+        return ApiResponse.ok(supplierOrders.markDelivered(
+                ActorContext.requireUserId(), id, idempotencyKey));
     }
 
     @PostMapping("/requirements/{id}/find-suppliers")

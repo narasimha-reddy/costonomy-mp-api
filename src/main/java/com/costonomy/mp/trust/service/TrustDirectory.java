@@ -1,5 +1,7 @@
 package com.costonomy.mp.trust.service;
 
+import com.costonomy.mp.procurement.domain.DeliveryMode;
+import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -24,16 +26,19 @@ public class TrustDirectory {
             String orderNumber,
             String status,
             Long outletId,
-            Long supplierStoreId) {
+            Long supplierStoreId,
+            /** How it travelled, which decides where receiving may happen. D-091. */
+            DeliveryMode deliveryMode) {
     }
 
     public OrderInfo order(Long supplierOrderId) {
         var rows = jdbc.query("""
-                select id, order_number, status, outlet_id, supplier_store_id
+                select id, order_number, status, outlet_id, supplier_store_id, delivery_mode
                   from supplier_order where id = ?
                 """,
                 (rs, row) -> new OrderInfo(rs.getLong(1), rs.getString(2), rs.getString(3),
-                        rs.getLong(4), rs.getLong(5)),
+                        rs.getLong(4), rs.getLong(5),
+                        DeliveryMode.valueOf(rs.getString(6))),
                 supplierOrderId);
         return rows.isEmpty() ? null : rows.get(0);
     }
@@ -86,12 +91,22 @@ public class TrustDirectory {
                 """, fulfilledQuantity, supplierOrderItemId);
     }
 
-    /** Move the order to COMPLETED, guarded on it still being DELIVERED. */
-    public boolean completeOrder(Long supplierOrderId) {
+    /**
+     * Move the order to COMPLETED, guarded on where it is allowed to come from.
+     *
+     * <p>Two origins since D-091. A delivered order completes from
+     * {@code DELIVERED}; a {@code PICKUP} order never reaches that status and
+     * completes from {@code READY_FOR_PICKUP}, when the restaurant confirms what
+     * they collected.
+     *
+     * <p>Compare-and-set rather than a read-then-write, so two confirmations of
+     * the same collection settle to one.
+     */
+    public boolean completeOrder(Long supplierOrderId, SupplierOrderStatus from) {
         return jdbc.update("""
                 update supplier_order
-                   set status = 'COMPLETED', version = version + 1, updated_at = now(6)
-                 where id = ? and status = 'DELIVERED'
-                """, supplierOrderId) == 1;
+                   set status = ?, version = version + 1, updated_at = now(6)
+                 where id = ? and status = ?
+                """, SupplierOrderStatus.COMPLETED.name(), supplierOrderId, from.name()) == 1;
     }
 }

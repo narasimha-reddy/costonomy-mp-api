@@ -75,6 +75,8 @@ public class SupplierOrderMapper {
                 order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
                 order.getAcceptedAmount(), acceptedSubtotal(items), acceptedGst(items),
                 order.getPaymentMethod(), order.getPaymentStatus(),
+                order.getDeliveryMode(), order.getDeliveryFee(),
+                order.getCancelledBy(), order.getCancellationReason(),
                 items.stream()
                         .map(item -> new ProcurementDtos.SupplierOrderItemResponse(
                                 item.getId(), item.getCanonicalProductId(),
@@ -86,7 +88,7 @@ public class SupplierOrderMapper {
                                 Pricing.inclusiveOfGst(item.getUnitPriceSnapshot(),
                                         item.getGstRateSnapshot()),
                                 item.getGstRateSnapshot(), item.getLineTotal(),
-                                acceptedLineTotal(item), item.getStatus()))
+                                acceptedLineTotal(item), item.getStatus().name()))
                         .toList());
     }
 

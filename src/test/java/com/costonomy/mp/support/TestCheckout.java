@@ -43,4 +43,22 @@ public final class TestCheckout {
                     Map.of("providerPaymentId", providerPayment.providerPaymentId()));
         }
     }
+
+    /**
+     * Pay one order's intent, which is what an intent-built order has.
+     *
+     * <p>{@link #payAll} takes a submit response and a list of them; an order
+     * created from a request is one order with one payment, so it needs the
+     * parts rather than a body shape that no longer exists.
+     */
+    public void pay(String buyerToken, Long paymentId, String providerOrderId)
+            throws Exception {
+        if (paymentId == null) {
+            // Credit orders are funded by a reservation, not a checkout.
+            return;
+        }
+        var providerPayment = provider.completeCheckout(providerOrderId);
+        api.post(buyerToken, "/api/v1/payments/" + paymentId + "/confirm",
+                Map.of("providerPaymentId", providerPayment.providerPaymentId()));
+    }
 }

@@ -60,7 +60,8 @@ public class IntentItem extends BaseEntity {
     @Column(name = "notes", length = 500)
     private String notes;
 
-    /** REQUESTED, then OFFERED, REDUCED or DECLINED once the supplier answers. */
-    @Column(name = "status", nullable = false, length = 32)
-    private String status = "REQUESTED";
+    // No per-line status. The column existed from V23, was never written by
+    // anything, and shipped a constant 'REQUESTED' to every client. A line's
+    // answer is its offered quantity and the IntentFulfilment derived from it;
+    // a status here would be a second, staler copy of that. Dropped in V29.
 }

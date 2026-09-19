@@ -3,6 +3,7 @@ package com.costonomy.mp.intent.web.dto;
 import com.costonomy.mp.catalog.service.SkuDirectory;
 import com.costonomy.mp.intent.domain.IntentAcceptanceStatus;
 import com.costonomy.mp.intent.domain.IntentFulfilment;
+import com.costonomy.mp.procurement.domain.DeliveryMode;
 import com.costonomy.mp.intent.domain.IntentStatus;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
@@ -104,7 +105,13 @@ public final class IntentDtos {
              */
             Long expectedRevision,
             Integer etaMinutes,
-            @Size(max = 32) String deliveryMode,
+            /**
+             * Which modes this store can serve, comma separated. D-091.
+             *
+             * <p>The supplier says what is possible; the restaurant picks, because
+             * the restaurant pays the delivery fee.
+             */
+            @Size(max = 120) String deliveryModes,
             @Size(max = 1000) String notes) {
     }
 
@@ -135,7 +142,39 @@ public final class IntentDtos {
      */
     public record CreateOrderRequest(
             @Valid List<OrderLine> lines,
-            @Size(max = 32) String paymentMethod) {
+            @Size(max = 32) String paymentMethod,
+            /**
+             * How the goods should travel. D-091.
+             *
+             * <p>The restaurant's choice, made here because the restaurant pays
+             * the delivery fee and the fee is part of what is charged — so it has
+             * to be settled before the payment intent exists.
+             *
+             * <p><b>Not {@code @NotNull}</b>, because this record is also the
+             * preview's request and a preview is about the goods: requiring a
+             * mode there would make the restaurant choose how something travels
+             * before being shown what it costs. {@code create} requires it.
+             */
+            DeliveryMode deliveryMode,
+            /**
+             * The quote being spent, for {@code COSTONOMY_DELIVERY}.
+             *
+             * <p>Required for that mode and ignored for the others. The fee comes
+             * from the stored quote rather than being recomputed: a figure
+             * recalculated between the screen that showed it and the charge that
+             * collected it is a silent reprice (§23A.16).
+             */
+            @Size(max = 64) String deliveryQuoteReference) {
+    }
+
+    /** What a Costonomy delivery would cost for this request. D-091. */
+    public record DeliveryQuoteResponse(
+            String quoteReference,
+            BigDecimal fee,
+            String currency,
+            Integer etaMinutes,
+            Double distanceKm,
+            Instant expiresAt) {
     }
 
     public record OrderLine(
@@ -292,7 +331,9 @@ public final class IntentDtos {
             BigDecimal requestedQuantity,
             String unit,
             String notes,
-            String status,
+            // No per-line status. It was a constant 'REQUESTED' every client
+            // received and none could act on; the line's answer is its offered
+            // quantity and the fulfilment derived from it. Dropped in V29.
             IntentFulfilment fulfilment,
             /** Null until the supplier answers. Zero means they declined this line. */
             BigDecimal offeredQuantity,
@@ -349,7 +390,7 @@ public final class IntentDtos {
             BigDecimal offeredTotal,
             BigDecimal deliveryFee,
             Integer etaMinutes,
-            String deliveryMode,
+            String deliveryModes,
             String notes,
             Instant submittedAt,
             Instant expiresAt) {

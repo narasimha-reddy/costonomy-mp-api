@@ -153,7 +153,9 @@ public class DeliveryService {
                               Integer requiredEtaMinutes, List<String> excluded,
                               String attemptType) {
 
-        var outcome = quoting.gather(delivery, order.deliveryFee(), requiredEtaMinutes, excluded);
+        var outcome = quoting.gather(delivery, order.deliveryFee(),
+                directory.consignmentWeightGrams(delivery.getSupplierOrderId()),
+                requiredEtaMinutes, excluded);
 
         if (!outcome.anyServiceable()) {
             delivery.setStatus(DeliveryStatus.QUOTE_FAILED);
@@ -186,7 +188,7 @@ public class DeliveryService {
 
         DeliveryMode asked = parseMode(requested);
         if (asked == null) {
-            asked = parseMode(onOrder);
+            asked = fromOrder(onOrder);
         }
 
         if (asked == DeliveryMode.SUPPLIER_OWN && !policy.ownDeliveryEnabled()) {
@@ -209,6 +211,31 @@ public class DeliveryService {
         }
         throw new BusinessException(ErrorCode.DELIVERY_UNAVAILABLE,
                 "This supplier has no delivery option configured.");
+    }
+
+    /**
+     * The order's mode, translated into this module's.
+     *
+     * <p>Two vocabularies over one column since D-091. The order says how the
+     * restaurant chose to receive the goods — including {@code PICKUP}, which is
+     * not a delivery at all — and this module only knows who carries them. They
+     * were the same word for a while and are not any more, so the mapping is
+     * written down rather than left to {@code valueOf} to get wrong.
+     */
+    private DeliveryMode fromOrder(String onOrder) {
+        if (onOrder == null || onOrder.isBlank()) {
+            return null;
+        }
+        return switch (onOrder) {
+            case "SUPPLIER_DELIVERY", "SUPPLIER_OWN" -> DeliveryMode.SUPPLIER_OWN;
+            case "COSTONOMY_DELIVERY", "COSTONOMY" -> DeliveryMode.COSTONOMY;
+            // A collected order has no consignment. Refused here rather than
+            // quietly booked, because a courier sent to goods the kitchen is
+            // coming for is a cost nobody agreed to.
+            case "PICKUP" -> throw new BusinessException(ErrorCode.DELIVERY_UNAVAILABLE,
+                    "This order is being collected, so there is nothing to deliver.");
+            default -> null;
+        };
     }
 
     private DeliveryMode parseMode(String value) {

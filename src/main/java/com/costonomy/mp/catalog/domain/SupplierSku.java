@@ -60,6 +60,18 @@ public class SupplierSku extends BaseEntity {
     @Column(name = "measure_unit", length = 16)
     private String measureUnit;
 
+    /**
+     * What one pack weighs, in grams. D-091.
+     *
+     * <p>Nullable, and the delivery quote derives a figure when it is absent — a
+     * KG pack size is mass outright, a litre needs an assumed density, and a
+     * count carries no weight information at all. A supplier who has not filled
+     * this in still has orderable SKUs; the quote records that the weight was
+     * derived rather than stated.
+     */
+    @Column(name = "weight_grams", precision = 19, scale = 4)
+    private BigDecimal weightGrams;
+
     @Column(name = "image_url", length = 1000)
     private String imageUrl;
 

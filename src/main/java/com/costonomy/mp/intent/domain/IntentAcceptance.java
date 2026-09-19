@@ -70,8 +70,18 @@ public class IntentAcceptance extends BaseEntity {
     @Column(name = "eta_minutes")
     private Integer etaMinutes;
 
-    @Column(name = "delivery_mode", length = 32)
-    private String deliveryMode;
+    /**
+     * Which modes this store can serve for this request, comma separated. D-091.
+     *
+     * <p>Was a single mode the supplier named. The restaurant pays the delivery
+     * fee, so the restaurant picks — the supplier's part is to say what is
+     * possible, bounded by their {@code supplier_delivery_policy}.
+     *
+     * <p>A CSV rather than a join table: the set has three members, is read
+     * whole every time, and is never queried across.
+     */
+    @Column(name = "delivery_modes", length = 120)
+    private String deliveryModes;
 
     @Column(name = "notes", length = 1000)
     private String notes;

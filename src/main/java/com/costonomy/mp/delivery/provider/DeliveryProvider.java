@@ -61,12 +61,24 @@ public interface DeliveryProvider {
     // ── our types, never theirs ──────────────────────────────────────────
 
     record QuoteRequest(
+            /**
+             * Null when quoting before the order exists.
+             *
+             * <p>D-091 quotes the fee at order creation, so the restaurant knows
+             * what it is paying before it pays — and at that moment there is no
+             * order to name.
+             */
             Long supplierOrderId,
             BigDecimal pickupLatitude,
             BigDecimal pickupLongitude,
             BigDecimal dropLatitude,
             BigDecimal dropLongitude,
             BigDecimal orderValue,
+            /**
+             * What the consignment weighs. Decides the vehicle, and with it the
+             * price — a provider cannot quote a hundred kilos onto a bike.
+             */
+            BigDecimal weightGrams,
             /** What the order needs, for a provider that can offer a faster tier. */
             Integer requiredEtaMinutes) {
     }

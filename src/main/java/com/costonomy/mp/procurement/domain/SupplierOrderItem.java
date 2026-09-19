@@ -5,6 +5,8 @@ import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 
@@ -80,9 +82,18 @@ public class SupplierOrderItem extends BaseEntity {
     @Column(name = "line_total", nullable = false, precision = 19, scale = 4)
     private BigDecimal lineTotal = BigDecimal.ZERO;
 
-    /** PENDING, ACCEPTED, PARTIALLY_ACCEPTED or REJECTED. */
+    /**
+     * This line's answer. D-091 typed it.
+     *
+     * <p>The enum has existed since doc 04 §11; the field was a {@code String}
+     * and every write went through {@code OrderItemStatus.X.name()}, which made
+     * the writes safe by convention and left every read comparing against a
+     * literal nothing checked.
+     */
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "status", nullable = false, length = 32)
-    private String status = "PENDING";
+    private OrderItemStatus status = OrderItemStatus.PENDING;
 
     @Column(name = "rejection_reason", length = 500)
     private String rejectionReason;

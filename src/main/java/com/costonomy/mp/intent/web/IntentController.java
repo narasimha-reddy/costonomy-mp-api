@@ -223,4 +223,27 @@ public class IntentController {
         return ApiResponse.ok(orders.create(
                 ActorContext.requireUserId(), id, request, idempotencyKey));
     }
+
+    @PostMapping("/intents/{id}/delivery-quote")
+    @Operation(
+            summary = "What our delivery would cost for this request",
+            description = """
+                    Priced before the order exists, because the restaurant chooses the
+                    delivery mode at order creation and pays the fee — so the figure has to
+                    be on screen before the payment intent is raised.
+
+                    **Takes no coordinates.** Both ends are resolved from the outlet and the
+                    store. A caller-supplied origin would let somebody be quoted a
+                    one-kilometre run and charged for it while a courier drove twenty.
+
+                    Returns one fee and an ETA. Provider bidding is internal (doc 06 §10),
+                    so there is no list of quotes here and never will be.
+
+                    The reference is passed back as `deliveryQuoteReference` when creating
+                    the order, which spends it. Quotes expire; an expired one is reported
+                    as a price change rather than being silently requoted (§23A.16).
+                    """)
+    public ApiResponse<IntentDtos.DeliveryQuoteResponse> deliveryQuote(@PathVariable Long id) {
+        return ApiResponse.ok(orders.deliveryQuote(ActorContext.requireUserId(), id));
+    }
 }

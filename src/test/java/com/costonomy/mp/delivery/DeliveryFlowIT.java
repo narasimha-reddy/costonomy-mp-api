@@ -6,6 +6,7 @@ import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
 import com.costonomy.mp.support.TestCheckout;
+import com.costonomy.mp.support.TestOrder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,11 +56,13 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
 
     private ApiClient api;
     private TestCheckout checkout;
+    private TestOrder orders;
 
     @BeforeEach
     void setUp() {
         api = new ApiClient(mvc, json);
         checkout = new TestCheckout(payments.provider(), api);
+        orders = new TestOrder(mvc, json, api);
         express.disarm();
         saver.disarm();
     }
@@ -116,6 +119,17 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
 
     /** Place, pay for, accept and prepare an order until a courier is needed. */
     private ReadyOrder readyOrder() throws Exception {
+        return readyOrder("COSTONOMY_DELIVERY");
+    }
+
+    /**
+     * The same, for an order the restaurant asked the supplier to carry.
+     *
+     * <p>A parameter since D-091: the mode is fixed when the order is created,
+     * so a test about the supplier's own van has to order one that way rather
+     * than changing the store's policy afterwards.
+     */
+    private ReadyOrder readyOrder(String mode) throws Exception {
         var buyer = newBuyer();
         var seller = newSeller();
         long productId = TestCatalog.freshProduct(jdbc, "paneer");
@@ -125,27 +139,23 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
                 Map.of("canonicalProductId", productId, "skuCode", "PNR-" + productId,
                         "name", "Paneer", "packSize", 1, "packUnit", "KG",
                         "sellingPrice", "400", "gstRate", "0")).at("/data/id").asLong();
-        long offerId = jdbc.queryForObject(
-                "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
-                Long.class, skuId);
+        // Through the request, because that is how an order is made now (D-091).
+        // A courier carries it, so the mode has to say so -- a pickup order never
+        // reaches OUT_FOR_DELIVERY and there would be nothing here to book.
+        // The policy has to exist before the order, not after: the mode is
+        // validated against it when the order is priced, which is the point --
+        // a supplier who does not deliver cannot be chosen to.
+        if ("SUPPLIER_DELIVERY".equals(mode)) {
+            deliveryPolicy(seller, true, true, "0.00");
+        }
 
-        long procurementId = api.post(buyer.token(),
-                "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                Map.of("supplierOfferId", offerId, "quantity", 10)).at("/data/id").asLong();
-        api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                Map.of("acceptPriceChanges", false));
+        var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                skuId, 10, 10, mode, null, null);
+        checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
 
-        String body = mvc.perform(MockMvcRequestBuilders
-                        .post("/api/v1/procurements/" + procurementId + "/submit")
-                        .header("Authorization", "Bearer " + buyer.token())
-                        .header("Idempotency-Key", UUID.randomUUID().toString())
-                        .contentType(MediaType.APPLICATION_JSON))
-                .andReturn().getResponse().getContentAsString();
-        JsonNode submitted = json.readTree(body);
-        checkout.payAll(buyer.token(), submitted);
-
-        long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
-        supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/accept");
+        long orderId = placed.orderId();
+        // No accept: the supplier agreed on the request, so the order is already
+        // theirs to prepare.
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/preparing");
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/ready");
 
@@ -305,21 +315,12 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
                     Map.of("canonicalProductId", productId, "skuCode", "P-" + productId,
                             "name", "Paneer", "packSize", 1, "packUnit", "KG",
                             "sellingPrice", "400", "gstRate", "0")).at("/data/id").asLong();
-            long offerId = jdbc.queryForObject(
-                    "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
-                    Long.class, skuId);
-            long procurementId = api.post(buyer.token(),
-                    "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                    Map.of("supplierOfferId", offerId, "quantity", 5)).at("/data/id").asLong();
-            api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                    Map.of("acceptPriceChanges", false));
-            String body = mvc.perform(MockMvcRequestBuilders
-                            .post("/api/v1/procurements/" + procurementId + "/submit")
-                            .header("Authorization", "Bearer " + buyer.token())
-                            .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON))
-                    .andReturn().getResponse().getContentAsString();
-            long orderId = json.readTree(body).at("/data/supplierOrders/0/id").asLong();
+            // Ordered and paid for, but never prepared: it sits in CONFIRMED,
+            // which is exactly the state a courier must not be sent against.
+            var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                    skuId, 5, 5, "COSTONOMY_DELIVERY", null, null);
+            checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
+            long orderId = placed.orderId();
 
             // Doc 06 §6 step 1. A courier sent to unpacked goods waits, and the ETA
             // starts running against a supplier who cannot meet it.
@@ -665,7 +666,7 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
         @Test
         @DisplayName("the supplier carries it, for their own fee, with no tracking")
         void ownDeliveryNeedsNoPartner() throws Exception {
-            var order = readyOrder();
+            var order = readyOrder("SUPPLIER_DELIVERY");
             deliveryPolicy(order.seller(), true, true, "0.00");
 
             var delivery = requestDelivery(order);
@@ -684,7 +685,7 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
         @Test
         @DisplayName("the supplier reports their own progress")
         void supplierReportsOwnDelivery() throws Exception {
-            var order = readyOrder();
+            var order = readyOrder("SUPPLIER_DELIVERY");
             deliveryPolicy(order.seller(), true, true, "0.00");
             long deliveryId = requestDelivery(order).get("id").asLong();
 

@@ -6,6 +6,7 @@ import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
 import com.costonomy.mp.support.TestCheckout;
+import com.costonomy.mp.support.TestOrder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,11 +46,13 @@ class TrustFlowIT extends AbstractIntegrationTest {
 
     private ApiClient api;
     private TestCheckout checkout;
+    private TestOrder orders;
 
     @BeforeEach
     void setUp() {
         api = new ApiClient(mvc, json);
         checkout = new TestCheckout(paymentProvider, api);
+        orders = new TestOrder(mvc, json, api);
     }
 
     private record Buyer(String token, long outletId) {
@@ -123,23 +126,20 @@ class TrustFlowIT extends AbstractIntegrationTest {
                 "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
                 Long.class, skuId);
 
-        long procurementId = api.post(buyer.token(),
-                "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                Map.of("supplierOfferId", offerId, "quantity", quantity)).at("/data/id").asLong();
-        api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                Map.of("acceptPriceChanges", false));
+        // Through the request. D-091 removed the cart, and with it the order
+        // acceptance this fixture used to perform -- the supplier commits when
+        // they answer, and the order is theirs to work on from the moment it is
+        // paid for.
+        //
+        // SUPPLIER_DELIVERY because this store carries its own, which is what
+        // lets the seller report the dispatch below. Under COSTONOMY_DELIVERY
+        // that is a courier's to report and the supplier is refused (§23A.38) --
+        // a rule the order's mode now decides rather than the store's policy.
+        var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                skuId, quantity, quantity, "SUPPLIER_DELIVERY", null, null);
+        checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
 
-        String body = mvc.perform(MockMvcRequestBuilders
-                        .post("/api/v1/procurements/" + procurementId + "/submit")
-                        .header("Authorization", "Bearer " + buyer.token())
-                        .header("Idempotency-Key", UUID.randomUUID().toString())
-                        .contentType(MediaType.APPLICATION_JSON))
-                .andReturn().getResponse().getContentAsString();
-        JsonNode submitted = json.readTree(body);
-        checkout.payAll(buyer.token(), submitted);
-
-        long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
-        supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/accept");
+        long orderId = placed.orderId();
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/preparing");
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/ready");
 
@@ -306,21 +306,15 @@ class TrustFlowIT extends AbstractIntegrationTest {
                     Map.of("canonicalProductId", productId, "skuCode", "P-" + productId,
                             "name", "Paneer", "packSize", 1, "packUnit", "KG",
                             "sellingPrice", "400", "gstRate", "0")).at("/data/id").asLong();
-            long offerId = jdbc.queryForObject(
-                    "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
-                    Long.class, skuId);
-            long procurementId = api.post(buyer.token(),
-                    "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                    Map.of("supplierOfferId", offerId, "quantity", 5)).at("/data/id").asLong();
-            api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                    Map.of("acceptPriceChanges", false));
-            String body = mvc.perform(MockMvcRequestBuilders
-                            .post("/api/v1/procurements/" + procurementId + "/submit")
-                            .header("Authorization", "Bearer " + buyer.token())
-                            .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON))
-                    .andReturn().getResponse().getContentAsString();
-            long orderId = json.readTree(body).at("/data/supplierOrders/0/id").asLong();
+            // Paid for and confirmed, but nothing has moved. A courier carries
+            // this one, so it has a delivery leg to not have completed yet --
+            // a pickup order would be receivable the moment it was ready. This
+            // seller has no delivery policy, which is also why it cannot be
+            // theirs to carry.
+            var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                    skuId, 5, 5, "COSTONOMY_DELIVERY", null, null);
+            checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
+            long orderId = placed.orderId();
             long itemId = jdbc.queryForObject(
                     "select id from supplier_order_item where supplier_order_id = ?",
                     Long.class, orderId);

@@ -5,6 +5,7 @@ import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
 import com.costonomy.mp.support.TestCheckout;
+import com.costonomy.mp.support.TestOrder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,11 +46,13 @@ class OperationsIT extends AbstractIntegrationTest {
 
     private ApiClient api;
     private TestCheckout checkout;
+    private TestOrder orders;
 
     @BeforeEach
     void setUp() {
         api = new ApiClient(mvc, json);
         checkout = new TestCheckout(paymentProvider, api);
+        orders = new TestOrder(mvc, json, api);
     }
 
     private record Buyer(String token, long outletId) {
@@ -119,27 +122,15 @@ class OperationsIT extends AbstractIntegrationTest {
                 "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
                 Long.class, skuId);
 
-        long procurementId = api.post(buyer.token(),
-                "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                Map.of("supplierOfferId", offerId, "quantity", 10)).at("/data/id").asLong();
-        api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                Map.of("acceptPriceChanges", false));
+        // Through the request. D-091 removed the cart, and with it the order
+        // acceptance this fixture used to perform -- the supplier commits when
+        // they answer, and the order is theirs to work on from the moment it is
+        // paid for.
+        var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                skuId, 10, 10, "PICKUP", null, null);
+        checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
 
-        String body = mvc.perform(MockMvcRequestBuilders
-                        .post("/api/v1/procurements/" + procurementId + "/submit")
-                        .header("Authorization", "Bearer " + buyer.token())
-                        .header("Idempotency-Key", UUID.randomUUID().toString())
-                        .contentType(MediaType.APPLICATION_JSON))
-                .andReturn().getResponse().getContentAsString();
-        JsonNode submitted = json.readTree(body);
-        checkout.payAll(buyer.token(), submitted);
-
-        long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
-        mvc.perform(MockMvcRequestBuilders
-                .post("/api/v1/supplier-orders/" + orderId + "/accept")
-                .header("Authorization", "Bearer " + seller.token())
-                .header("Idempotency-Key", UUID.randomUUID().toString())
-                .contentType(MediaType.APPLICATION_JSON));
+        long orderId = placed.orderId();
 
         return new PlacedOrder(buyer, seller, orderId, skuId);
     }
@@ -285,11 +276,15 @@ class OperationsIT extends AbstractIntegrationTest {
             var actions = new java.util.ArrayList<String>();
             timeline.get("entries").forEach(entry -> actions.add(entry.get("action").asText()));
 
-            // Release and acceptance both appear, in that order — which is the
-            // whole value of the screen.
-            assertThat(actions).contains("SUPPLIER_ORDER_RELEASED", "SUPPLIER_ORDER_CONFIRMED");
-            assertThat(actions.indexOf("SUPPLIER_ORDER_RELEASED"))
-                    .isLessThan(actions.indexOf("SUPPLIER_ORDER_CONFIRMED"));
+            // One entry, not two. D-091 folded the confirmation into the release:
+            // there is no separate acceptance to record, so the release itself
+            // carries DRAFT → CONFIRMED and the timeline says so.
+            assertThat(actions).contains("SUPPLIER_ORDER_RELEASED");
+            assertThat(actions).doesNotContain("SUPPLIER_ORDER_CONFIRMED");
+
+            // The order really is confirmed, which the single entry now covers.
+            assertThat(timeline.at("/order/status").asText()).isEqualTo("CONFIRMED");
+
             // The payment authorised before the order was released — guardrail 16,
             // visible in the ordering, which is the point of the screen.
             assertThat(actions.indexOf("PAYMENT_AUTHORIZED"))

@@ -35,18 +35,6 @@ public interface SupplierOrderRepository extends JpaRepository<SupplierOrder, Lo
             Instant from,
             Instant to);
 
-    /**
-     * Orders whose response window has closed. Read by the timeout job (Phase 8).
-     *
-     * <p>Selects candidates only — it does not expire them. Each is transitioned
-     * individually under optimistic locking, because a supplier may be accepting
-     * at the same instant and doc 03 §5 requires exactly one of the two to win.
-     */
-    @Query("""
-            select o from SupplierOrder o
-            where o.status = com.costonomy.mp.procurement.domain.SupplierOrderStatus.PENDING_ACCEPTANCE
-              and o.acceptanceDeadline < :now
-            order by o.acceptanceDeadline asc
-            """)
-    List<SupplierOrder> findExpiredCandidates(@Param("now") Instant now);
+    // No findExpiredCandidates. Nothing expires an order any more (D-091): the
+    // supplier committed on the request, and the request is what has a clock.
 }

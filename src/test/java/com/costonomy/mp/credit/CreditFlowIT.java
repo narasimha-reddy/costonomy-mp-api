@@ -122,73 +122,88 @@ class CreditFlowIT extends AbstractIntegrationTest {
         return new CreditLine(buyer, seller, agreementId);
     }
 
-    private long offerFor(Seller seller, String unitPrice) throws Exception {
+    private long skuFor(Seller seller, String unitPrice) throws Exception {
         long productId = TestCatalog.freshProduct(jdbc, "paneer");
-        long skuId = api.post(seller.token(),
+        return api.post(seller.token(),
                 "/api/v1/supplier-stores/" + seller.storeId() + "/skus",
                 Map.of("canonicalProductId", productId, "skuCode", "PNR-" + productId,
                         "name", "Paneer", "packSize", 1, "packUnit", "KG",
                         "sellingPrice", unitPrice, "gstRate", "0")).at("/data/id").asLong();
-        return jdbc.queryForObject(
-                "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
-                Long.class, skuId);
     }
 
-    /** Place a credit order and return the submit response. */
+    /**
+     * Place a credit order through the request flow, in the submit response's
+     * shape.
+     *
+     * <p>D-091 removed the cart these helpers used. The shape is preserved
+     * rather than the call sites rewritten, because what this suite is about is
+     * credit — reservation, utilisation, limits — and the route an order took to
+     * exist is incidental to every one of its assertions.
+     */
     private JsonNode orderOnCredit(CreditLine line, String unitPrice, int quantity)
             throws Exception {
 
-        long offerId = offerFor(line.seller(), unitPrice);
-        long procurementId = api.post(line.buyer().token(),
-                "/api/v1/outlets/" + line.buyer().outletId() + "/cart/items",
-                Map.of("supplierOfferId", offerId, "quantity", quantity)).at("/data/id").asLong();
+        long intentId = answeredRequest(line, unitPrice, quantity);
 
-        api.patchStatus(line.buyer().token(),
-                "/api/v1/procurements/" + procurementId + "/payment-method",
-                Map.of("paymentMethod", "CREDIT"));
-        api.post(line.buyer().token(), "/api/v1/procurements/" + procurementId + "/validate",
-                Map.of("acceptPriceChanges", false));
+        var created = keyed(line.buyer().token(), "/api/v1/intents/" + intentId + "/orders",
+                Map.of("deliveryMode", "PICKUP", "paymentMethod", "CREDIT")).at("/data");
 
-        String body = mvc.perform(MockMvcRequestBuilders
-                        .post("/api/v1/procurements/" + procurementId + "/submit")
-                        .header("Authorization", "Bearer " + line.buyer().token())
-                        .header("Idempotency-Key", UUID.randomUUID().toString())
-                        .contentType(MediaType.APPLICATION_JSON))
-                .andReturn().getResponse().getContentAsString();
-        return json.readTree(body);
+        long orderId = created.at("/supplierOrderId").asLong();
+        String status = jdbc.queryForObject(
+                "select status from supplier_order where id = ?", String.class, orderId);
+
+        var node = json.createObjectNode();
+        var order = node.putObject("data").putArray("supplierOrders").addObject();
+        order.put("id", orderId);
+        order.put("status", status);
+        return node;
     }
 
+    /** The HTTP status of trying to order on credit. */
     private int submitStatus(CreditLine line, String unitPrice, int quantity) throws Exception {
-        long offerId = offerFor(line.seller(), unitPrice);
-        long procurementId = api.post(line.buyer().token(),
-                "/api/v1/outlets/" + line.buyer().outletId() + "/cart/items",
-                Map.of("supplierOfferId", offerId, "quantity", quantity)).at("/data/id").asLong();
-
-        api.patchStatus(line.buyer().token(),
-                "/api/v1/procurements/" + procurementId + "/payment-method",
-                Map.of("paymentMethod", "CREDIT"));
-        api.post(line.buyer().token(), "/api/v1/procurements/" + procurementId + "/validate",
-                Map.of("acceptPriceChanges", false));
+        long intentId = answeredRequest(line, unitPrice, quantity);
 
         return mvc.perform(MockMvcRequestBuilders
-                        .post("/api/v1/procurements/" + procurementId + "/submit")
+                        .post("/api/v1/intents/" + intentId + "/orders")
                         .header("Authorization", "Bearer " + line.buyer().token())
                         .header("Idempotency-Key", UUID.randomUUID().toString())
-                        .contentType(MediaType.APPLICATION_JSON))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(
+                                Map.of("deliveryMode", "PICKUP", "paymentMethod", "CREDIT"))))
                 .andReturn().getResponse().getStatus();
+    }
+
+    /** A request this seller has answered in full, ready to be ordered against. */
+    private long answeredRequest(CreditLine line, String unitPrice, int quantity)
+            throws Exception {
+
+        long skuId = skuFor(line.seller(), unitPrice);
+
+        long intentId = api.post(line.buyer().token(),
+                "/api/v1/outlets/" + line.buyer().outletId() + "/intent-items",
+                Map.of("supplierSkuId", skuId, "quantity", quantity)).at("/data/id").asLong();
+        long itemId = api.get(line.buyer().token(), "/api/v1/intents/" + intentId)
+                .at("/data/items/0/id").asLong();
+
+        api.post(line.buyer().token(), "/api/v1/intents/" + intentId + "/send", Map.of());
+        keyed(line.seller().token(), "/api/v1/intents/" + intentId + "/respond",
+                Map.of("lines", List.of(
+                        Map.of("intentItemId", itemId, "offeredQuantity", quantity))));
+        return intentId;
+    }
+
+    private JsonNode keyed(String token, String path, Object body) throws Exception {
+        return json.readTree(mvc.perform(MockMvcRequestBuilders.post(path)
+                        .header("Authorization", "Bearer " + token)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(body)))
+                .andReturn().getResponse().getContentAsString());
     }
 
     private JsonNode agreement(CreditLine line) throws Exception {
         return api.get(line.buyer().token(),
                 "/api/v1/credit/agreements/" + line.agreementId()).at("/data");
-    }
-
-    private void accept(Seller seller, long orderId) throws Exception {
-        mvc.perform(MockMvcRequestBuilders
-                .post("/api/v1/supplier-orders/" + orderId + "/accept")
-                .header("Authorization", "Bearer " + seller.token())
-                .header("Idempotency-Key", UUID.randomUUID().toString())
-                .contentType(MediaType.APPLICATION_JSON));
     }
 
     // ── The negotiation ──────────────────────────────────────────────────
@@ -355,23 +370,26 @@ class CreditFlowIT extends AbstractIntegrationTest {
     class ReserveAndUtilize {
 
         @Test
-        @DisplayName("placing an order reserves, and the supplier sees it at once")
+        @DisplayName("placing an order draws the credit it needs, and the supplier sees it at once")
         void placingReserves() throws Exception {
             var line = creditLine("200000");
             var submitted = orderOnCredit(line, "400", 100);
 
-            // Credit is secured inside the submission, so unlike a prepaid order
-            // there is no checkout step and the order goes out immediately.
+            // Credit is secured inside the creating transaction, so unlike a
+            // prepaid order there is no checkout step and the order is confirmed
+            // outright.
             assertThat(submitted.at("/data/supplierOrders/0/status").asText())
-                    .isEqualTo("PENDING_ACCEPTANCE");
-            assertThat(submitted.at("/data/paymentIntents"))
-                    .describedAs("nothing for the client to pay")
-                    .isEmpty();
+                    .isEqualTo("CONFIRMED");
 
+            // Reserve and draw now land together. D-091 removed the acceptance
+            // that used to sit between them: the supplier committed on the
+            // request, so by the time an order exists there is nothing left to
+            // wait for and a reservation would be held against nobody. The
+            // exposure in doc 01 §19 is unchanged — it is reached in one step
+            // instead of two.
             var agreement = agreement(line);
-            assertThat(agreement.get("reserved").asDouble()).isEqualTo(40000.0);
-            assertThat(agreement.get("utilized").asDouble()).isZero();
-            // Doc 01 §19: placed → reserve. Nothing is drawn until acceptance.
+            assertThat(agreement.get("reserved").asDouble()).isZero();
+            assertThat(agreement.get("utilized").asDouble()).isEqualTo(40000.0);
             assertThat(agreement.get("available").asDouble()).isEqualTo(160000.0);
         }
 
@@ -382,7 +400,6 @@ class CreditFlowIT extends AbstractIntegrationTest {
             var submitted = orderOnCredit(line, "400", 100);
             long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
 
-            accept(line.seller(), orderId);
 
             var agreement = agreement(line);
             assertThat(agreement.get("reserved").asDouble()).isZero();
@@ -399,71 +416,73 @@ class CreditFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("a partial acceptance draws only what was accepted")
-        void partialAcceptanceDrawsOnlyAccepted() throws Exception {
+        @DisplayName("a short answer draws only what the supplier offered")
+        void shortAnswerDrawsOnlyOffered() throws Exception {
+            // Doc 01 §19, reached differently. D-091 moved the partial onto the
+            // request: a hundred are asked for, sixty offered, and the order is
+            // created for sixty. Nothing is held against the other forty, which
+            // is stricter than holding it and giving it back.
             var line = creditLine("200000");
-            var submitted = orderOnCredit(line, "400", 100);
-            long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
-            long itemId = jdbc.queryForObject(
-                    "select id from supplier_order_item where supplier_order_id = ?",
-                    Long.class, orderId);
 
-            mvc.perform(MockMvcRequestBuilders
-                    .post("/api/v1/supplier-orders/" + orderId + "/partial-accept")
-                    .header("Authorization", "Bearer " + line.seller().token())
-                    .header("Idempotency-Key", UUID.randomUUID().toString())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(json.writeValueAsString(Map.of("items", List.of(Map.of(
-                            "supplierOrderItemId", itemId, "acceptedQuantity", 60))))));
+            long skuId = skuFor(line.seller(), "400");
+            long intentId = api.post(line.buyer().token(),
+                    "/api/v1/outlets/" + line.buyer().outletId() + "/intent-items",
+                    Map.of("supplierSkuId", skuId, "quantity", 100)).at("/data/id").asLong();
+            long itemId = api.get(line.buyer().token(), "/api/v1/intents/" + intentId)
+                    .at("/data/items/0/id").asLong();
+            api.post(line.buyer().token(), "/api/v1/intents/" + intentId + "/send", Map.of());
+            keyed(line.seller().token(), "/api/v1/intents/" + intentId + "/respond",
+                    Map.of("lines", List.of(
+                            Map.of("intentItemId", itemId, "offeredQuantity", 60))));
+            keyed(line.buyer().token(), "/api/v1/intents/" + intentId + "/orders",
+                    Map.of("deliveryMode", "PICKUP", "paymentMethod", "CREDIT"));
 
-            // Doc 01 §19: accepted value only, remainder released.
             var agreement = agreement(line);
             assertThat(agreement.get("utilized").asDouble()).isEqualTo(24000.0);
             assertThat(agreement.get("reserved").asDouble()).isZero();
             assertThat(agreement.get("available").asDouble()).isEqualTo(176000.0);
-
-            // And the return is its own ledger line, not netted into the draw — a
-            // restaurant asking why ₹40,000 became ₹24,000 should see the ₹16,000.
-            var ledger = api.get(line.buyer().token(),
-                    "/api/v1/credit/agreements/" + line.agreementId() + "/ledger").at("/data");
-            var types = new HashMap<String, Double>();
-            ledger.forEach(entry -> types.put(entry.get("type").asText(),
-                    entry.get("amount").asDouble()));
-            assertThat(types).containsEntry("UTILIZE", 24000.0)
-                    .containsEntry("RELEASE", 16000.0)
-                    .containsEntry("RESERVE", 40000.0);
         }
 
         @Test
-        @DisplayName("a rejection gives the whole hold back")
-        void rejectionReleasesEverything() throws Exception {
+        @DisplayName("a supplier cancelling gives the credit back")
+        void supplierCancellationReturnsTheCredit() throws Exception {
             var line = creditLine("200000");
             var submitted = orderOnCredit(line, "400", 100);
             long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
 
-            mvc.perform(MockMvcRequestBuilders
-                    .post("/api/v1/supplier-orders/" + orderId + "/reject")
-                    .header("Authorization", "Bearer " + line.seller().token())
-                    .header("Idempotency-Key", UUID.randomUUID().toString())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(json.writeValueAsString(Map.of("reason", "OUT_OF_STOCK"))));
+            keyed(line.seller().token(),
+                    "/api/v1/supplier-orders/" + orderId + "/supplier-cancel",
+                    Map.of("reason", "OUT_OF_STOCK"));
 
+            assertThat(jdbc.queryForObject(
+                    "select status from supplier_order where id = ?", String.class, orderId))
+                    .isEqualTo("CANCELLED");
+
+            // The debt still stands, and this records that it does.
+            //
+            // Rejection used to happen before the draw, so releasing the hold was
+            // the whole reversal. D-091 confirms a credit order as it is created,
+            // which utilises it and raises the invoice -- so by the time a
+            // supplier backs out the money is drawn, and CreditLedgerService
+            // returns early because the reservation no longer holds exposure.
+            //
+            // This is the same shape as prepaid, where cancelling after capture
+            // needs a refund rather than a release. Credit's equivalent is a
+            // credit note, and it does not exist yet: until it does, a supplier
+            // cancelling a credit order leaves the restaurant owing for goods
+            // they will not receive. Asserted rather than hidden.
             var agreement = agreement(line);
-            assertThat(agreement.get("reserved").asDouble()).isZero();
-            assertThat(agreement.get("utilized").asDouble()).isZero();
-            assertThat(agreement.get("available").asDouble()).isEqualTo(200000.0);
-            // Nothing was supplied, so nothing is owed and no invoice exists.
-            assertThat(api.get(line.buyer().token(),
-                    "/api/v1/credit/agreements/" + line.agreementId() + "/invoices").at("/data"))
-                    .isEmpty();
+            assertThat(agreement.get("utilized").asDouble())
+                    .describedAs("a credit note is still owed -- see D-091's open items")
+                    .isEqualTo(40000.0);
         }
+
 
         @Test
         @DisplayName("the ledger explains every balance it reports")
         void ledgerCarriesRunningBalances() throws Exception {
             var line = creditLine("200000");
             var submitted = orderOnCredit(line, "400", 100);
-            accept(line.seller(), submitted.at("/data/supplierOrders/0/id").asLong());
 
             var ledger = api.get(line.buyer().token(),
                     "/api/v1/credit/agreements/" + line.agreementId() + "/ledger").at("/data");
@@ -528,7 +547,7 @@ class CreditFlowIT extends AbstractIntegrationTest {
             // And an order under the cap still goes through — the limit was never
             // the problem.
             assertThat(orderOnCredit(line, "400", 50).at("/data/supplierOrders/0/status").asText())
-                    .isEqualTo("PENDING_ACCEPTANCE");
+                    .isEqualTo("CONFIRMED");
         }
 
         @Test
@@ -536,7 +555,6 @@ class CreditFlowIT extends AbstractIntegrationTest {
         void suspensionStopsNewOrdersOnly() throws Exception {
             var line = creditLine("200000");
             var submitted = orderOnCredit(line, "400", 100);
-            accept(line.seller(), submitted.at("/data/supplierOrders/0/id").asLong());
 
             api.post(line.seller().token(),
                     "/api/v1/credit/agreements/" + line.agreementId() + "/suspend",
@@ -589,7 +607,6 @@ class CreditFlowIT extends AbstractIntegrationTest {
 
             // The order the supplier is already filling is untouched — a limit cut
             // must not cancel a delivery they already agreed to make.
-            accept(line.seller(), orderId);
             assertThat(agreement(line).get("utilized").asDouble()).isEqualTo(40000.0);
         }
 
@@ -623,26 +640,30 @@ class CreditFlowIT extends AbstractIntegrationTest {
             // the limit, so they cannot both be held — and a read-modify-write
             // would let them, because both would read the same untouched balance.
             var line = creditLine("100000");
-            long firstOffer = offerFor(line.seller(), "600");
-            long secondOffer = offerFor(line.seller(), "600");
 
-            long first = readyProcurement(line, firstOffer, 100);
-            long second = readyProcurement(line, secondOffer, 100);
+            // Two separate answered requests, because one request becomes at most
+            // one order (D-088). Racing them is racing the credit reservation,
+            // which is the thing under test.
+            long first = answeredRequest(line, "600", 100);
+            long second = answeredRequest(line, "600", 100);
 
             var start = new CountDownLatch(1);
             var done = new CountDownLatch(2);
             var statuses = new AtomicReference<>(List.<Integer>of());
             var pool = Executors.newFixedThreadPool(2);
 
-            for (long procurementId : List.of(first, second)) {
+            for (long intentId : List.of(first, second)) {
                 pool.submit(() -> {
                     try {
                         start.await();
                         int status = mvc.perform(MockMvcRequestBuilders
-                                        .post("/api/v1/procurements/" + procurementId + "/submit")
+                                        .post("/api/v1/intents/" + intentId + "/orders")
                                         .header("Authorization", "Bearer " + line.buyer().token())
                                         .header("Idempotency-Key", UUID.randomUUID().toString())
-                                        .contentType(MediaType.APPLICATION_JSON))
+                                        .contentType(MediaType.APPLICATION_JSON)
+                                        .content(json.writeValueAsString(Map.of(
+                                                "deliveryMode", "PICKUP",
+                                                "paymentMethod", "CREDIT"))))
                                 .andReturn().getResponse().getStatus();
                         synchronized (statuses) {
                             var updated = new java.util.ArrayList<>(statuses.get());
@@ -665,27 +686,17 @@ class CreditFlowIT extends AbstractIntegrationTest {
             assertThat(statuses.get()).containsExactlyInAnyOrder(200, 422);
 
             var agreement = agreement(line);
-            assertThat(agreement.get("reserved").asDouble()).isEqualTo(60000.0);
-            // The invariant, after the race: never more held than exists.
+            // Drawn rather than held: D-091 confirms a credit order as it is
+            // created, so the reservation is utilised in the same breath. The
+            // invariant the race is about is unchanged — one order's worth of
+            // exposure exists, never two.
+            assertThat(agreement.get("utilized").asDouble()).isEqualTo(60000.0);
             assertThat(agreement.get("available").asDouble()).isEqualTo(40000.0);
             assertThat(jdbc.queryForObject("select count(*) from credit_reservation "
-                    + "where credit_agreement_id = ? and status = 'RESERVED'",
+                    + "where credit_agreement_id = ?",
                     Integer.class, line.agreementId())).isEqualTo(1);
         }
 
-        private long readyProcurement(CreditLine line, long offerId, int quantity)
-                throws Exception {
-            long procurementId = api.post(line.buyer().token(),
-                    "/api/v1/outlets/" + line.buyer().outletId() + "/cart/items",
-                    Map.of("supplierOfferId", offerId, "quantity", quantity))
-                    .at("/data/id").asLong();
-            api.patchStatus(line.buyer().token(),
-                    "/api/v1/procurements/" + procurementId + "/payment-method",
-                    Map.of("paymentMethod", "CREDIT"));
-            api.post(line.buyer().token(), "/api/v1/procurements/" + procurementId + "/validate",
-                    Map.of("acceptPriceChanges", false));
-            return procurementId;
-        }
     }
 
     // ── Invoices, dues and repayment ─────────────────────────────────────
@@ -713,7 +724,6 @@ class CreditFlowIT extends AbstractIntegrationTest {
 
             var line = new CreditLine(buyer, seller, agreementId);
             var submitted = orderOnCredit(line, "400", 100);
-            accept(seller, submitted.at("/data/supplierOrders/0/id").asLong());
 
             var invoice = api.get(buyer.token(),
                     "/api/v1/credit/agreements/" + agreementId + "/invoices").at("/data").get(0);
@@ -749,7 +759,6 @@ class CreditFlowIT extends AbstractIntegrationTest {
         void repaymentIsIdempotent() throws Exception {
             var line = creditLine("200000");
             var submitted = orderOnCredit(line, "400", 100);
-            accept(line.seller(), submitted.at("/data/supplierOrders/0/id").asLong());
             long invoiceId = firstInvoiceId(line);
 
             String key = UUID.randomUUID().toString();
@@ -769,7 +778,6 @@ class CreditFlowIT extends AbstractIntegrationTest {
         void restaurantCannotRecordItsOwnRepayment() throws Exception {
             var line = creditLine("200000");
             var submitted = orderOnCredit(line, "400", 100);
-            accept(line.seller(), submitted.at("/data/supplierOrders/0/id").asLong());
             long invoiceId = firstInvoiceId(line);
 
             // The money moved outside Mandi, so only the party it reached can
@@ -795,7 +803,6 @@ class CreditFlowIT extends AbstractIntegrationTest {
         void overpaymentIsRefused() throws Exception {
             var line = creditLine("200000");
             var submitted = orderOnCredit(line, "400", 100);
-            accept(line.seller(), submitted.at("/data/supplierOrders/0/id").asLong());
 
             // Usually a typo. Turning one into spending power is worse than asking
             // someone to check the number.
@@ -819,7 +826,6 @@ class CreditFlowIT extends AbstractIntegrationTest {
 
             var line = new CreditLine(buyer, seller, agreementId);
             var submitted = orderOnCredit(line, "400", 100);
-            accept(seller, submitted.at("/data/supplierOrders/0/id").asLong());
             long invoiceId = firstInvoiceId(line);
 
             // Still inside the grace period: due, but not late.
@@ -859,7 +865,6 @@ class CreditFlowIT extends AbstractIntegrationTest {
 
             var line = new CreditLine(buyer, seller, agreementId);
             var submitted = orderOnCredit(line, "400", 100);
-            accept(seller, submitted.at("/data/supplierOrders/0/id").asLong());
 
             jdbc.update("update credit_invoice set due_date = date_sub(curdate(), interval 10 day), "
                     + "overdue_after = date_sub(curdate(), interval 10 day) "
@@ -879,7 +884,6 @@ class CreditFlowIT extends AbstractIntegrationTest {
         void summaryAddsUp() throws Exception {
             var line = creditLine("200000");
             var submitted = orderOnCredit(line, "400", 100);
-            accept(line.seller(), submitted.at("/data/supplierOrders/0/id").asLong());
 
             var summary = api.get(line.buyer().token(),
                     "/api/v1/outlets/" + line.buyer().outletId() + "/credit/summary").at("/data");

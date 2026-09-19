@@ -153,7 +153,7 @@ public class IntentResponder {
         acceptance.setRespondedBy(actorId);
         acceptance.setStatus(IntentAcceptanceStatus.SUBMITTED);
         acceptance.setEtaMinutes(request.etaMinutes());
-        acceptance.setDeliveryMode(request.deliveryMode());
+        acceptance.setDeliveryModes(request.deliveryModes());
         acceptance.setNotes(request.notes());
         acceptance.setSubmittedAt(now);
         // The same instant as the order-creation deadline, deliberately: an offer

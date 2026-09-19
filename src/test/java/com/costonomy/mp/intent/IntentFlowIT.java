@@ -833,13 +833,31 @@ class IntentFlowIT extends AbstractIntegrationTest {
                 .andReturn().getResponse().getStatus();
     }
 
+    /**
+     * Defaults the delivery mode so the cases below stay about requests.
+     *
+     * <p>D-091 made it required: an order has to say how the goods travel before
+     * it can be priced, because the fee is part of what is charged. Pickup is the
+     * one mode that needs nothing else configured, which is what makes it the
+     * right default for a test about something other than delivery.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> withPickup(Object body) {
+        var merged = new java.util.HashMap<String, Object>();
+        if (body instanceof Map<?, ?> given) {
+            merged.putAll((Map<String, Object>) given);
+        }
+        merged.putIfAbsent("deliveryMode", "PICKUP");
+        return merged;
+    }
+
     private JsonNode createOrder(String token, long intentId, Object body) throws Exception {
         return json.readTree(mvc.perform(MockMvcRequestBuilders
                         .post("/api/v1/intents/" + intentId + "/orders")
                         .header("Authorization", "Bearer " + token)
                         .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(body)))
+                        .content(json.writeValueAsString(withPickup(body))))
                 .andReturn().getResponse().getContentAsString());
     }
 
@@ -849,7 +867,7 @@ class IntentFlowIT extends AbstractIntegrationTest {
                         .header("Authorization", "Bearer " + token)
                         .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(body)))
+                        .content(json.writeValueAsString(withPickup(body))))
                 .andReturn().getResponse().getStatus();
     }
 
