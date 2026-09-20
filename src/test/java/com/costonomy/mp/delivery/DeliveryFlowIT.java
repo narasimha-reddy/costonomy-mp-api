@@ -95,6 +95,7 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
         String token = api.loginFresh();
         JsonNode created = api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", "ABC Foods Pvt Ltd", "displayName", "ABC Foods",
+                "contactName", "Ops Desk", "contactPhone", "+919876500000",
                 "firstStore", Map.of("name", "ABC store", "addressLine1", "Road No 36",
                         "city", "Hyderabad", "state", "Telangana",
                         "contactName", "Imran", "contactPhone", "+919876522222",

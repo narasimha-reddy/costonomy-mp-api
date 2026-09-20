@@ -59,6 +59,19 @@ public final class Permissions {
     public static final String SETTLEMENT_VIEW = "SETTLEMENT_VIEW";
     public static final String PERFORMANCE_VIEW = "PERFORMANCE_VIEW";
 
+    /**
+     * Chat between an outlet and a store. D-095, seeded by {@code V33__chat.sql}.
+     *
+     * <p>Read and write are separate on both sides (D-046), and the two sides are
+     * separate codes rather than one: a permission carries a scope, a restaurant's
+     * is held on an outlet and a supplier's on a store, and one code held at both
+     * would make "can this person write here" a question with two answers.
+     */
+    public static final String CHAT_VIEW = "CHAT_VIEW";
+    public static final String CHAT_SEND = "CHAT_SEND";
+    public static final String CHAT_VIEW_SUPPLIER = "CHAT_VIEW_SUPPLIER";
+    public static final String CHAT_SEND_SUPPLIER = "CHAT_SEND_SUPPLIER";
+
     // Shared between both worlds; the scope of the grant disambiguates.
     public static final String ORDER_VIEW = "ORDER_VIEW";
     public static final String CREDIT_VIEW = "CREDIT_VIEW";

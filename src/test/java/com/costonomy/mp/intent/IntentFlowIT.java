@@ -746,7 +746,8 @@ class IntentFlowIT extends AbstractIntegrationTest {
                 "select id from users where phone = ?", Long.class, "+91" + phone);
         JsonNode created = api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", name + " Pvt Ltd", "displayName", name,
-                "firstStore", Map.of("name", name + " store", "addressLine1", "Road No 36",
+                "contactName", "Ops Desk", "contactPhone", "+919876500000",
+                "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", "name", name + " store", "addressLine1", "Road No 36",
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
 

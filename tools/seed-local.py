@@ -196,8 +196,15 @@ def seed_supplier(spec):
     created = call("/suppliers", {
         "legalName": spec["name"] + " Pvt Ltd",
         "displayName": spec["name"],
+        # D-097: a supplier and each of its stores carry their own contact, and
+        # both are required on create. The store's is the number a restaurant
+        # rings about a delivery, so it is the store's own, not the head office's.
+        "contactName": spec["name"] + " Desk",
+        "contactPhone": spec["phone"],
         "firstStore": {
             "name": spec["name"] + " — " + spec["store"],
+            "contactName": spec["store"] + " Desk",
+            "contactPhone": spec["phone"],
             "addressLine1": spec["store"] + " Main Road",
             "city": "Bengaluru",
             "state": "Karnataka",

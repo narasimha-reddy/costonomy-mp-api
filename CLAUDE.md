@@ -16,11 +16,18 @@ Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 > charged to the restaurant, because it is only known after the payment is
 > authorised. Read it before touching the payment flow.
 >
-> **The mobile app is next.** Only its design system exists (`costonomy-mp-mobile`);
-> every screen in `docs/specs/05-mobile-screens.md` is still to build.
+> **The mobile app is built**, across both roles — see `costonomy-mp-mobile`.
+> Recent work adds wallets, direct orders, chat, SKU detail and store contacts
+> (migrations V31–V36, decisions D-092…D-097).
 >
-> **There are no open decisions.** OPEN-004 closed as D-020: a supplier order is
-> created `DRAFT` and released only once funding is secured.
+> **New here? Read `docs/ONBOARDING.md` first** — setup, seed accounts, how we
+> branch and review, and the questions that are genuinely still open.
+>
+> **Open questions are listed in `docs/ONBOARDING.md` §5** and are live, not
+> omissions — chat's missing realtime channel, serviceability filtering on the
+> supplier lists, and V36's deferred `NOT NULL` among them. Do not close one
+> silently. (OPEN-004 is closed, as D-020: a supplier order is created `DRAFT`
+> and released only once funding is secured.)
 
 ## Read before writing code
 

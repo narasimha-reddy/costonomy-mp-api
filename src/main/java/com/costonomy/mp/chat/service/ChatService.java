@@ -1,5 +1,6 @@
 package com.costonomy.mp.chat.service;
 
+import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.chat.domain.ChatAttachmentType;
@@ -68,7 +69,7 @@ public class ChatService {
 
     @Transactional(readOnly = true)
     public List<ChatDtos.ThreadResponse> forOutlet(Long actorId, Long outletId) {
-        accessControl.requireScoped(actorId, ChatPermissions.VIEW_RESTAURANT,
+        accessControl.requireScoped(actorId, Permissions.CHAT_VIEW,
                 ScopeType.OUTLET, outletId, "Outlet");
 
         return threads.findByOutletIdOrderByLastMessageAtDescIdDesc(outletId).stream()
@@ -78,7 +79,7 @@ public class ChatService {
 
     @Transactional(readOnly = true)
     public List<ChatDtos.ThreadResponse> forStore(Long actorId, Long storeId) {
-        accessControl.requireScoped(actorId, ChatPermissions.VIEW_SUPPLIER,
+        accessControl.requireScoped(actorId, Permissions.CHAT_VIEW_SUPPLIER,
                 ScopeType.SUPPLIER_STORE, storeId, "SupplierStore");
 
         return threads.findBySupplierStoreIdOrderByLastMessageAtDescIdDesc(storeId).stream()
@@ -106,10 +107,10 @@ public class ChatService {
                 .orElseThrow(() -> new NotFoundException("SupplierStore", supplierStoreId));
 
         ChatSide side;
-        if (accessControl.has(actorId, ChatPermissions.SEND_RESTAURANT,
+        if (accessControl.has(actorId, Permissions.CHAT_SEND,
                 ScopeType.OUTLET, outletId)) {
             side = ChatSide.RESTAURANT;
-        } else if (accessControl.has(actorId, ChatPermissions.SEND_SUPPLIER,
+        } else if (accessControl.has(actorId, Permissions.CHAT_SEND_SUPPLIER,
                 ScopeType.SUPPLIER_STORE, supplierStoreId)) {
             side = ChatSide.SUPPLIER;
         } else {
@@ -278,9 +279,9 @@ public class ChatService {
      */
     private ChatSide sideFor(Long actorId, ChatThread thread, boolean writing) {
         String restaurantPermission = writing
-                ? ChatPermissions.SEND_RESTAURANT : ChatPermissions.VIEW_RESTAURANT;
+                ? Permissions.CHAT_SEND : Permissions.CHAT_VIEW;
         String supplierPermission = writing
-                ? ChatPermissions.SEND_SUPPLIER : ChatPermissions.VIEW_SUPPLIER;
+                ? Permissions.CHAT_SEND_SUPPLIER : Permissions.CHAT_VIEW_SUPPLIER;
 
         if (accessControl.has(actorId, restaurantPermission,
                 ScopeType.OUTLET, thread.getOutletId())) {

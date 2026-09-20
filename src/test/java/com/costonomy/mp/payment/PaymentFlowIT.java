@@ -80,7 +80,8 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         String token = api.loginFresh();
         JsonNode created = api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", name + " Pvt Ltd", "displayName", name,
-                "firstStore", Map.of("name", name + " store", "addressLine1", "Road No 36",
+                "contactName", "Ops Desk", "contactPhone", "+919876500000",
+                "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", "name", name + " store", "addressLine1", "Road No 36",
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
         jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "

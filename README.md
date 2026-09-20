@@ -7,6 +7,7 @@ marketplace. Modular monolith on MySQL `costonomy_mp`.
 
 | | |
 |---|---|
+| `docs/ONBOARDING.md` | **start here** — setup, seed accounts, how we work, what is in flight |
 | `CLAUDE.md` | how to work in this repo, and the rules that are not negotiable |
 | `docs/specs/` | the full specification set |
 | `docs/DECISIONS.md` | decisions the specs don't settle, plus **open questions** |
@@ -26,7 +27,7 @@ docker exec jobs-mysql mysql -uroot -proot \
       CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
 ```
 
-Then run the app; Flyway applies V1–V19 on startup and the data persists across
+Then run the app; Flyway applies V1–V36 on startup and the data persists across
 restarts:
 
 ```bash

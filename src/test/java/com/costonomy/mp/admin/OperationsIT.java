@@ -96,8 +96,9 @@ class OperationsIT extends AbstractIntegrationTest {
         String token = api.loginFresh();
         JsonNode created = api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", name + " Pvt Ltd", "displayName", name,
+                "contactName", "Ops Desk", "contactPhone", "+919876500000",
                 "gstin", "36AAAAA" + String.format("%04d", (int) (Math.random() * 9999)) + "A1Z5",
-                "firstStore", Map.of("name", name + " store", "addressLine1", "Road No 36",
+                "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", "name", name + " store", "addressLine1", "Road No 36",
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
         long supplierId = created.get("id").asLong();
