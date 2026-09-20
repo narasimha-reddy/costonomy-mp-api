@@ -1,6 +1,9 @@
 package com.costonomy.mp.catalog.web;
 
 import com.costonomy.mp.catalog.service.CatalogQueryService;
+import com.costonomy.mp.catalog.service.SkuReviewService;
+import com.costonomy.mp.identity.security.ActorContext;
+import jakarta.validation.Valid;
 import com.costonomy.mp.catalog.domain.Unit;
 import com.costonomy.mp.catalog.web.dto.CatalogDtos;
 import com.costonomy.mp.common.api.ApiResponse;
@@ -21,6 +24,7 @@ import java.util.List;
 public class CatalogController {
 
     private final CatalogQueryService catalog;
+    private final SkuReviewService skuReviews;
 
     @GetMapping("/categories")
     @Operation(summary = "Product categories")
@@ -103,5 +107,34 @@ public class CatalogController {
                     """)
     public ApiResponse<List<CatalogDtos.OfferResponse>> offers(@PathVariable Long id) {
         return ApiResponse.ok(catalog.offersForProduct(id));
+    }
+
+    @PostMapping("/supplier-order-items/{orderItemId}/review")
+    @Operation(
+            summary = "Review a pack you received",
+            description = """
+                    Keyed on the order line, because that is the proof: a review is a
+                    report of something that arrived, and anything weaker is an opinion a
+                    competitor or the supplier themselves could have written.
+
+                    One per line — the same restaurant reviews again by buying again —
+                    and only once the order is COMPLETED. Reviewing a line that already
+                    has one returns the existing review rather than erroring: the honest
+                    answer to "did that go through?" is the review.
+
+                    Separate from the order rating, which is about the store and the
+                    delivery.
+                    """)
+    public ApiResponse<CatalogDtos.SkuReviewResponse> reviewSku(
+            @PathVariable Long orderItemId,
+            @Valid @RequestBody CatalogDtos.CreateSkuReviewRequest request) {
+        return ApiResponse.ok(skuReviews.review(
+                ActorContext.requireUserId(), orderItemId, request));
+    }
+
+    @GetMapping("/supplier-skus/{skuId}/reviews")
+    @Operation(summary = "A pack's published reviews")
+    public ApiResponse<List<CatalogDtos.SkuReviewResponse>> skuReviews(@PathVariable Long skuId) {
+        return ApiResponse.ok(skuReviews.forSku(skuId));
     }
 }

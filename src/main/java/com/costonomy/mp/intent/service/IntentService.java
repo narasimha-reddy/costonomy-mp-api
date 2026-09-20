@@ -388,6 +388,19 @@ public class IntentService {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "There's nothing to send.");
         }
+        // One supplier at a time, through the same path as all of them. The
+        // outlet query is still the source, so a draft belonging to somebody
+        // else's outlet is not found rather than refused — the id is not a way
+        // to reach a request the caller could not otherwise see.
+        if (request.intentId() != null) {
+            drafts = drafts.stream()
+                    .filter(draft -> request.intentId().equals(draft.getId()))
+                    .toList();
+            if (drafts.isEmpty()) {
+                throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "That request is no longer a draft.");
+            }
+        }
 
         var sent = new ArrayList<IntentDtos.IntentResponse>();
         var held = new ArrayList<IntentDtos.HeldRequest>();
@@ -560,6 +573,7 @@ public class IntentService {
                 source.outletName(), source.restaurantName(), source.outletLocality(),
                 source.outletCity(), source.distanceKm(),
                 source.supplierStoreId(), source.storeName(), source.supplierName(),
+                source.directOrdersEnabled(),
                 source.status(), source.fulfilment(),
                 source.source(), source.clonedFromId(), source.requestedDeliveryTime(),
                 source.notes(), source.sentAt(), source.responseDeadline(),

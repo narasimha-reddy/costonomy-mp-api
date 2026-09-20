@@ -142,6 +142,56 @@ public class AdminController {
         return ApiResponse.ok(Map.of("responseSlaSeconds", seconds));
     }
 
+    @PutMapping("/supplier-stores/{id}/direct-orders")
+    @Operation(summary = "Let restaurants order from a store without asking first",
+            description = """
+                    Turns off the request round trip for this store. It exists to find out
+                    whether the goods are there; a store that keeps stock already knows,
+                    and a supplier who told us on the phone should not have to find the
+                    screen.
+
+                    Requests and orders already in flight are untouched. Requires a reason,
+                    because from the supplier's side this is a setting they never changed.
+                    """)
+    public ApiResponse<Map<String, Object>> setDirectOrders(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> request) {
+        boolean enabled = Boolean.parseBoolean(String.valueOf(request.get("directOrdersEnabled")));
+        moderation.setDirectOrders(ActorContext.requireUserId(), id, enabled,
+                String.valueOf(request.getOrDefault("reason", "Operations change")));
+        return ApiResponse.ok(Map.of("directOrdersEnabled", enabled));
+    }
+
+    @PutMapping("/outlets/{id}/chat")
+    @Operation(summary = "Turn chat on or off for an outlet",
+            description = """
+                    Stops new messages between this outlet and every supplier it talks to.
+                    Messages already sent stay readable to both sides — the record of what
+                    was agreed is not the platform's to delete — and the app shows the
+                    chat action disabled with a line pointing at support, rather than a
+                    control that silently does nothing.
+                    """)
+    public ApiResponse<Map<String, Object>> setOutletChat(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> request) {
+        boolean enabled = Boolean.parseBoolean(String.valueOf(request.get("chatEnabled")));
+        moderation.setChatEnabled(ActorContext.requireUserId(), "outlet", id, enabled,
+                String.valueOf(request.getOrDefault("reason", "Operations change")));
+        return ApiResponse.ok(Map.of("chatEnabled", enabled));
+    }
+
+    @PutMapping("/supplier-stores/{id}/chat")
+    @Operation(summary = "Turn chat on or off for a supplier store",
+            description = "As for an outlet, from the other side of the conversation.")
+    public ApiResponse<Map<String, Object>> setStoreChat(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> request) {
+        boolean enabled = Boolean.parseBoolean(String.valueOf(request.get("chatEnabled")));
+        moderation.setChatEnabled(ActorContext.requireUserId(), "supplier_store", id, enabled,
+                String.valueOf(request.getOrDefault("reason", "Operations change")));
+        return ApiResponse.ok(Map.of("chatEnabled", enabled));
+    }
+
     // ── Orders ───────────────────────────────────────────────────────────
 
     @GetMapping("/orders")

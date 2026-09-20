@@ -80,6 +80,7 @@ public class SupplierOrderMapper {
                 items.stream()
                         .map(item -> new ProcurementDtos.SupplierOrderItemResponse(
                                 item.getId(), item.getCanonicalProductId(),
+                                item.getSupplierSkuId(),
                                 productNames.get(item.getCanonicalProductId()),
                                 productImages.get(item.getCanonicalProductId()),
                                 descriptors.get(item.getSupplierSkuId()),

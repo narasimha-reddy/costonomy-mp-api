@@ -104,6 +104,26 @@ public final class NotificationRules {
                 "Order confirmed",
                 "Order {orderNumber} is paid for and ready to prepare.", "SUPPLIER_ORDER"));
 
+        // ── Chat ─────────────────────────────────────────────────────────
+        //
+        // <p>Two rules for one thing, because a message reaches whichever side
+        // did not send it and a rule names one audience. D-095.
+        //
+        // <p><b>No preview in the body.</b> Doc 08 §8: a body renders from named
+        // fields so that a template asking for an order number can only ever
+        // contain an order number. A message preview is whatever somebody typed,
+        // and this lands on a lock screen — so it says who, and opening it says
+        // what.
+        add(rules, new NotificationRule("ChatMessageToSupplier", SUPPLIER_STORE, ORDERS, false,
+                List.of(IN_APP, PUSH),
+                "New message",
+                "{senderName} sent you a message.", "CHAT_THREAD"));
+
+        add(rules, new NotificationRule("ChatMessageToRestaurant", OUTLET, ORDERS, false,
+                List.of(IN_APP, PUSH),
+                "New message",
+                "{senderName} sent you a message.", "CHAT_THREAD"));
+
         // ── Requests ─────────────────────────────────────────────────────
         //
         // The one notification in this file that decides whether the feature

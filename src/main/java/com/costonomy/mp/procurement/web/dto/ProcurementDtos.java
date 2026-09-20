@@ -413,6 +413,14 @@ public final class ProcurementDtos {
     public record SupplierOrderItemResponse(
             Long id,
             Long canonicalProductId,
+            /**
+             * The exact pack that was bought. D-096.
+             *
+             * <p>Already on the row; carried out so an order line can open the
+             * pack's own page — an order is often where somebody goes to check
+             * what a thing actually was before ordering it again.
+             */
+            Long supplierSkuId,
             String productName,
             /**
              * The canonical product's picture, or null when it has none.

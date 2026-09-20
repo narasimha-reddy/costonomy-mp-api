@@ -77,6 +77,26 @@ public final class CatalogDtos {
 
     // ── Supplier-side SKU management ─────────────────────────────────────
 
+    /** One kitchen's verdict on a pack they received. D-096. */
+    public record CreateSkuReviewRequest(
+            @NotNull(message = "Choose a rating")
+            @Min(value = 1, message = "A rating is between 1 and 5")
+            @Max(value = 5, message = "A rating is between 1 and 5")
+            Integer rating,
+            @Size(max = 2000) String comment) {
+    }
+
+    public record SkuReviewResponse(
+            Long id,
+            Long supplierSkuId,
+            Long supplierOrderItemId,
+            Integer rating,
+            String comment,
+            /** Who, at outlet granularity. A person's name is not the point. */
+            String outletName,
+            Instant createdAt) {
+    }
+
     public record CreateSkuRequest(
             @NotNull(message = "Choose the product this SKU is")
             Long canonicalProductId,
@@ -97,6 +117,28 @@ public final class CatalogDtos {
             BigDecimal measureValue,
             @Size(max = 16) String measureUnit,
             @Size(max = 1000) String imageUrl,
+            /**
+             * Everything a kitchen decides on rather than compares on. D-096.
+             *
+             * <p>All optional. A listing without any of it behaves exactly as it
+             * did before the detail page existed.
+             */
+            @Size(max = 2000) String description,
+            /** Pack dimensions in centimetres. */
+            @DecimalMin(value = "0.00") BigDecimal lengthCm,
+            @DecimalMin(value = "0.00") BigDecimal widthCm,
+            @DecimalMin(value = "0.00") BigDecimal heightCm,
+            @DecimalMin(value = "0.00") BigDecimal weightGrams,
+            /** A YouTube link. Pasted, never uploaded. */
+            @Size(max = 500) String youtubeUrl,
+            /**
+             * The gallery, in order. `imageUrl` above stays the thumbnail.
+             *
+             * <p>Sent whole rather than as add/remove calls: a supplier
+             * reordering four pictures is one decision, and four requests for it
+             * would leave the gallery half-applied if one failed.
+             */
+            List<@Size(max = 500) String> images,
             @NotNull(message = "Enter the price")
             @DecimalMin(value = "0.0000", message = "Price can't be negative")
             BigDecimal sellingPrice,
@@ -125,6 +167,28 @@ public final class CatalogDtos {
             @DecimalMin(value = "0.0001") BigDecimal measureValue,
             @Size(max = 16) String measureUnit,
             @Size(max = 1000) String imageUrl,
+            /**
+             * Everything a kitchen decides on rather than compares on. D-096.
+             *
+             * <p>All optional. A listing without any of it behaves exactly as it
+             * did before the detail page existed.
+             */
+            @Size(max = 2000) String description,
+            /** Pack dimensions in centimetres. */
+            @DecimalMin(value = "0.00") BigDecimal lengthCm,
+            @DecimalMin(value = "0.00") BigDecimal widthCm,
+            @DecimalMin(value = "0.00") BigDecimal heightCm,
+            @DecimalMin(value = "0.00") BigDecimal weightGrams,
+            /** A YouTube link. Pasted, never uploaded. */
+            @Size(max = 500) String youtubeUrl,
+            /**
+             * The gallery, in order. `imageUrl` above stays the thumbnail.
+             *
+             * <p>Sent whole rather than as add/remove calls: a supplier
+             * reordering four pictures is one decision, and four requests for it
+             * would leave the gallery half-applied if one failed.
+             */
+            List<@Size(max = 500) String> images,
             @Pattern(regexp = "ACTIVE|INACTIVE") String status,
             @DecimalMin(value = "0.0000") BigDecimal sellingPrice,
             @DecimalMin(value = "0.0000") @DecimalMax(value = "100.0000") BigDecimal gstRate,
@@ -171,6 +235,14 @@ public final class CatalogDtos {
              * difference between their picture and the platform's.
              */
             String canonicalProductImageUrl,
+            /** D-096. Null or empty when the supplier has not filled them in. */
+            String description,
+            BigDecimal lengthCm,
+            BigDecimal widthCm,
+            BigDecimal heightCm,
+            BigDecimal weightGrams,
+            String youtubeUrl,
+            List<String> images,
             String status,
             BigDecimal sellingPrice,
             BigDecimal gstRate,

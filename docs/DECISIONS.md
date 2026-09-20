@@ -3141,3 +3141,382 @@ tenth of the catalogue.
 defaulted, and never written or read by anything in `src/main`. `intent_item.status`
 was on the wire as well, so every client received a constant it could have
 branched on.
+
+---
+
+
+## D-092 — The cart groups by supplier, and a repriced request cannot be collapsed
+**Raised 2026-09-19 · Settled 2026-09-19**
+
+The cart rendered every line of every supplier expanded, one card each, in a
+single scroll. With three suppliers and six lines apiece that is about a thousand
+points of scrolling in which the only thing separating one supplier's request
+from the next is a card edge that has already left the screen — and the lines on
+screen carry no indication of whose request they belong to.
+
+**Decision: collapsible sections with a pinned heading.** Each supplier is a
+heading and a body. The heading pins to the top of the scroll view while its own
+lines pass beneath it, so a price on screen always has a supplier's name and that
+request's total beside it. Sections beyond the second start collapsed; one or two
+start open, because two fit on a screen and the grouping is not yet earning
+anything.
+
+### A collapsed heading still carries the commercial facts
+Item count and the request's total sit on the heading whether it is open or shut.
+Collapsing is a way to find a request, never a way for the app to stop showing
+what one costs.
+
+### A request with a price change cannot be collapsed at all
+If any line has been repriced, or any line has no live price, that section is
+forced open, says so on its heading, and loses its chevron and its button role
+along with the ability to close. §23A.16 requires a change to be shown old and
+new and confirmed; a change folded behind a chevron the restaurant never opened
+is the app hiding it, and "they could have expanded it" is not consent. The
+chevron goes rather than sitting there refusing to work, because a dead
+affordance is worst on exactly the request that most needs reading.
+
+### The screen shell learned `stickyIndices`
+`MandiScreen` normally puts its children inside one padded wrapper, which would
+make the whole list a single scroll child and stickiness meaningless. Passing
+`stickyIndices` moves the gutter onto the scroll view's content container and
+lifts the children to be its direct descendants. That is also why the heading and
+the body of a section are two exports rather than one component, and why a
+collapsed body still renders an empty `View`: the indices address children by
+position, and a child that vanishes shifts every index after it.
+
+
+### A single supplier's request is sent through the basket, not through `send`
+Added after the fact, because the cart now offers "Send This Request" under each
+supplier's total — a basket of three is three conversations and they are not
+always ready together.
+
+`POST /intents/{id}/send` looks like the endpoint for that and is not. It neither
+checks whether the supplier has repriced nor re-snapshots the line, so one
+request sent that way would reach a supplier at a price nobody agreed to and the
+restaurant would never see the change. `sendAll` does both, and returns `held`,
+which the cart already knows how to show.
+
+So `SendBasketRequest` gained an optional `intentId` and the per-supplier button
+calls the same endpoint with it. Agreeing to a price change carries the id too:
+accepting one supplier's new price is not agreement to send the other two.
+
+---
+
+
+## D-093 — A supplier's shelf says whether that supplier has given you credit
+**Raised 2026-09-19 · Settled 2026-09-19**
+
+Credit decided whether a kitchen could buy from a supplier at all, and the only
+place that said so was the credit screen, three taps away from every screen where
+the question comes up. A restaurant browsing suppliers had no way to tell which
+of them they had terms with.
+
+**Decision: credit appears wherever a supplier does.** A chip on the tile in the
+home rail and the browse page; a line with a bar on the supplier's own shelf,
+with an offer to ask when there is none.
+
+### The shelf header is a scoped endpoint, and that is the point
+`GET /supplier-stores/{id}/storefront?outletId=` is served by
+`SupplierStorefrontService`, deliberately separate from `StorefrontService`.
+That one is open — it returns the catalogue any signed-in restaurant may shop,
+and its `outletId` only supplies a distance. This one carries what a supplier has
+extended *that outlet*, so naming an outlet requires being scoped to it; asking
+about somebody else's outlet is a 404, as every scoped read here is.
+
+Without an `outletId` there is no credit, no distance and no ETA — only the
+branch and its rating. That is a legitimate call, not a degraded one.
+
+### The app joins credit to a list; it never computes it
+The tiles get their credit from one `GET /outlets/{id}/credit/agreements` joined
+by store, rather than a per-row request that would land the most important fact
+on a tile last. The join is all the client does: every rupee is the server's, and
+`available` above all, since it nets off reservations against orders already in
+flight (§23A.24).
+
+The bar on the shelf header is the one derived thing on the screen, and what it
+derives is a width. The numbers beside it — used, limit, available — are printed
+as sent, because a bar is not readable to everyone (§23A.48) and a length is not
+a figure.
+
+### `canFund`, never the status
+Whether an order can draw on an agreement is the server's word. The app shows
+three states — spend it, wait for them, ask for it — and picks between them on
+`canFund` plus the status for the *wording*, never by inferring fundability from
+a status name.
+
+### A rating nobody has given is not a good rating
+`ratingCount == 0` renders "Not rated yet". Doc 07 §4: a supplier without history
+has no score, and averaging nothing into a number is how a new store ends up
+looking excellent or terrible for no reason.
+
+### The branch is the title; the organisation is beneath it
+A kitchen orders from a branch — it has the distance, the shelf, the hours. A
+supplier with more than one trading branch gets a switcher in the title bar, and
+the sheet says plainly that each branch has its own shelf and its own prices,
+because they do. A supplier with one branch gets no switcher: a picker with one
+option is a control that cannot do anything.
+
+### ETA is preparation plus travel, or nothing
+The same `Serviceability.estimateMinutes` the product comparison ranks on, so a
+shelf and a recommendation cannot disagree about how long a supplier takes. Null
+when either end has no coordinates — an ETA invented from a pincode is a number
+somebody plans a service around.
+
+---
+
+
+## D-094 — A store that keeps stock can be ordered from without being asked
+**Raised 2026-09-20 · Settled 2026-09-20**
+
+The request round trip exists to answer one question: does this supplier
+actually have the goods. A meat or vegetable wholesaler with a short list and
+real inventory has already answered it by listing the line, and making a kitchen
+wait out a response window to hear so is a delay that buys nothing.
+
+**Decision: `supplier_store.direct_orders_enabled`.** Off for every existing
+store, which is exactly today's behaviour. The supplier sets it on their own
+store settings; an operator can set it for them through
+`PUT /admin/supplier-stores/{id}/direct-orders`, with a reason, because a
+wholesaler who asks on the phone should not have to find the screen. Both paths
+audit who changed it and from what — from the supplier's side an operator's
+change looks like a setting they never touched.
+
+### It does not fork the order flow
+`POST /intents/{id}/direct-order` writes the supplier's answer from their own
+standing offer and hands back a request in `RESPONSES_RECEIVED`. Everything after
+that is the existing path: the same review screen, the same delivery choice, the
+same payment, the same `intent_order_link`, the same commission base. A second
+way to create an order would be a second place for the money to be wrong.
+
+The acceptance it writes has `responded_by` null. Nobody typed it; the store's
+setting made it, and that is what the record should say.
+
+### The price is the live offer, and a change is still shown
+A draft carries the price from when the line was added. Ordering directly
+re-reads the offer, and if it moved, nothing happens and old and new come back in
+the same `held` shape the basket returns — so the cart shows it with the sheet it
+already has. §23A.16 does not stop applying because the supplier is not in the
+loop; this is the only place it could be enforced.
+
+### A line the supplier cannot fill refuses by name
+Turning this on says "I hold these lines", but the offer still carries the
+quantity they declared, and an order beyond it lands on a supplier who cannot
+fill it. So a short line refuses with the product, the figure they declared and
+what was asked for, and nothing is charged. **Refusing rather than quietly
+capping**: the quantity is the restaurant's decision, they may want to take less
+or buy the rest elsewhere, and only they can say which.
+
+A line whose offer has been delisted refuses separately, and is not reported as a
+price change — there is no new price, and saying "the price went up" would be a
+lie about what happened.
+
+### The setting is re-checked on the server, every time
+A client that has not refreshed since a supplier turned this off must not be able
+to spend it. The flag on the draft is for drawing the button; the check that
+matters is the one in `DirectOrderService`.
+
+### Both buttons, not one replacing the other
+A supplier with direct ordering on still accepts requests, and the cart offers
+both under that supplier's total. A kitchen may want the supplier to confirm
+before money moves, and that is their call. The buttons are per supplier because
+an order is per supplier: a cart-wide "Create Order" cannot work when one store
+allows it and another does not, and a single tap producing two different outcomes
+for two suppliers is worse than two taps.
+
+---
+
+
+## D-095 — An outlet and a store share one conversation, and it can be switched off
+**Raised 2026-09-20 · Settled 2026-09-20**
+
+Two parties arranging a delivery had nowhere to say anything to each other. The
+order screens carry states, not sentences, and "can you send six more packs" is
+not a state.
+
+**Decision: one thread per outlet–store pair.** Requests and orders are shared
+*into* it as links. A thread per order was the alternative and gives a kitchen
+nine conversations with one supplier, no way to ask a general question, and a
+guarantee that everybody uses the newest thread for everything anyway.
+
+### A thread exists only where the two have traded
+Opening one needs a request sent or an order placed between them, and only the
+restaurant opens it — they are the side that chooses a supplier. Without that,
+the marketplace is a way to message strangers, in both directions.
+
+### Switching it off closes the composer, not the record
+`outlet.chat_enabled` and `supplier_store.chat_enabled`, both defaulting on,
+both set by operations with a reason and an audit row. Either being off stops
+new messages and leaves every message already sent readable to both sides: what
+a supplier agreed to in writing is exactly what somebody needs after support has
+been called, and deleting it would be the platform editing a conversation it was
+not part of.
+
+**The server decides this, not the app.** `canSend` and `disabledReason` come
+back on every thread. The app cannot work it out, because it only ever holds a
+flag about one of the two parties — and the header action is disabled with a
+line pointing at support rather than hidden, because a control that vanishes
+reads as a bug.
+
+### An attachment is a typed reference, never a URL
+`{type, id}`, checked against the pair before it is stored: an id from somebody
+else's order would be a link into a tenant the reader cannot see — a 404 at
+best, a probe for which ids exist at worst. The reference is snapshotted onto
+the message so a shared order still reads as `MP-260919-000013` without a join,
+and the app resolves the *screen* from who is reading, so a supplier tapping an
+order lands on their view of it rather than the restaurant's.
+
+### Two event names for one thing
+A notification rule names one audience, and a message has to reach whoever did
+not send it, so `ChatSide` owns `ChatMessageToSupplier` and
+`ChatMessageToRestaurant` (D-044 — the name belongs to the enum that raises it).
+**No preview in the notification body**: doc 08 §8 renders bodies from named
+fields precisely so a template asking for an order number can only ever contain
+one, and a message preview is whatever somebody typed, landing on a lock screen.
+It says who; opening it says what.
+
+### Read state is per side, not per user
+A store is answered by whoever is on the counter. Three colleagues each carrying
+their own unread badge for one conversation is three people ignoring it.
+
+### The scope is passed to the chat hook, never read from a provider
+`OutletProvider` lives under the restaurant navigator and `StoreProvider` under
+the supplier one. A hook reaching for both throws on whichever side is missing —
+which it did, and took the supplier home screen down with it. The inbox sits
+above both navigators and has neither, so the header that opens it names the
+outlet or store in the link.
+
+### Polling, for now, and said plainly
+Chat is the only thing in this app that arrives without the reader doing
+anything; everything else changes because somebody tapped. The right answer is a
+`realtime` channel and the events are already on the outbox for one. Until that
+exists the app polls slowly, which is honest rather than chatty.
+
+---
+
+
+## D-096 — A SKU is something to decide about, not only to compare
+**Raised 2026-09-20 · Settled 2026-09-20**
+
+A listing was a price, a pack and a thumbnail: enough to compare on, not enough
+to choose on. Nobody buys a 25 kg sack without knowing what it is, what it looks
+like, or whether it fits the shelf.
+
+**Decision: optional detail on the SKU, and a page that shows it.** Description,
+dimensions, weight, a gallery and a YouTube link, all optional — a listing with
+none of it behaves exactly as it did.
+
+### Dimensions are numbers, not a sentence
+Length, width and height in centimetres, beside the `weight_grams` V29 already
+added for delivery quoting. Free text could never be compared between two packs
+or read by anything else.
+
+### The gallery is separate; the thumbnail is not
+`supplier_sku.image_url` stays where it is — every list, cart row and order line
+reads it and none of them wants a join. The rest live in `supplier_sku_image`,
+sent whole on save: reordering four pictures is one decision, and four calls for
+it leave the gallery half-applied when one fails.
+
+### A review needs an order line, and the order has to have completed
+`sku_review` is keyed on `supplier_order_item_id`, unique. That is the whole
+design: a review is a report of something that arrived, and anything weaker is
+an opinion a competitor or the supplier themselves could have written. The same
+restaurant reviews again by buying again, which is the right cadence — a pack
+that was good in March and wet in June has two things worth saying.
+
+Reviewing a line that already has one returns the existing review rather than
+erroring, as order ratings do (§23A.23): the honest answer to "did that go
+through?" is the review.
+
+Separate from `rating`, which is about the order and the store. "It arrived
+late" and "the paneer was wet" are different complaints, and a kitchen comparing
+packs needs the second.
+
+### Several SKUs per product, one card per supplier
+Nothing in the schema ever stopped a supplier listing the same product in
+several packs — the restriction lived in the app, which bounced you to the
+existing SKU. It is gone: a supplier selling a 200 g tub and a 5 kg block has
+two things to sell.
+
+The comparison still shows **one card per supplier, their best pack**, because
+every pack competing turns a comparison of suppliers into a comparison of one
+supplier's shelf: a deep range fills the screen and pushes the others below the
+fold, on a screen whose whole job is to put them side by side. The card says how
+many other packs there are and the detail page lists them.
+
+### The page never recomputes money
+Price, GST and availability are the live offer; the pack price with GST is
+`Pricing`'s, computed the way the order will compute it. A detail page that
+priced a SKU differently from the row that led to it would be the worst possible
+place in the app to disagree.
+
+### What the product picker says
+"3 listing this" counted suppliers across the marketplace, which tells a
+supplier in a city of hundreds nothing about their own decision. "In catalog"
+was a yes/no from when one product meant one listing. Both are replaced by how
+many SKUs *this store* already lists under that product — and zero of them says
+"new" without needing a word for it.
+
+---
+
+
+## D-097 — A store has its own contact, and it is required
+**Raised 2026-09-20 · Settled 2026-09-20**
+
+The contact on `supplier_organization` is whoever runs the business. An order is
+filled by a **branch**, and the person to ring about it is whoever is on that
+counter — which on a supplier with three stores is three different people.
+
+`supplier_store.contact_name` and `contact_phone` have existed since V3 and were
+optional. They are required from here on: at registration, and for any store
+somebody saves.
+
+### Backfilled, not constrained
+V36 copies the organisation's contact into stores that have none. It stops
+there, and the columns stay nullable, because **a store whose organisation has
+no contact either has no truthful value to write**. Inventing one would put a
+name and a number in front of a restaurant chasing a delivery that nobody can
+answer. Of seven existing stores exactly one had an organisation contact to
+copy; the other six stay empty until their supplier fills them in, which the app
+now requires before it will save a store. D-089's split between a backfill and a
+constraint is the whole reason this is safe to ship.
+
+### `@NotBlank` belongs on the create body, never on the PATCH
+Putting it on `UpdateStoreRequest` rejects **every partial update** — a client
+toggling direct ordering sends that one field and nothing else. It did exactly
+that for one build here, until a test of the toggle caught it. So: required on
+`CreateStoreRequest`; on the update, absent leaves the field alone and blank is
+refused by the service, which is the only place that can tell those two apart.
+
+### The contact number pattern is loose on purpose
+Digits, spaces, dashes and brackets, optionally led by a country code. This is a
+number somebody dials, not an identity: the strict E.164 rule belongs on the
+login phone, and applying it here rejects the landline with an STD code that a
+warehouse counter actually answers.
+
+### Onboarding copies, it does not assume
+The business contact seeds the first store's, and the store's is held separately
+the moment anybody types in it. Registration used to pass the signed-in phone
+silently as both and never ask for a name, which is how every seeded store ended
+up with a number and nobody to ask for.
+
+Two smaller things fell out of this. `SupplierResponse` never returned the
+organisation's contact at all, so the business settings screen opened with empty
+fields over stored values and would have written the blanks back on save. And
+the store settings screen held `contactName`/`contactPhone` in state and sent
+them, with no input rendered for either — so every store saved whatever it
+started with, which for most of them was nothing.
+
+
+### Amendment (2026-09-20): either side may open a thread
+
+D-095 limited opening to the restaurant, on the reasoning that a supplier
+opening threads to kitchens is how a marketplace acquires a spam problem. The
+`traded` check is what actually prevents that — a supplier with an order from
+this outlet is not a stranger to it — and the restriction was instead stopping a
+supplier answering a question about an order they are filling, which is the
+wrong half to block. `POST /supplier-stores/{id}/chat/threads` is the same call
+from the other side, with the same `traded` requirement.
+
+Both request and order detail screens, on both sides, now carry the action in
+their header. It opens the **pair's** thread, not a thread about that order —
+the order is shared *into* it, which is what the share picker is for.

@@ -253,6 +253,7 @@ public class IntentMapper {
                     intent.getSupplierStoreId(),
                     store == null ? null : store.storeName(),
                     store == null ? null : store.supplierName(),
+                    store != null && store.directOrdersEnabled(),
                     intent.getStatus(),
                     IntentFulfilment.roll(lineFulfilments),
                     intent.getSource(),

@@ -245,6 +245,15 @@ public final class IntentDtos {
             Long supplierStoreId,
             String storeName,
             String supplierName,
+            /**
+             * This store takes orders without being asked first. D-094.
+             *
+             * <p>On the request rather than fetched per supplier, because the
+             * cart is a list of drafts and the button under each one depends on
+             * it. Read from the store live, so turning it off takes effect on
+             * the next refresh rather than whenever a cached list expires.
+             */
+            boolean directOrdersEnabled,
             IntentStatus status,
             IntentFulfilment fulfilment,
             String source,
@@ -440,7 +449,19 @@ public final class IntentDtos {
              */
             boolean acceptPriceChanges,
             Instant requestedDeliveryTime,
-            @Size(max = 1000) String notes) {
+            @Size(max = 1000) String notes,
+            /**
+             * Send only this draft, rather than every draft in the outlet.
+             *
+             * <p>Here rather than on {@code POST /intents/{id}/send} so that one
+             * supplier's request goes out through exactly the same path as all of
+             * them: the repricing check, the re-snapshot, and the {@code held}
+             * response the caller already knows how to show. That endpoint does
+             * none of those, so sending a single repriced request through it would
+             * put a stale price in front of a supplier without anyone agreeing to
+             * the new one.
+             */
+            Long intentId) {
     }
 
     /**
@@ -460,6 +481,23 @@ public final class IntentDtos {
             String reference,
             String storeName,
             List<PriceChange> changes) {
+    }
+
+    /** Agreement to a price that moved since the line was added. §23A.16. */
+    public record DirectOrderRequest(boolean acceptPriceChanges) {
+    }
+
+    /**
+     * A draft made ready to order from, or the prices that stopped it. D-094.
+     *
+     * <p>Two outcomes in one shape, and `held` is the same shape the basket
+     * returns, so the app shows the price change with the sheet it already has.
+     * Exactly one of the two is populated: an intent means it is ready, a held
+     * entry means nothing has changed yet and a price needs agreeing to.
+     */
+    public record DirectOrderResponse(
+            IntentResponse intent,
+            List<HeldRequest> held) {
     }
 
     /** Old and new, both, so §23A.16 can show what moved. */
@@ -499,7 +537,22 @@ public final class IntentDtos {
             List<PreviewLine> lines,
             BigDecimal subtotal,
             BigDecimal gstAmount,
+            /** The goods, with GST. What delivery costs is separate below. */
             BigDecimal total,
+            /**
+             * Carriage for the mode the caller asked about. Zero for a pickup,
+             * and zero when they asked about nothing.
+             */
+            BigDecimal deliveryFee,
+            /**
+             * Goods plus carriage — what the restaurant will actually be charged.
+             *
+             * <p>Computed here rather than added up on the client. Guardrail 3
+             * puts every money sum on the server, and a client that adds two
+             * already-rounded figures is exactly the case that lands a paisa
+             * away from the order it is previewing.
+             */
+            BigDecimal grandTotal,
             List<Blocker> blockers) {
     }
 

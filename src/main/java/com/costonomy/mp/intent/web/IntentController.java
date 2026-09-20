@@ -3,6 +3,7 @@ package com.costonomy.mp.intent.web;
 import com.costonomy.mp.common.api.ApiResponse;
 import com.costonomy.mp.identity.security.ActorContext;
 import com.costonomy.mp.intent.domain.IntentFulfilment;
+import com.costonomy.mp.intent.service.DirectOrderService;
 import com.costonomy.mp.intent.service.IntentOrderService;
 import com.costonomy.mp.intent.service.IntentService;
 import com.costonomy.mp.intent.web.dto.IntentDtos;
@@ -42,6 +43,7 @@ public class IntentController {
 
     private final IntentService intents;
     private final IntentOrderService orders;
+    private final DirectOrderService direct;
 
     // ── The basket ───────────────────────────────────────────────────────
 
@@ -121,7 +123,7 @@ public class IntentController {
             @Valid @RequestBody(required = false) IntentDtos.SendBasketRequest request) {
         return ApiResponse.ok(intents.sendAll(ActorContext.requireUserId(), outletId,
                 request == null
-                        ? new IntentDtos.SendBasketRequest(false, null, null)
+                        ? new IntentDtos.SendBasketRequest(false, null, null, null)
                         : request));
     }
 
@@ -187,6 +189,31 @@ public class IntentController {
     }
 
     // ── Ordering ─────────────────────────────────────────────────────────
+
+    @PostMapping("/intents/{id}/direct-order")
+    @Operation(
+            summary = "Make a draft ready to order from, without sending a request",
+            description = """
+                    For a store with direct ordering on. The request round trip exists to
+                    establish that the goods are there; a store that keeps stock has
+                    already answered that by listing the line, so this writes the answer
+                    from their standing offer and hands back a request ready to order
+                    from — same delivery choice, same payment, same order.
+
+                    **Prices are re-read from the live offer.** If one moved, nothing
+                    changes and `held` comes back with old and new for each line, exactly
+                    as the basket does; call again with `acceptPriceChanges` to agree.
+
+                    **A line the supplier cannot fill refuses by name**, with the quantity
+                    they declared. Nothing is charged, and the cart is left alone so the
+                    restaurant can decide whether to take less or buy elsewhere.
+                    """)
+    public ApiResponse<IntentDtos.DirectOrderResponse> directOrder(
+            @PathVariable Long id,
+            @RequestBody(required = false) IntentDtos.DirectOrderRequest request) {
+        return ApiResponse.ok(direct.prepare(ActorContext.requireUserId(), id,
+                request != null && request.acceptPriceChanges()));
+    }
 
     @PostMapping("/intents/{id}/orders/preview")
     @Operation(

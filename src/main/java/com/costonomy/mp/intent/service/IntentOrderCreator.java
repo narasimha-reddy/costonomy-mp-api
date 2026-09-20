@@ -178,6 +178,18 @@ public class IntentOrderCreator {
                 })
                 .toList();
 
+        // Priced here so the screen can show one figure. A preview that named
+        // the goods and left the client to add the carriage would be asking it
+        // to do the arithmetic guardrail 3 keeps on this side.
+        //
+        // Read, never spent: previewing an order must not consume the quote the
+        // order itself will need.
+        BigDecimal deliveryFee = BigDecimal.ZERO;
+        if (request != null && request.deliveryMode() != null) {
+            deliveryFee = deliveryFeeFor(
+                    request.deliveryMode(), plan.intent(), request, Instant.now(), false);
+        }
+
         return new IntentDtos.OrderPreviewResponse(
                 intentId,
                 plan.creatable(),
@@ -187,6 +199,8 @@ public class IntentOrderCreator {
                 plan.subtotal(),
                 plan.gst(),
                 plan.total(),
+                Pricing.money(deliveryFee),
+                Pricing.money(plan.total().add(deliveryFee)),
                 plan.blockers());
     }
 
@@ -249,7 +263,7 @@ public class IntentOrderCreator {
                     "Choose how this order should reach you.");
         }
         DeliveryMode mode = request.deliveryMode();
-        BigDecimal deliveryFee = deliveryFeeFor(mode, intent, request, now);
+        BigDecimal deliveryFee = deliveryFeeFor(mode, intent, request, now, true);
 
         var order = new SupplierOrder();
         // No procurement: the intent was the basket. The link to where this came
@@ -483,7 +497,8 @@ public class IntentOrderCreator {
      * </ul>
      */
     private BigDecimal deliveryFeeFor(DeliveryMode mode, com.costonomy.mp.intent.domain.Intent intent,
-                                      IntentDtos.CreateOrderRequest request, Instant now) {
+                                      IntentDtos.CreateOrderRequest request, Instant now,
+                                      boolean requireQuote) {
 
         var policy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
 
@@ -505,10 +520,16 @@ public class IntentOrderCreator {
                                     + "them to deliver.");
                 }
                 if (request.deliveryQuoteReference() == null) {
-                    // Not defaulted to zero and not quoted on the fly: a delivery
-                    // whose price nobody saw is a charge nobody agreed to.
-                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                            "Check the delivery fee before ordering.");
+                    // Creating: not defaulted to zero and not quoted on the fly —
+                    // a delivery whose price nobody saw is a charge nobody agreed
+                    // to. Previewing: the screen is asking what this mode would
+                    // cost before it has a quote in hand, and refusing would stop
+                    // it rendering at all.
+                    if (requireQuote) {
+                        throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                                "Check the delivery fee before ordering.");
+                    }
+                    yield BigDecimal.ZERO;
                 }
                 // Read, not spent. The order does not exist yet, and a quote
                 // spent here would be found already spent when the order it
