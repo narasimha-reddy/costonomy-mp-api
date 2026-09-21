@@ -13,6 +13,36 @@ marketplace. Modular monolith on MySQL `costonomy_mp`.
 
 Mobile client: `costonomy-mp-mobile`.
 
+## Prerequisites
+
+- **Java 17 (JDK 17)**: Lombok relies on annotation processing that breaks silently on JDK 18+ (causing "cannot find symbol" compile errors).
+  ```bash
+  export JAVA_HOME=$(/usr/libexec/java_home -v 17)
+  ```
+- **Docker**: Required for full builds and integration tests (`mvn verify` / `mvn clean install`), which spin up a throwaway MySQL 8 instance using Testcontainers. Ensure Docker Desktop or Colima is running before building.
+
+## Build & Test Commands
+
+```bash
+# Full build + package with all unit and integration tests (Docker must be running)
+mvn clean install
+
+# Fast build + package + unit tests (Docker NOT required)
+mvn clean install -DskipITs
+
+# Run unit tests only
+mvn test
+
+# Run the application locally (uses mock providers & local DB)
+mvn spring-boot:run -Dspring-boot.run.profiles=local
+```
+
+Once running:
+- API Base: `http://localhost:7070/costonomy-mp-api`
+- Swagger UI: `http://localhost:7070/costonomy-mp-api/swagger-ui.html`
+- OpenAPI: `http://localhost:7070/costonomy-mp-api/api-docs`
+- Every OTP is `123456` locally, and every external provider (payment, delivery, SMS) is mocked.
+
 ## Getting started
 
 ### Local database
