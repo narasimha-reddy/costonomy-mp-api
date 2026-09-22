@@ -23,6 +23,7 @@ public class AdminDeliveryController {
 
     private final AdminDeliveryService adminDeliveryService;
     private final DeliveryStatsAggregationService statsAggregationService;
+    private final com.costonomy.mp.delivery.service.AdminDeliveryExportService exportService;
 
     @GetMapping("/{id}/ledger")
     @Operation(summary = "Audit trail for delivery financial ledger",
@@ -103,6 +104,35 @@ public class AdminDeliveryController {
             @PathVariable String code) {
         Long actorId = ActorContext.requireUserId();
         return ApiResponse.ok(adminDeliveryService.getProviderMetrics(actorId, code));
+    }
+
+    // -----------------------------------------------------------------------
+    // Bulk delivery export (CSV & JSON)
+    // -----------------------------------------------------------------------
+
+    @GetMapping(value = "/export")
+    @Operation(summary = "Bulk export deliveries as CSV or JSON",
+               description = "Streams delivery records matching optional filters (since date, status). " +
+                             "Format query param accepts 'csv' or 'json' (default: json). " +
+                             "Requires DELIVERY_INSPECT at PLATFORM scope.")
+    public Object exportDeliveries(
+            @RequestParam(defaultValue = "json") String format,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate since,
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "1000") int limit,
+            jakarta.servlet.http.HttpServletResponse response) throws java.io.IOException {
+
+        Long actorId = ActorContext.requireUserId();
+        List<com.costonomy.mp.delivery.web.dto.DeliveryExportRow> rows = exportService.fetchDeliveries(actorId, since, status, limit);
+
+        if ("csv".equalsIgnoreCase(format)) {
+            response.setContentType("text/csv");
+            response.setHeader("Content-Disposition", "attachment; filename=\"deliveries_export.csv\"");
+            com.costonomy.mp.delivery.service.AdminDeliveryExportService.writeCsv(rows, response.getWriter());
+            return null;
+        }
+
+        return ApiResponse.ok(rows);
     }
 }
 
