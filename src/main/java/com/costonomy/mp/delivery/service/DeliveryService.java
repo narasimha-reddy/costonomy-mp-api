@@ -146,6 +146,81 @@ public class DeliveryService {
     }
 
     /**
+     * Automated dispatch triggered by warehouse/kitchen events (e.g. SupplierOrderReady).
+     * Does not require a user session.
+     */
+    @Transactional
+    public DeliveryDtos.DeliveryResponse autoDispatch(Long supplierOrderId) {
+        var order = directory.order(supplierOrderId);
+        if (order == null) {
+            log.warn("Auto-dispatch ignored: supplier order {} not found", supplierOrderId);
+            return null;
+        }
+
+        var existing = deliveries.findBySupplierOrderId(supplierOrderId).orElse(null);
+        if (existing != null) {
+            log.debug("Auto-dispatch: delivery already exists for order {}", supplierOrderId);
+            return toResponse(existing, order.orderNumber());
+        }
+
+        if (!"READY_FOR_PICKUP".equals(order.status())) {
+            log.debug("Auto-dispatch: order {} is not ready for pickup (status: {})", supplierOrderId, order.status());
+            return null;
+        }
+
+        var pickup = directory.pickupFor(order.supplierStoreId());
+        var drop = directory.dropFor(order.outletId());
+        if (pickup == null || drop == null) {
+            log.warn("Auto-dispatch: order {} is missing pickup or drop address", supplierOrderId);
+            return null;
+        }
+
+        var policy = directory.deliveryPolicy(order.supplierStoreId());
+        var mode = resolveMode(null, order.deliveryMode(), policy);
+
+        var delivery = new Delivery();
+        delivery.setSupplierOrderId(supplierOrderId);
+        delivery.setOutletId(order.outletId());
+        delivery.setSupplierStoreId(order.supplierStoreId());
+        delivery.setMode(mode);
+        delivery.setPickupAddress(pickup.address());
+        delivery.setPickupLatitude(pickup.latitude());
+        delivery.setPickupLongitude(pickup.longitude());
+        delivery.setPickupContactName(pickup.contactName());
+        delivery.setPickupContactPhone(pickup.contactPhone());
+        delivery.setDropAddress(drop.address());
+        delivery.setDropLatitude(drop.latitude());
+        delivery.setDropLongitude(drop.longitude());
+        delivery.setDropContactName(drop.contactName());
+        delivery.setDropContactPhone(drop.contactPhone());
+        delivery.setWeightKg(order.estimatedWeightKg());
+        delivery.setVolumeCbm(order.estimatedVolumeCbm());
+        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg()));
+        delivery.setRequestedAt(Instant.now());
+        deliveries.save(delivery);
+
+        timeline.record(delivery, "DeliveryRequested", DeliveryStatus.DELIVERY_REQUESTED,
+                "Automated dispatch initiated");
+
+        if (mode == DeliveryMode.SUPPLIER_OWN) {
+            delivery.setFee(policy.ownDeliveryFee() == null ? BigDecimal.ZERO : policy.ownDeliveryFee());
+            delivery.setStatus(DeliveryStatus.DRIVER_ASSIGNED);
+            delivery.setAssignedAt(Instant.now());
+            delivery.setDriverName(pickup.contactName());
+            delivery.setDriverPhone(pickup.contactPhone());
+            deliveries.save(delivery);
+
+            timeline.record(delivery, DeliveryStatus.DRIVER_ASSIGNED.eventName(),
+                    DeliveryStatus.DRIVER_ASSIGNED,
+                    "The supplier is delivering this order");
+            return toResponse(delivery, order.orderNumber());
+        }
+
+        quoteAndBook(delivery, order, null, List.of(), "BOOKING");
+        return toResponse(delivery, order.orderNumber());
+    }
+
+    /**
      * Gather quotes, then book. Doc 06 §6 steps 3–6.
      *
      * <p>One call rather than two endpoints the client sequences: doc 04 §14 exposes
