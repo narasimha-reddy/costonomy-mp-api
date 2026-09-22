@@ -175,5 +175,17 @@ public final class DeliveryDtos {
             /** Average price deviation in INR (positive = provider charged more than quoted). */
             BigDecimal avgPriceDeviationInr) {
     }
+
+    /**
+     * Aggregated latency and cost metrics for a delivery provider over a 2-hour window.
+     */
+    public record ProviderMetricsResponse(
+            String providerCode,
+            Instant windowStart,
+            double avgLatencyMs,
+            double p95LatencyMs,
+            BigDecimal totalCostInr,
+            long orderCount) {
+    }
 }
 

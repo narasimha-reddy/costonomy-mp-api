@@ -81,5 +81,28 @@ public class AdminDeliveryController {
         int written = statsAggregationService.aggregate(target);
         return ApiResponse.ok(Map.of("windowDate", target.toString(), "rowsWritten", written));
     }
+
+    // -----------------------------------------------------------------------
+    // Provider latency & cost metrics (2-hour rolling windows)
+    // -----------------------------------------------------------------------
+
+    @GetMapping("/providers/metrics")
+    @Operation(summary = "Recent 2-hour latency and cost metrics across providers",
+               description = "Returns aggregated metrics for the last N days (defaults to 7). " +
+                             "Requires DELIVERY_INSPECT at PLATFORM scope.")
+    public ApiResponse<List<DeliveryDtos.ProviderMetricsResponse>> providerMetrics(
+            @RequestParam(defaultValue = "7") int days) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(adminDeliveryService.getLastMetrics(actorId, days));
+    }
+
+    @GetMapping("/providers/{code}/metrics")
+    @Operation(summary = "Full 2-hour metrics history for one provider",
+               description = "Requires DELIVERY_INSPECT at PLATFORM scope.")
+    public ApiResponse<List<DeliveryDtos.ProviderMetricsResponse>> providerMetricsByCode(
+            @PathVariable String code) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(adminDeliveryService.getProviderMetrics(actorId, code));
+    }
 }
 

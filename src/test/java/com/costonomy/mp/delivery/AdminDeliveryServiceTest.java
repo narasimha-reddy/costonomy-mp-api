@@ -44,6 +44,9 @@ class AdminDeliveryServiceTest {
     private DeliveryProviderStatsRepository statsRepository;
 
     @Mock
+    private com.costonomy.mp.delivery.repository.DeliveryProviderMetricsRepository metricsRepository;
+
+    @Mock
     private DeliveryWaterfallService waterfallService;
 
     @Mock
@@ -53,7 +56,7 @@ class AdminDeliveryServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new AdminDeliveryService(accessControl, deliveries, ledgerRepository, statsRepository, waterfallService, deliveryService);
+        service = new AdminDeliveryService(accessControl, deliveries, ledgerRepository, statsRepository, metricsRepository, waterfallService, deliveryService);
     }
 
 

@@ -201,6 +201,7 @@ class MigrationIT extends AbstractIntegrationTest {
                         "intent_order_link",
                         "delivery_ledger",
                         "delivery_provider_stats",
+                        "delivery_provider_metrics",
                         // Owned by ShedLock; its columns are fixed by the library.
                         "shedlock");
     }
