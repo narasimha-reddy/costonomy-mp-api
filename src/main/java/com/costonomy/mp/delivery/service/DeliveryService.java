@@ -531,7 +531,7 @@ public class DeliveryService {
         return delivery;
     }
 
-    private DeliveryDtos.DeliveryResponse toResponse(Delivery delivery, String orderNumber) {
+    DeliveryDtos.DeliveryResponse toResponse(Delivery delivery, String orderNumber) {
         var latest = delivery.getMode().isTracked()
                 ? locations.findFirstByDeliveryIdOrderByRecordedAtDescIdDesc(delivery.getId())
                         .orElse(null)

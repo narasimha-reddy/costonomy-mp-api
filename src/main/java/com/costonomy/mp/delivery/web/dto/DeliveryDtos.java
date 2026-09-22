@@ -134,4 +134,17 @@ public final class DeliveryDtos {
             @DecimalMax(value = "500.0", message = "A delivery radius of more than 500 km is not a radius")
             BigDecimal maxDeliveryRadiusKm) {
     }
+
+    public record DeliveryLedgerResponse(
+            Long id,
+            Long deliveryId,
+            String providerCode,
+            String providerDeliveryId,
+            String entryType,
+            BigDecimal amount,
+            String currency,
+            String description,
+            Instant createdAt) {
+    }
 }
+

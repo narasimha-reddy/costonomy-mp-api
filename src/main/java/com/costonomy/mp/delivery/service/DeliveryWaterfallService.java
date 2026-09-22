@@ -64,4 +64,30 @@ public class DeliveryWaterfallService {
             return false;
         }
     }
+
+    /**
+     * Manually force carrier escalation (e.g. from operations console).
+     */
+    @Transactional
+    public boolean forceEscalate(Long deliveryId, String reason) {
+        var delivery = deliveries.findById(deliveryId).orElse(null);
+        if (delivery == null) {
+            return false;
+        }
+
+        log.warn("Force escalating delivery {} with provider {}: {}", deliveryId, delivery.getProviderCode(), reason);
+
+        auditService.record(null, null, "DELIVERY_WATERFALL_MANUAL", "DELIVERY",
+                deliveryId, delivery.getStatus().name(), DeliveryStatus.PROVIDER_SELECTED.name(),
+                reason, "ADMIN");
+
+        try {
+            deliveryService.reassign(null, deliveryId, reason);
+            return true;
+        } catch (Exception ex) {
+            log.error("Manual waterfall cascade failed for delivery {}: {}", deliveryId, ex.getMessage());
+            return false;
+        }
+    }
 }
+

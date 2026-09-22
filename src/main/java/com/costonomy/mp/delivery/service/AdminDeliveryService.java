@@ -1,0 +1,69 @@
+package com.costonomy.mp.delivery.service;
+
+import com.costonomy.mp.access.domain.Permissions;
+import com.costonomy.mp.access.domain.ScopeType;
+import com.costonomy.mp.access.service.AccessControlService;
+import com.costonomy.mp.common.error.NotFoundException;
+import com.costonomy.mp.delivery.domain.DeliveryLedgerEntry;
+import com.costonomy.mp.delivery.repository.DeliveryLedgerRepository;
+import com.costonomy.mp.delivery.repository.DeliveryRepository;
+import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+
+/**
+ * Operations & Admin service for delivery inspection and carrier management.
+ */
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class AdminDeliveryService {
+
+    private final AccessControlService accessControl;
+    private final DeliveryRepository deliveries;
+    private final DeliveryLedgerRepository ledgerRepository;
+    private final DeliveryWaterfallService waterfallService;
+    private final DeliveryService deliveryService;
+
+    @Transactional(readOnly = true)
+    public List<DeliveryDtos.DeliveryLedgerResponse> getLedger(Long actorId, Long deliveryId) {
+        accessControl.require(actorId, Permissions.DELIVERY_INSPECT, ScopeType.PLATFORM, null);
+
+        if (!deliveries.existsById(deliveryId)) {
+            throw new NotFoundException("Delivery", deliveryId);
+        }
+
+        return ledgerRepository.findByDeliveryIdOrderByCreatedAtAsc(deliveryId).stream()
+                .map(this::toLedgerResponse)
+                .toList();
+    }
+
+    @Transactional
+    public DeliveryDtos.DeliveryResponse forceWaterfall(Long actorId, Long deliveryId, String reason) {
+        accessControl.require(actorId, Permissions.DELIVERY_OPERATE, ScopeType.PLATFORM, null);
+
+        log.info("Admin actor {} manually forcing delivery waterfall for delivery {}: {}", actorId, deliveryId, reason);
+        waterfallService.forceEscalate(deliveryId, reason);
+
+        var delivery = deliveries.findById(deliveryId)
+                .orElseThrow(() -> new NotFoundException("Delivery", deliveryId));
+        return deliveryService.toResponse(delivery, null);
+    }
+
+    private DeliveryDtos.DeliveryLedgerResponse toLedgerResponse(DeliveryLedgerEntry entry) {
+        return new DeliveryDtos.DeliveryLedgerResponse(
+                entry.getId(),
+                entry.getDeliveryId(),
+                entry.getProviderCode(),
+                entry.getProviderDeliveryId(),
+                entry.getEntryType(),
+                entry.getAmount(),
+                entry.getCurrency(),
+                entry.getDescription(),
+                entry.getCreatedAt());
+    }
+}
