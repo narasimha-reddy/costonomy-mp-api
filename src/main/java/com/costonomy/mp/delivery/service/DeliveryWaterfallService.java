@@ -26,6 +26,20 @@ public class DeliveryWaterfallService {
     private final DeliveryRepository deliveries;
     private final DeliveryService deliveryService;
     private final AuditService auditService;
+    private final org.springframework.scheduling.TaskScheduler taskScheduler;
+
+    /**
+     * One-shot scheduled timer listener for newly booked deliveries.
+     * Fires only once per consignment attempt when deadline expires.
+     */
+    @org.springframework.context.event.EventListener
+    public void onDeliveryBooked(com.costonomy.mp.delivery.domain.DeliveryBookedEvent event) {
+        if (taskScheduler != null && event.assignmentDeadline() != null) {
+            log.info("Scheduling one-shot assignment deadline timer for delivery {} at {}",
+                    event.deliveryId(), event.assignmentDeadline());
+            taskScheduler.schedule(() -> cascadeUnassigned(event.deliveryId()), event.assignmentDeadline());
+        }
+    }
 
     /**
      * Trigger waterfall cascade for an unassigned delivery whose deadline expired.

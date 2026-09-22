@@ -42,6 +42,7 @@ public class DeliveryBookingService {
     private final DeliveryTimeline timeline;
     private final AuditService auditService;
     private final DeliveryLedgerRepository ledger;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     /**
      * Book the cheapest courier that will take it.
@@ -90,6 +91,9 @@ public class DeliveryBookingService {
                 delivery.setFailureCode(null);
                 delivery.setFailureReason(null);
                 deliveries.save(delivery);
+
+                eventPublisher.publishEvent(new com.costonomy.mp.delivery.domain.DeliveryBookedEvent(
+                        delivery.getId(), delivery.getAssignmentDeadline()));
 
                 attempt.setOutcome("BOOKED");
                 attempt.setProviderDeliveryId(booking.providerDeliveryId());

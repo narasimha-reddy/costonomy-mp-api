@@ -472,9 +472,23 @@ public class DeliveryService {
 
     // ── Reading ──────────────────────────────────────────────────────────
 
-    @Transactional(readOnly = true)
+    @Transactional
     public DeliveryDtos.DeliveryResponse get(Long actorId, Long deliveryId) {
         var delivery = loadForEitherSide(actorId, deliveryId);
+
+        // Lazy check: if the delivery timed out in PROVIDER_SELECTED (> 3 mins), cascade immediately
+        if (delivery.getStatus() == DeliveryStatus.PROVIDER_SELECTED
+                && delivery.getAssignmentDeadline() != null
+                && delivery.getAssignmentDeadline().isBefore(Instant.now())) {
+            log.warn("Delivery {} assignment deadline expired on read; triggering waterfall cascade", deliveryId);
+            try {
+                reassign(null, deliveryId, "Unassigned driver timeout (waterfall cascade on read)");
+                delivery = deliveries.findById(deliveryId).orElse(delivery);
+            } catch (Exception ex) {
+                log.error("Lazy waterfall cascade failed on read for delivery {}: {}", deliveryId, ex.getMessage());
+            }
+        }
+
         var order = directory.order(delivery.getSupplierOrderId());
         return toResponse(delivery, order == null ? null : order.orderNumber());
     }
