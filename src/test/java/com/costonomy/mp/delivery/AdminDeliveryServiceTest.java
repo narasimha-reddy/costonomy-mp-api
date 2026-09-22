@@ -8,6 +8,7 @@ import com.costonomy.mp.delivery.domain.DeliveryLedgerEntry;
 import com.costonomy.mp.delivery.domain.DeliveryMode;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import com.costonomy.mp.delivery.repository.DeliveryLedgerRepository;
+import com.costonomy.mp.delivery.repository.DeliveryProviderStatsRepository;
 import com.costonomy.mp.delivery.repository.DeliveryRepository;
 import com.costonomy.mp.delivery.service.AdminDeliveryService;
 import com.costonomy.mp.delivery.service.DeliveryService;
@@ -40,6 +41,9 @@ class AdminDeliveryServiceTest {
     private DeliveryLedgerRepository ledgerRepository;
 
     @Mock
+    private DeliveryProviderStatsRepository statsRepository;
+
+    @Mock
     private DeliveryWaterfallService waterfallService;
 
     @Mock
@@ -49,8 +53,9 @@ class AdminDeliveryServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new AdminDeliveryService(accessControl, deliveries, ledgerRepository, waterfallService, deliveryService);
+        service = new AdminDeliveryService(accessControl, deliveries, ledgerRepository, statsRepository, waterfallService, deliveryService);
     }
+
 
     @Test
     void getLedgerChecksPermissionAndReturnsEntries() {

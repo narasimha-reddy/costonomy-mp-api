@@ -146,5 +146,34 @@ public final class DeliveryDtos {
             String description,
             Instant createdAt) {
     }
+
+    /**
+     * Per-provider reliability snapshot for one calendar day. Doc 06 §4 (future).
+     *
+     * <p>Rates are expressed as percentages (0–100) rounded to one decimal place
+     * so the API consumer doesn't need to do maths.
+     */
+    public record ProviderStatsResponse(
+            String providerCode,
+            java.time.LocalDate windowDate,
+            int totalBookings,
+            int driverCancellations,
+            int pickupFailures,
+            int deliveryFailures,
+            int etaOverruns,
+            int completedDeliveries,
+            /** Cancellation rate as a percentage, e.g. 12.5 means 12.5%. */
+            double cancellationRatePct,
+            /** ETA breach rate as a percentage. */
+            double etaBreachRatePct,
+            /** Combined failure rate as a percentage. */
+            double overallFailureRatePct,
+            /** Average actual minutes from DRIVER_ASSIGNED to DELIVERED. */
+            Integer avgActualEtaMinutes,
+            /** Average quoted ETA minutes at booking time. */
+            Integer avgQuotedEtaMinutes,
+            /** Average price deviation in INR (positive = provider charged more than quoted). */
+            BigDecimal avgPriceDeviationInr) {
+    }
 }
 
