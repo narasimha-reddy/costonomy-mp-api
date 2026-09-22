@@ -71,6 +71,9 @@ public final class DeliveryDtos {
             Instant requestedAt,
             Instant pickedUpAt,
             Instant deliveredAt,
+            BigDecimal weightKg,
+            BigDecimal volumeCbm,
+            String vehicleType,
             List<EventResponse> timeline) {
     }
 

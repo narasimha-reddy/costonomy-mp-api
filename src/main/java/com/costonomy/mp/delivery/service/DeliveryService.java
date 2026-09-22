@@ -113,6 +113,9 @@ public class DeliveryService {
         delivery.setDropLongitude(drop.longitude());
         delivery.setDropContactName(drop.contactName());
         delivery.setDropContactPhone(drop.contactPhone());
+        delivery.setWeightKg(order.estimatedWeightKg());
+        delivery.setVolumeCbm(order.estimatedVolumeCbm());
+        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg()));
         delivery.setRequestedAt(Instant.now());
         deliveries.save(delivery);
 
@@ -483,6 +486,8 @@ public class DeliveryService {
                 location, stale, ageSeconds,
                 delivery.getFailureCode(), delivery.getFailureReason(),
                 delivery.getRequestedAt(), delivery.getPickedUpAt(), delivery.getDeliveredAt(),
+                delivery.getWeightKg(), delivery.getVolumeCbm(),
+                delivery.getVehicleType() != null ? delivery.getVehicleType().name() : null,
                 appliedEvents(delivery.getId()));
     }
 }

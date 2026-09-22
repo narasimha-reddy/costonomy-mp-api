@@ -90,6 +90,17 @@ public class Delivery extends BaseEntity {
     @Column(name = "drop_contact_phone", length = 32)
     private String dropContactPhone;
 
+    @Column(name = "weight_kg", precision = 19, scale = 4)
+    private BigDecimal weightKg;
+
+    @Column(name = "volume_cbm", precision = 19, scale = 4)
+    private BigDecimal volumeCbm;
+
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(name = "vehicle_type", length = 32)
+    private VehicleType vehicleType;
+
     /** Null until a driver exists. Never filled with a placeholder. */
     @Column(name = "driver_name", length = 150)
     private String driverName;
@@ -124,6 +135,13 @@ public class Delivery extends BaseEntity {
 
     @Column(name = "assigned_at")
     private Instant assignedAt;
+
+    /**
+     * Timeout window after booking before unassigned delivery automatically
+     * cascades to the next provider quote in the waterfall.
+     */
+    @Column(name = "assignment_deadline")
+    private Instant assignmentDeadline;
 
     @Column(name = "picked_up_at")
     private Instant pickedUpAt;

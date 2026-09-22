@@ -56,6 +56,11 @@ public class DeliveryQuote {
     @Column(name = "distance_km", precision = 9, scale = 4)
     private BigDecimal distanceKm;
 
+    @Enumerated(EnumType.STRING)
+    @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.VARCHAR)
+    @Column(name = "vehicle_type", length = 32)
+    private VehicleType vehicleType;
+
     @Column(name = "provider_quote_id", length = 200)
     private String providerQuoteId;
 

@@ -53,11 +53,15 @@ public class DeliveryQuotingService {
     public Outcome gather(Delivery delivery, BigDecimal orderValue,
                           Integer requiredEtaMinutes, List<String> excludedProviderCodes) {
 
+        var vehicleType = delivery.getVehicleType() != null ? delivery.getVehicleType()
+                : VehicleType.fromWeight(delivery.getWeightKg());
+
         var request = new DeliveryProvider.QuoteRequest(
                 delivery.getSupplierOrderId(),
                 delivery.getPickupLatitude(), delivery.getPickupLongitude(),
                 delivery.getDropLatitude(), delivery.getDropLongitude(),
-                orderValue, requiredEtaMinutes);
+                orderValue, requiredEtaMinutes,
+                delivery.getWeightKg(), delivery.getVolumeCbm(), vehicleType);
 
         List<DeliveryQuote> recorded = new ArrayList<>();
         List<DeliverySelection.Candidate> candidates = new ArrayList<>();
@@ -71,6 +75,7 @@ public class DeliveryQuotingService {
             quote.setDeliveryId(delivery.getId());
             quote.setDeliveryProviderId(available.record().getId());
             quote.setProviderCode(available.record().getCode());
+            quote.setVehicleType(vehicleType);
 
             try {
                 var answer = available.adapter().quote(request);
@@ -88,6 +93,9 @@ public class DeliveryQuotingService {
                                     .setScale(4, RoundingMode.HALF_UP));
                     quote.setProviderQuoteId(answer.providerQuoteId());
                     quote.setExpiresAt(answer.expiresAt());
+                    if (answer.vehicleType() != null) {
+                        quote.setVehicleType(answer.vehicleType());
+                    }
 
                     candidates.add(new DeliverySelection.Candidate(
                             available.record().getCode(), answer.amount(), answer.etaMinutes(),
