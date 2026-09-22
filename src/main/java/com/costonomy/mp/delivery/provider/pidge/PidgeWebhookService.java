@@ -78,6 +78,15 @@ public class PidgeWebhookService {
                     ? Instant.ofEpochMilli(root.path("timestamp").asLong())
                     : Instant.now();
 
+            // Record tracking URL if present in webhook
+            if (root.has("tracking_url")) {
+                String trackingUrl = root.path("tracking_url").asText(null);
+                if (trackingUrl != null && !trackingUrl.isBlank()) {
+                    delivery.setTrackingUrl(trackingUrl);
+                    deliveries.save(delivery);
+                }
+            }
+
             // Record driver details if present in webhook
             if (root.has("driver")) {
                 JsonNode driver = root.path("driver");

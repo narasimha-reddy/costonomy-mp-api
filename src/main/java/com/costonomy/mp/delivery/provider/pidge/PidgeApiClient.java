@@ -183,8 +183,9 @@ public class PidgeApiClient {
                 BigDecimal amount = new BigDecimal(body.path("fare").asText("50.00"));
                 int eta = body.path("eta_minutes").asInt(25);
                 Instant etaTime = Instant.now().plusSeconds(eta * 60L);
+                String trackingUrl = body.has("tracking_url") ? body.path("tracking_url").asText(null) : null;
 
-                return new DeliveryProvider.Booking(deliveryId, amount, "INR", eta, etaTime);
+                return new DeliveryProvider.Booking(deliveryId, amount, "INR", eta, etaTime, trackingUrl);
             }
             throw new DeliveryProviderException("PIDGE", "Failed to create delivery on Pidge", true);
 

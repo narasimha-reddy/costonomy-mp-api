@@ -78,6 +78,9 @@ public class DeliveryBookingService {
                 delivery.setCurrency(booking.currency());
                 delivery.setEtaMinutes(booking.etaMinutes());
                 delivery.setEstimatedArrivalAt(booking.estimatedArrivalAt());
+                if (booking.trackingUrl() != null) {
+                    delivery.setTrackingUrl(booking.trackingUrl());
+                }
                 delivery.setStatus(DeliveryStatus.PROVIDER_SELECTED);
                 delivery.setBookedAt(Instant.now());
                 delivery.setAssignmentDeadline(Instant.now().plus(java.time.Duration.ofMinutes(3)));

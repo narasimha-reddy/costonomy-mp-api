@@ -90,6 +90,9 @@ public class Delivery extends BaseEntity {
     @Column(name = "drop_contact_phone", length = 32)
     private String dropContactPhone;
 
+    @Column(name = "tracking_url", length = 1000)
+    private String trackingUrl;
+
     @Column(name = "weight_kg", precision = 19, scale = 4)
     private BigDecimal weightKg;
 

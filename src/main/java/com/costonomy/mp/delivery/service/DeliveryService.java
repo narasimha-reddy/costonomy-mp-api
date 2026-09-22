@@ -558,6 +558,7 @@ public class DeliveryService {
                 delivery.getDriverName(), delivery.getDriverPhone(), delivery.getDriverVehicle(),
                 delivery.getEtaMinutes(), delivery.getEstimatedArrivalAt(),
                 delivery.getMode().isTracked() && delivery.getStatus().isTrackable(),
+                delivery.getTrackingUrl(),
                 location, stale, ageSeconds,
                 delivery.getFailureCode(), delivery.getFailureReason(),
                 delivery.getRequestedAt(), delivery.getPickedUpAt(), delivery.getDeliveredAt(),

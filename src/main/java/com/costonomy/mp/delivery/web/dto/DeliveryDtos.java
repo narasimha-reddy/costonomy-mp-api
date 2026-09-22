@@ -63,6 +63,7 @@ public final class DeliveryDtos {
             Integer etaMinutes,
             Instant estimatedArrivalAt,
             boolean trackable,
+            String trackingUrl,
             LocationResponse location,
             boolean locationStale,
             Integer locationAgeSeconds,

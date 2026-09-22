@@ -145,7 +145,13 @@ public interface DeliveryProvider {
             BigDecimal amount,
             String currency,
             Integer etaMinutes,
-            Instant estimatedArrivalAt) {
+            Instant estimatedArrivalAt,
+            String trackingUrl) {
+
+        public Booking(String providerDeliveryId, BigDecimal amount, String currency,
+                       Integer etaMinutes, Instant estimatedArrivalAt) {
+            this(providerDeliveryId, amount, currency, etaMinutes, estimatedArrivalAt, null);
+        }
     }
 
     /** Provider-reported state, already mapped onto our vocabulary. */
