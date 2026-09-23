@@ -25,6 +25,35 @@ public class AdminDeliveryController {
     private final DeliveryStatsAggregationService statsAggregationService;
     private final com.costonomy.mp.delivery.service.AdminDeliveryExportService exportService;
 
+    @GetMapping
+    @Operation(summary = "List deliveries with pagination and filters",
+               description = "Returns paginated deliveries (default: last 10, newest first) " +
+                             "with joined supplier store, supplier org, and delivery provider details. " +
+                             "Requires DELIVERY_INSPECT permission at PLATFORM scope.")
+    public ApiResponse<DeliveryDtos.PagedResponse<DeliveryDtos.AdminDeliverySummaryResponse>> list(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String providerCode,
+            @RequestParam(required = false) Long supplierStoreId) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(adminDeliveryService.listDeliveries(actorId, page, size, status, providerCode, supplierStoreId));
+    }
+
+    @GetMapping("/late")
+    @Operation(summary = "List deliveries with missed ETA",
+               description = "Returns paginated deliveries with missed ETAs sorted by minutes overdue. " +
+                             "If liveOnly=true (default: true), only lists active deliveries currently in transit that have passed their estimated arrival. " +
+                             "If liveOnly=false, includes completed deliveries that breached quoted ETA. " +
+                             "Requires DELIVERY_INSPECT permission at PLATFORM scope.")
+    public ApiResponse<DeliveryDtos.PagedResponse<DeliveryDtos.AdminDeliverySummaryResponse>> listLate(
+            @RequestParam(defaultValue = "true") boolean liveOnly,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(adminDeliveryService.listLateDeliveries(actorId, liveOnly, page, size));
+    }
+
     @GetMapping("/{id}/ledger")
     @Operation(summary = "Audit trail for delivery financial ledger",
                description = "Requires DELIVERY_INSPECT permission at PLATFORM scope.")

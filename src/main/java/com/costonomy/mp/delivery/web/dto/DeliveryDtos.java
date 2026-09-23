@@ -187,5 +187,55 @@ public final class DeliveryDtos {
             BigDecimal totalCostInr,
             long orderCount) {
     }
+
+    /**
+     * Operational delivery summary for admin listing and missed-ETA monitoring,
+     * including joined supplier and delivery provider information.
+     */
+    public record AdminDeliverySummaryResponse(
+            Long id,
+            Long supplierOrderId,
+            String orderNumber,
+            Long outletId,
+            String outletName,
+            Long supplierStoreId,
+            String supplierStoreName,
+            String supplierOrgName,
+            String mode,
+            DeliveryStatus status,
+            String providerCode,
+            String providerName,
+            String providerDeliveryId,
+            BigDecimal fee,
+            String currency,
+            String vehicleType,
+            BigDecimal weightKg,
+            String driverName,
+            String driverPhone,
+            String driverVehicle,
+            Integer etaMinutes,
+            Instant estimatedArrivalAt,
+            Integer minutesOverdue,
+            Instant requestedAt,
+            Instant bookedAt,
+            Instant assignedAt,
+            Instant pickedUpAt,
+            Instant deliveredAt,
+            Instant cancelledAt,
+            String failureCode,
+            String failureReason
+    ) {}
+
+    /**
+     * Paginated response wrapper for delivery listings.
+     */
+    public record PagedResponse<T>(
+            List<T> items,
+            int page,
+            int size,
+            long totalElements,
+            int totalPages,
+            boolean hasNext
+    ) {}
 }
 

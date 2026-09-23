@@ -52,11 +52,14 @@ class AdminDeliveryServiceTest {
     @Mock
     private DeliveryService deliveryService;
 
+    @Mock
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
     private AdminDeliveryService service;
 
     @BeforeEach
     void setUp() {
-        service = new AdminDeliveryService(accessControl, deliveries, ledgerRepository, statsRepository, metricsRepository, waterfallService, deliveryService);
+        service = new AdminDeliveryService(accessControl, deliveries, ledgerRepository, statsRepository, metricsRepository, waterfallService, deliveryService, jdbc);
     }
 
 
@@ -104,5 +107,36 @@ class AdminDeliveryServiceTest {
 
         verify(accessControl).require(actorId, Permissions.DELIVERY_OPERATE, ScopeType.PLATFORM, null);
         verify(waterfallService).forceEscalate(deliveryId, "Driver stalled");
+    }
+
+    @Test
+    void listDeliveriesExecutesQueryWithPagination() {
+        Long actorId = 1L;
+        when(jdbc.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(25L);
+        when(jdbc.query(anyString(), any(org.springframework.jdbc.core.RowMapper.class), any(Object[].class)))
+                .thenReturn(List.of());
+
+        var result = service.listDeliveries(actorId, 0, 10, null, null, null);
+
+        verify(accessControl).require(actorId, Permissions.DELIVERY_INSPECT, ScopeType.PLATFORM, null);
+        assertThat(result.totalElements()).isEqualTo(25);
+        assertThat(result.size()).isEqualTo(10);
+        assertThat(result.page()).isEqualTo(0);
+        assertThat(result.totalPages()).isEqualTo(3);
+        assertThat(result.hasNext()).isTrue();
+    }
+
+    @Test
+    void listLateDeliveriesFiltersByBreachedEta() {
+        Long actorId = 1L;
+        when(jdbc.queryForObject(anyString(), eq(Long.class))).thenReturn(5L);
+        when(jdbc.query(anyString(), any(org.springframework.jdbc.core.RowMapper.class), any(Object[].class)))
+                .thenReturn(List.of());
+
+        var result = service.listLateDeliveries(actorId, true, 0, 10);
+
+        verify(accessControl).require(actorId, Permissions.DELIVERY_INSPECT, ScopeType.PLATFORM, null);
+        assertThat(result.totalElements()).isEqualTo(5);
+        assertThat(result.hasNext()).isFalse();
     }
 }

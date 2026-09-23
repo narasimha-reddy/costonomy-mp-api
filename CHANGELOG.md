@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [feat/pidge-15-admin-delivery-search-and-late-tracking] - PR 15
+### Added
+- Operations Delivery Search & Listing endpoint: `GET /api/v1/admin/deliveries?page=0&size=10&status=...&providerCode=...&supplierStoreId=...`.
+  - Lists last 10 deliveries by default (newest first) with full pagination metadata (`PagedResponse`).
+  - Joins order number (`supplier_order`), outlet name (`outlet`), supplier store name (`supplier_store`), supplier org name (`supplier_organization`), and delivery provider name (`delivery_provider`).
+- Dedicated Missed ETA Tracking endpoint: `GET /api/v1/admin/deliveries/late?liveOnly=true&page=0&size=10`.
+  - Computes `minutesOverdue` live using `estimated_arrival_at` for active deliveries or historical SLA overruns for completed deliveries.
+  - Sorts automatically by urgency (highest `minutesOverdue` first).
+- `AdminDeliverySummaryResponse` and `PagedResponse` DTO records.
+- Unit test coverage in `AdminDeliveryServiceTest`.
+
+---
+
 ## [feat/pidge-14-webhook-signature-verification] - PR 14
 ### Added
 - Environment-injected webhook secret binding: `costonomy.mp.delivery.webhook-secret=${DELIVERY_WEBHOOK_SECRET:${PIDGE_WEBHOOK_SECRET:}}`.
