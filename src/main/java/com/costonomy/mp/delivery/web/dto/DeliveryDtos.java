@@ -237,5 +237,102 @@ public final class DeliveryDtos {
             int totalPages,
             boolean hasNext
     ) {}
+
+    public enum ArrivalStage {
+        AT_KITCHEN_DOOR,
+        APPROACHING,
+        EN_ROUTE,
+        AT_SUPPLIER_PICKUP,
+        DRIVER_DISPATCHED,
+        AWAITING_DRIVER,
+        DELIVERED_UNCHECKED
+    }
+
+    public enum ScheduleStatus {
+        ON_SCHEDULE,
+        RUNNING_LATE,
+        CRITICALLY_DELAYED
+    }
+
+    public enum ProblemType {
+        NONE,
+        STALE_TELEMETRY,
+        MISSED_ETA,
+        CARRIER_EXCEPTION,
+        UNASSIGNED_TIMEOUT
+    }
+
+    public enum KitchenAction {
+        CHECK_IN,
+        MEET_DRIVER,
+        PREPARE_DOCK,
+        CALL_DRIVER,
+        ESCALATE,
+        MONITOR
+    }
+
+    public record DriverInfo(
+            String name,
+            String phone,
+            String vehicle
+    ) {}
+
+    public record SupplierInfo(
+            Long supplierStoreId,
+            String supplierStoreName,
+            String supplierOrgName,
+            String contactPhone
+    ) {}
+
+    public record ProblemDetails(
+            boolean hasProblem,
+            ProblemType problemType,
+            String problemDescription,
+            String failureCode,
+            String failureReason
+    ) {}
+
+    public record OutletDeliveryRadarItemResponse(
+            Long deliveryId,
+            Long supplierOrderId,
+            String orderNumber,
+            Long outletId,
+            DeliveryStatus status,
+            ArrivalStage arrivalStage,
+            int arrivalRank,
+            ScheduleStatus scheduleStatus,
+            Integer minutesOverdue,
+            Integer etaMinutes,
+            Instant estimatedArrivalAt,
+            SupplierInfo supplier,
+            DriverInfo driver,
+            ProblemDetails problem,
+            KitchenAction recommendedAction,
+            String actionReason,
+            boolean isCheckedIn,
+            LocationResponse location,
+            boolean locationStale,
+            Integer locationAgeSeconds,
+            Instant requestedAt,
+            Instant assignedAt,
+            Instant pickedUpAt,
+            Instant deliveredAt
+    ) {}
+
+    public record RadarSummaryResponse(
+            int totalActive,
+            int atDoorCount,
+            int approachingCount,
+            int enRouteCount,
+            int delayedCount,
+            int pendingCheckInCount,
+            int requiresEscalationCount
+    ) {}
+
+    public record OutletDeliveryRadarResponse(
+            Long outletId,
+            RadarSummaryResponse summary,
+            List<OutletDeliveryRadarItemResponse> items
+    ) {}
 }
 
