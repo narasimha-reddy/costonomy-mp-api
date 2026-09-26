@@ -1,6 +1,7 @@
 package com.costonomy.mp.payment.provider;
 
 import java.math.BigDecimal;
+import java.util.Optional;
 
 /**
  * Takes and returns money. Doc 02 §2, doc 21.
@@ -51,6 +52,20 @@ public interface PaymentProvider {
     ProviderPayment fetchPayment(String providerPaymentId);
 
     /**
+     * The payment that completed an intent, if the customer completed it.
+     *
+     * <p>The recovery path when we never learned the payment id at all: the
+     * customer paid and the client died before calling confirm, and the webhook
+     * was lost. All we hold then is the intent, so we ask by that.
+     *
+     * <p>Returns only a payment holding or having taken money. A declined attempt
+     * is not an answer — the customer can try again against the same intent, and
+     * treating their first decline as the outcome would abandon an order they
+     * then paid for.
+     */
+    Optional<ProviderPayment> findPaymentForOrder(String providerOrderId);
+
+    /**
      * Take an authorised amount, up to what was authorised.
      *
      * <p>Doc 01 §14: only the accepted commercial value is captured, so this is
@@ -99,6 +114,12 @@ public interface PaymentProvider {
     /** The provider's view of a payment. Authoritative over ours. */
     record ProviderPayment(
             String providerPaymentId,
+            /**
+             * The intent this payment completed. What ties a payment id a client
+             * hands us to the payment it claims to complete — without it, any
+             * authorised payment id would fund any order.
+             */
+            String providerOrderId,
             ProviderPaymentStatus status,
             BigDecimal authorizedAmount,
             BigDecimal capturedAmount,

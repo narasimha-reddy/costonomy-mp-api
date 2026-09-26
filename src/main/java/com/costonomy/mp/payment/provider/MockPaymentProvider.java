@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -50,6 +51,8 @@ public class MockPaymentProvider implements PaymentProvider {
 
     private final Map<String, ProviderPayment> payments = new ConcurrentHashMap<>();
     private final Map<String, BigDecimal> intents = new ConcurrentHashMap<>();
+    /** Intent → the payment that completed it, for {@link #findPaymentForOrder}. */
+    private final Map<String, String> paymentByOrder = new ConcurrentHashMap<>();
 
     @Override
     public String name() {
@@ -84,16 +87,17 @@ public class MockPaymentProvider implements PaymentProvider {
         String paymentId = "mock_pay_" + UUID.randomUUID().toString().replace("-", "");
 
         if (endsWith(amount, DECLINE_SUFFIX)) {
-            var declined = new ProviderPayment(paymentId, ProviderPaymentStatus.FAILED,
+            var declined = new ProviderPayment(paymentId, providerOrderId, ProviderPaymentStatus.FAILED,
                     BigDecimal.ZERO, BigDecimal.ZERO, "CARD_DECLINED",
                     "The card was declined by the issuing bank.");
             payments.put(paymentId, declined);
             return declined;
         }
 
-        var authorized = new ProviderPayment(paymentId, ProviderPaymentStatus.AUTHORIZED,
+        var authorized = new ProviderPayment(paymentId, providerOrderId, ProviderPaymentStatus.AUTHORIZED,
                 amount, BigDecimal.ZERO, null, null);
         payments.put(paymentId, authorized);
+        paymentByOrder.put(providerOrderId, paymentId);
         return authorized;
     }
 
@@ -105,6 +109,12 @@ public class MockPaymentProvider implements PaymentProvider {
                     "Unknown mock payment " + providerPaymentId, false, "NOT_FOUND");
         }
         return payment;
+    }
+
+    @Override
+    public Optional<ProviderPayment> findPaymentForOrder(String providerOrderId) {
+        // Declines are never recorded here, matching the port's contract.
+        return Optional.ofNullable(paymentByOrder.get(providerOrderId)).map(payments::get);
     }
 
     @Override
@@ -131,7 +141,8 @@ public class MockPaymentProvider implements PaymentProvider {
                     "Capture failed at the gateway", true, "GATEWAY_ERROR");
         }
 
-        var captured = new ProviderPayment(providerPaymentId, ProviderPaymentStatus.CAPTURED,
+        var captured = new ProviderPayment(providerPaymentId, payment.providerOrderId(),
+                ProviderPaymentStatus.CAPTURED,
                 payment.authorizedAmount(), amount, null, null);
         payments.put(providerPaymentId, captured);
         return captured;
@@ -143,7 +154,8 @@ public class MockPaymentProvider implements PaymentProvider {
         if (payment.status() == ProviderPaymentStatus.RELEASED) {
             return payment;
         }
-        var released = new ProviderPayment(providerPaymentId, ProviderPaymentStatus.RELEASED,
+        var released = new ProviderPayment(providerPaymentId, payment.providerOrderId(),
+                ProviderPaymentStatus.RELEASED,
                 payment.authorizedAmount(), BigDecimal.ZERO, null, null);
         payments.put(providerPaymentId, released);
         return released;
