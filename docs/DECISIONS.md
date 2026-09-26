@@ -3520,3 +3520,87 @@ from the other side, with the same `traded` requirement.
 Both request and order detail screens, on both sides, now carry the action in
 their header. It opens the **pair's** thread, not a thread about that order —
 the order is shared *into* it, which is what the share picker is for.
+
+---
+
+## D-098 — Razorpay's checkout opens on the client, and the adapter speaks Razorpay's documented API
+**Raised 2026-09-26 · Settled 2026-09-26**
+
+The Razorpay adapter existed from Phase 7 but had only ever run against the
+mock, and the app had no way to open Razorpay's checkout at all — the pay screen
+always called the mock-only simulation, which the server refuses against a real
+provider. So `PAYMENT_PROVIDER=RAZORPAY` produced an app nobody could pay in.
+Wiring the client exposed six places where the adapter and Razorpay disagreed.
+Each was checked against Razorpay's own documentation, not inferred.
+
+**The client opens the provider's checkout, chosen by the intent.** The app
+reads `provider` off the payment intent — `RAZORPAY` opens Razorpay's window
+(checkout.js on web, `react-native-razorpay` on iOS and Android), `MOCK` uses the
+simulation. Never a build flag: a build and a server that disagreed about the
+provider would fail in the one place it matters. The client sends no amount;
+Razorpay reads it from the order the server created, so no paise are computed in
+the app. Checkout ends at *which* payment; confirm still asks the provider.
+
+**Native needs a development build.** `react-native-razorpay` wraps Razorpay's
+native SDKs, which Expo Go does not contain. It is required lazily so Expo Go
+shows "this preview build cannot open the payment window" rather than crashing.
+
+What the adapter had wrong, and what changed (7 and 8 were found later, by
+the test-mode suite and while writing it):
+
+1. **Confirm accepted any payment id.** `/payments/{id}/confirm` fetched whatever
+   id it was given and applied its state, so any authorised payment — a cheaper
+   one, another outlet's — funded the order. `ProviderPayment` now carries the
+   provider order id, and `PaymentService.completes` requires it to match the
+   intent we minted (and, when money first appears, the amount). Confirm refuses
+   with `VALIDATION_ERROR` and audits `PAYMENT_CONFIRM_MISMATCH`; the webhook,
+   sweep and capture paths ignore a mismatch and log it at error.
+2. **Every real webhook was malformed.** The event id was read from the body.
+   Razorpay sends it only in the `X-Razorpay-Event-Id` header, which is also what
+   they say to deduplicate on. The header now wins; a body `id` remains the
+   fallback the mock uses.
+3. **Reconciliation could not find a payment it only had the intent for.** If
+   the client died after paying and the webhook was lost, the sweep skipped the
+   payment because it had no payment id. It now asks
+   `GET /v1/orders/{id}/payments`, for intents under a day old. Only a payment
+   holding or having taken money counts: Razorpay lets a customer retry inside
+   one order, so a declined first attempt is not the outcome.
+4. **Manual capture used an undocumented flag.** `payment_capture: 0` is not in
+   the current Orders API; the documented form is
+   `payment: { capture: "manual", capture_options: { manual_expiry_period } }`.
+   Had the flag been ignored, the dashboard default would decide.
+5. **"Already captured" read as failure.** Razorpay refuses a second capture with
+   a 400. After a capture whose response was lost, that refusal means it worked,
+   and treating it as a rejection marked a captured payment `FAILED`. On any
+   non-retryable capture refusal the adapter now fetches the payment and returns
+   it if it is captured.
+6. **Refunds were not idempotent at Razorpay.** The adapter sent
+   `X-Razorpay-Idempotency-Key`, which Razorpay does not read. The documented
+   header is `X-Refund-Idempotency`, with a key of at least ten characters — so
+   the refund key moved from `refund-{id}` to `mandi-refund-{id}`. Orders and
+   captures have no idempotency header at all; they rely on `uk_payment_order`
+   and on point 5.
+7. **An id the provider does not know no longer fails the payment.** Confirm
+   used to mark the payment `FAILED` on any non-retryable lookup error — and
+   `FAILED` is terminal, so one stale or garbled id from a client made the order
+   unpayable for good. It is the client's claim that is wrong, so confirm now
+   refuses it with `VALIDATION_ERROR` and changes nothing, like a mismatch.
+8. **A webhook about a payment we never made stays `IGNORED`.** The handler
+   marked it `IGNORED` and then overwrote that with `PROCESSED`, so the events
+   kept precisely to make such cases diagnosable looked like ordinary work.
+
+**Rejected:** trusting Razorpay's client-side `razorpay_signature` instead of
+fetching the payment. It proves the checkout completed; it does not say what
+state the payment is in now, and confirm's contract is that the provider is asked.
+
+**Verified against Razorpay's test mode** on 2026-09-26 by
+`costonomy-mp-mobile/tools/razorpay-e2e`: 27 cases, most of them failures —
+declined cards, wrong OTPs, retries inside one order, a closed window, a lost
+confirm recovered by the sweep and by a webhook, forged and duplicate webhooks,
+refund idempotency — each asserting our database and Razorpay's own record. Two
+full runs passed back to back. Point 8 was found by that suite.
+
+**Still open.** UPI: the test account's checkout does not offer it, so the UPI
+test ids cannot be exercised yet. Real webhook delivery from Razorpay (through a
+tunnel) is simulated with correctly signed requests rather than observed.
+OPEN-005 (the delivery fee) is unaffected.
