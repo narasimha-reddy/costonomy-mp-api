@@ -137,7 +137,8 @@ public class OrderFundingAdapter implements OrderFundingPort {
             // path that bypassed that. It used to log "a refund is required" and
             // stop: the restaurant was charged for a cancelled order and nothing
             // ever refunded it. Now the full remaining amount is refunded, once
-            // (the key is the order's), with no one having to ask.
+            // (the key is the order's), with no one having to ask — to the
+            // outlet's wallet, from which it can go back to the card (D-104).
             refundService.refundCancelled(payment, reason);
             return;
         }

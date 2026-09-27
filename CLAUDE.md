@@ -18,7 +18,8 @@ Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 >
 > **The mobile app is built**, across both roles — see `costonomy-mp-mobile`.
 > Recent work adds wallets, direct orders, chat, SKU detail and store contacts
-> (migrations V31–V36, decisions D-092…D-097).
+> (migrations V31–V36, decisions D-092…D-097), then Razorpay checkout, capture at
+> "ready" and refunds to the wallet (V37–V38, D-098…D-104).
 >
 > **New here? Read `docs/ONBOARDING.md` first** — setup, seed accounts, how we
 > branch and review, and the questions that are genuinely still open.
@@ -346,10 +347,11 @@ D-020. Submission creates supplier orders in `DRAFT` with **no acceptance
 deadline**; `OrderReleaseService.releaseIfFunded` moves them to
 `PENDING_ACCEPTANCE` and starts the clock at that moment, from whichever of the
 confirm call, the webhook or the reconciliation job arrives first. Funding means
-`PaymentStatus.fundsSecured()` — nothing else may decide it. Money is captured
-only after acceptance and only for what was accepted; the remainder of a partial
-acceptance is *released*, never refunded, so nothing reaches the restaurant's
-statement that should not be there.
+`PaymentStatus.fundsSecured()` — nothing else may decide it. Money is held from
+payment and captured only when the supplier marks the order ready (D-103), and
+only for what was accepted; the remainder of a partial acceptance is *released*,
+never refunded, and so is the whole hold if the order is cancelled before ready —
+nothing reaches the restaurant's statement that should not be there.
 
 This applies identically to credit, which is why both go through
 `OrderFundingPort` and `OrderFunding` routes between them. A credit order differs
@@ -357,6 +359,16 @@ only in timing: the reservation succeeds or fails inside the submission, so the
 order releases immediately and there is no intent for the client to complete. Add
 a funding method by adding an `OrderFundingPort`, never by branching on the
 payment method in procurement.
+
+**A refund goes to the wallet, and leaves it only for the card it came from.**
+D-104. There is no endpoint for a restaurant to refund itself, and there must not
+be one. A refund is credited to the outlet's wallet in one transaction
+(`RefundService.refundToWallet`, `destination = WALLET`) and counts against the
+payment then; a withdrawal is a provider refund on the payment the money was
+refunded from, which must **not** count again. Only refund money can be
+withdrawn. Anything that decides what a wallet can give back holds the wallet row
+first and the payment second — the other order deadlocks with a withdrawal.
+**Costonomy never funds a refund**: the supplier bears it, from their payout.
 
 **Credit is supplier-funded and supplier-controlled.** Doc 01 §18. Every limit,
 term, per-order cap and suspension is the supplier's; Mandi runs the workflow,
