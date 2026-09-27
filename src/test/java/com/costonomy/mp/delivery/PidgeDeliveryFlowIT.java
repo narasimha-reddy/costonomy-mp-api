@@ -46,17 +46,65 @@ class PidgeDeliveryFlowIT extends AbstractIntegrationTest {
         return HexFormat.of().formatHex(mac.doFinal(payload.getBytes(StandardCharsets.UTF_8)));
     }
 
-    private Long createSeedDelivery(String providerDeliveryId) {
+    private Long createSeedDelivery(String providerDeliveryId) throws Exception {
+        String buyerPhone = ApiClient.freshPhone();
+        String buyerToken = api.login(buyerPhone);
+        JsonNode r = api.post(buyerToken, "/api/v1/restaurants", Map.of(
+                "name", "Pidge Test Restaurant",
+                "firstOutlet", Map.of(
+                        "name", "Indiranagar",
+                        "addressLine1", "100 Feet Rd",
+                        "city", "Bengaluru",
+                        "state", "Karnataka",
+                        "pincode", "560038",
+                        "latitude", "12.9716",
+                        "longitude", "77.5946"))).get("data");
+        long outletId = r.get("outlets").get(0).get("id").asLong();
+        Long buyerUserId = jdbc.queryForObject("select id from users where phone = ?", Long.class, "+91" + buyerPhone);
+
+        String sellerPhone = ApiClient.freshPhone();
+        String sellerToken = api.login(sellerPhone);
+        JsonNode s = api.post(sellerToken, "/api/v1/suppliers", Map.of(
+                "legalName", "Pidge Supplier " + System.currentTimeMillis() + " Pvt Ltd",
+                "displayName", "Pidge Supplier",
+                "firstStore", Map.of(
+                        "name", "Koramangala Store",
+                        "addressLine1", "80 Feet Rd",
+                        "city", "Bengaluru",
+                        "state", "Karnataka",
+                        "latitude", "12.9352",
+                        "longitude", "77.6245"))).get("data");
+        long storeId = s.get("stores").get(0).get("id").asLong();
+
+        // Insert minimal procurement
+        jdbc.update("""
+                insert into procurement (outlet_id, created_by, status, approval_status,
+                                         payment_method, payment_status, total_amount, created_at, updated_at, version)
+                values (?, ?, 'SUBMITTED', 'NOT_REQUIRED', 'PREPAID', 'CAPTURED', 500.00, now(6), now(6), 0)
+                """, outletId, buyerUserId);
+        Long procurementId = jdbc.queryForObject(
+                "select id from procurement where outlet_id = ? order by id desc limit 1", Long.class, outletId);
+
+        String orderNumber = "SO-" + System.currentTimeMillis() + "-" + (int)(Math.random() * 10000);
+        jdbc.update("""
+                insert into supplier_order (procurement_id, supplier_store_id, outlet_id,
+                                            order_number, status, total_amount, accepted_amount,
+                                            payment_method, payment_status, created_at, updated_at, version)
+                values (?, ?, ?, ?, 'READY_FOR_PICKUP', 500.00, 500.00, 'PREPAID', 'CAPTURED', now(6), now(6), 0)
+                """, procurementId, storeId, outletId, orderNumber);
+        Long supplierOrderId = jdbc.queryForObject(
+                "select id from supplier_order where order_number = ?", Long.class, orderNumber);
+
         // Create minimal delivery record for testing
         jdbc.update("""
                 insert into delivery (supplier_order_id, outlet_id, supplier_store_id, mode, status,
                                       provider_code, provider_delivery_id, fee, currency,
                                       pickup_address, drop_address, requested_at, created_at, updated_at, version)
-                values (99001, 1, 1, 'COSTONOMY', 'PROVIDER_SELECTED',
+                values (?, ?, ?, 'COSTONOMY', 'PROVIDER_SELECTED',
                         'PIDGE', ?, 65.0000, 'INR',
                         'Pickup Point, Indiranagar, Bengaluru', 'Drop Point, Koramangala, Bengaluru',
                         now(6), now(6), now(6), 0)
-                """, providerDeliveryId);
+                """, supplierOrderId, outletId, storeId, providerDeliveryId);
 
         return jdbc.queryForObject(
                 "select id from delivery where provider_delivery_id = ? order by id desc limit 1",

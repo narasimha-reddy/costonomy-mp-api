@@ -2,6 +2,7 @@ package com.costonomy.mp.identity.service;
 
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.Map;
 
@@ -23,6 +24,7 @@ import java.util.Map;
  * serve fit in the table below. Swap it for libphonenumber when the second
  * country arrives.
  */
+@Slf4j
 public final class PhoneNumbers {
 
     /** ISO country → (dialling code, expected national significant digits). */
@@ -48,51 +50,73 @@ public final class PhoneNumbers {
      * @throws BusinessException {@code VALIDATION_ERROR} if it cannot be a valid number
      */
     public static String normalize(String raw, String country) {
+        String effectiveCountry = (country == null || country.isBlank()) ? DEFAULT_COUNTRY : country.toUpperCase();
+        log.info("[PHONE_EVENT_SEQ 1/3: NORMALIZE_REQUESTED] Phone normalization requested: raw='{}', country='{}' (effectiveCountry='{}')",
+                mask(raw), country, effectiveCountry);
+
         if (raw == null || raw.isBlank()) {
-            throw invalid();
+            throw invalid("Raw input is null or blank (country=" + country + ")");
         }
 
         // Strip everything a human might type: spaces, dashes, brackets, dots.
         String cleaned = raw.replaceAll("[\\s()\\-.]", "");
+        log.debug("[PHONE_EVENT_SEQ 2/3: SANITIZED] Cleaned phone input: raw='{}' -> cleaned='{}'", mask(raw), mask(cleaned));
 
-        CountryRule rule = RULES.get(country == null ? DEFAULT_COUNTRY : country.toUpperCase());
+        CountryRule rule = RULES.get(effectiveCountry);
         if (rule == null) {
-            throw invalid();
+            throw invalid("Unsupported country '" + country + "'. Supported countries: " + RULES.keySet());
         }
 
         if (cleaned.startsWith("+")) {
             String digits = cleaned.substring(1);
             if (!digits.matches("\\d{8,15}")) {
-                throw invalid();
+                throw invalid("International number with '+' has " + digits.length()
+                        + " digits, expected 8-15 (masked=" + mask(digits) + ")");
             }
-            return "+" + digits;
+            String result = "+" + digits;
+            log.info("[PHONE_EVENT_SEQ 3/3: NORMALIZED] Normalized via explicit '+' prefix: input='{}' -> result='{}' (country='{}')",
+                    mask(raw), mask(result), effectiveCountry);
+            return result;
         }
 
         // 00 is the other international prefix in common use.
         if (cleaned.startsWith("00")) {
+            log.info("[PHONE_EVENT_SEQ 2/3: PREFIX_TRANSFORM] Detected international prefix '00', rewriting as '+' and re-normalizing: raw='{}'",
+                    mask(raw));
             return normalize("+" + cleaned.substring(2), country);
         }
 
         if (!cleaned.matches("\\d+")) {
-            throw invalid();
+            throw invalid("Cleaned number contains non-digit characters (cleaned=" + mask(cleaned) + ")");
         }
 
         // A single leading zero is the national trunk prefix, not part of the number.
         if (cleaned.length() == rule.nationalDigits() + 1 && cleaned.startsWith("0")) {
+            log.info("[PHONE_EVENT_SEQ 2/3: TRUNK_PREFIX_STRIPPED] Stripped leading national trunk prefix '0' (country='{}'): '{}' -> '{}'",
+                    effectiveCountry, mask(cleaned), mask(cleaned.substring(1)));
             cleaned = cleaned.substring(1);
         }
 
         // Already carries the country code but no '+'.
         if (cleaned.length() == rule.diallingCode().length() + rule.nationalDigits()
                 && cleaned.startsWith(rule.diallingCode())) {
-            return "+" + cleaned;
+            String result = "+" + cleaned;
+            log.info("[PHONE_EVENT_SEQ 3/3: NORMALIZED] Matched country dialling code without '+': input='{}' -> result='{}' (country='{}')",
+                    mask(raw), mask(result), effectiveCountry);
+            return result;
         }
 
         if (cleaned.length() == rule.nationalDigits()) {
-            return "+" + rule.diallingCode() + cleaned;
+            String result = "+" + rule.diallingCode() + cleaned;
+            log.info("[PHONE_EVENT_SEQ 3/3: NORMALIZED] Matched bare national format ({} digits): input='{}' -> result='{}' (country='{}')",
+                    rule.nationalDigits(), mask(raw), mask(result), effectiveCountry);
+            return result;
         }
 
-        throw invalid();
+        throw invalid("Length " + cleaned.length() + " does not match expected national digits ("
+                + rule.nationalDigits() + ") or dialling code + national digits ("
+                + (rule.diallingCode().length() + rule.nationalDigits()) + ") for country '" + effectiveCountry
+                + "' (cleaned=" + mask(cleaned) + ")");
     }
 
     /** {@code +919999000001} → {@code +91******0001}. For logs and audit (doc 09 §6). */
@@ -103,7 +127,8 @@ public final class PhoneNumbers {
         return phone.substring(0, 3) + "******" + phone.substring(phone.length() - 4);
     }
 
-    private static BusinessException invalid() {
+    private static BusinessException invalid(String reason) {
+        log.warn("[PHONE_EVENT_SEQ: NORMALIZATION_FAILED] Rejecting phone number: {}", reason);
         return new BusinessException(ErrorCode.VALIDATION_ERROR,
                 "That doesn't look like a valid mobile number.");
     }

@@ -1,6 +1,8 @@
 package com.costonomy.mp.delivery.web;
 
 import com.costonomy.mp.common.api.ApiResponse;
+import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.delivery.provider.pidge.PidgeWebhookService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
@@ -38,6 +40,9 @@ public class DeliveryWebhookController {
             @RequestHeader(value = "X-Pidge-Signature", required = false) String signature) {
 
         boolean processed = pidgeWebhooks.handle(rawBody, signature);
+            if (!processed) {
+                throw new BusinessException(ErrorCode.UNAUTHENTICATED, "Webhook signature is invalid.");
+            }
         return ApiResponse.ok(Map.of("received", true, "processed", processed));
     }
 }
