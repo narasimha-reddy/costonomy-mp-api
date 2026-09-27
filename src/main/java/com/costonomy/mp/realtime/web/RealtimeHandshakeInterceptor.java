@@ -37,17 +37,24 @@ public class RealtimeHandshakeInterceptor implements HandshakeInterceptor {
     public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response,
                                    WebSocketHandler handler, Map<String, Object> attributes) {
 
+        String origin = request.getHeaders().getOrigin();
+        log.info("[REALTIME_EVENT_SEQ 1/2: HANDSHAKE_REQUESTED] Incoming WebSocket handshake: origin='{}', path='{}'",
+                origin, request.getURI().getPath());
+
         String ticket = ticketFrom(request);
         Long userId = tickets.consume(ticket);
 
         if (userId == null) {
             // Spent, expired or never issued — one answer for all three, so a
             // caller cannot probe which.
-            log.debug("Rejected a realtime handshake with an unusable ticket");
+            log.warn("[REALTIME_EVENT_SEQ: HANDSHAKE_REJECTED] Rejected realtime handshake: ticket is missing, expired, or already consumed (origin='{}')",
+                    origin);
             return false;
         }
 
         attributes.put(USER_ID, userId);
+        log.info("[REALTIME_EVENT_SEQ 2/2: HANDSHAKE_ACCEPTED] Accepted realtime handshake for userId={} (origin='{}')",
+                userId, origin);
         return true;
     }
 

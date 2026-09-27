@@ -63,6 +63,7 @@ public final class DeliveryDtos {
             Integer etaMinutes,
             Instant estimatedArrivalAt,
             boolean trackable,
+            String trackingUrl,
             LocationResponse location,
             boolean locationStale,
             Integer locationAgeSeconds,
@@ -71,6 +72,9 @@ public final class DeliveryDtos {
             Instant requestedAt,
             Instant pickedUpAt,
             Instant deliveredAt,
+            BigDecimal weightKg,
+            BigDecimal volumeCbm,
+            String vehicleType,
             List<EventResponse> timeline) {
     }
 
@@ -130,4 +134,205 @@ public final class DeliveryDtos {
             @DecimalMax(value = "500.0", message = "A delivery radius of more than 500 km is not a radius")
             BigDecimal maxDeliveryRadiusKm) {
     }
+
+    public record DeliveryLedgerResponse(
+            Long id,
+            Long deliveryId,
+            String providerCode,
+            String providerDeliveryId,
+            String entryType,
+            BigDecimal amount,
+            String currency,
+            String description,
+            Instant createdAt) {
+    }
+
+    /**
+     * Per-provider reliability snapshot for one calendar day. Doc 06 §4 (future).
+     *
+     * <p>Rates are expressed as percentages (0–100) rounded to one decimal place
+     * so the API consumer doesn't need to do maths.
+     */
+    public record ProviderStatsResponse(
+            String providerCode,
+            java.time.LocalDate windowDate,
+            int totalBookings,
+            int driverCancellations,
+            int pickupFailures,
+            int deliveryFailures,
+            int etaOverruns,
+            int completedDeliveries,
+            /** Cancellation rate as a percentage, e.g. 12.5 means 12.5%. */
+            double cancellationRatePct,
+            /** ETA breach rate as a percentage. */
+            double etaBreachRatePct,
+            /** Combined failure rate as a percentage. */
+            double overallFailureRatePct,
+            /** Average actual minutes from DRIVER_ASSIGNED to DELIVERED. */
+            Integer avgActualEtaMinutes,
+            /** Average quoted ETA minutes at booking time. */
+            Integer avgQuotedEtaMinutes,
+            /** Average price deviation in INR (positive = provider charged more than quoted). */
+            BigDecimal avgPriceDeviationInr) {
+    }
+
+    /**
+     * Aggregated latency and cost metrics for a delivery provider over a 2-hour window.
+     */
+    public record ProviderMetricsResponse(
+            String providerCode,
+            Instant windowStart,
+            double avgLatencyMs,
+            double p95LatencyMs,
+            BigDecimal totalCostInr,
+            long orderCount) {
+    }
+
+    /**
+     * Operational delivery summary for admin listing and missed-ETA monitoring,
+     * including joined supplier and delivery provider information.
+     */
+    public record AdminDeliverySummaryResponse(
+            Long id,
+            Long supplierOrderId,
+            String orderNumber,
+            Long outletId,
+            String outletName,
+            Long supplierStoreId,
+            String supplierStoreName,
+            String supplierOrgName,
+            String mode,
+            DeliveryStatus status,
+            String providerCode,
+            String providerName,
+            String providerDeliveryId,
+            BigDecimal fee,
+            String currency,
+            String vehicleType,
+            BigDecimal weightKg,
+            String driverName,
+            String driverPhone,
+            String driverVehicle,
+            Integer etaMinutes,
+            Instant estimatedArrivalAt,
+            Integer minutesOverdue,
+            Instant requestedAt,
+            Instant bookedAt,
+            Instant assignedAt,
+            Instant pickedUpAt,
+            Instant deliveredAt,
+            Instant cancelledAt,
+            String failureCode,
+            String failureReason
+    ) {}
+
+    /**
+     * Paginated response wrapper for delivery listings.
+     */
+    public record PagedResponse<T>(
+            List<T> items,
+            int page,
+            int size,
+            long totalElements,
+            int totalPages,
+            boolean hasNext
+    ) {}
+
+    public enum ArrivalStage {
+        AT_KITCHEN_DOOR,
+        APPROACHING,
+        EN_ROUTE,
+        AT_SUPPLIER_PICKUP,
+        DRIVER_DISPATCHED,
+        AWAITING_DRIVER,
+        DELIVERED_UNCHECKED
+    }
+
+    public enum ScheduleStatus {
+        ON_SCHEDULE,
+        RUNNING_LATE,
+        CRITICALLY_DELAYED
+    }
+
+    public enum ProblemType {
+        NONE,
+        STALE_TELEMETRY,
+        MISSED_ETA,
+        CARRIER_EXCEPTION,
+        UNASSIGNED_TIMEOUT
+    }
+
+    public enum KitchenAction {
+        CHECK_IN,
+        MEET_DRIVER,
+        PREPARE_DOCK,
+        CALL_DRIVER,
+        ESCALATE,
+        MONITOR
+    }
+
+    public record DriverInfo(
+            String name,
+            String phone,
+            String vehicle
+    ) {}
+
+    public record SupplierInfo(
+            Long supplierStoreId,
+            String supplierStoreName,
+            String supplierOrgName,
+            String contactPhone
+    ) {}
+
+    public record ProblemDetails(
+            boolean hasProblem,
+            ProblemType problemType,
+            String problemDescription,
+            String failureCode,
+            String failureReason
+    ) {}
+
+    public record OutletDeliveryRadarItemResponse(
+            Long deliveryId,
+            Long supplierOrderId,
+            String orderNumber,
+            Long outletId,
+            DeliveryStatus status,
+            ArrivalStage arrivalStage,
+            int arrivalRank,
+            ScheduleStatus scheduleStatus,
+            Integer minutesOverdue,
+            Integer etaMinutes,
+            Instant estimatedArrivalAt,
+            SupplierInfo supplier,
+            DriverInfo driver,
+            ProblemDetails problem,
+            KitchenAction recommendedAction,
+            String actionReason,
+            boolean isCheckedIn,
+            LocationResponse location,
+            boolean locationStale,
+            Integer locationAgeSeconds,
+            Instant requestedAt,
+            Instant assignedAt,
+            Instant pickedUpAt,
+            Instant deliveredAt
+    ) {}
+
+    public record RadarSummaryResponse(
+            int totalActive,
+            int atDoorCount,
+            int approachingCount,
+            int enRouteCount,
+            int delayedCount,
+            int pendingCheckInCount,
+            int requiresEscalationCount
+    ) {}
+
+    public record OutletDeliveryRadarResponse(
+            Long outletId,
+            RadarSummaryResponse summary,
+            List<OutletDeliveryRadarItemResponse> items
+    ) {}
 }
+

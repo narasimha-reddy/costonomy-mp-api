@@ -110,7 +110,7 @@ public class MockDeliveryProvider implements DeliveryProvider {
         var quote = new Quote("mock_q_" + UUID.randomUUID().toString().replace("-", ""),
                 true, amount, "INR", eta,
                 BigDecimal.valueOf(distanceKm).setScale(4, RoundingMode.HALF_UP).doubleValue(),
-                Instant.now().plus(Duration.ofMinutes(15)), null);
+                Instant.now().plus(Duration.ofMinutes(15)), null, request.vehicleType());
         quotes.put(quote.providerQuoteId(), quote);
         return quote;
     }

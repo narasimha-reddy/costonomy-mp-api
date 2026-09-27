@@ -4,6 +4,7 @@ import com.costonomy.mp.common.api.ApiResponse;
 import com.costonomy.mp.common.idempotency.IdempotencyService;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import com.costonomy.mp.delivery.service.DeliveryService;
+import com.costonomy.mp.delivery.service.OutletDeliveryRadarService;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
 import com.costonomy.mp.identity.security.ActorContext;
 import io.swagger.v3.oas.annotations.Operation;
@@ -30,6 +31,7 @@ public class DeliveryController {
 
     private final DeliveryService deliveries;
     private final IdempotencyService idempotency;
+    private final OutletDeliveryRadarService radarService;
 
     @PostMapping("/supplier-orders/{orderId}/delivery")
     @Operation(
@@ -133,5 +135,40 @@ public class DeliveryController {
     public ApiResponse<DeliveryDtos.DeliveryResponse> delivered(@PathVariable Long id) {
         return ApiResponse.ok(deliveries.supplierReports(
                 ActorContext.requireUserId(), id, DeliveryStatus.DELIVERED));
+    }
+
+    // ── Outlet Delivery Radar & Operational Situation ───────────────────
+
+    @GetMapping("/outlets/{outletId}/deliveries/radar")
+    @Operation(
+            summary = "Situational delivery radar for an outlet",
+            description = """
+                    Ranks active incoming deliveries by physical arrival urgency.
+                    Directly answers:
+                    - Which order is approaching the kitchen first?
+                    - Is the supplier on schedule or delayed?
+                    - Did the driver call / is there a problem?
+                    - Which orders need to be checked in, met at the dock, or escalated?
+                    """)
+    public ApiResponse<DeliveryDtos.OutletDeliveryRadarResponse> radar(
+            @PathVariable Long outletId,
+            @RequestParam(value = "action", required = false) DeliveryDtos.KitchenAction action,
+            @RequestParam(value = "stage", required = false) DeliveryDtos.ArrivalStage stage,
+            @RequestParam(value = "scheduleStatus", required = false) DeliveryDtos.ScheduleStatus scheduleStatus) {
+        return ApiResponse.ok(radarService.getRadar(
+                ActorContext.requireUserId(), outletId, action, stage, scheduleStatus));
+    }
+
+    @GetMapping("/outlets/{outletId}/deliveries")
+    @Operation(
+            summary = "Paginated list of deliveries for an outlet",
+            description = "Lists outlet deliveries with default 10 per page, newest first.")
+    public ApiResponse<DeliveryDtos.PagedResponse<DeliveryDtos.OutletDeliveryRadarItemResponse>> outletDeliveries(
+            @PathVariable Long outletId,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "10") int size,
+            @RequestParam(value = "status", required = false) String status) {
+        return ApiResponse.ok(radarService.listDeliveries(
+                ActorContext.requireUserId(), outletId, page, size, status));
     }
 }

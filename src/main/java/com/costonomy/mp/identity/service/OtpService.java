@@ -81,7 +81,6 @@ public class OtpService {
     @Transactional
     public Challenge request(String normalizedPhone, OtpPurpose purpose) {
         Instant now = Instant.now();
-
         enforceHourlyLimit(normalizedPhone, now);
         enforceResendCooldown(normalizedPhone, purpose, now);
         supersedePending(normalizedPhone, purpose);

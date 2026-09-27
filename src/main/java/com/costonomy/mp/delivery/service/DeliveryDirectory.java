@@ -28,7 +28,9 @@ public class DeliveryDirectory {
             Long outletId,
             Long supplierStoreId,
             BigDecimal deliveryFee,
-            String deliveryMode) {
+            String deliveryMode,
+            BigDecimal estimatedWeightKg,
+            BigDecimal estimatedVolumeCbm) {
     }
 
     public OrderInfo order(Long supplierOrderId) {
@@ -38,9 +40,80 @@ public class DeliveryDirectory {
                   from supplier_order where id = ?
                 """,
                 (rs, row) -> new OrderInfo(rs.getLong(1), rs.getString(2), rs.getString(3),
-                        rs.getLong(4), rs.getLong(5), rs.getBigDecimal(6), rs.getString(7)),
+                        rs.getLong(4), rs.getLong(5), rs.getBigDecimal(6), rs.getString(7),
+                        calculateWeightKg(rs.getLong(1)), null),
                 supplierOrderId);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * Compute total payload weight in KG by summing line item pack quantities multiplied
+     * by their SKU pack size or measure value.
+     */
+    public BigDecimal calculateWeightKg(Long supplierOrderId) {
+        var items = jdbc.query("""
+                select coalesce(soi.accepted_quantity, soi.requested_quantity) as qty,
+                       soi.unit,
+                       sku.pack_size,
+                       sku.pack_unit,
+                       sku.measure_value,
+                       sku.measure_unit
+                  from supplier_order_item soi
+                  join supplier_sku sku on sku.id = soi.supplier_sku_id
+                 where soi.supplier_order_id = ?
+                """,
+                (rs, row) -> {
+                    BigDecimal qty = rs.getBigDecimal(1);
+                    String itemUnit = rs.getString(2);
+                    BigDecimal packSize = rs.getBigDecimal(3);
+                    String packUnit = rs.getString(4);
+                    BigDecimal measureValue = rs.getBigDecimal(5);
+                    String measureUnit = rs.getString(6);
+                    return lineWeightKg(qty, itemUnit, packSize, packUnit, measureValue, measureUnit);
+                },
+                supplierOrderId);
+
+        if (items.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        return items.stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private static BigDecimal lineWeightKg(BigDecimal qty, String itemUnit, BigDecimal packSize,
+                                           String packUnit, BigDecimal measureValue, String measureUnit) {
+        if (qty == null || qty.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO;
+        }
+        // If measure unit is given (e.g. 1 PKT of 500 GM), measure takes precedence
+        if (measureValue != null && measureUnit != null) {
+            BigDecimal perPackKg = convertToKg(measureValue, measureUnit);
+            return qty.multiply(perPackKg);
+        }
+        // If pack unit is a weight unit (e.g. KG, GM)
+        if (packUnit != null) {
+            BigDecimal perPackKg = convertToKg(packSize != null ? packSize : BigDecimal.ONE, packUnit);
+            return qty.multiply(perPackKg);
+        }
+        // Fallback to item unit
+        if (itemUnit != null) {
+            return qty.multiply(convertToKg(BigDecimal.ONE, itemUnit));
+        }
+        return qty;
+    }
+
+    private static BigDecimal convertToKg(BigDecimal value, String unitStr) {
+        if (value == null) return BigDecimal.ZERO;
+        String u = unitStr.toUpperCase().trim();
+        return switch (u) {
+            case "KG", "KGS", "KILOGRAM", "KILO" -> value;
+            case "GM", "GMS", "G", "GRAM", "GRAMS" -> value.divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP);
+            case "LTR", "L", "LITRE", "LITER" -> value; // 1 L ~ 1 KG assumption
+            case "ML", "MILLILITRE", "MILLILITER" -> value.divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP);
+            case "LB", "LBS", "POUND" -> value.multiply(BigDecimal.valueOf(0.453592)).setScale(4, java.math.RoundingMode.HALF_UP);
+            case "OZ", "OUNCE" -> value.multiply(BigDecimal.valueOf(0.0283495)).setScale(4, java.math.RoundingMode.HALF_UP);
+            default -> value.compareTo(BigDecimal.ZERO) > 0 ? value : BigDecimal.ONE; // default 1 KG estimate per unit
+        };
     }
 
     /** A pickup or drop point, with someone to call when the driver cannot find it. */

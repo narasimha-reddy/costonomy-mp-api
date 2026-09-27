@@ -113,6 +113,9 @@ public class DeliveryService {
         delivery.setDropLongitude(drop.longitude());
         delivery.setDropContactName(drop.contactName());
         delivery.setDropContactPhone(drop.contactPhone());
+        delivery.setWeightKg(order.estimatedWeightKg());
+        delivery.setVolumeCbm(order.estimatedVolumeCbm());
+        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg()));
         delivery.setRequestedAt(Instant.now());
         deliveries.save(delivery);
 
@@ -139,6 +142,81 @@ public class DeliveryService {
         }
 
         quoteAndBook(delivery, order, body.requiredEtaMinutes(), List.of(), "BOOKING");
+        return toResponse(delivery, order.orderNumber());
+    }
+
+    /**
+     * Automated dispatch triggered by warehouse/kitchen events (e.g. SupplierOrderReady).
+     * Does not require a user session.
+     */
+    @Transactional
+    public DeliveryDtos.DeliveryResponse autoDispatch(Long supplierOrderId) {
+        var order = directory.order(supplierOrderId);
+        if (order == null) {
+            log.warn("Auto-dispatch ignored: supplier order {} not found", supplierOrderId);
+            return null;
+        }
+
+        var existing = deliveries.findBySupplierOrderId(supplierOrderId).orElse(null);
+        if (existing != null) {
+            log.debug("Auto-dispatch: delivery already exists for order {}", supplierOrderId);
+            return toResponse(existing, order.orderNumber());
+        }
+
+        if (!"READY_FOR_PICKUP".equals(order.status())) {
+            log.debug("Auto-dispatch: order {} is not ready for pickup (status: {})", supplierOrderId, order.status());
+            return null;
+        }
+
+        var pickup = directory.pickupFor(order.supplierStoreId());
+        var drop = directory.dropFor(order.outletId());
+        if (pickup == null || drop == null) {
+            log.warn("Auto-dispatch: order {} is missing pickup or drop address", supplierOrderId);
+            return null;
+        }
+
+        var policy = directory.deliveryPolicy(order.supplierStoreId());
+        var mode = resolveMode(null, order.deliveryMode(), policy);
+
+        var delivery = new Delivery();
+        delivery.setSupplierOrderId(supplierOrderId);
+        delivery.setOutletId(order.outletId());
+        delivery.setSupplierStoreId(order.supplierStoreId());
+        delivery.setMode(mode);
+        delivery.setPickupAddress(pickup.address());
+        delivery.setPickupLatitude(pickup.latitude());
+        delivery.setPickupLongitude(pickup.longitude());
+        delivery.setPickupContactName(pickup.contactName());
+        delivery.setPickupContactPhone(pickup.contactPhone());
+        delivery.setDropAddress(drop.address());
+        delivery.setDropLatitude(drop.latitude());
+        delivery.setDropLongitude(drop.longitude());
+        delivery.setDropContactName(drop.contactName());
+        delivery.setDropContactPhone(drop.contactPhone());
+        delivery.setWeightKg(order.estimatedWeightKg());
+        delivery.setVolumeCbm(order.estimatedVolumeCbm());
+        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg()));
+        delivery.setRequestedAt(Instant.now());
+        deliveries.save(delivery);
+
+        timeline.record(delivery, "DeliveryRequested", DeliveryStatus.DELIVERY_REQUESTED,
+                "Automated dispatch initiated");
+
+        if (mode == DeliveryMode.SUPPLIER_OWN) {
+            delivery.setFee(policy.ownDeliveryFee() == null ? BigDecimal.ZERO : policy.ownDeliveryFee());
+            delivery.setStatus(DeliveryStatus.DRIVER_ASSIGNED);
+            delivery.setAssignedAt(Instant.now());
+            delivery.setDriverName(pickup.contactName());
+            delivery.setDriverPhone(pickup.contactPhone());
+            deliveries.save(delivery);
+
+            timeline.record(delivery, DeliveryStatus.DRIVER_ASSIGNED.eventName(),
+                    DeliveryStatus.DRIVER_ASSIGNED,
+                    "The supplier is delivering this order");
+            return toResponse(delivery, order.orderNumber());
+        }
+
+        quoteAndBook(delivery, order, null, List.of(), "BOOKING");
         return toResponse(delivery, order.orderNumber());
     }
 
@@ -421,9 +499,23 @@ public class DeliveryService {
 
     // ── Reading ──────────────────────────────────────────────────────────
 
-    @Transactional(readOnly = true)
+    @Transactional
     public DeliveryDtos.DeliveryResponse get(Long actorId, Long deliveryId) {
         var delivery = loadForEitherSide(actorId, deliveryId);
+
+        // Lazy check: if the delivery timed out in PROVIDER_SELECTED (> 3 mins), cascade immediately
+        if (delivery.getStatus() == DeliveryStatus.PROVIDER_SELECTED
+                && delivery.getAssignmentDeadline() != null
+                && delivery.getAssignmentDeadline().isBefore(Instant.now())) {
+            log.warn("Delivery {} assignment deadline expired on read; triggering waterfall cascade", deliveryId);
+            try {
+                reassign(null, deliveryId, "Unassigned driver timeout (waterfall cascade on read)");
+                delivery = deliveries.findById(deliveryId).orElse(delivery);
+            } catch (Exception ex) {
+                log.error("Lazy waterfall cascade failed on read for delivery {}: {}", deliveryId, ex.getMessage());
+            }
+        }
+
         var order = directory.order(delivery.getSupplierOrderId());
         return toResponse(delivery, order == null ? null : order.orderNumber());
     }
@@ -480,7 +572,7 @@ public class DeliveryService {
         return delivery;
     }
 
-    private DeliveryDtos.DeliveryResponse toResponse(Delivery delivery, String orderNumber) {
+    DeliveryDtos.DeliveryResponse toResponse(Delivery delivery, String orderNumber) {
         var latest = delivery.getMode().isTracked()
                 ? locations.findFirstByDeliveryIdOrderByRecordedAtDescIdDesc(delivery.getId())
                         .orElse(null)
@@ -507,9 +599,12 @@ public class DeliveryService {
                 delivery.getDriverName(), delivery.getDriverPhone(), delivery.getDriverVehicle(),
                 delivery.getEtaMinutes(), delivery.getEstimatedArrivalAt(),
                 delivery.getMode().isTracked() && delivery.getStatus().isTrackable(),
+                delivery.getTrackingUrl(),
                 location, stale, ageSeconds,
                 delivery.getFailureCode(), delivery.getFailureReason(),
                 delivery.getRequestedAt(), delivery.getPickedUpAt(), delivery.getDeliveredAt(),
+                delivery.getWeightKg(), delivery.getVolumeCbm(),
+                delivery.getVehicleType() != null ? delivery.getVehicleType().name() : null,
                 appliedEvents(delivery.getId()));
     }
 }

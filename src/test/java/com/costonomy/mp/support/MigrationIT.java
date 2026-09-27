@@ -202,10 +202,14 @@ class MigrationIT extends AbstractIntegrationTest {
                         "settlement_adjustment",
                         // Reference data that is added or removed, never edited.
                         "canonical_product_alias",
-                        // Pure join tables.
+                        // Pure join tables and links.
                         "role_permission",
                         "restaurant_user_outlet",
                         "supplier_user_store",
+                        "intent_order_link",
+                        "delivery_ledger",
+                        "delivery_provider_stats",
+                        "delivery_provider_metrics",
                         // Owned by ShedLock; its columns are fixed by the library.
                         "shedlock");
     }

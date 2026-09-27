@@ -16,5 +16,8 @@ public interface DeliveryRepository extends JpaRepository<Delivery, Long> {
 
     List<Delivery> findByStatusIn(List<DeliveryStatus> statuses);
 
+    List<Delivery> findByStatusAndAssignmentDeadlineBefore(
+            DeliveryStatus status, java.time.Instant now);
+
     List<Delivery> findByOutletIdOrderByCreatedAtDesc(Long outletId);
 }

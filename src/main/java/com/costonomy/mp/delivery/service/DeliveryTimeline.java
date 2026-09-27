@@ -60,6 +60,9 @@ public class DeliveryTimeline {
         if (delivery.getEtaMinutes() != null) {
             payload.put("etaMinutes", delivery.getEtaMinutes());
         }
+        if (delivery.getTrackingUrl() != null) {
+            payload.put("trackingUrl", delivery.getTrackingUrl());
+        }
         if (description != null) {
             payload.put("description", description);
         }
