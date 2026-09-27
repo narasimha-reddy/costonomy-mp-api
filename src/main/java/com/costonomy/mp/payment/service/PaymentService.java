@@ -94,6 +94,8 @@ public class PaymentService {
 
             payment.setProviderOrderId(intent.providerOrderId());
             payments.save(payment);
+            log.info("Payment {} created for {} {} with provider order {}",
+                    payment.getId(), amount.toPlainString(), "INR", intent.providerOrderId());
 
         } catch (PaymentProviderException ex) {
             // The order cannot be funded, so it must not reach the supplier.
@@ -287,6 +289,11 @@ public class PaymentService {
         payments.save(payment);
         auditService.record(null, null, "PAYMENT_" + target.name(), "PAYMENT",
                 payment.getId(), previous.name(), target.name(), source, "PROVIDER");
+        // One line per step, the same shape everywhere, so a search for one
+        // payment reads as its sequence (D-100). The trace ids come from the
+        // caller's scope; the payment id is repeated for lines read without one.
+        log.info("Payment {} {} → {} via {} (provider payment {})", payment.getId(),
+                previous, target, source, providerPayment.providerPaymentId());
 
         return payment;
     }
@@ -330,6 +337,8 @@ public class PaymentService {
         auditService.record(null, null, "PAYMENT_CAPTURE_PENDING", "PAYMENT", payment.getId(),
                 PaymentStatus.AUTHORIZED.name(), PaymentStatus.CAPTURE_PENDING.name(),
                 "Accepted " + toCapture.toPlainString(), "SYSTEM");
+        log.info("Payment {} AUTHORIZED → CAPTURE_PENDING for {}",
+                payment.getId(), toCapture.toPlainString());
     }
 
     /**
@@ -451,6 +460,7 @@ public class PaymentService {
         auditService.record(null, null, "PAYMENT_RELEASED", "PAYMENT", payment.getId(),
                 PaymentStatus.AUTHORIZED.name(), PaymentStatus.RELEASED.name(),
                 reason.name() + (note == null ? "" : ": " + note), "SYSTEM");
+        log.info("Payment {} AUTHORIZED → RELEASED ({})", payment.getId(), reason);
     }
 
     // ── Reads and helpers ────────────────────────────────────────────────
@@ -469,6 +479,7 @@ public class PaymentService {
 
     private void fail(Payment payment, String code, String reason) {
         if (payment.getStatus().canTransitionTo(PaymentStatus.FAILED)) {
+            log.warn("Payment {} {} → FAILED: {} {}", payment.getId(), payment.getStatus(), code, reason);
             payment.setStatus(PaymentStatus.FAILED);
         }
         payment.setFailureCode(code);

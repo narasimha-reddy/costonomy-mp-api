@@ -3676,3 +3676,53 @@ Hyderabad and failed once more of them existed; it now searches for its own
 uniquely named stores.
 
 Full suite: 319 unit, 326 integration, no failures.
+
+---
+
+## D-100 — A payment's story can be read from the logs, by its id, in order
+**Raised 2026-09-27 · Settled 2026-09-27**
+
+The database always held a payment's sequence — `audit_log` with before and
+after, `payment_transaction`, `payment_webhook_event` — but the logs did not. A
+real test-mode payment that was authorised by the sweep, marked for capture,
+released and captured left **one** log line, and every audit row it produced had
+`request_id` = `-`. Debugging from production logs meant knowing to open the
+database first.
+
+Four gaps, each closed where the work enters the system rather than in every
+method:
+
+1. **Job runs had no correlation id.** Every `@Scheduled` run now gets
+   `job-<method>-<8 hex>` from `CorrelatedTaskScheduler`, in both the MDC (logs)
+   and `RequestContext` (audit, outbox) — two separate thread-locals, and setting
+   one would make logs and audit disagree. A subclass of Spring's scheduler,
+   because `setTaskDecorator` arrived in 6.2 and this is 6.1; built from Boot's
+   builder so `spring.task.scheduling.*` still applies. All 21 jobs, not only
+   payments.
+2. **No business ids on lines.** `TraceScope` puts `payment=… order=… rzp_order=…
+   rzp_payment=…` (or `refund=…`, `rzp_event=…`) on every line in scope, via the
+   `trace` MDC key the log pattern appends. Opened at the edges — the confirm and
+   refund endpoints, the webhook, each job iteration, order creation — so a line
+   written deep inside code that knows nothing of payments still carries them,
+   including the error lines (the scope wraps the catch). Values are sanitised:
+   webhook ids come from outside, and a newline would forge a line.
+3. **Normal steps were not logged.** One INFO line per state change, next to each
+   audit write that already marks one: `Payment 160 CREATED → AUTHORIZED via
+   CONFIRM`, and the same for capture, release, failure and each refund step.
+4. **Provider calls were invisible.** One line per Razorpay call — method, path,
+   status, milliseconds; WARN when not 2xx. Never the body, which can carry a
+   customer's contact details. The line to quote to Razorpay support, and the one
+   that shows a slow gateway before the connection pool does.
+
+Webhooks also log arrival and outcome (processed, duplicate, ignored, failed)
+under Razorpay's event id.
+
+**Not done:** JSON log output. It would make every id a searchable field in a log
+platform, but the right encoder depends on where production logs go, which is
+not decided. The `key=value` form is chosen so any platform can parse it until
+then.
+
+`TraceabilityTest` (4) and `PaymentFlowIT$Traceability` prove it — the latter runs
+a payment through confirm, a real scheduler run and a late webhook, then finds
+each step in the captured log output with its ids, and the same request and job
+ids on the audit rows.

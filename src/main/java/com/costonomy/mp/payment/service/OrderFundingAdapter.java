@@ -1,5 +1,7 @@
 package com.costonomy.mp.payment.service;
 
+import com.costonomy.mp.common.logging.TraceScope;
+import com.costonomy.mp.payment.domain.Payment;
 import com.costonomy.mp.payment.domain.PaymentStatus;
 import com.costonomy.mp.payment.domain.RefundReason;
 import com.costonomy.mp.payment.provider.PaymentProvider;
@@ -45,9 +47,12 @@ public class OrderFundingAdapter implements OrderFundingPort {
         List<FundingIntent> intents = new ArrayList<>();
 
         for (SupplierOrder order : orders) {
-            var payment = paymentService.createForOrder(
-                    order.getId(), order.getProcurementId(), order.getOutletId(),
-                    order.getTotalAmount(), order.getPaymentMethod());
+            Payment payment;
+            try (var trace = TraceScope.of("order", order.getId(), "order_number", order.getOrderNumber())) {
+                payment = paymentService.createForOrder(
+                        order.getId(), order.getProcurementId(), order.getOutletId(),
+                        order.getTotalAmount(), order.getPaymentMethod());
+            }
 
             intents.add(new FundingIntent(
                     order.getId(), payment.getId(), payment.getProvider(),

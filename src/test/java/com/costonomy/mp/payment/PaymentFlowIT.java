@@ -15,6 +15,11 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.scheduling.TaskScheduler;
+import org.springframework.scheduling.support.ScheduledMethodRunnable;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import com.costonomy.mp.payment.provider.PaymentProviderException;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -36,6 +41,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -837,6 +843,78 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             paymentJobs.reconcileStale();
 
             assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+        }
+    }
+
+    // ── Traceability (D-100) ─────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("traceability")
+    @ExtendWith(OutputCaptureExtension.class)
+    class Traceability {
+
+        @Autowired private TaskScheduler scheduler;
+
+        @Test
+        @DisplayName("one payment's story can be read from the logs and the audit trail, in order")
+        void onePaymentReadsAsASequence(CapturedOutput output) throws Exception {
+            var submitted = submit("400", 1);
+            var paid = mockProvider.completeCheckout(submitted.providerOrderId());
+            long pid = submitted.paymentId();
+
+            // Confirm, as the app does — with its own request id.
+            String requestId = "trace-" + UUID.randomUUID();
+            mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/payments/" + pid + "/confirm")
+                            .header("Authorization", "Bearer " + submitted.buyer().token())
+                            .header("X-Request-Id", requestId)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(
+                                    Map.of("providerPaymentId", paid.providerPaymentId()))))
+                    .andExpect(status().isOk());
+
+            // Capture through the real scheduler, so the run gets its job id the
+            // way production does — not by calling the job directly.
+            scheduler.schedule(new ScheduledMethodRunnable(paymentJobs,
+                            PaymentJobs.class.getMethod("capturePending")), Instant.now())
+                    .get(30, TimeUnit.SECONDS);
+
+            // A webhook for the same payment, arriving late.
+            String eventId = "evt_" + UUID.randomUUID();
+            postWebhook(webhookBody(eventId, "payment.captured",
+                    paid.providerPaymentId(), submitted.providerOrderId()));
+
+            // Logs: every step names the payment, and says who moved it.
+            String log = output.getOut();
+            String authorised = lineWith(log, "Payment " + pid + " CREATED → AUTHORIZED via CONFIRM");
+            assertThat(authorised).contains("[costonomy-mp-api," + requestId + "]")
+                    .contains(" payment=" + pid + " ").contains(" order=" + submitted.orderId() + " ");
+            assertThat(lineWith(log, "Payment " + pid + " AUTHORIZED → CAPTURE_PENDING"))
+                    .contains(requestId);
+            String captured = lineWith(log, "Payment " + pid + " CAPTURE_PENDING → CAPTURED via CAPTURE_JOB");
+            assertThat(captured).containsPattern("\\[costonomy-mp-api,job-capturePending-[0-9a-f]{8}\\]")
+                    .contains(" payment=" + pid + " ");
+            assertThat(lineWith(log, "Webhook " + eventId + " payment.captured received"))
+                    .contains(" rzp_event=" + eventId);
+            assertThat(lineWith(log, "Webhook " + eventId + " PROCESSED")).contains(" rzp_event=" + eventId);
+
+            // Audit: the same run ids, so a row leads back to the lines around it.
+            var audit = jdbc.queryForList("select action, request_id from audit_log "
+                    + "where entity_type = 'PAYMENT' and entity_id = ? order by id", pid);
+            assertThat(audit).extracting(row -> row.get("action"))
+                    .containsSubsequence("PAYMENT_AUTHORIZED", "PAYMENT_CAPTURE_PENDING", "PAYMENT_CAPTURED");
+            assertThat(requestIdOf(audit, "PAYMENT_AUTHORIZED")).isEqualTo(requestId);
+            assertThat(requestIdOf(audit, "PAYMENT_CAPTURED")).startsWith("job-capturePending-");
+        }
+
+        private String lineWith(String log, String text) {
+            return log.lines().filter(line -> line.contains(text)).findFirst()
+                    .orElseThrow(() -> new AssertionError("no log line containing: " + text));
+        }
+
+        private String requestIdOf(List<Map<String, Object>> audit, String action) {
+            return audit.stream().filter(row -> action.equals(row.get("action")))
+                    .map(row -> String.valueOf(row.get("request_id"))).findFirst().orElseThrow();
         }
     }
 

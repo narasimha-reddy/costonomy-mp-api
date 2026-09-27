@@ -78,14 +78,18 @@ public class PaymentJobs {
     public void capturePending() {
         var pending = payments.findPendingCaptures(PageRequest.of(0, CAPTURE_BATCH));
         for (var payment : pending) {
-            try {
-                paymentService.performCapture(payment.getId());
-            } catch (RuntimeException ex) {
-                // One stuck payment must not block the rest — otherwise a single
-                // poison row would leave every later capture unprocessed, and an
-                // uncaptured authorisation eventually lapses into money the
-                // supplier never receives.
-                log.error("Could not capture payment {}", payment.getId(), ex);
+            // The scope wraps the catch too: an error line without the payment's
+            // ids is the one you most need to find (D-100).
+            try (var trace = PaymentTrace.of(payment)) {
+                try {
+                    paymentService.performCapture(payment.getId());
+                } catch (RuntimeException ex) {
+                    // One stuck payment must not block the rest — otherwise a single
+                    // poison row would leave every later capture unprocessed, and an
+                    // uncaptured authorisation eventually lapses into money the
+                    // supplier never receives.
+                    log.error("Could not capture payment {}", payment.getId(), ex);
+                }
             }
         }
     }
@@ -105,47 +109,49 @@ public class PaymentJobs {
         var stale = payments.findStale(staleBefore, PageRequest.of(0, RECONCILE_BATCH));
 
         for (var payment : stale) {
-            if (payment.getProviderPaymentId() == null && payment.getProviderOrderId() == null) {
-                continue;
-            }
-            try {
-                PaymentProvider.ProviderPayment providerPayment;
-                if (payment.getProviderPaymentId() != null) {
-                    providerPayment = provider.fetchPayment(payment.getProviderPaymentId());
-                } else {
-                    // Only the intent. Either the customer never paid, or they did
-                    // and neither the client's confirm nor the webhook reached us
-                    // — so ask by the intent. Bounded in age, or every abandoned
-                    // checkout would cost a provider call a minute for ever.
-                    Instant now = Instant.now();
-                    if (payment.getCreatedAt().isBefore(now.minus(INTENT_LOOKUP_WINDOW))
-                            || !dueForIntentLookup(payment.getCreatedAt(), payment.getReconciledAt(), now)) {
-                        continue;
-                    }
-                    var found = provider.findPaymentForOrder(payment.getProviderOrderId());
-                    if (found.isEmpty()) {
-                        payments.markAsked(payment.getId(), now);
-                        continue;
-                    }
-                    providerPayment = found.get();
+            try (var trace = PaymentTrace.of(payment)) {
+                if (payment.getProviderPaymentId() == null && payment.getProviderOrderId() == null) {
+                    continue;
                 }
+                try {
+                    PaymentProvider.ProviderPayment providerPayment;
+                    if (payment.getProviderPaymentId() != null) {
+                        providerPayment = provider.fetchPayment(payment.getProviderPaymentId());
+                    } else {
+                        // Only the intent. Either the customer never paid, or they did
+                        // and neither the client's confirm nor the webhook reached us
+                        // — so ask by the intent. Bounded in age, or every abandoned
+                        // checkout would cost a provider call a minute for ever.
+                        Instant now = Instant.now();
+                        if (payment.getCreatedAt().isBefore(now.minus(INTENT_LOOKUP_WINDOW))
+                                || !dueForIntentLookup(payment.getCreatedAt(), payment.getReconciledAt(), now)) {
+                            continue;
+                        }
+                        var found = provider.findPaymentForOrder(payment.getProviderOrderId());
+                        if (found.isEmpty()) {
+                            payments.markAsked(payment.getId(), now);
+                            continue;
+                        }
+                        providerPayment = found.get();
+                    }
 
-                var updated = paymentService.applyProviderState(
-                        payment, providerPayment, "RECONCILE");
+                    var updated = paymentService.applyProviderState(
+                            payment, providerPayment, "RECONCILE");
 
-                if (updated.getStatus().fundsSecured()) {
-                    // The order the customer paid for, finally released.
-                    orderRelease.releaseIfFunded(updated.getSupplierOrderId());
-                } else if (updated.getStatus() == PaymentStatus.FAILED) {
-                    orderRelease.abandonUnfunded(updated.getSupplierOrderId(),
-                            "Payment failed: " + String.valueOf(updated.getFailureCode()));
+                    if (updated.getStatus().fundsSecured()) {
+                        // The order the customer paid for, finally released.
+                        orderRelease.releaseIfFunded(updated.getSupplierOrderId());
+                    } else if (updated.getStatus() == PaymentStatus.FAILED) {
+                        orderRelease.abandonUnfunded(updated.getSupplierOrderId(),
+                                "Payment failed: " + String.valueOf(updated.getFailureCode()));
+                    }
+
+                } catch (PaymentProviderException ex) {
+                    // Unreachable providers are normal. The next sweep asks again.
+                    log.debug("Could not reconcile payment {}: {}", payment.getId(), ex.getMessage());
+                } catch (RuntimeException ex) {
+                    log.error("Could not reconcile payment {}", payment.getId(), ex);
                 }
-
-            } catch (PaymentProviderException ex) {
-                // Unreachable providers are normal. The next sweep asks again.
-                log.debug("Could not reconcile payment {}: {}", payment.getId(), ex.getMessage());
-            } catch (RuntimeException ex) {
-                log.error("Could not reconcile payment {}", payment.getId(), ex);
             }
         }
     }
@@ -161,10 +167,12 @@ public class PaymentJobs {
                 Instant.now().minus(RefundService.STUCK_AFTER)));
 
         for (var refund : pending) {
-            try {
-                refundService.process(refund.getId());
-            } catch (RuntimeException ex) {
-                log.error("Could not process refund {}", refund.getId(), ex);
+            try (var trace = PaymentTrace.of(refund)) {
+                try {
+                    refundService.process(refund.getId());
+                } catch (RuntimeException ex) {
+                    log.error("Could not process refund {}", refund.getId(), ex);
+                }
             }
         }
     }

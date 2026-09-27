@@ -4,6 +4,7 @@ import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.common.api.ApiResponse;
+import com.costonomy.mp.common.logging.TraceScope;
 import com.costonomy.mp.identity.security.ActorContext;
 import com.costonomy.mp.payment.domain.RefundReason;
 import com.costonomy.mp.payment.repository.PaymentTransactionRepository;
@@ -21,6 +22,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -29,6 +31,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/v1")
 @RequiredArgsConstructor
+@Slf4j
 @SecurityRequirement(name = "bearerAuth")
 @Tag(name = "Payments")
 public class PaymentController {
@@ -72,16 +75,24 @@ public class PaymentController {
         accessControl.requireScoped(ActorContext.requireUserId(), Permissions.PAYMENT_CREATE,
                 ScopeType.OUTLET, payment.getOutletId(), "Payment");
 
-        var confirmed = paymentService.confirm(id, request.providerPaymentId());
+        // After the access check, so an id a caller may not see is never logged
+        // as theirs. The claimed provider id goes in as sent — it is the thing
+        // being checked (D-100).
+        try (var trace = TraceScope.of("payment", id, "order", payment.getSupplierOrderId(),
+                "rzp_order", payment.getProviderOrderId(), "rzp_payment", request.providerPaymentId())) {
+            log.info("Payment {} confirm requested", id);
 
-        if (confirmed.getStatus().fundsSecured()) {
-            orderRelease.releaseIfFunded(confirmed.getSupplierOrderId());
-        } else if (confirmed.getStatus() == com.costonomy.mp.payment.domain.PaymentStatus.FAILED) {
-            orderRelease.abandonUnfunded(confirmed.getSupplierOrderId(),
-                    "Payment failed: " + String.valueOf(confirmed.getFailureCode()));
+            var confirmed = paymentService.confirm(id, request.providerPaymentId());
+
+            if (confirmed.getStatus().fundsSecured()) {
+                orderRelease.releaseIfFunded(confirmed.getSupplierOrderId());
+            } else if (confirmed.getStatus() == com.costonomy.mp.payment.domain.PaymentStatus.FAILED) {
+                orderRelease.abandonUnfunded(confirmed.getSupplierOrderId(),
+                        "Payment failed: " + String.valueOf(confirmed.getFailureCode()));
+            }
+
+            return ApiResponse.ok(toResponse(paymentService.load(id)));
         }
-
-        return ApiResponse.ok(toResponse(paymentService.load(id)));
     }
 
     @PostMapping("/payments/{id}/refund")
@@ -115,10 +126,12 @@ public class PaymentController {
                     "Choose one of the listed refund reasons.");
         }
 
-        var refund = refundService.request(ActorContext.requireUserId(), id, request.amount(),
-                RefundReason.valueOf(request.reason()), request.note(), idempotencyKey);
+        try (var trace = TraceScope.of("payment", id, "order", payment.getSupplierOrderId())) {
+            var refund = refundService.request(ActorContext.requireUserId(), id, request.amount(),
+                    RefundReason.valueOf(request.reason()), request.note(), idempotencyKey);
 
-        return ApiResponse.ok(toResponse(refund));
+            return ApiResponse.ok(toResponse(refund));
+        }
     }
 
     @GetMapping("/payments/{id}/refunds")
