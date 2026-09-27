@@ -1,5 +1,6 @@
 package com.costonomy.mp.trust.service;
 
+import com.costonomy.mp.common.text.Rupees;
 import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
@@ -91,7 +92,7 @@ public class DisputeRefundService {
         BigDecimal max = maxRefund(dispute);
         if (request.amount().compareTo(max) > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "At most ₹%s can be refunded on this order.".formatted(max.toPlainString()));
+                    "At most ₹%s can be refunded on this order.".formatted(Rupees.of(max)));
         }
 
         var refund = new DisputeRefund();
@@ -105,7 +106,7 @@ public class DisputeRefundService {
         requests.saveAndFlush(refund);
 
         say(dispute, "RESTAURANT", actorId, "Asked for a refund of ₹%s.%s".formatted(
-                request.amount().toPlainString(), suffix(request.reason())));
+                Rupees.of(request.amount()), suffix(request.reason())));
         auditService.record(actorId, null, "DISPUTE_REFUND_REQUESTED", "DISPUTE", disputeId,
                 null, DisputeRefundStatus.REQUESTED.name(), request.amount().toPlainString(), "API");
         publish(refund, dispute, actorId, "RESTAURANT");
@@ -131,7 +132,7 @@ public class DisputeRefundService {
         refund.setSupplierNote(note);
         requests.save(refund);
         return decided(refund, actorId, "SUPPLIER",
-                "Approved the refund of ₹%s.%s".formatted(refund.getAmount().toPlainString(), suffix(note)));
+                "Approved the refund of ₹%s.%s".formatted(Rupees.of(refund.getAmount()), suffix(note)));
     }
 
     @Transactional
@@ -178,7 +179,7 @@ public class DisputeRefundService {
         refund.setOpsNote(note);
         requests.save(refund);
         return decided(refund, actorId, "OPERATIONS",
-                "Mandi approved the refund of ₹%s.%s".formatted(refund.getAmount().toPlainString(), suffix(note)));
+                "Mandi approved the refund of ₹%s.%s".formatted(Rupees.of(refund.getAmount()), suffix(note)));
     }
 
     @Transactional
@@ -277,7 +278,7 @@ public class DisputeRefundService {
                         "supplierStoreId", dispute.getSupplierStoreId(),
                         "supplierOrderId", dispute.getSupplierOrderId(),
                         "disputeNumber", dispute.getDisputeNumber(),
-                        "amount", refund.getAmount().toPlainString(),
+                        "amount", Rupees.of(refund.getAmount()),
                         "status", refund.getStatus().name(),
                         "decidedBy", side),
                 actorId);

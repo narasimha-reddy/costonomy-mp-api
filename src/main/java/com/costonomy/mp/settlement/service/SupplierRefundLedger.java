@@ -1,5 +1,6 @@
 package com.costonomy.mp.settlement.service;
 
+import com.costonomy.mp.common.text.Rupees;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
@@ -119,7 +120,7 @@ public class SupplierRefundLedger {
         }
         if (amount.compareTo(coverage.available()) > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "At most ₹%s of this order can be refunded.".formatted(coverage.available().toPlainString()));
+                    "At most ₹%s of this order can be refunded.".formatted(Rupees.of(coverage.available())));
         }
 
         var figures = directory.orderFigures(supplierOrderId).orElseThrow();

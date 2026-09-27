@@ -1,5 +1,6 @@
 package com.costonomy.mp.wallet.service;
 
+import com.costonomy.mp.common.text.Rupees;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.payment.service.RefundService;
@@ -52,7 +53,7 @@ public class WalletWithdrawalService {
         }
         if (amount.compareTo(wallet.getBalance()) > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "Your wallet has ₹%s.".formatted(wallet.getBalance().toPlainString()));
+                    "Your wallet has ₹%s.".formatted(Rupees.of(wallet.getBalance())));
         }
 
         var sources = refunds.withdrawable(outletId);
@@ -63,7 +64,7 @@ public class WalletWithdrawalService {
         if (amount.compareTo(returnable) > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     ("₹%s can go back to your card or bank. The rest of your balance can be "
-                            + "spent on orders.").formatted(returnable.toPlainString()));
+                            + "spent on orders.").formatted(Rupees.of(returnable)));
         }
 
         var parts = new ArrayList<WalletDtos.WithdrawalPart>();

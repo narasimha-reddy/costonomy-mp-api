@@ -1,5 +1,6 @@
 package com.costonomy.mp.payment.service;
 
+import com.costonomy.mp.common.text.Rupees;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
@@ -145,7 +146,7 @@ public class RefundService {
         if (value.compareTo(refundable) > 0) {
             // Refunding more than was captured would give back money we never took.
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "The refund can't exceed ₹%s.".formatted(refundable.toPlainString()));
+                    "The refund can't exceed ₹%s.".formatted(Rupees.of(refundable)));
         }
 
         var refund = new Refund();
@@ -246,7 +247,7 @@ public class RefundService {
                 .findFirst().orElse(BigDecimal.ZERO);
         if (amount.signum() <= 0 || amount.compareTo(available) > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "Only ₹%s from this payment can go back to its card.".formatted(available.toPlainString()));
+                    "Only ₹%s from this payment can go back to its card.".formatted(Rupees.of(available)));
         }
 
         var refund = new Refund();

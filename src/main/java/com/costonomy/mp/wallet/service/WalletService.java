@@ -1,5 +1,6 @@
 package com.costonomy.mp.wallet.service;
 
+import com.costonomy.mp.common.text.Rupees;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.wallet.domain.Wallet;
@@ -227,7 +228,7 @@ public class WalletService {
         if (amount.compareTo(refundableForOrder(supplierOrderId)) > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "At most ₹%s of this order can be refunded."
-                            .formatted(refundableForOrder(supplierOrderId).toPlainString()));
+                            .formatted(Rupees.of(refundableForOrder(supplierOrderId))));
         }
         wallets.credit(debit.getWalletId(), amount);
         wallets.flush();
@@ -250,7 +251,7 @@ public class WalletService {
         var wallet = forOutlet(outletId);
         if (wallets.debit(wallet.getId(), amount) == 0) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "Your wallet doesn't have ₹%s to withdraw.".formatted(amount.toPlainString()));
+                    "Your wallet doesn't have ₹%s to withdraw.".formatted(Rupees.of(amount)));
         }
         wallets.flush();
 

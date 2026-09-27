@@ -258,6 +258,12 @@ class DisputeRefundFlowIT extends AbstractIntegrationTest {
 
             assertThat(approved.get("status").asText()).isEqualTo("APPROVED");
             assertThat(wallet(d)).isEqualByComparingTo("500.00");
+            // As a person reads it: "₹500.0000" reached the thread and the push before.
+            assertThat(jdbc.queryForList("select message from dispute_message where dispute_id = ?",
+                    String.class, d.disputeId())).contains("Approved the refund of ₹500.00. Sorry about that");
+            assertThat(jdbc.queryForObject("select json_unquote(json_extract(payload, '$.amount')) from outbox_event "
+                    + "where event_type = 'DisputeRefundApproved' and aggregate_id = ?", String.class, d.disputeId()))
+                    .isEqualTo("500.00");
             assertThat(jdbc.queryForMap("select destination, reason, status from refund where id = ?",
                     approved.get("refundId").asLong()))
                     .containsEntry("destination", "WALLET").containsEntry("reason", "DISPUTE_RESOLVED")
