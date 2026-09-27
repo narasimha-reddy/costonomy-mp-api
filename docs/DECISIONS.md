@@ -3823,3 +3823,48 @@ tenant's order is a 404.
 `OrderFundingPort.openIntent`, rather than re-running `arrangeFunding`. Empty for
 funding with no client step (credit, wallet) and once the payment is funded or
 ended.
+
+---
+
+## D-103 — Money is held until the order is ready, and taken there
+**Raised 2026-09-27 · Settled 2026-09-27** · supersedes D-091's "Capture moved to confirmation"
+
+D-091 captured at confirmation, about ten seconds after payment. That made almost
+every cancellation a refund of money already taken — a charge and a reversal on
+the restaurant's statement for an order that never happened, and a refund that
+the cancellation path did not in fact issue (it logged "a refund is required" and
+stopped). Settled with the product owner: **the money is taken when the supplier
+dispatches**.
+
+**The trigger is `READY_FOR_PICKUP`.** Every order passes through it, whether it
+is collected, carried by the supplier or by a courier, and it is exactly where
+cancellation closes (doc 01 §13, D-091). So:
+
+- **Before ready**, the payment is AUTHORIZED — held, not taken. The order is
+  funded (`fundsSecured`) and the supplier works on it. A cancellation, by either
+  side, drops the hold: RELEASED, nothing charged, nothing to refund.
+- **At ready**, `SupplierOrderTransitions.advance` marks the payment for capture
+  (`OrderFundingPort.onOrderDispatched`) and the capture job takes it.
+- **Capture and cancellation can never race**: an order cannot be cancelled once
+  ready, and money is not taken before.
+
+Credit is unchanged: it still draws at confirmation (`onOrderAccepted`), so
+D-091's note on a supplier cancelling a credit order still stands.
+
+**A hold has an end.** Razorpay's manual-capture hold lasts at most five days;
+after that the money goes back to the customer on its own. The supplier is
+refused at "ready" once a hold is within six hours of that
+(`OrderFundingAdapter.canTakeFunds`, 409) — goods must not leave against money
+that is about to lapse. The sweep checks held payments every six hours rather
+than every few minutes, and logs at error once a hold is four days old with the
+order not dispatched, for someone to resolve with both parties before the limit.
+
+**If money was taken and the order is then cancelled** — only possible for an
+order captured before this change — the full remaining amount is refunded,
+system-initiated and keyed `cancel-order-{id}`, so a repeated cancellation
+cannot refund twice. D-104 moves where such refunds go (the wallet).
+
+Tests: `PaymentFlowIT$Capture` — held after paying and taken at ready; a supplier
+cancelling while held releases it with nothing captured or refunded; no
+cancellation once ready; a cancelled order already captured is refunded once;
+an expiring hold refuses "ready".

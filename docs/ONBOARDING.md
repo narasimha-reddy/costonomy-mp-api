@@ -253,7 +253,7 @@ app is built across both roles.
 
 ### Latest: Razorpay payments (D-098, D-099)
 
-Five stacked PRs. **One migration**, `V37` (`refund.attempts`); otherwise — the payment tables from `V11` are used as
+Seven stacked PRs. **One migration**, `V37` (`refund.attempts`); otherwise — the payment tables from `V11` are used as
 they were.
 
 | PR | What it changed |
@@ -263,6 +263,8 @@ they were.
 | `feat/razorpay-3-small-fixes` | The seed script runs on a fresh database again; the wallet top-up is refused unless payments run on the mock; a spent delivery quote says "already used" |
 | `feat/razorpay-7-payment-tracing` | A payment's story reads from the logs by its id: every job run has a correlation id (in logs and audit), payment and Razorpay ids ride on every line in scope, each state change and each Razorpay call is one INFO line (D-100) |
 | `feat/razorpay-8-review-fixes` | Fixes from three independent reviews: a declined attempt can no longer fail a paid order; the sweep cannot be starved; pending refunds wait for the provider; refunds cannot be over-promised and go to `NEEDS_REVIEW` instead of retrying for ever; a production profile refuses mock providers (D-101) |
+| `feat/razorpay-9-payment-intent-lookup` | `GET /supplier-orders/{id}/payment-intent`, so the pay screen asks the server for an order's checkout; a repeated Create Order returns it (D-102) |
+| `feat/razorpay-10-capture-at-dispatch` | **Money is held until the supplier marks the order ready, and taken there** (D-103). A cancellation before ready drops the hold — nothing charged. "Ready" is refused when a hold is about to lapse |
 
 What you will notice:
 
@@ -272,13 +274,17 @@ What you will notice:
 - New setting `SCHEDULER_THREADS` (default 8).
 - Refund keys sent to the provider are `mandi-refund-{id}` (Razorpay needs ten
   characters).
+- **Money is held, not taken, until "ready"** (D-103). A payment is AUTHORIZED
+  while the supplier prepares; `CAPTURE_PENDING` / `CAPTURED` only after the
+  supplier marks the order ready. Tests and scripts that expect a capture straight
+  after paying need to move the order to ready first.
 - **Searching the logs:** `payment=160` finds one payment's whole sequence; a job
   run's lines share `job-<method>-<id>`, and so do the audit rows it wrote. The
   log pattern appends the ids, so custom log configs need `%X{trace}` too.
 - `costonomy-mp-mobile/tools/razorpay-e2e` pays real test-mode orders end to end,
   28 cases, mostly failures. It needs this API on Razorpay test keys.
 
-Tests after these PRs: 329 unit, 335 integration.
+Tests after these PRs: 329 unit, 341 integration.
 
 ### Earlier, on `feat/edit-open-request-quantities`
 

@@ -35,6 +35,7 @@ public class OrderFundingAdapter implements OrderFundingPort {
     private final PaymentService paymentService;
     private final PaymentRepository payments;
     private final PaymentProvider provider;
+    private final RefundService refundService;
 
     @Override
     public String paymentMethod() {
@@ -85,12 +86,40 @@ public class OrderFundingAdapter implements OrderFundingPort {
                         payment.getCurrency(), publicKeyFor(payment.getProvider())));
     }
 
+    /**
+     * How long a provider holds an authorisation before it lapses back to the
+     * customer — Razorpay's manual-capture maximum, five days — less a margin, so
+     * nothing is handed over against a hold about to expire (D-103).
+     */
+    static final java.time.Duration HOLD_USABLE_FOR = java.time.Duration.ofDays(5).minusHours(6);
+
+    @Override
+    public void onOrderAccepted(Long supplierOrderId, BigDecimal acceptedAmount) {
+        // Nothing, for prepaid, since D-103: the money stays held until the goods
+        // are about to leave (onOrderDispatched). Credit still draws here.
+    }
+
     @Override
     @Transactional
-    public void onOrderAccepted(Long supplierOrderId, BigDecimal acceptedAmount) {
+    public void onOrderDispatched(Long supplierOrderId, BigDecimal amount) {
         // Marks only. The provider call happens after this transaction commits —
         // see PaymentService.markForCapture for why that separation matters.
-        paymentService.markForCapture(supplierOrderId, acceptedAmount);
+        try (var trace = TraceScope.of("order", supplierOrderId)) {
+            paymentService.markForCapture(supplierOrderId, amount);
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public boolean canTakeFunds(Long supplierOrderId) {
+        return payments.findBySupplierOrderId(supplierOrderId)
+                .map(payment -> switch (payment.getStatus()) {
+                    case AUTHORIZED -> payment.getAuthorizedAt() != null
+                            && payment.getAuthorizedAt().isAfter(java.time.Instant.now().minus(HOLD_USABLE_FOR));
+                    case CAPTURE_PENDING, CAPTURED, PARTIALLY_REFUNDED -> true;
+                    default -> false;
+                })
+                .orElse(false);
     }
 
     @Override
@@ -101,11 +130,15 @@ public class OrderFundingAdapter implements OrderFundingPort {
             return;
         }
 
-        if (payment.getStatus() == PaymentStatus.CAPTURED) {
-            // Captured before the supplier resolved — a race the reconciliation
-            // path can produce. Returning captured money is a refund, and
-            // RefundService owns that so idempotency lives in one place.
-            log.info("Order {} was unfulfilled after capture; a refund is required", supplierOrderId);
+        if (payment.getStatus() == PaymentStatus.CAPTURED
+                || payment.getStatus() == PaymentStatus.PARTIALLY_REFUNDED) {
+            // Money was taken — since D-103 only once an order was ready, after
+            // which it cannot be cancelled, so this is an order from before, or a
+            // path that bypassed that. It used to log "a refund is required" and
+            // stop: the restaurant was charged for a cancelled order and nothing
+            // ever refunded it. Now the full remaining amount is refunded, once
+            // (the key is the order's), with no one having to ask.
+            refundService.refundCancelled(payment, reason);
             return;
         }
 

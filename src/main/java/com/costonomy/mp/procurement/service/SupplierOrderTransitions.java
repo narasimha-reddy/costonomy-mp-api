@@ -106,8 +106,24 @@ public class SupplierOrderTransitions {
                     "This order can't move from %s to %s.".formatted(current, target));
         }
 
+        boolean dispatching = target == SupplierOrderStatus.READY_FOR_PICKUP;
+        if (dispatching && !funding.canTakeFunds(orderId)) {
+            // The goods must not leave against money that cannot be taken — a
+            // hold about to lapse back to the customer, or one already gone
+            // (D-103). Operations has to resolve it before the supplier ships.
+            throw new BusinessException(ErrorCode.PAYMENT_STATE_CONFLICT,
+                    "The payment for this order can no longer be collected. Contact support before handing the goods over.");
+        }
+
         order.setStatus(target);
         save(order, current);
+
+        if (dispatching) {
+            // The money is taken here, not at confirmation (D-103): from READY an
+            // order can no longer be cancelled, so a cancellation before it only
+            // ever drops a hold, and the two can never race.
+            funding.onOrderDispatched(orderId, order.getAcceptedAmount());
+        }
 
         auditService.record(actorId, null, "SUPPLIER_ORDER_" + target.name(), "SUPPLIER_ORDER",
                 orderId, current.name(), target.name(), null, "API");

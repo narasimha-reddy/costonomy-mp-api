@@ -135,6 +135,43 @@ public class RefundService {
     }
 
     /**
+     * Refund what is left of a payment whose order was cancelled after the money
+     * was taken (D-103). System-initiated, keyed on the order, so a second
+     * cancellation event cannot refund twice.
+     *
+     * @return the refund, or null if nothing is left to refund
+     */
+    @Transactional
+    public Refund refundCancelled(Payment payment, String note) {
+        String key = "cancel-order-" + payment.getSupplierOrderId();
+        var existing = refunds.findByIdempotencyKey(key);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        var locked = payments.lockById(payment.getId()).orElseThrow();
+        BigDecimal remaining = locked.refundableAmount()
+                .subtract(refunds.sumByPaymentIdAndStatusIn(locked.getId(), IN_FLIGHT));
+        if (remaining.signum() <= 0) {
+            return null;
+        }
+        var refund = new Refund();
+        refund.setPaymentId(locked.getId());
+        refund.setSupplierOrderId(locked.getSupplierOrderId());
+        refund.setAmount(remaining);
+        refund.setReason(RefundReason.CANCELLATION);
+        refund.setNote(note);
+        refund.setStatus(RefundStatus.REQUESTED);
+        refund.setIdempotencyKey(key);
+        refunds.saveAndFlush(refund);
+
+        auditService.record(null, null, "REFUND_REQUESTED", "REFUND", refund.getId(),
+                null, RefundStatus.REQUESTED.name(), "Order cancelled after capture: " + note, "SYSTEM");
+        log.info("Refund {} REQUESTED for {} (order cancelled after capture) against payment {}",
+                refund.getId(), remaining.toPlainString(), locked.getId());
+        return refund;
+    }
+
+    /**
      * Send a requested refund to the provider. Called by the refund job.
      *
      * <p>Separate from {@link #request} so the record commits first: a provider

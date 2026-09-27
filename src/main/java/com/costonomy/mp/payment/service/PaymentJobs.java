@@ -59,6 +59,12 @@ public class PaymentJobs {
     static final int CAPTURE_BATCH = 100;
     static final int RECONCILE_BATCH = 200;
 
+    /** How often a payment held for dispatch is checked with the provider (D-103). */
+    static final Duration HELD_CHECK_EVERY = Duration.ofHours(6);
+
+    /** A hold this old, with the order not yet dispatched, is logged for someone to act on. */
+    static final Duration HOLD_WARN_AFTER = Duration.ofDays(4);
+
     /** Per run; a field so a test can shrink it and see what happens past a full batch. */
     int reconcileBatch = RECONCILE_BATCH;
 
@@ -118,6 +124,14 @@ public class PaymentJobs {
                 }
                 try {
                     PaymentProvider.ProviderPayment providerPayment;
+                    if (payment.getStatus() == PaymentStatus.AUTHORIZED
+                            && payment.getReconciledAt() != null
+                            && payment.getReconciledAt().isAfter(Instant.now().minus(HELD_CHECK_EVERY))) {
+                        // Held on purpose until the order is ready (D-103), for up to
+                        // days. Asked about every few hours to catch a lapse, not
+                        // every few minutes for the whole hold.
+                        continue;
+                    }
                     if (payment.getProviderPaymentId() != null) {
                         providerPayment = provider.fetchPayment(payment.getProviderPaymentId());
                     } else {
@@ -157,6 +171,15 @@ public class PaymentJobs {
                     var updated = paymentService.applyProviderState(
                             payment, providerPayment, "RECONCILE");
 
+                    if (updated.getStatus() == PaymentStatus.AUTHORIZED && updated.getAuthorizedAt() != null
+                            && updated.getAuthorizedAt().isBefore(Instant.now().minus(HOLD_WARN_AFTER))) {
+                        // Error, for an alert to match: the hold lapses at five days
+                        // and the order is still not ready. Past OrderFundingAdapter's
+                        // margin the supplier will be refused at "ready"; somebody has
+                        // to act before that, with the restaurant and the supplier.
+                        log.error("Payment {} has been held since {} and its order is not dispatched; "
+                                + "the hold lapses at five days", updated.getId(), updated.getAuthorizedAt());
+                    }
                     if (updated.getStatus().fundsSecured()) {
                         // The order the customer paid for, finally released.
                         orderRelease.releaseIfFunded(updated.getSupplierOrderId());
