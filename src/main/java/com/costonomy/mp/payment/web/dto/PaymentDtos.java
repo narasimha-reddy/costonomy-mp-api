@@ -54,6 +54,26 @@ public final class PaymentDtos {
             List<TransactionResponse> transactions) {
     }
 
+    /**
+     * An order's payment, as the pay screen needs it (D-102).
+     *
+     * @param payable whether a checkout can still be opened against
+     *                {@code providerOrderId}. False once funded, or once ended.
+     */
+    public record PaymentIntentResponse(
+            Long paymentId,
+            Long supplierOrderId,
+            String provider,
+            String providerOrderId,
+            BigDecimal amount,
+            String currency,
+            String publicKey,
+            PaymentStatus status,
+            boolean fundsSecured,
+            boolean payable,
+            String failureReason) {
+    }
+
     public record TransactionResponse(
             String type,
             BigDecimal amount,

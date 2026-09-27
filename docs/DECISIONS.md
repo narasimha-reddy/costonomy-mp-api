@@ -3734,8 +3734,9 @@ ids on the audit rows.
 
 Three independent reviews of D-098 to D-100 (security, backend correctness,
 mobile) found three critical and four high problems. This records the backend
-ones fixed here; the refund policy (who may refund, cancellation) is D-102 and
-D-103, and the pay screen is fixed in `costonomy-mp-mobile`.
+ones fixed here. The pay screen's server side is D-102; the refund policy is
+D-103 (cancellation) and D-104 (who may refund); the pay screen itself is fixed in
+`costonomy-mp-mobile`.
 
 **One Razorpay order takes several attempts, and only one of them is the payment.**
 A declined attempt used to move the payment to FAILED, which is terminal; and
@@ -3798,3 +3799,27 @@ supplier has accepted. For a store with direct orders on (D-094), switching the
 setting on **is** the supplier's standing acceptance of any order within its
 listed stock and prices, so a direct order is paid at once. A supplier who cannot
 fill one cancels it, and the restaurant is refunded (D-103).
+
+---
+
+## D-102 — The pay screen asks the server for the order's checkout
+**Raised 2026-09-27 · Settled 2026-09-27**
+
+The pay screen held the payment intent only in a query-cache entry nothing
+observed, gone after five minutes and on any refresh. A bank or UPI flow can take
+longer than that, and nothing else linked to the pay screen, so an order whose
+screen lost its intent could never be paid from the app. And a Create Order retry
+that found the order already made returned it with `payment: null`, which the app
+read as "nothing to pay" — the same dead end, reached from the other side.
+
+**`GET /supplier-orders/{orderId}/payment-intent`** returns the order's payment
+as the pay screen needs it: the provider order to open checkout against, the
+publishable key, `payable` (still CREATED with a provider order), `fundsSecured`,
+and the last decline's reason. A read — it never creates a provider order, so
+asking twice cannot charge twice. PAYMENT_CREATE on the payment's outlet; another
+tenant's order is a 404.
+
+**The "already ordered" return carries the open intent** through a new read-only
+`OrderFundingPort.openIntent`, rather than re-running `arrangeFunding`. Empty for
+funding with no client step (credit, wallet) and once the payment is funded or
+ended.

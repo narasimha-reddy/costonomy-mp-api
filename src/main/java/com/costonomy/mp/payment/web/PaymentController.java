@@ -42,6 +42,7 @@ public class PaymentController {
     private final PaymentTransactionRepository transactions;
     private final RefundRepository refunds;
     private final AccessControlService accessControl;
+    private final com.costonomy.mp.payment.provider.PaymentProvider provider;
 
     @GetMapping("/payments/{id}")
     @Operation(summary = "Get a payment and its movements")
@@ -50,6 +51,33 @@ public class PaymentController {
         accessControl.requireScoped(ActorContext.requireUserId(), Permissions.ORDER_VIEW,
                 ScopeType.OUTLET, payment.getOutletId(), "Payment");
         return ApiResponse.ok(toResponse(payment));
+    }
+
+    @GetMapping("/supplier-orders/{orderId}/payment-intent")
+    @Operation(
+            summary = "The order's payment, to pay or to check",
+            description = """
+                    What the pay screen needs, from the server rather than from what the
+                    screen happened to keep: the provider order to open checkout against,
+                    whether it can still be paid, and whether it already is. A read — it
+                    never creates a provider order, so asking twice cannot charge twice.
+
+                    Lets a restaurant pay an order after a refresh, after a long bank or
+                    UPI flow, or from the order itself (D-102).
+                    """)
+    public ApiResponse<PaymentDtos.PaymentIntentResponse> intentForOrder(@PathVariable Long orderId) {
+        var payment = paymentService.loadForOrder(orderId);
+        accessControl.requireScoped(ActorContext.requireUserId(), Permissions.PAYMENT_CREATE,
+                ScopeType.OUTLET, payment.getOutletId(), "Payment");
+
+        boolean payable = payment.getStatus() == com.costonomy.mp.payment.domain.PaymentStatus.CREATED
+                && payment.getProviderOrderId() != null;
+        return ApiResponse.ok(new PaymentDtos.PaymentIntentResponse(
+                payment.getId(), payment.getSupplierOrderId(), payment.getProvider(),
+                payment.getProviderOrderId(), payment.getAuthorizedAmount(), payment.getCurrency(),
+                payable ? publicKey(payment.getProvider()) : null,
+                payment.getStatus(), payment.getStatus().fundsSecured(), payable,
+                payment.getFailureReason()));
     }
 
     @PostMapping("/payments/{id}/confirm")
@@ -143,6 +171,11 @@ public class PaymentController {
 
         return ApiResponse.ok(refunds.findByPaymentIdOrderByCreatedAtDesc(id).stream()
                 .map(PaymentController::toResponse).toList());
+    }
+
+    /** The publishable key, from the adapter — never a property someone could put a secret in. */
+    private String publicKey(String providerName) {
+        return provider.name().equals(providerName) ? provider.createAuthorizationPublicKey() : null;
     }
 
     private PaymentDtos.PaymentResponse toResponse(
