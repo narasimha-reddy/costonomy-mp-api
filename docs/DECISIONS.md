@@ -3655,6 +3655,13 @@ two to thirty minutes — about sixty lookups per abandoned checkout instead of
 1,440, recorded with a one-column update so it cannot overwrite a concurrent
 confirm. Capture and reconcile runs are batched (100 and 200).
 
+**Also fixed:**
+
+- **The wallet top-up let anyone who can order credit their own wallet** with no
+  money behind it. The endpoint is refused unless payments run on the mock — the
+  same gate as checkout simulation. `WalletService.topUp` is unchanged, for a
+  real funding rail to call.
+
 `StorefrontIT$Suppliers.radiusCountsWhatItExcluded` listed every supplier near
 Hyderabad and failed once more of them existed; it now searches for its own
 uniquely named stores.
