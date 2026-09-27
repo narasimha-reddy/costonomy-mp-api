@@ -59,6 +59,9 @@ public class PaymentJobs {
     static final int CAPTURE_BATCH = 100;
     static final int RECONCILE_BATCH = 200;
 
+    /** Per run; a field so a test can shrink it and see what happens past a full batch. */
+    int reconcileBatch = RECONCILE_BATCH;
+
     /**
      * Whether an unpaid intent is due to be asked about again.
      *
@@ -106,7 +109,7 @@ public class PaymentJobs {
     @SchedulerLock(name = "payment-reconcile", lockAtMostFor = "PT10M", lockAtLeastFor = "PT0S")
     public void reconcileStale() {
         var staleBefore = Instant.now().minus(Duration.ofMinutes(2));
-        var stale = payments.findStale(staleBefore, PageRequest.of(0, RECONCILE_BATCH));
+        var stale = payments.findStale(staleBefore, PageRequest.of(0, reconcileBatch));
 
         for (var payment : stale) {
             try (var trace = PaymentTrace.of(payment)) {
@@ -123,17 +126,33 @@ public class PaymentJobs {
                         // — so ask by the intent. Bounded in age, or every abandoned
                         // checkout would cost a provider call a minute for ever.
                         Instant now = Instant.now();
-                        if (payment.getCreatedAt().isBefore(now.minus(INTENT_LOOKUP_WINDOW))
-                                || !dueForIntentLookup(payment.getCreatedAt(), payment.getReconciledAt(), now)) {
+                        boolean pastWindow = payment.getCreatedAt().isBefore(now.minus(INTENT_LOOKUP_WINDOW));
+                        if (!pastWindow
+                                && !dueForIntentLookup(payment.getCreatedAt(), payment.getReconciledAt(), now)) {
                             continue;
                         }
                         var found = provider.findPaymentForOrder(payment.getProviderOrderId());
                         if (found.isEmpty()) {
-                            payments.markAsked(payment.getId(), now);
+                            if (pastWindow) {
+                                // Asked one last time and still nothing: end it, so it
+                                // leaves this batch for good (D-101). It used to stay
+                                // CREATED, untouched, at the front of every batch.
+                                if (paymentService.expireIntent(payment.getId())) {
+                                    orderRelease.abandonUnfunded(payment.getSupplierOrderId(),
+                                            "Payment never completed");
+                                }
+                            } else {
+                                payments.markAsked(payment.getId(), now);
+                            }
                             continue;
                         }
                         providerPayment = found.get();
                     }
+                    // Whatever the answer does to the payment, it was asked — so it
+                    // moves to the back of the queue even if nothing is applied (a
+                    // mismatch, an attempt we ignore), rather than being asked again
+                    // on every run ahead of everything else.
+                    payments.markAsked(payment.getId(), Instant.now());
 
                     var updated = paymentService.applyProviderState(
                             payment, providerPayment, "RECONCILE");
@@ -163,8 +182,8 @@ public class PaymentJobs {
                 java.util.List.of(RefundStatus.REQUESTED, RefundStatus.FAILED)));
         // Claimed and never finished: the process died between claiming and
         // writing the outcome. Safe to resend — the provider key is per refund.
-        pending.addAll(refunds.findByStatusAndUpdatedAtBefore(RefundStatus.PROCESSING,
-                Instant.now().minus(RefundService.STUCK_AFTER)));
+        pending.addAll(refunds.findByStatusAndProviderRefundIdIsNullAndUpdatedAtBefore(
+                RefundStatus.PROCESSING, Instant.now().minus(RefundService.STUCK_AFTER)));
 
         for (var refund : pending) {
             try (var trace = PaymentTrace.of(refund)) {
@@ -172,6 +191,18 @@ public class PaymentJobs {
                     refundService.process(refund.getId());
                 } catch (RuntimeException ex) {
                     log.error("Could not process refund {}", refund.getId(), ex);
+                }
+            }
+        }
+
+        // Accepted by the provider but not finished there: ask, never resend.
+        for (var refund : refunds.findByStatusAndProviderRefundIdIsNotNullAndUpdatedAtBefore(
+                RefundStatus.PROCESSING, Instant.now().minus(Duration.ofMinutes(2)))) {
+            try (var trace = PaymentTrace.of(refund)) {
+                try {
+                    refundService.settlePending(refund.getId());
+                } catch (RuntimeException ex) {
+                    log.error("Could not settle refund {}", refund.getId(), ex);
                 }
             }
         }

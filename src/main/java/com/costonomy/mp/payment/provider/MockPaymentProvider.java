@@ -53,6 +53,10 @@ public class MockPaymentProvider implements PaymentProvider {
     private final Map<String, BigDecimal> intents = new ConcurrentHashMap<>();
     /** Intent → the payment that completed it, for {@link #findPaymentForOrder}. */
     private final Map<String, String> paymentByOrder = new ConcurrentHashMap<>();
+    private final Map<String, ProviderRefund> refunds = new ConcurrentHashMap<>();
+
+    /** Refund amount ending in this: accepted as PENDING, completed when fetched. */
+    private static final String REFUND_PENDING_SUFFIX = "23";
 
     @Override
     public String name() {
@@ -99,6 +103,22 @@ public class MockPaymentProvider implements PaymentProvider {
         payments.put(paymentId, authorized);
         paymentByOrder.put(providerOrderId, paymentId);
         return authorized;
+    }
+
+    /**
+     * Simulate one declined attempt on an order, whatever its amount — the first
+     * try in a checkout the customer then retries. Test-facing, like
+     * {@link #completeCheckout}; Razorpay allows several attempts per order.
+     */
+    public ProviderPayment declineAttempt(String providerOrderId) {
+        if (!intents.containsKey(providerOrderId)) {
+            throw new PaymentProviderException("Unknown mock order " + providerOrderId, false, null);
+        }
+        String paymentId = "mock_pay_" + UUID.randomUUID().toString().replace("-", "");
+        var declined = new ProviderPayment(paymentId, providerOrderId, ProviderPaymentStatus.FAILED,
+                BigDecimal.ZERO, BigDecimal.ZERO, "BAD_REQUEST_ERROR", "Payment was declined by the bank.");
+        payments.put(paymentId, declined);
+        return declined;
     }
 
     @Override
@@ -172,8 +192,25 @@ public class MockPaymentProvider implements PaymentProvider {
             return new ProviderRefund(null, ProviderRefundStatus.FAILED, amount,
                     "REFUND_DECLINED", "The refund was declined by the gateway.");
         }
-        return new ProviderRefund("mock_rfnd_" + UUID.randomUUID().toString().replace("-", ""),
-                ProviderRefundStatus.COMPLETED, amount, null, null);
+        String refundId = "mock_rfnd_" + UUID.randomUUID().toString().replace("-", "");
+        var refund = new ProviderRefund(refundId,
+                endsWith(amount, REFUND_PENDING_SUFFIX) ? ProviderRefundStatus.PENDING
+                        : ProviderRefundStatus.COMPLETED, amount, null, null);
+        refunds.put(refundId, refund);
+        return refund;
+    }
+
+    @Override
+    public ProviderRefund fetchRefund(String providerRefundId) {
+        var refund = refunds.get(providerRefundId);
+        if (refund == null) {
+            throw new PaymentProviderException("Unknown mock refund " + providerRefundId, false, "NOT_FOUND");
+        }
+        // A pending refund finishes by the time anyone asks again.
+        var settled = new ProviderRefund(refund.providerRefundId(), ProviderRefundStatus.COMPLETED,
+                refund.amount(), null, null);
+        refunds.put(providerRefundId, settled);
+        return settled;
     }
 
     @Override

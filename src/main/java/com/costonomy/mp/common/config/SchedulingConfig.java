@@ -5,7 +5,10 @@ import net.javacrumbs.shedlock.provider.jdbctemplate.JdbcTemplateLockProvider;
 import net.javacrumbs.shedlock.spring.annotation.EnableSchedulerLock;
 import org.springframework.context.annotation.Bean;
 import com.costonomy.mp.common.logging.CorrelatedTaskScheduler;
+import org.springframework.boot.task.ThreadPoolTaskExecutorBuilder;
 import org.springframework.boot.task.ThreadPoolTaskSchedulerBuilder;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
@@ -31,6 +34,17 @@ public class SchedulingConfig {
     @Bean
     public ThreadPoolTaskScheduler taskScheduler(ThreadPoolTaskSchedulerBuilder builder) {
         return builder.configure(new CorrelatedTaskScheduler());
+    }
+
+    /**
+     * The executor Boot would have made itself (D-101). Boot creates it only when
+     * no {@code Executor} bean exists, and the scheduler above is one — so without
+     * this, a future {@code @Async} would quietly run on the eight job threads.
+     */
+    @Bean(name = {"applicationTaskExecutor", "taskExecutor"})
+    @Lazy
+    public ThreadPoolTaskExecutor applicationTaskExecutor(ThreadPoolTaskExecutorBuilder builder) {
+        return builder.build();
     }
 
     @Bean

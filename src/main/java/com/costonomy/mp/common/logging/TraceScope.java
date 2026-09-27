@@ -80,6 +80,9 @@ public final class TraceScope implements AutoCloseable {
      * RequestIdFilter sanitises its header too.
      */
     private static String sanitize(String value) {
-        return value.replaceAll("[^A-Za-z0-9_.:\\-]", "_");
+        String clean = value.replaceAll("[^A-Za-z0-9_.:\\-]", "_");
+        // Capped: a value arrives on every line in scope, so an oversized one
+        // multiplies across the log (D-101).
+        return clean.length() > 64 ? clean.substring(0, 64) + "…" : clean;
     }
 }

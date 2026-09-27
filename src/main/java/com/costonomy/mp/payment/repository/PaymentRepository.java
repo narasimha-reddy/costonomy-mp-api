@@ -36,6 +36,11 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     @Query("select p from Payment p where p.id = :id")
     Optional<Payment> lockById(@Param("id") Long id);
 
+    /** The order's payment, locked. For writers that start from the order. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Payment p where p.supplierOrderId = :supplierOrderId")
+    Optional<Payment> lockBySupplierOrderId(@Param("supplierOrderId") Long supplierOrderId);
+
     Optional<Payment> findByProviderOrderId(String providerOrderId);
 
     List<Payment> findByProcurementId(Long procurementId);
@@ -62,13 +67,17 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
      *
      * <p>Catches doc 46's lost callback: the customer paid, the client vanished,
      * and nothing told us. Asking the provider is the only way to find out.
+     *
+     * <p>Least recently asked first (D-101). Ordered by {@code updated_at}, rows
+     * the sweep skipped without writing stayed at the front and, 200 of them,
+     * filled every batch for good — no lost payment was ever found again.
      */
     @Query("""
             select p from Payment p
             where p.status in (com.costonomy.mp.payment.domain.PaymentStatus.CREATED,
                                com.costonomy.mp.payment.domain.PaymentStatus.AUTHORIZED)
               and p.updatedAt < :staleBefore
-            order by p.updatedAt asc
+            order by coalesce(p.reconciledAt, p.createdAt) asc, p.id asc
             """)
     List<Payment> findStale(@Param("staleBefore") Instant staleBefore, Pageable batch);
 

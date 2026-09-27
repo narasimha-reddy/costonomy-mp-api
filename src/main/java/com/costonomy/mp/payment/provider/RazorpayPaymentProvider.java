@@ -61,6 +61,12 @@ public class RazorpayPaymentProvider implements PaymentProvider {
             @Value("${costonomy.mp.razorpay.key-secret}") String keySecret,
             @Value("${costonomy.mp.razorpay.webhook-secret}") String webhookSecret) {
 
+        // Refuse to start half-configured (D-101). A blank webhook secret made every
+        // webhook fail closed with a stack trace per request; a blank key fails
+        // every payment. Neither should wait for the first customer to find out.
+        requireSet("costonomy.mp.razorpay.key-id", keyId);
+        requireSet("costonomy.mp.razorpay.key-secret", keySecret);
+        requireSet("costonomy.mp.razorpay.webhook-secret", webhookSecret);
         this.keyId = keyId;
         this.keySecret = keySecret;
         this.webhookSecret = webhookSecret;
@@ -139,7 +145,7 @@ public class RazorpayPaymentProvider implements PaymentProvider {
         try {
             JsonNode response = post("/v1/payments/" + providerPaymentId + "/capture",
                     Map.of("amount", toPaise(amount), "currency", "INR"), Map.of());
-            return toProviderPayment(response);
+            return capturedAs(toProviderPayment(response), amount);
         } catch (PaymentProviderException ex) {
             if (ex.isRetryable()) {
                 throw ex;
@@ -151,10 +157,23 @@ public class RazorpayPaymentProvider implements PaymentProvider {
             var current = fetchPayment(providerPaymentId);
             if (current.status() == ProviderPaymentStatus.CAPTURED) {
                 log.info("Razorpay payment {} was already captured", providerPaymentId);
-                return current;
+                return capturedAs(current, amount);
             }
             throw ex;
         }
+    }
+
+    /**
+     * What we captured is what we asked to capture (D-101). Razorpay's payment
+     * carries its full {@code amount} whatever was captured, and reading that as
+     * the captured figure overwrote a partial capture with the whole
+     * authorisation — no release of the remainder, and refunds allowed up to
+     * money never taken.
+     */
+    private static ProviderPayment capturedAs(ProviderPayment payment, BigDecimal requested) {
+        return new ProviderPayment(payment.providerPaymentId(), payment.providerOrderId(),
+                payment.status(), payment.authorizedAmount(), requested,
+                payment.failureCode(), payment.failureReason());
     }
 
     @Override
@@ -187,6 +206,23 @@ public class RazorpayPaymentProvider implements PaymentProvider {
                     default -> ProviderRefundStatus.PENDING;
                 },
                 toRupees(response.path("amount").asLong()), null, null);
+    }
+
+    @Override
+    public ProviderRefund fetchRefund(String providerRefundId) {
+        JsonNode response = get("/v1/refunds/" + providerRefundId);
+        return new ProviderRefund(
+                response.path("id").asText(null),
+                refundStatus(response.path("status").asText("")),
+                toRupees(response.path("amount").asLong()), null, null);
+    }
+
+    private static ProviderRefundStatus refundStatus(String status) {
+        return switch (status) {
+            case "processed" -> ProviderRefundStatus.COMPLETED;
+            case "failed" -> ProviderRefundStatus.FAILED;
+            default -> ProviderRefundStatus.PENDING;
+        };
     }
 
     @Override
@@ -297,12 +333,24 @@ public class RazorpayPaymentProvider implements PaymentProvider {
      * to quote to Razorpay support, and the one that shows a slow gateway before
      * the pool does.
      */
-    private static void logCall(String method, String path, String status, long startedNanos) {
+    private static void logCall(String method, String rawPath, String status, long startedNanos) {
         long millis = (System.nanoTime() - startedNanos) / 1_000_000;
+        // The path can hold a payment id a client sent. Keep it to one token on
+        // one line, as TraceScope does, so it cannot forge a line (D-101).
+        String path = rawPath.replaceAll("[^A-Za-z0-9_./:\\-]", "_");
+        if (path.length() > 120) {
+            path = path.substring(0, 120) + "…";
+        }
         if (status != null && status.startsWith("2")) {
             log.info("Razorpay {} {} → {} in {} ms", method, path, status, millis);
         } else {
             log.warn("Razorpay {} {} → {} in {} ms", method, path, status, millis);
+        }
+    }
+
+    private static void requireSet(String property, String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException(property + " must be set when payments run on Razorpay");
         }
     }
 
