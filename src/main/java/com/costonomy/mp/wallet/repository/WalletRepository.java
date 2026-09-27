@@ -15,6 +15,9 @@ public interface WalletRepository extends JpaRepository<Wallet, Long> {
 
     boolean existsByOutletId(Long outletId);
 
+    @Query("select w.outletId from Wallet w where w.id = :walletId")
+    Long outletIdOf(@Param("walletId") Long walletId);
+
     /**
      * The wallet, held until the transaction ends (D-104). A withdrawal decides
      * how much can go back to which card while holding it, so two withdrawals

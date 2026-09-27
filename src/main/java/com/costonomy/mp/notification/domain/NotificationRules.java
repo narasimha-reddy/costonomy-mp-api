@@ -279,6 +279,31 @@ public final class NotificationRules {
                 "Dispute resolved",
                 "Dispute {disputeNumber} was closed.", "DISPUTE", "supplierOrderId"));
 
+        // D-104. Critical: the request has a 48-hour clock, and the answers are money.
+        add(rules, new NotificationRule("DisputeRefundRequested", SUPPLIER_STORE, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund requested",
+                "A restaurant asked for a refund of ₹{amount} on dispute {disputeNumber}. "
+                        + "Please answer within 48 hours.", "DISPUTE", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DisputeRefundApproved", OUTLET, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund approved",
+                "₹{amount} from dispute {disputeNumber} has been added to your wallet.",
+                "DISPUTE", "supplierOrderId"));
+
+        // The supplier too: it comes out of their payout, whoever approved it.
+        add(rules, new NotificationRule("DisputeRefundApproved", SUPPLIER_STORE, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund approved",
+                "A refund of ₹{amount} on dispute {disputeNumber} was approved. It will be "
+                        + "taken from your payout for the order.", "DISPUTE", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DisputeRefundDeclined", OUTLET, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund declined",
+                "Your refund on dispute {disputeNumber} was declined.", "DISPUTE", "supplierOrderId"));
+
         add(rules, new NotificationRule("ReceivingCompleted", SUPPLIER_STORE, ORDERS, false,
                 List.of(IN_APP),
                 "Order received",

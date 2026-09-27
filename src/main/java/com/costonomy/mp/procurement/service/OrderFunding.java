@@ -85,6 +85,15 @@ public class OrderFunding {
         return forOrder(supplierOrderId).openIntent(supplierOrderId);
     }
 
+    public BigDecimal refundableToWallet(Long supplierOrderId) {
+        return forOrder(supplierOrderId).refundableToWallet(supplierOrderId);
+    }
+
+    public Long refundToWallet(Long supplierOrderId, BigDecimal amount, String key,
+                               Long actorId, String note) {
+        return forOrder(supplierOrderId).refundToWallet(supplierOrderId, amount, key, actorId, note);
+    }
+
     public void onOrderUnfulfilled(Long supplierOrderId, String reason) {
         forOrder(supplierOrderId).onOrderUnfulfilled(supplierOrderId, reason);
     }

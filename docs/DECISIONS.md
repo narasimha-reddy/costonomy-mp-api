@@ -3870,7 +3870,7 @@ cancellation once ready; a cancelled order already captured is refunded once;
 an expiring hold refuses "ready".
 
 ## D-104 — A refund goes to the wallet; money leaves the wallet only back to the card
-**Raised 2026-09-27 · Settled 2026-09-27 (part one: the money's path)** · the dispute workflow that decides a refund is part two, in the next change
+**Raised 2026-09-27 · Settled 2026-09-27** · part one, the money's path; part two, below, the dispute workflow that decides a refund · amends D-036 and D-048
 
 Before this, a restaurant could refund its own captured payment:
 `POST /payments/{id}/refund` needed only `PAYMENT_CREATE` on its outlet, and took
@@ -3952,3 +3952,70 @@ once, capped at the balance, only refund money, split oldest first with each
 card capped, idempotent and key reuse refused, another tenant 404, concurrent
 withdrawals, cancellation to the wallet. The provider-refund cases (stuck,
 declined, pending, transient, no open transaction) now run through a withdrawal.
+
+### D-104, part two — a refund is decided on a dispute, and the supplier pays for it
+
+**The workflow.** A restaurant asks for an amount on a dispute
+(`POST /disputes/{id}/refund-request`, `DISPUTE_CREATE`, once per dispute, once the
+order is DELIVERED or COMPLETED — before that a problem is a cancellation, which
+releases the hold). The supplier approves or declines with a reason
+(`POST /dispute-refunds/{id}/approve|decline`, new `DISPUTE_REFUND_DECIDE` for
+owner, admin, store manager and finance staff — not a salesperson, because it
+gives money away out of the payout). If they decline, or have not answered in 48
+hours, operations decides (`/admin/dispute-refunds`, new INTERNAL `REFUND_DECIDE`
+for OPS_FINANCE and OPS_ADMIN; the queue needs `DISPUTE_INSPECT`, D-046). The
+supplier may still answer after 48 hours, until operations has. Every step writes
+to the dispute's thread, is audited, and raises `DisputeRefund{Requested,
+Approved,Declined}` — named by `DisputeRefundStatus`, D-044 — which notify the
+supplier (with the 48-hour clock) and the restaurant, and the supplier again on an
+approval, since it is their payout.
+
+**An approval moves money twice, in one transaction:** the supplier's payout is
+charged (`SupplierRefundLedger.charge`, a `supplier_deduction`) and the wallet is
+credited through the order's funding method (`OrderFundingPort.refundToWallet`:
+a wallet refund of the card payment; a `DISPUTE_REFUND` credit for a wallet-paid
+order, which has no card and so cannot be withdrawn; refused for credit, which is
+settled between the two parties). Either refusal rolls both back.
+
+**Costonomy never funds a refund.** Settled with the product owner — "make sure
+Costonomy will not lose any money". Four rules, each tested:
+
+1. **The supplier bears every refund**, including one operations approves over
+   their decline. Costonomy keeps its commission on the order.
+2. **Capped at the supplier's payout for the order** — its value less commission,
+   less earlier refunds on it — and at the order's money. From the stored
+   calculation once the order is settled, from `CommissionService.preview` before
+   (never saved: a calculation row is what marks an order settled).
+3. **Refused once that payout is approved.** After approval the money is committed
+   to the supplier, and a refund would come out of Costonomy's pocket if they
+   never traded again. The restaurant is told to contact support.
+4. **A payout cannot be approved while a refund on one of its orders is
+   undecided** — REQUESTED, or DECLINED and waiting for operations. Approval
+   applies any deduction still pending first, and refuses a settlement whose net
+   would be negative.
+
+**How a deduction reaches the payout.** An order is settled the day after it
+completes. A refund approved before that waits as PENDING and is applied, as a
+DEBIT `REFUND` adjustment, by the generation that picks the order up; one approved
+while the order's settlement is open is applied to it at once (the settlement's
+version makes that and a simultaneous approval exclusive). The order is **never
+held back from generation** instead: generation finds orders by the day they
+completed, so an order skipped once would never be settled.
+
+**Concurrency.** Deciding locks the request row, so a supplier and an operator
+approving at once pay once (`NoLoss.concurrentDecisionsPayOnce`, five races). Lock
+order: request, settlement, wallet, payment.
+
+**Known edge.** The cap before settlement uses today's commission rate; if the
+rate rises before generation, the deduction can exceed that order's net by the
+difference. Approval refuses a settlement that nets negative, so it cannot pay out
+wrongly — someone corrects it first.
+
+Tests: `DisputeRefundFlowIT` (16) — approved, credited and taken from the next
+payout; applied at once to an open settlement; visible on the dispute and both
+lists; capped at the payout; refused after the payout; undecided holds the payout;
+concurrent approvals pay once; an approval twice pays once; operations waits 48
+hours and the supplier still pays; declined by both moves nothing; only the
+supplier decides, and support cannot; once per dispute; only after delivery;
+delivered but not received; a wallet-paid order's refund is spendable, not
+withdrawable.

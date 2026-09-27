@@ -182,6 +182,22 @@ public class RefundService {
         return refund;
     }
 
+    /**
+     * What can still be refunded from this payment: captured, less refunded, less
+     * older provider refunds on their way. Zero unless the money was taken.
+     */
+    @Transactional(readOnly = true)
+    public BigDecimal refundableFor(Long paymentId) {
+        var payment = payments.findById(paymentId).orElse(null);
+        if (payment == null || (payment.getStatus() != PaymentStatus.CAPTURED
+                && payment.getStatus() != PaymentStatus.PARTIALLY_REFUNDED)) {
+            return BigDecimal.ZERO;
+        }
+        return payment.refundableAmount()
+                .subtract(refunds.sumByPaymentIdAndStatusIn(paymentId, IN_FLIGHT))
+                .max(BigDecimal.ZERO);
+    }
+
     /** How much of one payment's wallet refunds can still go back to its card. */
     public record Withdrawable(Long paymentId, BigDecimal available) {
     }

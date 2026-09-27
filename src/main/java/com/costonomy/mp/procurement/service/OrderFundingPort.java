@@ -105,6 +105,28 @@ public interface OrderFundingPort {
     }
 
     /**
+     * How much of this order's money can still be given back to the restaurant's
+     * wallet (D-104). Zero by default: a credit order's money never passed
+     * through Mandi, and a refund on it is a credit note between the two parties.
+     */
+    default BigDecimal refundableToWallet(Long supplierOrderId) {
+        return BigDecimal.ZERO;
+    }
+
+    /**
+     * Give part of this order's money back to the outlet's wallet, once per key
+     * (D-104). The caller has already charged it to the supplier.
+     *
+     * @return the refund behind the credit, where the funding method has one
+     */
+    default Long refundToWallet(Long supplierOrderId, BigDecimal amount, String key,
+                                Long actorId, String note) {
+        throw new com.costonomy.mp.common.error.BusinessException(
+                com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR,
+                "Refunds on this order are settled with the supplier directly.");
+    }
+
+    /**
      * What the client needs to pay for one order.
      *
      * @param providerOrderId the intent to open a checkout against

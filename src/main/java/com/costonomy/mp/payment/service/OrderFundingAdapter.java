@@ -147,6 +147,25 @@ public class OrderFundingAdapter implements OrderFundingPort {
                 RefundReason.SUPPLIER_REJECTION, reason);
     }
 
+    @Override
+    public BigDecimal refundableToWallet(Long supplierOrderId) {
+        return payments.findBySupplierOrderId(supplierOrderId)
+                .map(payment -> refundService.refundableFor(payment.getId()))
+                .orElse(BigDecimal.ZERO);
+    }
+
+    /** A wallet refund of the order's captured payment (D-104). */
+    @Override
+    public Long refundToWallet(Long supplierOrderId, BigDecimal amount, String key,
+                               Long actorId, String note) {
+        var payment = payments.findBySupplierOrderId(supplierOrderId)
+                .orElseThrow(() -> new com.costonomy.mp.common.error.BusinessException(
+                        com.costonomy.mp.common.error.ErrorCode.PAYMENT_STATE_CONFLICT,
+                        "This order has no payment to refund."));
+        return refundService.refundToWallet(actorId, payment.getId(), amount,
+                RefundReason.DISPUTE_RESOLVED, note, key).getId();
+    }
+
     /**
      * The provider's publishable key.
      *
