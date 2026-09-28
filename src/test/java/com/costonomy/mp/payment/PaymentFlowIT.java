@@ -552,6 +552,32 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("an order shows where its money is: held, then taken; or released when cancelled")
+        void orderShowsItsPaymentLive() throws Exception {
+            var taken = submit("400", 1);
+            payAndConfirm(taken);
+            assertThat(orderPaymentStatus(taken)).isEqualTo("AUTHORIZED");
+            dispatch(taken);
+            paymentJobs.capturePending();
+            // It used to stay "AUTHORIZED" for good: the order kept a copy written
+            // once, at release.
+            assertThat(orderPaymentStatus(taken)).isEqualTo("CAPTURED");
+
+            var cancelled = submit("400", 1);
+            payAndConfirm(cancelled);
+            int status = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/supplier-orders/" + cancelled.orderId() + "/supplier-cancel")
+                            .header("Authorization", "Bearer " + cancelled.seller().token())
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("reason", "OUT_OF_STOCK"))))
+                    .andReturn().getResponse().getStatus();
+            assertThat(status).isEqualTo(200);
+            // Not "Authorized" on a cancelled order: the hold is gone.
+            assertThat(orderPaymentStatus(cancelled)).isEqualTo("RELEASED");
+        }
+
+        @Test
         @DisplayName("a retryable capture failure stays queued, and the next run really tries again")
         void captureFailureIsRetried() throws Exception {
             // .17 makes the mock fail the capture.
@@ -1574,6 +1600,11 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         creditWallet(submitted, amount);
         return withdraw(submitted.buyer(), amount, UUID.randomUUID().toString())
                 .at("/data/parts/0/refundId").asLong();
+    }
+
+    private String orderPaymentStatus(Submitted submitted) throws Exception {
+        return api.get(submitted.buyer().token(), "/api/v1/supplier-orders/" + submitted.orderId())
+                .at("/data/paymentStatus").asText();
     }
 
     private BigDecimal balance(Buyer buyer) {

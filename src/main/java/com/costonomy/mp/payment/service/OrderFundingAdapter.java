@@ -147,6 +147,13 @@ public class OrderFundingAdapter implements OrderFundingPort {
                 RefundReason.SUPPLIER_REJECTION, reason);
     }
 
+    /** The payment's own status: AUTHORIZED, CAPTURED, RELEASED, PARTIALLY_REFUNDED… */
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Optional<String> paymentState(Long supplierOrderId) {
+        return payments.findBySupplierOrderId(supplierOrderId).map(payment -> payment.getStatus().name());
+    }
+
     @Override
     public BigDecimal refundableToWallet(Long supplierOrderId) {
         return payments.findBySupplierOrderId(supplierOrderId)

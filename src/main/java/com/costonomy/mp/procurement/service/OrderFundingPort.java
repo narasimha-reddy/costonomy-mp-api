@@ -127,6 +127,20 @@ public interface OrderFundingPort {
     }
 
     /**
+     * Where this order's money stands now, in the funding method's own words —
+     * the value an order shows as its payment status.
+     *
+     * <p>Read live. {@code supplier_order.payment_status} is a copy written once,
+     * at release, as "AUTHORIZED" whatever the method: a wallet order read
+     * "Authorized" when its money was already paid, and a card order still said so
+     * after the money was taken, refunded or released. Empty means no answer, and
+     * the stored value stands.
+     */
+    default java.util.Optional<String> paymentState(Long supplierOrderId) {
+        return java.util.Optional.empty();
+    }
+
+    /**
      * What the client needs to pay for one order.
      *
      * @param providerOrderId the intent to open a checkout against
