@@ -206,7 +206,6 @@ class MigrationIT extends AbstractIntegrationTest {
                         "role_permission",
                         "restaurant_user_outlet",
                         "supplier_user_store",
-                        "intent_order_link",
                         "delivery_ledger",
                         "delivery_provider_stats",
                         "delivery_provider_metrics",
