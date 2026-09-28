@@ -3,6 +3,7 @@ package com.costonomy.mp.delivery;
 import com.costonomy.mp.delivery.provider.pidge.PidgeProperties;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
+import com.costonomy.mp.support.TestCatalog;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -67,14 +68,21 @@ class PidgeDeliveryFlowIT extends AbstractIntegrationTest {
         JsonNode s = api.post(sellerToken, "/api/v1/suppliers", Map.of(
                 "legalName", "Pidge Supplier " + System.currentTimeMillis() + " Pvt Ltd",
                 "displayName", "Pidge Supplier",
+                "contactName", "Ops Desk",
+                "contactPhone", "+919876500000",
                 "firstStore", Map.of(
                         "name", "Koramangala Store",
+                        "contactName", "Store Desk",
+                        "contactPhone", "+919876500000",
                         "addressLine1", "80 Feet Rd",
                         "city", "Bengaluru",
                         "state", "Karnataka",
                         "latitude", "12.9352",
                         "longitude", "77.6245"))).get("data");
+        long supplierOrgId = s.get("id").asLong();
         long storeId = s.get("stores").get(0).get("id").asLong();
+        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', verification_status = 'VERIFIED' where id = ?", supplierOrgId);
+        TestCatalog.tradesAroundTheClock(jdbc, supplierOrgId);
 
         // Insert minimal procurement
         jdbc.update("""
@@ -89,8 +97,8 @@ class PidgeDeliveryFlowIT extends AbstractIntegrationTest {
         jdbc.update("""
                 insert into supplier_order (procurement_id, supplier_store_id, outlet_id,
                                             order_number, status, total_amount, accepted_amount,
-                                            payment_method, payment_status, created_at, updated_at, version)
-                values (?, ?, ?, ?, 'READY_FOR_PICKUP', 500.00, 500.00, 'PREPAID', 'CAPTURED', now(6), now(6), 0)
+                                            delivery_mode, payment_method, payment_status, created_at, updated_at, version)
+                values (?, ?, ?, ?, 'READY_FOR_PICKUP', 500.00, 500.00, 'COSTONOMY_DELIVERY', 'PREPAID', 'CAPTURED', now(6), now(6), 0)
                 """, procurementId, storeId, outletId, orderNumber);
         Long supplierOrderId = jdbc.queryForObject(
                 "select id from supplier_order where order_number = ?", Long.class, orderNumber);
