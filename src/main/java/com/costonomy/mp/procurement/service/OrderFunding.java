@@ -106,6 +106,18 @@ public class OrderFunding {
         return port.paymentState(order.getId()).orElse(order.getPaymentStatus());
     }
 
+    /** How the order was paid for, for wording, or null when the method has no answer (D-109). */
+    public String paymentInstrument(SupplierOrder order) {
+        var port = byMethod.get(order.getPaymentMethod());
+        return port == null ? null : port.paymentInstrument(order.getId()).orElse(null);
+    }
+
+    /** The refund of a cancelled order's debited money, if one was raised; see {@link OrderFundingPort#cancelRefund}. */
+    public java.util.Optional<OrderFundingPort.CancelRefund> cancelRefund(SupplierOrder order) {
+        var port = byMethod.get(order.getPaymentMethod());
+        return port == null ? java.util.Optional.empty() : port.cancelRefund(order.getId());
+    }
+
     public void onOrderUnfulfilled(Long supplierOrderId, String reason) {
         forOrder(supplierOrderId).onOrderUnfulfilled(supplierOrderId, reason);
     }

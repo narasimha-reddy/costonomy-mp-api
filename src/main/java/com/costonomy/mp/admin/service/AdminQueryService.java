@@ -288,16 +288,20 @@ public class AdminQueryService {
         var payments = jdbc.query("""
                 select id, supplier_order_id, status, provider, provider_payment_id,
                        authorized_amount, captured_amount, refunded_amount, released_amount,
-                       failure_code, failure_reason, reconciled_at
+                       failure_code, failure_reason, reconciled_at,
+                       provider_method, release_reason, provider_fee, review_required_at, review_reason
                   from payment where supplier_order_id = ?
                 """,
                 (rs, row) -> {
                     var reconciled = rs.getTimestamp(12);
+                    var review = rs.getTimestamp(16);
                     return new AdminDtos.PaymentDetail(
                             rs.getLong(1), rs.getLong(2), rs.getString(3), rs.getString(4),
                             rs.getString(5), rs.getBigDecimal(6), rs.getBigDecimal(7),
                             rs.getBigDecimal(8), rs.getBigDecimal(9), rs.getString(10),
                             rs.getString(11), reconciled == null ? null : reconciled.toInstant(),
+                            rs.getString(13), rs.getString(14), rs.getBigDecimal(15),
+                            review == null ? null : review.toInstant(), rs.getString(17),
                             List.of(), List.of());
                 },
                 orderId);
@@ -335,7 +339,9 @@ public class AdminQueryService {
                 payment.status(), payment.provider(), payment.providerPaymentId(),
                 payment.authorizedAmount(), payment.capturedAmount(), payment.refundedAmount(),
                 payment.releasedAmount(), payment.failureCode(), payment.failureReason(),
-                payment.reconciledAt(), transactions, refunds);
+                payment.reconciledAt(), payment.providerMethod(), payment.releaseReason(),
+                payment.providerFee(), payment.reviewRequiredAt(), payment.reviewReason(),
+                transactions, refunds);
     }
 
     // ── Delivery ─────────────────────────────────────────────────────────

@@ -141,6 +141,34 @@ public interface OrderFundingPort {
     }
 
     /**
+     * How the order was paid for, as the provider names it — {@code card},
+     * {@code upi}, {@code netbanking}, {@code wallet}… — for wording only (D-109):
+     * whether "you were not charged" is true depends on it, because a card is
+     * only held and a UPI payment is debited. Empty when the method has no such
+     * thing (credit, the wallet) or has not been read yet.
+     */
+    default java.util.Optional<String> paymentInstrument(Long supplierOrderId) {
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * The refund that sends a cancelled order's debited money back to where it came
+     * from (D-109), for the apps to say how much is coming and when it landed. Empty
+     * for an order that was not cancelled, whose money was only a held card (nothing
+     * to refund), or whose refund has not been raised yet.
+     */
+    default java.util.Optional<CancelRefund> cancelRefund(Long supplierOrderId) {
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * @param amount      what is being refunded
+     * @param completedAt when the refund completed, or null while it is still on its way
+     */
+    record CancelRefund(BigDecimal amount, java.time.Instant completedAt) {
+    }
+
+    /**
      * What the client needs to pay for one order.
      *
      * @param providerOrderId the intent to open a checkout against

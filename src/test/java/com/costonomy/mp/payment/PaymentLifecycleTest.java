@@ -91,6 +91,47 @@ class PaymentLifecycleTest {
     }
 
     @Nested
+    @DisplayName("a cancelled order's debited payment (D-109)")
+    class CancelPending {
+
+        @Test
+        @DisplayName("CANCEL_PENDING can only become CAPTURED, RELEASED or FAILED")
+        void cancelPendingTransitions() {
+            assertThat(CANCEL_PENDING.allowedTransitions()).containsExactlyInAnyOrder(CAPTURED, RELEASED, FAILED);
+            for (var other : PaymentStatus.values()) {
+                if (other != CAPTURED && other != RELEASED && other != FAILED) {
+                    assertThat(CANCEL_PENDING.canTransitionTo(other)).describedAs("to " + other).isFalse();
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("it is neither secured nor holding: nothing may release the order or take the money for it")
+        void cancelPendingIsNotFundsSecuredNorHolding() {
+            assertThat(CANCEL_PENDING.fundsSecured()).isFalse();
+            assertThat(CANCEL_PENDING.isHoldingFunds()).isFalse();
+            assertThat(CANCEL_PENDING.isSettled()).isFalse();
+        }
+
+        @Test
+        @DisplayName("an authorised payment may go to CANCEL_PENDING, and nothing else may")
+        void authorizedMayGoToCancelPending() {
+            assertThat(AUTHORIZED.canTransitionTo(CANCEL_PENDING)).isTrue();
+            for (var other : PaymentStatus.values()) {
+                if (other != AUTHORIZED) {
+                    assertThat(other.canTransitionTo(CANCEL_PENDING)).describedAs("from " + other).isFalse();
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("FAILED stays terminal: late money reopens it through an explicit move, not a transition")
+        void failedStaysTerminal() {
+            assertThat(FAILED.allowedTransitions()).isEmpty();
+        }
+    }
+
+    @Nested
     @DisplayName("refund")
     class Refunds {
 
