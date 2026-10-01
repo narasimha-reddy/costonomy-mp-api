@@ -54,6 +54,8 @@ public class MockPaymentProvider implements PaymentProvider {
     /** Intent → the payment that completed it, for {@link #findPaymentForOrder}. */
     private final Map<String, String> paymentByOrder = new ConcurrentHashMap<>();
     private final Map<String, ProviderRefund> refunds = new ConcurrentHashMap<>();
+    /** Every refund the mock holds, by payment, as {@link #listRefunds} lists it: ours (with the receipt we sent) and foreign ones. */
+    private final Map<String, java.util.List<ProviderRefundEntry>> entriesByPayment = new ConcurrentHashMap<>();
     /** Idempotency key → the refund it made, so a resend returns it as Razorpay does. */
     private final Map<String, ProviderRefund> refundsByKey = new ConcurrentHashMap<>();
     /** Payment → what has been refunded of it, for {@link #inspect}. */
@@ -246,7 +248,18 @@ public class MockPaymentProvider implements PaymentProvider {
         var payment = fetchPayment(providerPaymentId);
         if (payment.status() != ProviderPaymentStatus.CAPTURED) {
             throw new PaymentProviderException(
-                    "Only a captured payment can be refunded", false, "INVALID_STATE");
+                    "Only a captured payment can be refunded", false, "INVALID_STATE",
+                    ProviderFailureKind.NOT_CAPTURED, "The payment status should be captured");
+        }
+        // As Razorpay refuses them (D-110): a payment already refunded in full, and more than is left.
+        BigDecimal left = payment.authorizedAmount().subtract(refundedOf(providerPaymentId));
+        if (left.signum() <= 0) {
+            throw new PaymentProviderException("The payment has been fully refunded already", false,
+                    "400", ProviderFailureKind.ALREADY_REFUNDED, "The payment has been fully refunded already");
+        }
+        if (amount.compareTo(left) > 0) {
+            throw new PaymentProviderException("The refund amount is greater than the refundable amount", false,
+                    "400", ProviderFailureKind.OVER_REFUND, "The refund amount is greater than the refundable amount");
         }
         if (endsWith(payment.capturedAmount(), REFUND_FAILURE_SUFFIX)) {
             return new ProviderRefund(null, ProviderRefundStatus.FAILED, amount,
@@ -259,7 +272,34 @@ public class MockPaymentProvider implements PaymentProvider {
         refunds.put(refundId, refund);
         refundsByKey.put(idempotencyKey, refund);
         refundedByPayment.merge(providerPaymentId, amount, BigDecimal::add);
+        entriesByPayment.computeIfAbsent(providerPaymentId, k -> new java.util.concurrent.CopyOnWriteArrayList<>())
+                .add(new ProviderRefundEntry(refundId, amount, refund.status(),
+                        options == null ? null : options.receipt(),
+                        options == null || options.notes() == null ? null : options.notes().get("mandi_refund_id"),
+                        java.time.Instant.now()));
         return refund;
+    }
+
+    /**
+     * A refund made at the provider by someone else, in its dashboard: on the list without our
+     * receipt and counted in what has gone back. Test-facing (D-110).
+     */
+    public ProviderRefundEntry refundedExternally(String providerPaymentId, BigDecimal amount) {
+        fetchPayment(providerPaymentId);
+        String refundId = "mock_rfnd_foreign_" + UUID.randomUUID().toString().replace("-", "");
+        var entry = new ProviderRefundEntry(refundId, amount, ProviderRefundStatus.COMPLETED, null, null,
+                java.time.Instant.now());
+        entriesByPayment.computeIfAbsent(providerPaymentId, k -> new java.util.concurrent.CopyOnWriteArrayList<>())
+                .add(entry);
+        refundedByPayment.merge(providerPaymentId, amount, BigDecimal::add);
+        return entry;
+    }
+
+    @Override
+    public java.util.List<ProviderRefundEntry> listRefunds(String providerPaymentId) {
+        // As the provider does: a payment it does not know is refused, not listed as empty.
+        fetchPayment(providerPaymentId);
+        return java.util.List.copyOf(entriesByPayment.getOrDefault(providerPaymentId, java.util.List.of()));
     }
 
     @Override
@@ -293,6 +333,9 @@ public class MockPaymentProvider implements PaymentProvider {
         var settled = new ProviderRefund(refund.providerRefundId(), ProviderRefundStatus.COMPLETED,
                 refund.amount(), null, null);
         refunds.put(providerRefundId, settled);
+        entriesByPayment.values().forEach(list -> list.replaceAll(entry -> providerRefundId.equals(entry.providerRefundId())
+                ? new ProviderRefundEntry(entry.providerRefundId(), entry.amount(), ProviderRefundStatus.COMPLETED,
+                        entry.receipt(), entry.mandiRefundId(), entry.createdAt()) : entry));
         return settled;
     }
 

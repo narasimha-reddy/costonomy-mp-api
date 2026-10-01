@@ -235,12 +235,16 @@ public class SupplierOrderTransitions {
             orders.saveAndFlush(order);
         } catch (OptimisticLockingFailureException ex) {
             Long id = order.getId();
-            log.info("Lost the race on supplier order {} — reporting the winning outcome", id);
-
             // Read the winner in a fresh state. The entity in hand is stale by
             // definition, so nothing on it can be trusted here.
             var winner = orders.findById(id).orElseThrow(
                     () -> new NotFoundException("SupplierOrder", id));
+
+            log.info("Lost the race on supplier order {} (expected {} -> {}): the winner left it {}"
+                            + (winner.getStatus() == SupplierOrderStatus.CANCELLED
+                            ? ", cancelled by " + winner.getCancelledBy() : "")
+                            + "; reporting the winning outcome",
+                    id, expectedPrevious, order.getStatus(), winner.getStatus());
 
             throw switch (winner.getStatus()) {
                 case CANCELLED -> new BusinessException(ErrorCode.SUPPLIER_ORDER_ALREADY_RESOLVED,

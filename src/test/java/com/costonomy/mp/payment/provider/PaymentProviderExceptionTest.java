@@ -40,4 +40,39 @@ class PaymentProviderExceptionTest {
         assertThat(with("429").isCredentialsRefused()).isFalse();
         assertThat(with("401").isRateLimited()).isFalse();
     }
+
+    @Test
+    @DisplayName("D-110: a failure says what it means for the money: throttled, credentials, unknown payment, refused, or ambiguous")
+    void kindIsDerivedFromWhatTheFailureSays() {
+        assertThat(with("429").kind()).isEqualTo(ProviderFailureKind.THROTTLED);
+        assertThat(with("401").kind()).isEqualTo(ProviderFailureKind.CONFIG);
+        assertThat(with("403").kind()).isEqualTo(ProviderFailureKind.CONFIG);
+        assertThat(with("404").kind()).isEqualTo(ProviderFailureKind.PAYMENT_UNKNOWN);
+        assertThat(with("NOT_FOUND").kind()).isEqualTo(ProviderFailureKind.PAYMENT_UNKNOWN);
+        assertThat(with("400").kind()).isEqualTo(ProviderFailureKind.REJECTED_OTHER);
+        assertThat(with("INVALID_STATE").kind()).isEqualTo(ProviderFailureKind.REJECTED_OTHER);
+        // Retryable, or unreachable, says nothing about whether it was done.
+        assertThat(new PaymentProviderException("x", true, "500").kind()).isEqualTo(ProviderFailureKind.AMBIGUOUS);
+        assertThat(new PaymentProviderException("x", true, null).kind()).isEqualTo(ProviderFailureKind.AMBIGUOUS);
+        assertThat(PaymentProviderException.unreachable("down", new RuntimeException()).kind())
+                .isEqualTo(ProviderFailureKind.AMBIGUOUS);
+        // An explicit kind wins over the code.
+        assertThat(new PaymentProviderException("x", false, "400", ProviderFailureKind.ALREADY_REFUNDED, "fully refunded").kind())
+                .isEqualTo(ProviderFailureKind.ALREADY_REFUNDED);
+    }
+
+    @Test
+    @DisplayName("D-110: only a definite refusal is checked for a reversal; only the permanent ones block; two of them trip the breaker")
+    void kindProperties() {
+        for (var kind : ProviderFailureKind.values()) {
+            boolean definite = kind != ProviderFailureKind.AMBIGUOUS && kind != ProviderFailureKind.THROTTLED
+                    && kind != ProviderFailureKind.CONFIG;
+            assertThat(kind.isDefinite()).describedAs(kind.name()).isEqualTo(definite);
+        }
+        assertThat(java.util.Arrays.stream(ProviderFailureKind.values()).filter(ProviderFailureKind::isPermanent))
+                .containsExactlyInAnyOrder(ProviderFailureKind.PAYMENT_UNKNOWN, ProviderFailureKind.NOT_CAPTURED,
+                        ProviderFailureKind.WINDOW_PASSED);
+        assertThat(java.util.Arrays.stream(ProviderFailureKind.values()).filter(ProviderFailureKind::tripsBreaker))
+                .containsExactlyInAnyOrder(ProviderFailureKind.INSUFFICIENT_BALANCE, ProviderFailureKind.CONFIG);
+    }
 }

@@ -127,6 +127,26 @@ public enum ErrorCode {
             "A refund has already been requested for this."),
     WEBHOOK_SIGNATURE_INVALID(HttpStatus.BAD_REQUEST,
             "Invalid webhook signature."),
+    /**
+     * More was asked to go back to the card or bank than can. The details carry
+     * {@code withdrawableNow} (what can go back right now, and so what to offer instead),
+     * {@code blocked} (wallet money whose original payment can no longer be refunded) and
+     * {@code unavailable} (money that could not be checked with the provider just now) (D-110).
+     */
+    WITHDRAWAL_EXCEEDS_REFUNDABLE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That much can't go back to your card or bank right now."),
+    /** Operations acted on a refund without a fresh read of the provider's refunds behind it (D-110). */
+    REFUND_VERIFICATION_REQUIRED(HttpStatus.CONFLICT,
+            "Check this refund against the payment provider first."),
+    /** A money-moving operations action above the threshold needs a second person (D-110). */
+    SECOND_APPROVER_REQUIRED(HttpStatus.CONFLICT,
+            "This needs a second person to approve it."),
+    /** What operations said about the provider's records is not what the provider's records show (D-110). */
+    REFUND_VERIFICATION_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "The payment provider's records don't match."),
+    /** Refunds are failing for a reason on our side (D-110); nothing is lost and the wallet is untouched. */
+    WITHDRAWALS_PAUSED(HttpStatus.SERVICE_UNAVAILABLE,
+            "Withdrawals are paused for a short while. Your money is safe in your wallet."),
 
     // ── Delivery (422) ───────────────────────────────────────────────────
     DELIVERY_UNAVAILABLE(HttpStatus.UNPROCESSABLE_ENTITY,

@@ -162,15 +162,24 @@ public class WalletService {
      */
     @Transactional
     public Wallet lock(Long outletId) {
-        // Locked before anything loads it. A wallet already in the persistence
-        // context is not re-read by the locking query, only version-checked — so a
-        // withdrawal that waited on the lock saw the balance from before the one
-        // ahead of it, and failed on a stale version instead of finding the money
-        // gone.
-        if (!wallets.existsByOutletId(outletId)) {
-            forOutlet(outletId);
-            wallets.flush();
+        // The locking read comes first, before anything reads the wallet or anything else. Under
+        // REPEATABLE READ the first plain SELECT of a transaction fixes what every later plain SELECT
+        // sees, so a check that ran before the lock was granted made a caller that had waited for the lock
+        // read the world as it was before the caller ahead of it committed: a withdrawal decided
+        // what a payment could still give back from figures that left out the withdrawal it had just waited
+        // for (D-110). A locking read sees the latest committed row, and everything after it in this
+        // transaction sees at least that.
+        //
+        // And locked before anything loads it as an entity: a wallet already in the persistence context
+        // is not re-read by the locking query, only version-checked — so a withdrawal that waited on the
+        // lock saw the balance from before the one ahead of it, and failed on a stale version instead of
+        // finding the money gone.
+        var locked = wallets.lockByOutletId(outletId);
+        if (locked.isPresent()) {
+            return locked.get();
         }
+        forOutlet(outletId);
+        wallets.flush();
         return wallets.lockByOutletId(outletId).orElseThrow();
     }
 
@@ -234,19 +243,28 @@ public class WalletService {
      */
     @Transactional
     public void creditDisputeRefund(Long supplierOrderId, BigDecimal amount, String reference) {
+        // The order's payment row never changes, so a plain read of it says which wallet it was, before the lock.
         var debit = entries.findBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.ORDER_PAYMENT)
                 .orElseThrow(() -> new BusinessException(ErrorCode.PAYMENT_STATE_CONFLICT,
                         "This order wasn't paid from the wallet."));
-        if (entries.existsByReference(reference)) {
-            return;
-        }
         // The outlet by a scalar query, not by loading the wallet: a wallet already
         // in the persistence context is not re-read by the lock (see lock()).
         lock(wallets.outletIdOf(debit.getWalletId()));
-        if (amount.compareTo(refundableForOrder(supplierOrderId)) > 0) {
+        // What the lock protects is read after it, and as a locking read: this may be one step of a caller's larger
+        // transaction whose own plain reads see the ledger as it was at its first read, before the lock was granted.
+        // A locking read sees what whoever held the wallet before us has committed. Not a second transaction for
+        // the read: that would take a second connection while this one holds the wallet, and as many concurrent
+        // refunds as the pool has connections would each wait for one that none of them can give back. One read of
+        // the order's own entries, and the decisions are made from it: a locking read of the new reference would
+        // deadlock two refunds on two wallets (see WalletTransactionRepository#lockedLedgerOf).
+        var ledger = entries.lockedLedgerOf(supplierOrderId);
+        if (ledger.stream().anyMatch(line -> reference.equals(line.getReference()))) {
+            return;
+        }
+        BigDecimal refundable = refundableFrom(ledger);
+        if (amount.compareTo(refundable) > 0) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "At most ₹%s of this order can be refunded."
-                            .formatted(Rupees.of(refundableForOrder(supplierOrderId))));
+                    "At most ₹%s of this order can be refunded.".formatted(Rupees.of(refundable)));
         }
         wallets.credit(debit.getWalletId(), amount);
         wallets.flush();
@@ -254,6 +272,20 @@ public class WalletService {
         var refreshed = wallets.findById(debit.getWalletId()).orElseThrow();
         record(refreshed, supplierOrderId, WalletDirection.CREDIT, WalletEntryKind.DISPUTE_REFUND,
                 amount, "Refund", reference, null);
+    }
+
+    /** {@link #refundableForOrder}, from the order's entries as one locking read read them. */
+    private static BigDecimal refundableFrom(List<WalletTransactionRepository.LedgerLine> ledger) {
+        var paid = sumOf(ledger, WalletEntryKind.ORDER_PAYMENT);
+        var returned = sumOf(ledger, WalletEntryKind.ORDER_REFUND);
+        var refunded = sumOf(ledger, WalletEntryKind.DISPUTE_REFUND);
+        return paid.subtract(returned).subtract(refunded).max(BigDecimal.ZERO);
+    }
+
+    private static BigDecimal sumOf(List<WalletTransactionRepository.LedgerLine> ledger, WalletEntryKind kind) {
+        return ledger.stream().filter(line -> kind.name().equals(line.getKind()))
+                .map(WalletTransactionRepository.LedgerLine::getAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     /**
@@ -277,6 +309,31 @@ public class WalletService {
         record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.WITHDRAWAL, amount,
                 "Withdrawal to the original payment method", "withdrawal-" + refundId, refundId);
         return refreshed;
+    }
+
+    /**
+     * Put a withdrawal part the provider did not send back in the wallet (D-110).
+     *
+     * <p>Idempotent on the refund: the reference {@code withdrawal-reversal-{refundId}} is
+     * unique, so a second call is a no-op and a racing second insert fails and rolls its own
+     * credit back with it. Called with the wallet locked, by the reversal, after it has
+     * decided; the credit is the atomic update every balance change goes through.
+     */
+    @Transactional
+    public void creditWithdrawalReversal(Long outletId, Long refundId, BigDecimal amount) {
+        String reference = "withdrawal-reversal-" + refundId;
+        if (entries.existsByReference(reference)) {
+            return;
+        }
+        var wallet = forOutlet(outletId);
+        wallets.credit(wallet.getId(), amount);
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.CREDIT, WalletEntryKind.WITHDRAWAL_REVERSAL, amount,
+                "Withdrawal returned to your wallet", reference, refundId);
+        log.info("Wallet {} credited {} for reversed withdrawal refund {}; balance {}",
+                wallet.getId(), amount.toPlainString(), refundId, refreshed.getBalance().toPlainString());
     }
 
     private void record(Wallet wallet, Long supplierOrderId, WalletDirection direction,

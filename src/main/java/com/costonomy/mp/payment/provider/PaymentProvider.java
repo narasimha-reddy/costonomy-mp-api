@@ -103,6 +103,18 @@ public interface PaymentProvider {
     ProviderPaymentFacts inspect(String providerPaymentId);
 
     /**
+     * Every refund the provider holds against one payment, ours and anyone else's (D-110).
+     *
+     * <p>The one read that can prove a refund was <em>not</em> made, which is what any decision
+     * to put money back, or to send a refund a second time, rests on. Matching is by the
+     * {@code receipt} we send, not by amount and time. A payment the provider does not know
+     * throws a not-found, which means nothing of ours can exist there. Complete: it follows
+     * the provider's paging, or throws rather than return part of the list, since a partial
+     * list is exactly what would make "none of ours" a lie.
+     */
+    java.util.List<ProviderRefundEntry> listRefunds(String providerPaymentId);
+
+    /**
      * Where a refund we sent now stands.
      *
      * <p>A provider can accept a refund and finish it later — Razorpay answers
@@ -247,6 +259,23 @@ public interface PaymentProvider {
         public static RefundOptions none() {
             return new RefundOptions(null, Map.of(), null);
         }
+    }
+
+    /**
+     * One refund as the provider lists it (D-110).
+     *
+     * @param receipt        the receipt we sent ({@code mandi-refund-{id}}), or null for a refund
+     *                       that is not ours or was made before we sent one
+     * @param mandiRefundId  {@code notes.mandi_refund_id}, or null
+     * @param createdAt      when the provider made it, or null if not said
+     */
+    record ProviderRefundEntry(
+            String providerRefundId,
+            BigDecimal amount,
+            ProviderRefundStatus status,
+            String receipt,
+            String mandiRefundId,
+            java.time.Instant createdAt) {
     }
 
     record ProviderRefund(

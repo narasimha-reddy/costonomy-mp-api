@@ -50,5 +50,14 @@ public class ProductionProviderGuard {
                         + "Set it to the real provider, or run without the production profile.");
             }
         }
+        // A switch for watching a withdrawal be reversed on a local stack (D-110). With it off, a
+        // withdrawal is debited without first asking the provider whether it can be refunded. Any explicit
+        // value but exactly "true" is refused, not only "false": Spring reads off, no and 0 as false too, and
+        // a value that means something else than what it says must not slip through.
+        String precheck = environment.getProperty("costonomy.mp.wallet.withdraw-precheck");
+        if (precheck != null && !"true".equalsIgnoreCase(precheck.trim())) {
+            throw new IllegalStateException("costonomy.mp.wallet.withdraw-precheck is '" + precheck.trim()
+                    + "' under a production profile. It is for local testing only; remove it, or set it to true.");
+        }
     }
 }

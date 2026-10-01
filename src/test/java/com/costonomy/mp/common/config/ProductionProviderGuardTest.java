@@ -35,4 +35,56 @@ class ProductionProviderGuardTest {
         local.setActiveProfiles("local");
         assertThatCode(() -> ProductionProviderGuard.check(local)).doesNotThrowAnyException();
     }
+
+    @Test
+    @DisplayName("D-110: the switch that skips the check before a withdrawal is refused under production, and fine locally")
+    void withdrawalPrecheckCannotBeSwitchedOffInProduction() {
+        var prod = new MockEnvironment();
+        prod.setActiveProfiles("prod");
+        prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+        prod.setProperty("costonomy.mp.providers.otp", "MSG91");
+        prod.setProperty("costonomy.mp.wallet.withdraw-precheck", "false");
+        assertThatThrownBy(() -> ProductionProviderGuard.check(prod))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("withdraw-precheck");
+
+        prod.setProperty("costonomy.mp.wallet.withdraw-precheck", "true");
+        assertThatCode(() -> ProductionProviderGuard.check(prod)).doesNotThrowAnyException();
+
+        var local = new MockEnvironment();
+        local.setActiveProfiles("local");
+        local.setProperty("costonomy.mp.wallet.withdraw-precheck", "false");
+        assertThatCode(() -> ProductionProviderGuard.check(local)).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("D-110: production refuses any explicit value of the pre-check switch but true, including the ones Spring reads as false")
+    void withdrawalPrecheckOnlyTrueOrUnsetInProduction() {
+        // Spring binds off, no and 0 (and a blank) to false for a boolean property: a guard that only looked for
+        // the word "false" let each of them switch the check off in production unnoticed.
+        for (String value : new String[]{"false", "FALSE", "off", "no", "0", "n", "", " ", "disabled", "yes", "1"}) {
+            var prod = new MockEnvironment();
+            prod.setActiveProfiles("prod");
+            prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+            prod.setProperty("costonomy.mp.providers.otp", "MSG91");
+            prod.setProperty("costonomy.mp.wallet.withdraw-precheck", value);
+            assertThatThrownBy(() -> ProductionProviderGuard.check(prod))
+                    .describedAs("value '%s'", value)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("withdraw-precheck");
+        }
+        for (String value : new String[]{"true", "TRUE", " true "}) {
+            var prod = new MockEnvironment();
+            prod.setActiveProfiles("production");
+            prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+            prod.setProperty("costonomy.mp.providers.otp", "MSG91");
+            prod.setProperty("costonomy.mp.wallet.withdraw-precheck", value);
+            assertThatCode(() -> ProductionProviderGuard.check(prod)).describedAs("value '%s'", value).doesNotThrowAnyException();
+        }
+        var unset = new MockEnvironment();
+        unset.setActiveProfiles("prod");
+        unset.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+        unset.setProperty("costonomy.mp.providers.otp", "MSG91");
+        assertThatCode(() -> ProductionProviderGuard.check(unset)).doesNotThrowAnyException();
+    }
 }

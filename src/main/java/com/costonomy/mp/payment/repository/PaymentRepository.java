@@ -43,6 +43,23 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
 
     Optional<Payment> findByProviderOrderId(String providerOrderId);
 
+    /**
+     * Payments made after the given one that the provider took money for, newest first: what the proof that the
+     * provider's keys work is read from when a payment the provider does not know is being decided (D-110). Not
+     * the payment itself, not one already found to be unknown, and only this provider's own.
+     */
+    @Query("""
+            select p from Payment p
+            where p.provider = :provider and p.providerPaymentId is not null and p.id > :afterId
+              and p.status in (com.costonomy.mp.payment.domain.PaymentStatus.CAPTURED,
+                               com.costonomy.mp.payment.domain.PaymentStatus.PARTIALLY_REFUNDED,
+                               com.costonomy.mp.payment.domain.PaymentStatus.FULLY_REFUNDED)
+              and (p.providerRefundBlockedReason is null or p.providerRefundBlockedReason <> 'PAYMENT_UNKNOWN')
+            order by p.id desc
+            """)
+    List<Payment> findKeyProofCandidates(@Param("provider") String provider, @Param("afterId") Long afterId,
+                                         Pageable page);
+
     List<Payment> findByProcurementId(Long procurementId);
 
     List<Payment> findByStatusIn(Collection<PaymentStatus> statuses);
@@ -120,4 +137,31 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     @Modifying
     @Query("update Payment p set p.reconciledAt = :at where p.id = :id")
     int markAsked(@Param("id") Long id, @Param("at") Instant at);
+
+    /**
+     * Stop drawing withdrawals from this payment (D-110). One conditional statement, so of two
+     * callers that meet the same refusal one records it, and only that one audits it.
+     *
+     * @return 1 if this call blocked it, 0 if it already was
+     */
+    @org.springframework.transaction.annotation.Transactional
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Payment p
+               set p.providerRefundBlockedAt = :at, p.providerRefundBlockedReason = :reason,
+                   p.version = p.version + 1, p.updatedAt = :at
+             where p.id = :id and p.providerRefundBlockedAt is null
+            """)
+    int block(@Param("id") Long id, @Param("at") Instant at, @Param("reason") String reason);
+
+    /** Undo a block (D-110). @return 1 if it was blocked and now is not */
+    @org.springframework.transaction.annotation.Transactional
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Payment p
+               set p.providerRefundBlockedAt = null, p.providerRefundBlockedReason = null,
+                   p.version = p.version + 1, p.updatedAt = :at
+             where p.id = :id and p.providerRefundBlockedAt is not null
+            """)
+    int unblock(@Param("id") Long id, @Param("at") Instant at);
 }
