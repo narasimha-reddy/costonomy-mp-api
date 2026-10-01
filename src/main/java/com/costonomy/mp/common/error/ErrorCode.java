@@ -140,6 +140,12 @@ public enum ErrorCode {
      */
     WALLET_LIMIT_EXCEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
             "That would take your wallet over its limit."),
+    /**
+     * A wallet statement for the period would run to more rows than a file can
+     * reasonably hold (D-108). The customer's fix is a shorter period.
+     */
+    STATEMENT_TOO_LARGE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That period has too many entries for one statement. Please choose a shorter period."),
     WEBHOOK_SIGNATURE_INVALID(HttpStatus.BAD_REQUEST,
             "Invalid webhook signature."),
     /**

@@ -47,6 +47,17 @@ public class WalletTopUp extends BaseEntity {
     @Column(name = "razorpay_payment_id", length = 64)
     private String razorpayPaymentId;
 
+    /**
+     * How the payment was made, as the provider reported it when the top-up was credited
+     * or returned (D-108): {@code card}, {@code upi}, {@code netbanking}... Null before V42.
+     */
+    @Column(name = "payment_method", length = 32)
+    private String paymentMethod;
+
+    /** A card's last four digits or a provider wallet's name. Never a full card number. */
+    @Column(name = "payment_detail", length = 64)
+    private String paymentDetail;
+
     @Column(name = "provider_refund_id", length = 64)
     private String providerRefundId;
 

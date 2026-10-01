@@ -84,7 +84,7 @@ final class WalletTopUpSupport {
             request.contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body));
         }
         var response = mvc.perform(request).andReturn().getResponse();
-        String text = response.getContentAsString();
+        String text = response.getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
         return new Reply(response.getStatus(), text.isBlank() ? json.createObjectNode() : json.readTree(text));
     }
 

@@ -60,25 +60,29 @@ public interface WalletTopUpRepository extends JpaRepository<WalletTopUp, Long> 
     @Query("""
             update WalletTopUp t
                set t.status = com.costonomy.mp.wallet.domain.WalletTopUpStatus.CREDITED,
-                   t.razorpayPaymentId = :paymentId, t.creditedAt = :now, t.version = t.version + 1
+                   t.razorpayPaymentId = :paymentId, t.creditedAt = :now,
+                   t.paymentMethod = :method, t.paymentDetail = :detail, t.version = t.version + 1
              where t.id = :id and t.status in (
                    com.costonomy.mp.wallet.domain.WalletTopUpStatus.CREATED,
                    com.costonomy.mp.wallet.domain.WalletTopUpStatus.EXPIRED)
             """)
-    int markCredited(@Param("id") Long id, @Param("paymentId") String paymentId, @Param("now") Instant now);
+    int markCredited(@Param("id") Long id, @Param("paymentId") String paymentId, @Param("now") Instant now,
+                     @Param("method") String method, @Param("detail") String detail);
 
     /** A captured payment that cannot be credited: it is to be returned instead. */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
             update WalletTopUp t
                set t.status = com.costonomy.mp.wallet.domain.WalletTopUpStatus.REFUND_PENDING,
-                   t.razorpayPaymentId = :paymentId, t.failureReason = :reason, t.version = t.version + 1
+                   t.razorpayPaymentId = :paymentId, t.failureReason = :reason,
+                   t.paymentMethod = :method, t.paymentDetail = :detail, t.version = t.version + 1
              where t.id = :id and t.status in (
                    com.costonomy.mp.wallet.domain.WalletTopUpStatus.CREATED,
                    com.costonomy.mp.wallet.domain.WalletTopUpStatus.EXPIRED)
             """)
     int markRefundPending(@Param("id") Long id, @Param("paymentId") String paymentId,
-                          @Param("reason") String reason);
+                          @Param("reason") String reason,
+                          @Param("method") String method, @Param("detail") String detail);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""

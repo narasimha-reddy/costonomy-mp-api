@@ -48,6 +48,15 @@ public class WalletService {
         });
     }
 
+    /**
+     * This outlet's wallet if it has one, without opening it. For the read models (history and
+     * statements): the wallet repository is held by this service alone, so that only it can move a balance.
+     */
+    @Transactional(readOnly = true)
+    public java.util.Optional<Wallet> find(Long outletId) {
+        return wallets.findByOutletId(outletId);
+    }
+
     @Transactional(readOnly = true)
     public BigDecimal balanceOf(Long outletId) {
         return wallets.findByOutletId(outletId).map(Wallet::getBalance).orElse(BigDecimal.ZERO);
