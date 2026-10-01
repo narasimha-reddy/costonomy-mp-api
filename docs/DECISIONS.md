@@ -4140,6 +4140,113 @@ balance settling to exactly one (five races), and the config endpoint;
 `QuickScanDisabledIT` (2) — the flag off refuses the payment and says so on the
 config endpoint, both with the wallet otherwise fully funded.
 
+## D-107 — Adding money to the wallet through Razorpay, and where that money physically is
+**Raised 2026-09-29 · Settled 2026-09-29**
+
+**Where the money lives, plainly.** The wallet balance is a number in our MySQL
+database: a ledger (`wallet_transaction`) and a total (`wallet.balance`) saying
+how much we owe a restaurant. It is not money. The money is the cash Razorpay
+collected when the restaurant paid: it sits in *our* Razorpay balance and settles
+to *our* bank account on Razorpay's schedule. So a wallet is a **liability** —
+rupees we hold for a restaurant and must be able to pay out (to an order's
+supplier, back to a card on withdrawal, or to a shop by QuickScan) — and the
+promise behind every rupee of it is that the same rupee is in our Razorpay
+balance or our bank. A credit with no captured payment behind it is money we owe
+and do not have; that is the one thing this design exists to prevent, and it is
+why the mock top-up (D-099) is refused on a real provider.
+
+**What.** `POST /outlets/{id}/wallet/top-ups` (`PROCUREMENT_SUBMIT`, scoped to the
+outlet, `Idempotency-Key` required) validates the amount and the limits, writes a
+`wallet_top_up` row (V41) and opens a Razorpay order for exactly that amount with
+**`payment.capture = automatic`** — a top-up is captured when paid, unlike an
+order (D-103), because there is nothing to wait for and a held authorisation
+would lapse into money we never took. `PaymentProvider.AuthorizationRequest`
+gained `autoCapture` (default false, so every order is unchanged). The client
+opens Razorpay's checkout with `{ topUpId, razorpayOrderId, keyId, amount,
+currency }` and calls `POST .../top-ups/{id}/confirm` with `{ razorpayPaymentId,
+razorpaySignature }`. `GET .../top-ups/{id}` gives the status, and
+`GET /outlets/{id}/wallet` now carries a `limits` object.
+
+**Confirm trusts nothing the client sent.** The signature is checked first
+(`PaymentProvider.verifyCheckoutSignature`: HMAC-SHA256 of `order_id|payment_id`
+under the API secret — not the webhook secret, and the two are never accepted for
+one another). Then Razorpay is asked what the payment is, and it is credited only
+if it belongs to *this top-up's order*, is *captured*, and its amount equals the
+amount *we stored*. A payment that is authorised but not yet captured, or a
+Razorpay that cannot be reached, answers `TOP_UP_PROCESSING` (409): the money is
+safe and the poller credits it.
+
+**One method credits, so nothing can credit twice.** The client's confirm and the
+background poller both end in `WalletTopUpService.settle`. In one transaction it
+locks the outlet's wallet, then the top-up row (that order, always), re-checks the
+limits against the freshly locked balance, moves the row out of CREATED/EXPIRED
+with a conditional `UPDATE ... WHERE status IN (...)`, and writes the ledger
+credit through `WalletService.creditTopUp`. Behind it: a unique
+`razorpay_payment_id` per top-up, a unique ledger `reference` (`topup-{id}`), and
+the unique `razorpay_order_id`. The transaction runs at READ COMMITTED: under
+MySQL's default REPEATABLE READ a transaction that waited for the wallet lock
+still read the month's total as it stood before the wait, and two top-ups could
+each pass a limit that together they break. (A test that removes the wallet lock
+fails, five races in a row, on exactly this.) No provider call holds a
+connection (D-099).
+
+**No captured money is ever left without a credit or a refund.**
+- *Confirm never arrives* (app killed, network gone): `WalletTopUpJobs.poll`
+  finds CREATED top-ups older than a minute, asks Razorpay for the payment on the
+  order, and credits a captured one through `settle`. Asked every minute in the
+  first hour, every half hour after (an abandoned checkout costs about fifty
+  calls, not 1,440). After a day with nothing paid — checked at Razorpay first,
+  never assumed — the row is EXPIRED. A payment that turns up after that is still
+  credited: EXPIRED can become CREDITED.
+- *Crediting would break a limit* (two top-ups racing past the maximum balance,
+  say): the payment is not credited and not dropped. The row moves to
+  REFUND_PENDING in the same transaction, and a provider refund of that payment
+  is sent straight after commit with a key derived from the top-up
+  (`mandi-topup-refund-{id}`), so a retry reaches the same refund. A refund
+  Razorpay accepts as pending is followed up by asking, never sent twice; one that
+  fails is retried by the refund job up to five times and then logged at ERROR as
+  needing a person, with the balance untouched. The refund goes straight to
+  Razorpay rather than through `RefundService`, deliberately: that machinery is
+  built around an order's `payment` row and a supplier order, which a top-up has
+  neither of. It borrows its shape (claim, send without a transaction, record,
+  retry, hand to a person) rather than its tables.
+- *A captured payment whose amount is not the stored amount* is neither credited
+  nor refunded, and is logged at ERROR. Razorpay fixes an order's amount, so this
+  should never happen; if it does, a person decides.
+
+**Limits stand in for KYC.** `costonomy.mp.wallet.max-balance` (₹1,00,000),
+`monthly-top-up-limit` (₹10,00,000), `min-top-up` (₹10) and `max-top-up`
+(₹1,00,000) are checked when the top-up is created and again when it lands. A
+wallet anyone can fill without limit is a place to park money whose owner we know
+nothing about; KYC is what would allow that, and **KYC is not being built**, so
+the limits keep the exposure small without it. A future KYC tier would raise them
+per outlet, and `WalletLimits` is the one place they are read. "Month" is the
+calendar month in Asia/Kolkata; `addedThisMonth` counts CREDITED top-ups only, so
+the mock top-up, a refunded one and one still waiting do not count.
+
+**Open item — legal, not code.** Holding restaurants' money in a balance they can
+spend on orders, withdraw, and (D-106) pay third parties from is very likely a
+prepaid payment instrument under RBI's PPI rules, which need authorisation or a
+licensed partner holding the funds (an escrow or nodal account, or a PA/PPI
+partner). Limits are a risk control, not a licence. Whether this may go live, and
+under whose licence, is unanswered; it is the same question D-104 and D-106
+raised. Until it is answered this should be treated as sandbox only.
+
+**Known gaps.**
+- The payment webhook is not wired to top-ups. A `payment.captured` event for a
+  top-up's order is recorded as IGNORED (it matches no `payment` row); the poller
+  is what credits an unconfirmed payment, within about a minute and a half. Wiring
+  the webhook would make it instant; the poller would still be the net.
+- After a FAILED top-up (Razorpay refused the order) a retry needs a new
+  `Idempotency-Key`; the same key answers that the top-up has ended.
+- The auto-capture order body (`payment.capture = automatic`) follows Razorpay's
+  documented Orders API and is tested against a stand-in HTTP server, not the real
+  sandbox.
+
+Tests: `WalletTopUpIT` (52 across seven groups), `WalletTopUpLimitsIT` (5, small
+configured limits), `WalletLimitsTest` (3, the IST month), `RazorpayPaymentProviderTest`
+(+3: automatic capture, exact paise, checkout signature).
+
 ## D-109 — Cancelling an order whose money was debited captures it and refunds it, and a lapsed hold is noticed
 **Raised 2026-09-30 · Settled 2026-09-30** (owner recommendations E-1 to E-6 accepted as defaults; the fee and instant-refund choices are still the owner's, see below)
 

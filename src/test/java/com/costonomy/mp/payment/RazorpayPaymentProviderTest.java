@@ -768,6 +768,58 @@ class RazorpayPaymentProviderTest {
                 .isInstanceOfSatisfying(PaymentProviderException.class, ex -> assertThat(ex.isNotFound()).isTrue());
     }
 
+    @DisplayName("a top-up asks for automatic capture, never manual, and sends paise exactly")
+    void topUpOrderIsAutomaticCapture() throws IOException {
+        routes.put("/v1/orders", new Canned(200, """
+                {"id":"order_T","amount":1010,"currency":"INR","status":"created"}"""));
+
+        var intent = razorpay.createAuthorization(new AuthorizationRequest(
+                "topup-7", new BigDecimal("10.10"), "INR", "Mandi wallet top-up", "topup-7", true));
+
+        assertThat(intent.providerOrderId()).isEqualTo("order_T");
+        JsonNode sent = only("/v1/orders").json();
+        assertThat(sent.get("amount").asLong()).isEqualTo(1010);
+        assertThat(sent.at("/payment/capture").asText()).isEqualTo("automatic");
+        assertThat(sent.at("/payment/capture_options/manual_expiry_period").isMissingNode()).isTrue();
+        assertThat(sent.get("receipt").asText()).isEqualTo("topup-7");
+    }
+
+    @Test
+    @DisplayName("amounts a top-up can hold convert to paise without a float in sight")
+    void paiseAreExact() throws IOException {
+        routes.put("/v1/orders", new Canned(200, "{\"id\":\"order_P\"}"));
+
+        for (String rupees : List.of("0.29", "10.10", "1234.57", "99999.99", "100000.00")) {
+            seen.clear();
+            razorpay.createAuthorization(new AuthorizationRequest(
+                    "topup-1", new BigDecimal(rupees), "INR", "t", "k", true));
+            assertThat(only("/v1/orders").json().get("amount").asLong())
+                    .describedAs(rupees).isEqualTo(new BigDecimal(rupees).movePointRight(2).longValueExact());
+        }
+    }
+
+    @Test
+    @DisplayName("the checkout signature is HMAC-SHA256 of order|payment under the API secret, and only that")
+    void checkoutSignature() throws Exception {
+        String valid = hmac("rzp_test_secret", "order_A|pay_A");
+
+        assertThat(razorpay.verifyCheckoutSignature("order_A", "pay_A", valid)).isTrue();
+        assertThat(razorpay.verifyCheckoutSignature("order_A", "pay_B", valid)).isFalse();
+        assertThat(razorpay.verifyCheckoutSignature("order_B", "pay_A", valid)).isFalse();
+        assertThat(razorpay.verifyCheckoutSignature("order_A", "pay_A", valid + "0")).isFalse();
+        assertThat(razorpay.verifyCheckoutSignature("order_A", "pay_A", null)).isFalse();
+        assertThat(razorpay.verifyCheckoutSignature(null, "pay_A", valid)).isFalse();
+        // The webhook secret signs webhooks, not checkouts: a signature made with it must not pass.
+        assertThat(razorpay.verifyCheckoutSignature("order_A", "pay_A",
+                hmac(WEBHOOK_SECRET, "order_A|pay_A"))).isFalse();
+    }
+
+    private static String hmac(String secret, String message) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        return HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8)));
+    }
+
     private Seen only(String path) {
         var matching = seen.stream().filter(request -> request.path().equals(path)).toList();
         assertThat(matching).hasSize(1);
