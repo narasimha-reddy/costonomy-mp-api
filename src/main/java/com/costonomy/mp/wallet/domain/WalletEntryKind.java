@@ -32,5 +32,12 @@ public enum WalletEntryKind {
      * the provider showed no refund of ours. Money that came from a card, so it is
      * withdrawable again unless its source payment has since been blocked.
      */
-    WITHDRAWAL_REVERSAL
+    WITHDRAWAL_REVERSAL,
+    /** A QuickScan payment to a UPI merchant, debited up front (D-106). */
+    QUICKSCAN_PAYMENT,
+    /**
+     * A QuickScan payment's money given back — the payout was refused or
+     * reversed. No card behind it, like an order's return.
+     */
+    QUICKSCAN_RETURN
 }
