@@ -104,6 +104,16 @@ public class Payment extends BaseEntity {
     @Column(name = "review_reason", length = 200)
     private String reviewReason;
 
+    /**
+     * The provider will not (or can no longer) take a refund against this payment, so no
+     * withdrawal is drawn from it and the wallet money it produced stays spendable (D-110).
+     */
+    @Column(name = "provider_refund_blocked_at")
+    private Instant providerRefundBlockedAt;
+
+    @Column(name = "provider_refund_blocked_reason", length = 64)
+    private String providerRefundBlockedReason;
+
     /** The full order total — what the supplier will accept is not yet known. */
     @Column(name = "authorized_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal authorizedAmount = BigDecimal.ZERO;

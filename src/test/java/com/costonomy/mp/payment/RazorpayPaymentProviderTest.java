@@ -5,6 +5,7 @@ import com.costonomy.mp.payment.provider.PaymentProvider.ProviderPaymentStatus;
 import com.costonomy.mp.payment.provider.PaymentProvider.ProviderRefundStatus;
 import com.costonomy.mp.payment.provider.PaymentProvider.RefundOptions;
 import com.costonomy.mp.payment.provider.PaymentProviderException;
+import com.costonomy.mp.payment.provider.ProviderFailureKind;
 import com.costonomy.mp.payment.provider.RazorpayPaymentProvider;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -404,17 +405,38 @@ class RazorpayPaymentProviderTest {
     void feeIsNotDoubledByTax() {
         routes.put("/v1/payments/pay_fee", new Canned(200, """
                 {"id":"pay_fee","order_id":"order_A","status":"captured","captured":true,"amount":100000,
-                 "method":"upi","fee":236,"tax":36}"""));
+                 "amount_refunded":0,"method":"upi","fee":236,"tax":36}"""));
         routes.put("/v1/payments/pay_notax", new Canned(200, """
                 {"id":"pay_notax","order_id":"order_A","status":"captured","captured":true,"amount":100000,
-                 "method":"upi","fee":200}"""));
+                 "amount_refunded":0,"method":"upi","fee":200}"""));
         routes.put("/v1/payments/pay_taxonly", new Canned(200, """
                 {"id":"pay_taxonly","order_id":"order_A","status":"captured","captured":true,"amount":100000,
-                 "method":"upi","tax":36}"""));
+                 "amount_refunded":0,"method":"upi","tax":36}"""));
 
         assertThat(razorpay.inspect("pay_fee").fee()).isEqualByComparingTo("2.36");
         assertThat(razorpay.inspect("pay_notax").fee()).isEqualByComparingTo("2.00");
         assertThat(razorpay.inspect("pay_taxonly").fee()).isNull();
+    }
+
+    @Test
+    @DisplayName("inspect: a payment read without amount_refunded (or amount) is unreadable, never 'nothing was refunded': it would pass that half of the proof in silence")
+    void inspectWithoutWhatWasRefundedIsUnreadable() {
+        routes.put("/v1/payments/pay_nofield", new Canned(200, """
+                {"id":"pay_nofield","order_id":"order_A","status":"captured","captured":true,"amount":50000,"method":"upi"}"""));
+        routes.put("/v1/payments/pay_null", new Canned(200, """
+                {"id":"pay_null","order_id":"order_A","status":"captured","captured":true,"amount":50000,"amount_refunded":null}"""));
+        routes.put("/v1/payments/pay_text", new Canned(200, """
+                {"id":"pay_text","order_id":"order_A","status":"captured","captured":true,"amount":50000,"amount_refunded":"lots"}"""));
+        routes.put("/v1/payments/pay_noamount", new Canned(200, """
+                {"id":"pay_noamount","order_id":"order_A","status":"captured","captured":true,"amount_refunded":0}"""));
+
+        for (String name : List.of("nofield", "null", "text", "noamount")) {
+            assertThatThrownBy(() -> razorpay.inspect("pay_" + name)).describedAs(name)
+                    .isInstanceOfSatisfying(PaymentProviderException.class, ex -> {
+                        assertThat(ex.kind()).isEqualTo(com.costonomy.mp.payment.provider.ProviderFailureKind.AMBIGUOUS);
+                        assertThat(ex.isNotFound()).isFalse();
+                    });
+        }
     }
 
     @Test
@@ -600,6 +622,150 @@ class RazorpayPaymentProviderTest {
 
         assertThat(razorpay.findPaymentForOrder("order_A")).hasValueSatisfying(
                 payment -> assertThat(payment.status()).isEqualTo(ProviderPaymentStatus.RELEASED));
+    }
+
+    // ── Refund refusals and the refund list (D-110) ──────────────────────
+
+    private static String refusal(String description) {
+        return "{\"error\":{\"code\":\"BAD_REQUEST_ERROR\",\"description\":\"" + description + "\"}}";
+    }
+
+    private ProviderFailureKind refundRefusedAs(int status, String body) {
+        routes.put("/v1/payments/pay_A/refund", new Canned(status, body));
+        try {
+            razorpay.refund("pay_A", new BigDecimal("200.00"), "mandi-refund-7", RefundOptions.none());
+        } catch (PaymentProviderException ex) {
+            return ex.kind();
+        }
+        throw new AssertionError("the refund should have been refused");
+    }
+
+    @Test
+    @DisplayName("D-110: a refusal of a refund is classified by what it says about whether money moved")
+    void refundRefusalIsClassified() {
+        assertThat(refundRefusedAs(404, "{}")).isEqualTo(ProviderFailureKind.PAYMENT_UNKNOWN);
+        assertThat(refundRefusedAs(400, refusal("The id provided does not exist"))).isEqualTo(ProviderFailureKind.PAYMENT_UNKNOWN);
+        assertThat(refundRefusedAs(400, refusal("The payment has been fully refunded already"))).isEqualTo(ProviderFailureKind.ALREADY_REFUNDED);
+        assertThat(refundRefusedAs(400, refusal("The payment status should be captured for action to be taken"))).isEqualTo(ProviderFailureKind.NOT_CAPTURED);
+        assertThat(refundRefusedAs(400, refusal("The refund amount provided is greater than the refundable amount"))).isEqualTo(ProviderFailureKind.OVER_REFUND);
+        assertThat(refundRefusedAs(400, refusal("Your account does not have enough balance to carry out the refund operation"))).isEqualTo(ProviderFailureKind.INSUFFICIENT_BALANCE);
+        assertThat(refundRefusedAs(400, refusal("Refund is not allowed after the refund window"))).isEqualTo(ProviderFailureKind.WINDOW_PASSED);
+        assertThat(refundRefusedAs(400, refusal("Something we have never seen"))).isEqualTo(ProviderFailureKind.REJECTED_OTHER);
+        assertThat(refundRefusedAs(400, "not json at all")).isEqualTo(ProviderFailureKind.REJECTED_OTHER);
+        // The key was used with a different body: a refund with our key may exist. Not a definite refusal.
+        assertThat(refundRefusedAs(400, refusal("Idempotency key already used with different request"))).isEqualTo(ProviderFailureKind.AMBIGUOUS);
+        assertThat(refundRefusedAs(401, "{}")).isEqualTo(ProviderFailureKind.CONFIG);
+        assertThat(refundRefusedAs(403, "{}")).isEqualTo(ProviderFailureKind.CONFIG);
+        assertThat(refundRefusedAs(429, "{}")).isEqualTo(ProviderFailureKind.THROTTLED);
+        assertThat(refundRefusedAs(500, "{}")).isEqualTo(ProviderFailureKind.AMBIGUOUS);
+        assertThat(refundRefusedAs(503, "{}")).isEqualTo(ProviderFailureKind.AMBIGUOUS);
+    }
+
+    @Test
+    @DisplayName("D-110: an over-refund is never read as our account's balance, and a 408 or 409 is ambiguous")
+    void overRefundIsNotInsufficientBalance() {
+        // Both contain "balance"; read as our account's balance they would trip the withdrawal breaker and be
+        // filed as ours to fix, when they say the payment cannot take this much.
+        assertThat(refundRefusedAs(400, refusal("Refund amount exceeds the refundable balance"))).isEqualTo(ProviderFailureKind.OVER_REFUND);
+        assertThat(refundRefusedAs(400, refusal("The refund amount is greater than the unrefunded balance of the payment"))).isEqualTo(ProviderFailureKind.OVER_REFUND);
+        assertThat(refundRefusedAs(400, refusal("Your account does not have enough balance to carry out the refund operation"))).isEqualTo(ProviderFailureKind.INSUFFICIENT_BALANCE);
+        assertThat(refundRefusedAs(400, refusal("Insufficient funds"))).isEqualTo(ProviderFailureKind.INSUFFICIENT_BALANCE);
+        // A timeout or a conflict with a request still being handled: the provider may well have acted.
+        assertThat(refundRefusedAs(408, "{}")).isEqualTo(ProviderFailureKind.AMBIGUOUS);
+        assertThat(refundRefusedAs(409, "{}")).isEqualTo(ProviderFailureKind.AMBIGUOUS);
+        // Any other 4xx it answered is still a definite refusal, which is then checked against its list.
+        assertThat(refundRefusedAs(422, "{}")).isEqualTo(ProviderFailureKind.REJECTED_OTHER);
+    }
+
+    @Test
+    @DisplayName("D-110: a server that never answers is ambiguous, never a definite refusal")
+    void refundTimeoutIsAmbiguous() throws Exception {
+        // A port with nothing listening: connection refused, which is as unknown as a timeout.
+        var dead = new RazorpayPaymentProvider("http://127.0.0.1:1", "rzp_test_key", "rzp_test_secret", WEBHOOK_SECRET, 4320);
+        assertThatThrownBy(() -> dead.refund("pay_A", new BigDecimal("200.00"), "mandi-refund-7", RefundOptions.none()))
+                .isInstanceOfSatisfying(PaymentProviderException.class, ex -> {
+                    assertThat(ex.kind()).isEqualTo(ProviderFailureKind.AMBIGUOUS);
+                    assertThat(ex.isRetryable()).isTrue();
+                });
+    }
+
+    @Test
+    @DisplayName("D-110: a 200 that carries no refund id is ambiguous: it says nothing about whether a refund was made")
+    void refundWithoutAnIdIsAmbiguous() {
+        routes.put("/v1/payments/pay_A/refund", new Canned(200, "{}"));
+        assertThatThrownBy(() -> razorpay.refund("pay_A", new BigDecimal("200.00"), "mandi-refund-7", RefundOptions.none()))
+                .isInstanceOfSatisfying(PaymentProviderException.class, ex -> {
+                    assertThat(ex.kind()).isEqualTo(ProviderFailureKind.AMBIGUOUS);
+                    assertThat(ex.isRetryable()).isTrue();
+                });
+    }
+
+    @Test
+    @DisplayName("D-110: a refund Razorpay made and reports failed carries its id and a failure code")
+    void refundReportedFailedKeepsItsId() {
+        routes.put("/v1/payments/pay_A/refund", new Canned(200, """
+                {"id":"rfnd_F","payment_id":"pay_A","amount":20000,"status":"failed"}"""));
+        var refund = razorpay.refund("pay_A", new BigDecimal("200.00"), "mandi-refund-7", RefundOptions.none());
+        assertThat(refund.status()).isEqualTo(ProviderRefundStatus.FAILED);
+        assertThat(refund.providerRefundId()).isEqualTo("rfnd_F");
+        assertThat(refund.failureCode()).isEqualTo("PROVIDER_FAILED");
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("D-110: the provider's wording is kept to 120 printable characters, and the body is never logged")
+    void refusalTextIsShortAndNotLogged(CapturedOutput output) {
+        String long1 = "x".repeat(300);
+        routes.put("/v1/payments/pay_A/refund", new Canned(400,
+                "{\"error\":{\"code\":\"BAD_REQUEST_ERROR\",\"description\":\"" + long1 + "\\u0000\",\"contact\":\"+919876500000\","
+                        + "\"email\":\"buyer@example.com\"}}"));
+
+        assertThatThrownBy(() -> razorpay.refund("pay_A", new BigDecimal("200.00"), "mandi-refund-7", RefundOptions.none()))
+                .isInstanceOfSatisfying(PaymentProviderException.class, ex -> {
+                    assertThat(ex.description()).hasSize(120).matches("[ -~]+");
+                    assertThat(ex.getMessage()).doesNotContain("xxxx").doesNotContain("919876500000");
+                });
+        assertThat(output.getAll()).doesNotContain("919876500000").doesNotContain("buyer@example.com")
+                .doesNotContain("x".repeat(121));
+    }
+
+    @Test
+    @DisplayName("D-110: listing a payment's refunds reads receipt, notes, status and amount, and asks for the full page")
+    void listRefundsMatchesReceipt() {
+        routes.put("/v1/payments/pay_A/refunds", new Canned(200, """
+                {"entity":"collection","count":3,"items":[
+                  {"id":"rfnd_1","amount":20000,"status":"processed","receipt":"mandi-refund-7","notes":{"mandi_refund_id":"7"},"created_at":1780000000},
+                  {"id":"rfnd_2","amount":5000,"status":"pending","receipt":null,"notes":[]},
+                  {"id":"rfnd_3","amount":100,"status":"failed","notes":{"mandi_refund_id":"9"}}]}"""));
+
+        var listed = razorpay.listRefunds("pay_A");
+
+        assertThat(listed).hasSize(3);
+        assertThat(listed.get(0).receipt()).isEqualTo("mandi-refund-7");
+        assertThat(listed.get(0).mandiRefundId()).isEqualTo("7");
+        assertThat(listed.get(0).amount()).isEqualByComparingTo("200.00");
+        assertThat(listed.get(0).status()).isEqualTo(ProviderRefundStatus.COMPLETED);
+        assertThat(listed.get(0).createdAt()).isNotNull();
+        assertThat(listed.get(1).receipt()).isNull();
+        assertThat(listed.get(1).status()).isEqualTo(ProviderRefundStatus.PENDING);
+        assertThat(listed.get(2).mandiRefundId()).isEqualTo("9");
+        assertThat(listed.get(2).status()).isEqualTo(ProviderRefundStatus.FAILED);
+        var request = seen.stream().filter(r -> r.path().equals("/v1/payments/pay_A/refunds")).findFirst().orElseThrow();
+        assertThat(request.method()).isEqualTo("GET");
+    }
+
+    @Test
+    @DisplayName("D-110: a list that cannot be read, or a payment Razorpay does not know, is never read as an empty list")
+    void listRefundsNeverPretendsToBeEmpty() {
+        routes.put("/v1/payments/pay_bad/refunds", new Canned(200, "{}"));
+        assertThatThrownBy(() -> razorpay.listRefunds("pay_bad"))
+                .isInstanceOfSatisfying(PaymentProviderException.class, ex -> assertThat(ex.isRetryable()).isTrue());
+        routes.put("/v1/payments/pay_500/refunds", new Canned(500, "{}"));
+        assertThatThrownBy(() -> razorpay.listRefunds("pay_500"))
+                .isInstanceOfSatisfying(PaymentProviderException.class, ex -> assertThat(ex.isRetryable()).isTrue());
+        routes.put("/v1/payments/pay_none/refunds", new Canned(400, refusal("The id provided does not exist")));
+        assertThatThrownBy(() -> razorpay.listRefunds("pay_none"))
+                .isInstanceOfSatisfying(PaymentProviderException.class, ex -> assertThat(ex.isNotFound()).isTrue());
     }
 
     private Seen only(String path) {

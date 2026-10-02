@@ -219,9 +219,11 @@ public class OrderFundingAdapter implements OrderFundingPort {
         return refunds.findByIdempotencyKey(CancellationLedger.cancelRefundKey(payment.getSupplierOrderId()))
                 .filter(refund -> refund.getDestination() == RefundDestination.ORIGINAL)
                 .map(refund -> switch (refund.getStatus()) {
-                    case REQUESTED, PROCESSING, FAILED -> "RETURNING";
+                    // REJECTED is being checked with the provider (D-110); if it ends in review it reads as delayed.
+                    case REQUESTED, PROCESSING, FAILED, REJECTED -> "RETURNING";
                     case NEEDS_REVIEW -> "RETURN_DELAYED";
-                    case COMPLETED -> payment.getStatus().name();
+                    // REVERSED: operations sent it to the wallet instead; the payment says so.
+                    case COMPLETED, REVERSED -> payment.getStatus().name();
                 })
                 .orElse(payment.getStatus().name());
     }

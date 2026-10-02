@@ -23,4 +23,14 @@ public class WalletRefundAdapter implements RefundWalletPort {
                              BigDecimal amount, String reason) {
         wallets.creditRefund(outletId, supplierOrderId, refundId, amount, reason);
     }
+
+    @Override
+    public void creditWithdrawalReversal(Long outletId, Long refundId, BigDecimal amount) {
+        wallets.creditWithdrawalReversal(outletId, refundId, amount);
+    }
+
+    @Override
+    public BigDecimal balanceOf(Long outletId) {
+        return wallets.balanceOf(outletId);
+    }
 }

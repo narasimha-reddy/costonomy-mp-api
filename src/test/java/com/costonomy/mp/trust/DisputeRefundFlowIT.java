@@ -564,9 +564,9 @@ class DisputeRefundFlowIT extends AbstractIntegrationTest {
             assertThat(jdbc.queryForObject("select kind from wallet_transaction where reference like 'dispute-refund-%' "
                     + "and supplier_order_id = ?", String.class, d.orderId())).isEqualTo("DISPUTE_REFUND");
             assertThat(deductions(d)).isEqualTo(1);
-            // No card behind it.
+            // No card behind it: refused with what can go back, which is nothing (D-110).
             assertThat(post(d.buyer().token(), "/api/v1/outlets/" + d.buyer().outletId() + "/wallet/withdraw",
-                    Map.of("amount", "700.00")).getStatus()).isEqualTo(400);
+                    Map.of("amount", "700.00")).getStatus()).isEqualTo(422);
         }
     }
 }

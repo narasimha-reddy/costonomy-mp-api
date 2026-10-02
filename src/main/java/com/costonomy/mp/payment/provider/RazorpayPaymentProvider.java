@@ -237,24 +237,134 @@ public class RazorpayPaymentProvider implements PaymentProvider {
         if (options != null && options.speed() != null) {
             body.put("speed", options.speed());
         }
-        JsonNode response = post("/v1/payments/" + providerPaymentId + "/refund", body,
-                // The only idempotency header Razorpay documents. It is what stops
-                // a retried refund becoming a second refund (doc 10 §2).
-                Map.of("X-Refund-Idempotency", idempotencyKey));
+        JsonNode response;
+        try {
+            response = post("/v1/payments/" + providerPaymentId + "/refund", body,
+                    // The only idempotency header Razorpay documents. It is what stops
+                    // a retried refund becoming a second refund (doc 10 §2).
+                    Map.of("X-Refund-Idempotency", idempotencyKey));
+        } catch (PaymentProviderException ex) {
+            // Said in our own words, for what it tells us about whether money moved (D-110).
+            throw new PaymentProviderException(ex.getMessage(), ex.isRetryable(), ex.providerCode(),
+                    refundFailureKind(ex.providerCode(), ex.description()), ex.description());
+        }
+        // A 2xx that carries no refund id says nothing about whether the refund was made: as
+        // uncertain as a lost answer, and never a definite refusal.
+        if (response == null || !response.hasNonNull("id")) {
+            throw new PaymentProviderException("Razorpay answered the refund without a refund id",
+                    true, "UNREADABLE", ProviderFailureKind.AMBIGUOUS, null);
+        }
 
+        var status = refundStatus(response.path("status").asText(""));
         return new ProviderRefund(
                 response.get("id").asText(),
-                switch (response.path("status").asText("")) {
-                    case "processed" -> ProviderRefundStatus.COMPLETED;
-                    case "failed" -> ProviderRefundStatus.FAILED;
-                    default -> ProviderRefundStatus.PENDING;
-                },
-                toRupees(response.path("amount").asLong()), null, null);
+                status,
+                toRupees(response.path("amount").asLong()),
+                status == ProviderRefundStatus.FAILED ? "PROVIDER_FAILED" : null,
+                status == ProviderRefundStatus.FAILED ? "Razorpay reported the refund as failed" : null);
+    }
+
+    @Override
+    public java.util.List<ProviderRefundEntry> listRefunds(String providerPaymentId) {
+        var entries = new java.util.ArrayList<ProviderRefundEntry>();
+        int skip = 0;
+        // count=100 is Razorpay's maximum page. A payment with more refunds than five full
+        // pages is not something this can complete, and a partial list would let "none of ours"
+        // be believed wrongly, so it fails instead of returning what it has.
+        for (int page = 0; page < 5; page++) {
+            JsonNode response = get("/v1/payments/" + providerPaymentId + "/refunds?count=100&skip=" + skip);
+            JsonNode items = response == null ? null : response.path("items");
+            if (items == null || !items.isArray()) {
+                throw new PaymentProviderException("Razorpay answered the refund list unreadably",
+                        true, "UNREADABLE", ProviderFailureKind.AMBIGUOUS, null);
+            }
+            for (JsonNode item : items) {
+                entries.add(new ProviderRefundEntry(
+                        item.path("id").asText(null),
+                        toRupees(item.path("amount").asLong()),
+                        refundStatus(item.path("status").asText("")),
+                        item.hasNonNull("receipt") ? item.path("receipt").asText() : null,
+                        item.path("notes").isObject() && item.path("notes").hasNonNull("mandi_refund_id")
+                                ? item.path("notes").path("mandi_refund_id").asText() : null,
+                        item.hasNonNull("created_at")
+                                ? java.time.Instant.ofEpochSecond(item.path("created_at").asLong()) : null));
+            }
+            if (items.size() < 100) {
+                return entries;
+            }
+            skip += items.size();
+        }
+        throw new PaymentProviderException("Payment " + providerPaymentId + " has more refunds than can be listed",
+                false, "TOO_MANY", ProviderFailureKind.AMBIGUOUS, null);
+    }
+
+    /**
+     * What a refused refund says about whether money moved, from the HTTP status and the
+     * provider's own description (D-110). Deliberately only a label: whether money moved is
+     * decided by reading the provider's refunds, never by this text, so a reworded message can
+     * at worst be filed as {@code REJECTED_OTHER}. Order matters: the most specific first.
+     */
+    static ProviderFailureKind refundFailureKind(String statusCode, String description) {
+        String text = description == null ? "" : description.toLowerCase(java.util.Locale.ROOT);
+        return switch (statusCode == null ? "" : statusCode) {
+            case "404" -> ProviderFailureKind.PAYMENT_UNKNOWN;
+            case "429" -> ProviderFailureKind.THROTTLED;
+            case "401", "403" -> ProviderFailureKind.CONFIG;
+            // A timeout, or a conflict with a request still being handled: the provider may well have acted.
+            case "408", "409" -> ProviderFailureKind.AMBIGUOUS;
+            case "400" -> {
+                if (text.contains("idempoten")) {
+                    yield ProviderFailureKind.AMBIGUOUS;
+                } else if (text.contains("fully refunded") || text.contains("already been refunded")
+                        || text.contains("already refunded")) {
+                    yield ProviderFailureKind.ALREADY_REFUNDED;
+                } else if (text.contains("should be captured") || text.contains("not captured")
+                        || text.contains("not been captured")) {
+                    yield ProviderFailureKind.NOT_CAPTURED;
+                } else if (text.contains("refund window") || text.contains("older than")
+                        || text.contains("not allowed after") || text.contains("beyond the refund")) {
+                    yield ProviderFailureKind.WINDOW_PASSED;
+                } else if (text.contains("greater than") || text.contains("exceed") || text.contains("refundable")
+                        || text.contains("unrefunded")) {
+                    // Before the balance test: "exceeds the refundable balance" is about the payment, and read as
+                    // our account's balance it would trip the withdrawal breaker and be filed as ours to fix.
+                    yield ProviderFailureKind.OVER_REFUND;
+                } else if (text.contains("balance") || text.contains("insufficient")) {
+                    yield ProviderFailureKind.INSUFFICIENT_BALANCE;
+                } else if (saysIdDoesNotExist("BAD_REQUEST_ERROR", description == null ? "" : description)) {
+                    yield ProviderFailureKind.PAYMENT_UNKNOWN;
+                } else {
+                    yield ProviderFailureKind.REJECTED_OTHER;
+                }
+            }
+            // 5xx, unreachable, unreadable: the provider may have acted.
+            default -> statusCode != null && statusCode.startsWith("4")
+                    ? ProviderFailureKind.REJECTED_OTHER : ProviderFailureKind.AMBIGUOUS;
+        };
+    }
+
+    /** A provider's description, one line of printable text, at most 120 characters: fit for a log line and a review list. */
+    static String sanitised(String description) {
+        if (description == null) {
+            return null;
+        }
+        String clean = description.replaceAll("[^\\x20-\\x7E]", " ").replaceAll("\\s+", " ").trim();
+        if (clean.isEmpty()) {
+            return null;
+        }
+        return clean.length() <= 120 ? clean : clean.substring(0, 120);
     }
 
     @Override
     public ProviderPaymentFacts inspect(String providerPaymentId) {
         JsonNode response = get("/v1/payments/" + providerPaymentId);
+        // What has gone back to the payer is half of the proof that a refund was not made another way (D-110).
+        // A body without the figure would read as "nothing has", and pass that half in silence: it is
+        // unreadable instead, as any answer this cannot make sense of is (never proof either way).
+        if (response == null || !response.path("amount_refunded").isNumber() || !response.path("amount").isNumber()) {
+            throw new PaymentProviderException("Razorpay answered the payment without its amount or what was refunded",
+                    true, "UNREADABLE", ProviderFailureKind.AMBIGUOUS, null);
+        }
         String status = response.path("status").asText("");
         // Whether the money was ever taken. Razorpay always says; where it does not,
         // "refunded" is assumed to have been captured, because the alternative reads
@@ -400,10 +510,13 @@ public class RazorpayPaymentProvider implements PaymentProvider {
                     .body(body)
                     .retrieve()
                     .onStatus(HttpStatusCode::is4xxClientError, (request, response) -> {
-                        // The provider refused. Retrying would be refused again.
+                        // The provider refused. Retrying would be refused again. What it said is read
+                        // (only its description, cut short) because a refusal of a refund is worth
+                        // telling apart from another; the body is never logged whole (D-110).
+                        int status = response.getStatusCode().value();
                         throw new PaymentProviderException(
                                 "Razorpay rejected the request: " + response.getStatusCode(),
-                                false, String.valueOf(response.getStatusCode().value()));
+                                false, String.valueOf(status), null, refusalText(response));
                     })
                     .onStatus(HttpStatusCode::is5xxServerError, (request, response) -> {
                         // We do not know whether they acted. Retryable — with the
@@ -425,6 +538,16 @@ public class RazorpayPaymentProvider implements PaymentProvider {
     }
 
     private static final ObjectMapper ERROR_BODY = new ObjectMapper();
+
+    /** {@code error.description} of a refusal, sanitised; null when the body cannot be read. */
+    private static String refusalText(org.springframework.http.client.ClientHttpResponse response) {
+        try {
+            byte[] raw = response.getBody().readNBytes(8192);
+            return sanitised(ERROR_BODY.readTree(raw).path("error").path("description").asText(null));
+        } catch (Exception ex) {
+            return null;
+        }
+    }
 
     /**
      * Whether an HTTP 400 body is Razorpay's "that id does not exist": {@code error.code} is
