@@ -3868,3 +3868,87 @@ Tests: `PaymentFlowIT$Capture` — held after paying and taken at ready; a suppl
 cancelling while held releases it with nothing captured or refunded; no
 cancellation once ready; a cancelled order already captured is refunded once;
 an expiring hold refuses "ready".
+
+## D-104 — A refund goes to the wallet; money leaves the wallet only back to the card
+**Raised 2026-09-27 · Settled 2026-09-27 (part one: the money's path)** · the dispute workflow that decides a refund is part two, in the next change
+
+Before this, a restaurant could refund its own captured payment:
+`POST /payments/{id}/refund` needed only `PAYMENT_CREATE` on its outlet, and took
+any reason and any amount up to the capture. Nobody on the supplier's side had to
+agree, and the supplier was paid for the order all the same — the reviews of the
+Razorpay work flagged it as critical. Settled with the product owner:
+
+- **A restaurant cannot refund itself.** The endpoint is removed. A refund comes
+  from a dispute the supplier approves, or ops approves after the supplier
+  declines or does not answer within 48 hours (part two), or from the system
+  when an order whose money was taken is cancelled (D-103).
+- **A refund is credited to the outlet's wallet**, at once.
+- **Money leaves the wallet only back to the card or bank it came from** — a
+  provider refund on the original payment.
+- **Costonomy never funds a refund.** The supplier bears every refund, including
+  one ops approves over their decline, and Costonomy keeps its commission. Part
+  two enforces it; it is recorded here because it shapes part one.
+
+**How it is built.**
+
+- `refund.destination` is `WALLET` or `ORIGINAL`. A `WALLET` refund
+  (`RefundService.refundToWallet`) is completed in the same transaction as the
+  wallet credit — no provider, nothing to wait for, nothing that can
+  half-happen. It counts against the payment at once (`refunded_amount`,
+  `PARTIALLY_`/`FULLY_REFUNDED`): the money is no longer the supplier's, it is owed
+  to the restaurant, and settlement reconciliation (captured − refunded) is right
+  without change.
+- **A withdrawal** (`POST /outlets/{id}/wallet/withdraw`, new `WALLET_WITHDRAW`
+  permission for owner, admin, purchase manager and finance staff) is split
+  across the payments the wallet's refunds came from, oldest credit first. Each
+  part is an `ORIGINAL` refund with reason `WALLET_WITHDRAWAL`, sent by the
+  existing refund job — so it inherits D-099/D-101's retries, the pending check,
+  NEEDS_REVIEW and the idempotency key at Razorpay. It does **not** add to the
+  payment's refunded amount again: that moved when the money reached the wallet.
+  Nor does it count as "in flight" against a later refund of the same payment.
+- **Only card money can leave.** A top-up (mock only) or a wallet-paid order's
+  return has no card behind it: it stays spendable and cannot be withdrawn. The
+  most that can go back to one payment's card is what was refunded from it.
+- **The wallet ledger says why.** `wallet_transaction.kind` (TOP_UP,
+  ORDER_PAYMENT, ORDER_REFUND, REFUND, WITHDRAWAL), a unique `reference`
+  (`refund-41`, `withdrawal-42`) so one operation cannot move the balance twice,
+  and `refund_id`. The old unique key (one row per order and direction) would
+  have refused a second refund credit on one order, so it now applies only to
+  ORDER_PAYMENT and ORDER_REFUND, through a generated column. The statement
+  shows each withdrawal's refund status, read live.
+- **Cancellation refunds (D-103) go to the wallet** too.
+
+**Concurrency.** Everything that decides what a wallet can give back holds the
+wallet row (`SELECT … FOR UPDATE`), and takes it **before** the payment: a
+withdrawal holds the wallet and then writes refunds against payments, so a wallet
+refund taking them the other way round could deadlock with it. Two withdrawals of
+the whole balance at once run one after the other and the second is told the
+money is gone (`Withdrawals.concurrentWithdrawalsSpendOnce`, five races). Found
+on the way: the lock was first taken on a wallet already loaded into the
+persistence context, which Hibernate only version-checks rather than re-reads —
+the waiting withdrawal failed on a stale version (409) instead of finding the
+balance spent. `WalletService.lock` now locks before anything loads it.
+
+**What a withdrawal that cannot finish looks like.** Out of the wallet, not on
+the card: its refund goes to NEEDS_REVIEW and is logged at error, as every
+provider refund that cannot finish is (D-101). The statement shows it. Putting
+the money back into the wallet is a person's decision, because a refund that
+failed with an unknown outcome may in fact have reached the card.
+
+**Open.**
+- **Legal.** Whether Costonomy may hold refunds as a wallet balance is a question
+  for a lawyer (RBI's rules on prepaid payment instruments). Until that is
+  answered this should not go live.
+- **Razorpay's refund window.** Razorpay refuses refunds on old payments (the limit
+  is set on the account). A withdrawal from a payment past it ends in
+  NEEDS_REVIEW. Allocating oldest first uses the oldest credit while it can still go back.
+- **Razorpay's balance.** A refund is paid from Costonomy's Razorpay balance; if
+  it is short the refund fails and goes to a person.
+
+Tests: `PaymentFlowIT$Refunds` (5) — credited at once with no provider call,
+idempotent, capped at the capture, refused on a held payment, the self-refund
+endpoint gone. `PaymentFlowIT$Withdrawals` (8) — sent to the card and counted
+once, capped at the balance, only refund money, split oldest first with each
+card capped, idempotent and key reuse refused, another tenant 404, concurrent
+withdrawals, cancellation to the wallet. The provider-refund cases (stuck,
+declined, pending, transient, no open transaction) now run through a withdrawal.

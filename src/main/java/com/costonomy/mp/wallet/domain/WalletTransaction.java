@@ -21,7 +21,7 @@ public class WalletTransaction extends BaseEntity {
     @Column(name = "wallet_id", nullable = false)
     private Long walletId;
 
-    /** The order this paid for, or null for a top-up. */
+    /** The order this paid for or refunded; null for a top-up or a withdrawal. */
     @Column(name = "supplier_order_id")
     private Long supplierOrderId;
 
@@ -29,6 +29,19 @@ public class WalletTransaction extends BaseEntity {
     @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "direction", nullable = false, length = 16)
     private WalletDirection direction;
+
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(name = "kind", nullable = false, length = 32)
+    private WalletEntryKind kind;
+
+    /** The operation this movement belongs to, unique: {@code refund-41}. Null for older kinds. */
+    @Column(name = "reference", length = 80)
+    private String reference;
+
+    /** The refund behind a REFUND credit or a WITHDRAWAL debit. */
+    @Column(name = "refund_id")
+    private Long refundId;
 
     @Column(name = "amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal amount;

@@ -33,7 +33,10 @@ class WalletTopUpGateTest {
 
     private final WalletService wallets = mock(WalletService.class);
     private final WalletController controller =
-            new WalletController(wallets, mock(AccessControlService.class));
+            new WalletController(wallets, mock(com.costonomy.mp.wallet.service.WalletWithdrawalService.class),
+                    mock(com.costonomy.mp.payment.service.RefundService.class),
+                    mock(com.costonomy.mp.common.idempotency.IdempotencyService.class),
+                    mock(AccessControlService.class));
 
     @BeforeEach
     void signIn() {

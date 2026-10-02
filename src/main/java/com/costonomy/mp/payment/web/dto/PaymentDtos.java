@@ -82,20 +82,13 @@ public final class PaymentDtos {
             Instant createdAt) {
     }
 
-    public record RequestRefundRequest(
-            @NotNull(message = "Enter an amount")
-            @DecimalMin(value = "0.01", message = "The refund must be more than zero")
-            BigDecimal amount,
-            @NotBlank(message = "Choose a reason")
-            String reason,
-            @Size(max = 500) String note) {
-    }
-
     public record RefundResponse(
             Long id,
             Long paymentId,
             BigDecimal amount,
             String reason,
+            /** WALLET (credited to the outlet's wallet) or ORIGINAL (to the card). D-104. */
+            String destination,
             RefundStatus status,
             String failureReason,
             Instant completedAt,

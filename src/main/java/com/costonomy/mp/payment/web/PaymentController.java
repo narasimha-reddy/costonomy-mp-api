@@ -6,21 +6,15 @@ import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.common.api.ApiResponse;
 import com.costonomy.mp.common.logging.TraceScope;
 import com.costonomy.mp.identity.security.ActorContext;
-import com.costonomy.mp.payment.domain.RefundReason;
 import com.costonomy.mp.payment.repository.PaymentTransactionRepository;
 import com.costonomy.mp.payment.repository.RefundRepository;
 import com.costonomy.mp.payment.service.PaymentService;
-import com.costonomy.mp.payment.service.RefundService;
 import com.costonomy.mp.payment.web.dto.PaymentDtos;
-import com.costonomy.mp.common.error.BusinessException;
-import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.procurement.service.OrderReleaseService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -37,7 +31,6 @@ import java.util.List;
 public class PaymentController {
 
     private final PaymentService paymentService;
-    private final RefundService refundService;
     private final OrderReleaseService orderRelease;
     private final PaymentTransactionRepository transactions;
     private final RefundRepository refunds;
@@ -123,45 +116,6 @@ public class PaymentController {
         }
     }
 
-    @PostMapping("/payments/{id}/refund")
-    @Operation(
-            summary = "Request a refund",
-            description = """
-                    Returns money that was captured. Money merely held is released instead,
-                    automatically, when a supplier rejects or times out — that is not a
-                    refund and does not appear as one.
-
-                    Requires an `Idempotency-Key`: a duplicate refund is money leaving
-                    twice, and a repeated request returns the original rather than issuing
-                    another.
-
-                    Reasons: SUPPLIER_REJECTION, PARTIAL_ACCEPTANCE, CANCELLATION,
-                    DELIVERY_FAILURE, DISPUTE_RESOLVED, DUPLICATE_PAYMENT,
-                    PROVIDER_REVERSAL.
-                    """)
-    public ApiResponse<PaymentDtos.RefundResponse> refund(
-            @PathVariable Long id,
-            @Valid @RequestBody PaymentDtos.RequestRefundRequest request,
-            @Parameter(description = "Client-generated key, required for this operation")
-            @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey) {
-
-        var payment = paymentService.load(id);
-        accessControl.requireScoped(ActorContext.requireUserId(), Permissions.PAYMENT_CREATE,
-                ScopeType.OUTLET, payment.getOutletId(), "Payment");
-
-        if (!RefundReason.isValid(request.reason())) {
-            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "Choose one of the listed refund reasons.");
-        }
-
-        try (var trace = TraceScope.of("payment", id, "order", payment.getSupplierOrderId())) {
-            var refund = refundService.request(ActorContext.requireUserId(), id, request.amount(),
-                    RefundReason.valueOf(request.reason()), request.note(), idempotencyKey);
-
-            return ApiResponse.ok(toResponse(refund));
-        }
-    }
-
     @GetMapping("/payments/{id}/refunds")
     @Operation(summary = "Refunds against a payment")
     public ApiResponse<List<PaymentDtos.RefundResponse>> refundsFor(@PathVariable Long id) {
@@ -202,7 +156,8 @@ public class PaymentController {
 
         return new PaymentDtos.RefundResponse(
                 refund.getId(), refund.getPaymentId(), refund.getAmount(),
-                refund.getReason().name(), refund.getStatus(), refund.getFailureReason(),
+                refund.getReason().name(), refund.getDestination().name(),
+                refund.getStatus(), refund.getFailureReason(),
                 refund.getCompletedAt(), refund.getCreatedAt());
     }
 }
