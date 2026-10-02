@@ -220,11 +220,12 @@ public class MockDeliveryProvider implements DeliveryProvider {
     }
 
     private MockDelivery require(String providerDeliveryId) {
-        return deliveries.computeIfAbsent(providerDeliveryId, id -> {
-            var d = new MockDelivery(id, baseFee, 30);
-            d.record(ProviderDeliveryStatus.PENDING, "Booking accepted");
-            return d;
-        });
+        var delivery = deliveries.get(providerDeliveryId);
+        if (delivery == null) {
+            throw new DeliveryProviderException(code,
+                    "Unknown mock delivery " + providerDeliveryId, false);
+        }
+        return delivery;
     }
 
     /** Mutable provider-side state. Never leaves this class. */
