@@ -312,6 +312,48 @@ public class WalletService {
     }
 
     /**
+     * Take a QuickScan payment's money (D-106). Called with the wallet already
+     * locked by the caller — {@code QuickScanService.payFromWallet} locks before
+     * inserting the payment row, so the conditional debit below never races a
+     * second click.
+     *
+     * @throws BusinessException VALIDATION_ERROR if the balance is short
+     */
+    @Transactional
+    public void debitQuickScan(Long outletId, Long paymentId, BigDecimal total) {
+        var wallet = forOutlet(outletId);
+        if (wallets.debit(wallet.getId(), total) == 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Your wallet doesn't have ₹%s.".formatted(Rupees.of(total)));
+        }
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.QUICKSCAN_PAYMENT, total,
+                "QuickScan payment", "quickscan-" + paymentId, null);
+    }
+
+    /**
+     * Give a QuickScan payment's money back — the payout was refused or reversed
+     * (D-106). Idempotent on the reference, so a payment failing once and a
+     * REVERSED arriving for it later cannot return the money twice.
+     */
+    @Transactional
+    public void returnQuickScan(Long outletId, Long paymentId, BigDecimal total, String reason) {
+        String reference = "quickscan-return-" + paymentId;
+        if (entries.existsByReference(reference)) {
+            return;
+        }
+        var wallet = forOutlet(outletId);
+        wallets.credit(wallet.getId(), total);
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.CREDIT, WalletEntryKind.QUICKSCAN_RETURN, total,
+                reason, reference, null);
+    }
+
+    /**
      * Put a withdrawal part the provider did not send back in the wallet (D-110).
      *
      * <p>Idempotent on the refund: the reference {@code withdrawal-reversal-{refundId}} is

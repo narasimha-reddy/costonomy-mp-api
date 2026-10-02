@@ -4041,6 +4041,105 @@ Tests: `PaymentFlowIT$Capture.orderShowsItsPaymentLive` (held, taken, released),
 `DisputeRefundFlowIT` (wallet: paid, then partly refunded), `CreditFlowIT` (on
 credit, in the response and the column).
 
+## D-106 — QuickScan, part one: pay any UPI merchant from the wallet
+**Raised 2026-09-28 · Settled 2026-09-28**
+
+**Why.** Everything Mandi has funded so far pays a supplier the restaurant
+already has an order with. A kitchen also buys from shops that will never be on
+Mandi — the corner vegetable seller, an ice supplier paid in person — and today
+that means cash or a personal UPI app, off the platform and off the wallet
+balance entirely. QuickScan lets a restaurant scan any shop's UPI QR code and pay
+from the wallet the same way a UPI app pays from a bank account.
+
+**What.** `POST /outlets/{id}/quickscan/payments` (new `QUICKSCAN_PAY`, granted
+by default to owner, admin, purchase manager and finance staff — the same set
+`WALLET_WITHDRAW` uses): a VPA, an amount, an optional name and note. The wallet
+is debited for the amount plus a flat fee (`costonomy.mp.quickscan.fee`, zero for
+now — the fee policy is undecided) in the same transaction the `quickscan_payment`
+row is created in, `WalletService.lock` first, before any payout has been
+attempted — the same shape as every other wallet write (D-104): the debit that
+must never race a second click happens first, and the payout catches up with what
+the ledger already recorded. A `PayoutProvider` port takes it from there
+(`createPayout`/`fetchPayout`; only `MOCK` exists — RazorpayX is the natural next
+adapter, once a test account exists to build it against), in the same claim →
+call the provider outside any transaction → record the outcome shape as
+`RefundService.process`, with the same `NEEDS_REVIEW` after `MAX_ATTEMPTS` (5)
+for an outcome retries never resolved. `GET /outlets/{id}/quickscan/config` tells
+the client whether WALLET is available (and why not, if the flag is off) and that
+UPI-direct is not built yet.
+
+**The legal flag.** `costonomy.mp.quickscan.enabled` (default `false`) gates the
+whole feature, and `ProductionProviderGuard` now refuses to start a production
+profile with it on, or with the payout provider left at `MOCK` — paying third
+parties out of a wallet balance is the same open RBI/prepaid-instrument question
+D-104 raised and left unanswered, and this is a second reason it should not go
+live until a lawyer has answered it.
+
+**Outcomes.** `PAYOUT_PENDING` (debited, payout not finished) → `PAID` (reached
+the shop); `FAILED` (refused or reversed — the money goes back to the wallet,
+`WalletService.returnQuickScan`, idempotent on `quickscan-return-{id}` so a
+REVERSED arriving after a PAID settlement cannot return it twice); or
+`NEEDS_REVIEW` (retries exhausted, outcome unknown) — deliberately **not**
+auto-returned, because the payout may already have reached the shop, the same
+reasoning D-101 uses for a refund NEEDS_REVIEW. `QuickScanJobs` is the safety net
+for whatever the synchronous call inside the request does not settle: a PENDING
+answer, a transient failure, or a process that dies mid-call. VPAs are masked in
+every log line (first two characters, then the handle) the same way a card
+number or token would be.
+
+**Fees are undecided.** The column and the config response carry a fee today so
+adding one later is a number, not a migration or an API change — `fee` defaults
+to zero and nothing charges it until a rate is set.
+
+**Two defects found after the above went in, both about the gap between the
+wallet debit committing and the payout settling.** First: `QuickScanJobs`'
+`findClaimable` used to treat any `attempts = 0` row as claimable immediately,
+so a job run landing in the few milliseconds between `payFromWallet`'s debit
+commit and its own synchronous `sendPayout` claim could win that claim first —
+the request's own `saveAndFlush` then lost the optimistic-lock race and
+`payFromWallet` threw, telling a restaurant its payment had failed (and marking
+the idempotency key failed) although the wallet was already debited and the
+payout was already in flight. Fixed two ways: `findClaimable` now only takes a
+fresh (`attempts = 0`) row once it is older than `JOB_CLAIM_DELAY` (30s) — the
+request that created it owns the claim until then — and `payFromWallet` never
+lets a failure from its own `sendPayout` call escape after the debit has
+committed; it logs a warning and returns the row's true state instead, because
+the money has already moved and `QuickScanJobs` will finish the payout regardless.
+Second: `findSettleable` had no age bound and nothing actually recorded a
+check — `payments.save` on an entity with no changed field is a Hibernate
+no-op, so a PENDING "touch" and an already-PAID row confirmed still PAID never
+moved `updated_at` — so every open QuickScan payout was re-fetched from the
+provider on every ten-second job run forever, a rate-limit and cost problem
+against a real provider. Fixed with a `checked_at` column (V40, edited before
+it shipped) that `settlePending` sets explicitly on every outcome it gets an
+answer for, and a bounded, named backoff: a PENDING row is asked about at most
+once a minute (`PENDING_CHECK_EVERY`), and a PAID row at most once every six
+hours (`PAID_CHECK_EVERY`) and only for 48 hours after paying
+(`PAID_WATCH_FOR`) — a reversal, if one comes, almost always shows within
+hours of paying, and a later one is an ops matter, not something to poll for
+indefinitely.
+
+Tests: `MockPayoutProviderTest` (6, the amount-driven scenarios) and
+`QuickScanValidationTest` (17, the VPA shape) as units;
+`ProductionProviderGuardTest` (+2, the legal flag and the mock payout provider);
+`QuickScanFlowIT` (18) — paid synchronously within the request, a refused payout
+returned once even after a second job run, a pending payout settled to PAID, a
+pending payout reversed and returned once (and not twice), a transient failure
+retried to the cap then NEEDS_REVIEW with the money left out, an unexpected
+(non-`PayoutProviderException`) error right after the debit commits still
+returns 200 `PAYOUT_PENDING` with the wallet debited once and the job finishing
+the payout on the next run, a fresh job-inserted row excluded from
+`findClaimable` under 30s old and included once past it, a PAID row not
+re-fetched within six hours of its last check but re-fetched once that passes
+and never once 48 hours old, a PENDING row fetched at most once a minute,
+over-balance, over-max, an invalid VPA and UPI-direct all refused with nothing
+written, the same idempotency key replayed and a different amount on it
+refused, another tenant 404 on pay and on read, a member without
+`QUICKSCAN_PAY` 404 with nothing debited, two concurrent payments over the
+balance settling to exactly one (five races), and the config endpoint;
+`QuickScanDisabledIT` (2) — the flag off refuses the payment and says so on the
+config endpoint, both with the wallet otherwise fully funded.
+
 ## D-109 — Cancelling an order whose money was debited captures it and refunds it, and a lapsed hold is noticed
 **Raised 2026-09-30 · Settled 2026-09-30** (owner recommendations E-1 to E-6 accepted as defaults; the fee and instant-refund choices are still the owner's, see below)
 
