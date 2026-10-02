@@ -45,6 +45,12 @@ public class PaymentJobs {
     private final OrderReleaseService orderRelease;
     private final PaymentProvider provider;
 
+    /**
+     * How long an unpaid intent is still worth asking about. A day comfortably
+     * covers a lost callback; past it, nobody is mid-checkout.
+     */
+    private static final Duration INTENT_LOOKUP_WINDOW = Duration.ofDays(1);
+
     @Scheduled(fixedDelayString = "${costonomy.mp.payments.capture-interval:PT10S}")
     @SchedulerLock(name = "payment-capture", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
     public void capturePending() {
@@ -81,14 +87,24 @@ public class PaymentJobs {
                 continue;
             }
             try {
-                if (payment.getProviderPaymentId() == null) {
-                    // We only have the intent, so there is nothing to ask about
-                    // yet — the customer never started. It will be abandoned by
-                    // the cart's own expiry rather than here.
-                    continue;
+                PaymentProvider.ProviderPayment providerPayment;
+                if (payment.getProviderPaymentId() != null) {
+                    providerPayment = provider.fetchPayment(payment.getProviderPaymentId());
+                } else {
+                    // Only the intent. Either the customer never paid, or they did
+                    // and neither the client's confirm nor the webhook reached us
+                    // — so ask by the intent. Bounded in age, or every abandoned
+                    // checkout would cost a provider call a minute for ever.
+                    if (payment.getCreatedAt().isBefore(Instant.now().minus(INTENT_LOOKUP_WINDOW))) {
+                        continue;
+                    }
+                    var found = provider.findPaymentForOrder(payment.getProviderOrderId());
+                    if (found.isEmpty()) {
+                        continue;
+                    }
+                    providerPayment = found.get();
                 }
 
-                var providerPayment = provider.fetchPayment(payment.getProviderPaymentId());
                 var updated = paymentService.applyProviderState(
                         payment, providerPayment, "RECONCILE");
 

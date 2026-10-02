@@ -127,8 +127,10 @@ public class RefundService {
         try {
             var result = provider.refund(payment.getProviderPaymentId(), refund.getAmount(),
                     // Stable per refund, so a retry reaches the same operation at
-                    // the provider rather than issuing a second one.
-                    "refund-" + refund.getId());
+                    // the provider rather than issuing a second one. Prefixed to
+                    // clear Razorpay's ten-character minimum: "refund-7" is
+                    // rejected, and a rejected key is no key at all.
+                    "mandi-refund-" + refund.getId());
 
             if (result.status() == PaymentProvider.ProviderRefundStatus.FAILED) {
                 markFailed(refund, result.failureCode(), result.failureReason());
