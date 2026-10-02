@@ -1,5 +1,6 @@
 package com.costonomy.mp.wallet.service;
 
+import com.costonomy.mp.common.text.Rupees;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.wallet.domain.Wallet;
@@ -196,6 +197,48 @@ public class WalletService {
     }
 
     /**
+     * What of a wallet-paid order can still come back: what it took, less a
+     * cancellation's return and earlier dispute refunds (D-104).
+     */
+    @Transactional(readOnly = true)
+    public BigDecimal refundableForOrder(Long supplierOrderId) {
+        var paid = entries.findBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.ORDER_PAYMENT)
+                .map(WalletTransaction::getAmount).orElse(BigDecimal.ZERO);
+        var returned = entries.findBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.ORDER_REFUND)
+                .map(WalletTransaction::getAmount).orElse(BigDecimal.ZERO);
+        var refunded = entries.sumBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.DISPUTE_REFUND);
+        return paid.subtract(returned).subtract(refunded).max(BigDecimal.ZERO);
+    }
+
+    /**
+     * A dispute refund on a wallet-paid order, back into the wallet. Idempotent on
+     * the reference.
+     */
+    @Transactional
+    public void creditDisputeRefund(Long supplierOrderId, BigDecimal amount, String reference) {
+        var debit = entries.findBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.ORDER_PAYMENT)
+                .orElseThrow(() -> new BusinessException(ErrorCode.PAYMENT_STATE_CONFLICT,
+                        "This order wasn't paid from the wallet."));
+        if (entries.existsByReference(reference)) {
+            return;
+        }
+        // The outlet by a scalar query, not by loading the wallet: a wallet already
+        // in the persistence context is not re-read by the lock (see lock()).
+        lock(wallets.outletIdOf(debit.getWalletId()));
+        if (amount.compareTo(refundableForOrder(supplierOrderId)) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "At most ₹%s of this order can be refunded."
+                            .formatted(Rupees.of(refundableForOrder(supplierOrderId))));
+        }
+        wallets.credit(debit.getWalletId(), amount);
+        wallets.flush();
+
+        var refreshed = wallets.findById(debit.getWalletId()).orElseThrow();
+        record(refreshed, supplierOrderId, WalletDirection.CREDIT, WalletEntryKind.DISPUTE_REFUND,
+                amount, "Refund", reference, null);
+    }
+
+    /**
      * Take the part of a withdrawal that one refund sends back to a card.
      *
      * <p>Called with the wallet locked and the amount already checked against the
@@ -208,7 +251,7 @@ public class WalletService {
         var wallet = forOutlet(outletId);
         if (wallets.debit(wallet.getId(), amount) == 0) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "Your wallet doesn't have ₹%s to withdraw.".formatted(amount.toPlainString()));
+                    "Your wallet doesn't have ₹%s to withdraw.".formatted(Rupees.of(amount)));
         }
         wallets.flush();
 

@@ -85,6 +85,45 @@ public class SettlementDirectory {
         return captured == null ? BigDecimal.ZERO : captured;
     }
 
+    /**
+     * One order as settlement sees it, in whatever state it is, with its status.
+     * For a refund decided before the order is settled (D-104).
+     */
+    public record OrderFigures(SettleableOrder order, String status) {
+    }
+
+    public java.util.Optional<OrderFigures> orderFigures(Long supplierOrderId) {
+        var rows = jdbc.query("""
+                select so.id, so.supplier_store_id, ss.supplier_organization_id,
+                       so.accepted_amount, so.delivery_fee, so.updated_at, so.status
+                  from supplier_order so
+                  join supplier_store ss on ss.id = so.supplier_store_id
+                 where so.id = ?
+                """,
+                (rs, row) -> new OrderFigures(new SettleableOrder(rs.getLong(1), rs.getLong(2),
+                        rs.getLong(3),
+                        rs.getBigDecimal(4) == null ? BigDecimal.ZERO : rs.getBigDecimal(4),
+                        rs.getBigDecimal(5), rs.getTimestamp(6).toInstant()), rs.getString(7)),
+                supplierOrderId);
+        return rows.stream().findFirst();
+    }
+
+    /**
+     * Refund requests on this settlement's orders that nobody has decided yet —
+     * asked for, or declined by the supplier and waiting for operations (D-104).
+     * While there are any, the payout they would come out of cannot be approved.
+     */
+    public List<String> undecidedRefunds(Long settlementId) {
+        return jdbc.queryForList("""
+                select concat(so.order_number, ' (request ', dr.id, ', ', dr.status, ')')
+                  from dispute_refund dr
+                  join commission_calculation c on c.supplier_order_id = dr.supplier_order_id
+                  join supplier_order so on so.id = dr.supplier_order_id
+                 where c.settlement_id = ? and dr.status in ('REQUESTED', 'DECLINED')
+                 order by dr.id
+                """, String.class, settlementId);
+    }
+
     /** Stores with unsettled completed orders. */
     public List<Long> storesWithSettleableOrders(Instant from, Instant to) {
         List<Long> stores = new ArrayList<>();

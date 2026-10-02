@@ -58,6 +58,8 @@ public final class Permissions {
     public static final String CREDIT_MODIFY = "CREDIT_MODIFY";
     /** Answer a dispute raised against this store's order. Doc 04 §16. */
     public static final String DISPUTE_RESPOND = "DISPUTE_RESPOND";
+    /** Approve or decline a dispute refund; an approval comes out of the payout. D-104, V39. */
+    public static final String DISPUTE_REFUND_DECIDE = "DISPUTE_REFUND_DECIDE";
     public static final String SETTLEMENT_VIEW = "SETTLEMENT_VIEW";
     public static final String PERFORMANCE_VIEW = "PERFORMANCE_VIEW";
 
@@ -103,5 +105,7 @@ public final class Permissions {
     public static final String PAYMENT_INSPECT = "PAYMENT_INSPECT";
     public static final String DELIVERY_INSPECT = "DELIVERY_INSPECT";
     public static final String DISPUTE_INSPECT = "DISPUTE_INSPECT";
+    /** Decide a dispute refund the supplier declined or did not answer. Moves money. D-104, V39. */
+    public static final String REFUND_DECIDE = "REFUND_DECIDE";
     public static final String CONFIG_VIEW = "CONFIG_VIEW";
 }

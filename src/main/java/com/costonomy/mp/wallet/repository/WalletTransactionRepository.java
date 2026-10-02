@@ -19,5 +19,13 @@ public interface WalletTransactionRepository extends JpaRepository<WalletTransac
 
     boolean existsByReference(String reference);
 
+    @org.springframework.data.jpa.repository.Query("""
+            select coalesce(sum(t.amount), 0) from WalletTransaction t
+             where t.supplierOrderId = :orderId and t.kind = :kind
+            """)
+    java.math.BigDecimal sumBySupplierOrderIdAndKind(
+            @org.springframework.data.repository.query.Param("orderId") Long supplierOrderId,
+            @org.springframework.data.repository.query.Param("kind") com.costonomy.mp.wallet.domain.WalletEntryKind kind);
+
     List<WalletTransaction> findByWalletIdOrderByCreatedAtDesc(Long walletId, Pageable pageable);
 }

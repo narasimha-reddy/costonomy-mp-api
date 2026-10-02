@@ -20,5 +20,10 @@ public enum WalletEntryKind {
      */
     REFUND,
     /** Refund money sent back to the card or bank it came from. */
-    WITHDRAWAL
+    WITHDRAWAL,
+    /**
+     * A dispute refund on an order paid from the wallet (D-104). No card behind
+     * it, so like a wallet order's return it can be spent and not withdrawn.
+     */
+    DISPUTE_REFUND
 }

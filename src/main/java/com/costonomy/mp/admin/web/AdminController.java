@@ -36,6 +36,7 @@ public class AdminController {
     private final AdminModerationService moderation;
     private final AdminConfigService config;
     private final OperationsDashboardService dashboard;
+    private final com.costonomy.mp.trust.service.DisputeRefundService disputeRefunds;
 
     // ── Suppliers ────────────────────────────────────────────────────────
 
@@ -283,6 +284,43 @@ public class AdminController {
                 request.get("resolutionType"), request.get("resolution"),
                 request.get("internalNote"));
         return ApiResponse.ok(Map.of("resolved", true));
+    }
+
+    // ── Dispute refunds (D-104) ──────────────────────────────────────────
+
+    @GetMapping("/dispute-refunds")
+    @Operation(summary = "Refunds waiting for operations",
+            description = "Declined by the supplier, or unanswered for 48 hours. Oldest first. "
+                    + "Requires DISPUTE_INSPECT. Each one holds the supplier's payout for its "
+                    + "order until it is decided.")
+    public ApiResponse<List<com.costonomy.mp.trust.web.dto.TrustDtos.DisputeRefundResponse>> escalatedRefunds() {
+        return ApiResponse.ok(disputeRefunds.escalated(ActorContext.requireUserId()));
+    }
+
+    @PostMapping("/dispute-refunds/{id}/approve")
+    @Operation(
+            summary = "Approve a refund the supplier declined or did not answer",
+            description = """
+                    Requires REFUND_DECIDE and a `note`, which both parties see. **Moves
+                    money**: the restaurant's wallet is credited now and the supplier's payout
+                    for the order is charged — Costonomy never funds a refund (D-104). Refused
+                    if that payout cannot cover it or has already been approved.
+                    """)
+    public ApiResponse<com.costonomy.mp.trust.web.dto.TrustDtos.DisputeRefundResponse> approveRefund(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> request) {
+        return ApiResponse.ok(disputeRefunds.opsApprove(ActorContext.requireUserId(), id,
+                request.get("note")));
+    }
+
+    @PostMapping("/dispute-refunds/{id}/decline")
+    @Operation(summary = "Decline a refund the supplier declined or did not answer",
+            description = "Requires REFUND_DECIDE and a `note`. Final.")
+    public ApiResponse<com.costonomy.mp.trust.web.dto.TrustDtos.DisputeRefundResponse> declineRefund(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> request) {
+        return ApiResponse.ok(disputeRefunds.opsDecline(ActorContext.requireUserId(), id,
+                request.get("note")));
     }
 
     // ── Audit ────────────────────────────────────────────────────────────
