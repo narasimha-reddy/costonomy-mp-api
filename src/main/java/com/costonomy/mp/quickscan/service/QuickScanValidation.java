@@ -12,14 +12,14 @@ import java.util.regex.Pattern;
  * whether the handle or the account behind it exists, which only a payout
  * attempt can answer.
  */
-final class QuickScanValidation {
+public final class QuickScanValidation {
 
     private QuickScanValidation() {
     }
 
     static final Pattern VPA = Pattern.compile("^[a-zA-Z0-9.\\-_]{2,256}@[a-zA-Z][a-zA-Z0-9]{1,63}$");
 
-    static boolean isValidVpa(String vpa) {
+    public static boolean isValidVpa(String vpa) {
         return vpa != null && VPA.matcher(vpa).matches();
     }
 }

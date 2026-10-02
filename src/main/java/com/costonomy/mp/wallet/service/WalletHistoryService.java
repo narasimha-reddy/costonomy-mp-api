@@ -311,9 +311,7 @@ public class WalletHistoryService {
             var entry = (WalletTransaction) row[0];
             var refundStatus = (RefundStatus) row[1];
             boolean withdrawal = entry.getKind() == WalletEntryKind.WITHDRAWAL;
-            String status = !withdrawal || refundStatus == null || refundStatus == RefundStatus.COMPLETED
-                    ? Status.COMPLETED.name()
-                    : refundStatus == RefundStatus.REVERSED ? Status.RETURNED.name() : Status.IN_PROGRESS.name();
+            String status = statusOf(entry.getKind(), refundStatus).name();
             String instrument = null;
             if (entry.getKind() == WalletEntryKind.TOP_UP && entry.getReference() != null
                     && entry.getReference().startsWith("topup-")) {
@@ -332,6 +330,14 @@ public class WalletHistoryService {
             out.add(new Row(entry.getCreatedAt(), LEDGER, entry.getId(), item));
         }
         return out;
+    }
+
+    /** What the customer is told about a ledger row; shared by the list and the detail so they never differ. */
+    static Status statusOf(WalletEntryKind kind, RefundStatus refundStatus) {
+        boolean withdrawal = kind == WalletEntryKind.WITHDRAWAL;
+        return !withdrawal || refundStatus == null || refundStatus == RefundStatus.COMPLETED
+                ? Status.COMPLETED
+                : refundStatus == RefundStatus.REVERSED ? Status.RETURNED : Status.IN_PROGRESS;
     }
 
     private List<Row> returnedTopUps(Long outletId, Filter filter, Cursor cursor, int limit) {

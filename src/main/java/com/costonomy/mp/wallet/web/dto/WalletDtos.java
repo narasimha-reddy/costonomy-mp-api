@@ -89,6 +89,44 @@ public final class WalletDtos {
             Instant at) {
     }
 
+    /**
+     * One wallet entry in full, for the transaction-details page. Carries every field the list
+     * item does ({@link HistoryItem}) plus who the other side was and what we hold to prove it.
+     */
+    public record TransactionDetail(
+            String key,
+            Long id,
+            /** Our own transaction id: the ledger entry id as a plain decimal string, e.g. "184". */
+            String transactionId,
+            WalletDirection direction,
+            String kind,
+            BigDecimal amount,
+            BigDecimal balanceAfter,
+            Long supplierOrderId,
+            String reason,
+            String status,
+            String refundStatus,
+            String instrument,
+            Instant at,
+            /** Who was paid or who paid; null when we do not know. */
+            String counterpartyName,
+            /** A QuickScan payee's masked VPA, an order number, or null. Never a full VPA. */
+            String counterpartyDetail,
+            /** Real identifiers we hold, in display order. Our own transaction id is not repeated here. */
+            List<Reference> references,
+            Actions actions) {
+    }
+
+    public record Reference(String label, String value, boolean copyable) {
+    }
+
+    public record Actions(
+            boolean canPayAgain,
+            /** The full VPA, present only when {@code canPayAgain}: the caller's own past payment. */
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+            String payeeVpa) {
+    }
+
     /** What a month's ledger added and spent, in rupees. Ledger only: a returned top-up is neither. */
     public record MonthTotal(String month, BigDecimal added, BigDecimal spent) {
     }
