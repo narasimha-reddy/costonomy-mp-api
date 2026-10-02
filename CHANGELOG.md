@@ -1,228 +1,241 @@
 # Changelog
 
-All notable changes across the platform (Delivery/Logistics and Razorpay Payment Integrations) are documented in this file.
+All notable changes across the platform (Procurement, Wallet, Payments, Delivery, Security, and Architecture) are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Razorpay Integrations]
+---
 
-### [feat/razorpay-17-withdrawal-failure-reversal] - PR / Step 17
+## [Architecture & Security Audit]
+
+### [Security Audit Report] - 2026-10-02
 #### Added
-- Database migration `V44__withdrawal_failure_reversal.sql` adding withdrawal failure audit states and operator resolution tracking.
-- `WithdrawalReversalService`: verified bank proof validation before restoring failed withdrawals to restaurant wallets (D-110).
-- `AdminRefundController`: dedicated admin endpoints (`/api/v1/admin/refunds/...`) for operational audit reviews and manual override exits.
-- Concurrency deadlock protection utility `DeadlockRetry` with unit and integration tests.
+- [`docs/SECURITY_AUDIT_REPORT.md`](file:///Users/rac/Documents/costonomy_projects/marketplace_be/costonomy-mp-api/docs/SECURITY_AUDIT_REPORT.md): Comprehensive code-level penetration testing report evaluating identity boundaries, financial invariants, multi-tenant IDOR isolation, and state machine integrity.
+#### Security
+- Evaluated ATO vectors: verified constant-time BCrypt/HMAC matching, independent `REQUIRES_NEW` transaction commits for OTP attempts in `OtpAttemptStore`, and automatic whole-lineage session revocation upon refresh token reuse.
+- Evaluated Financial Invariants: proved zero money creation (`paymentProvider != 'MOCK'` gate in production), zero double-spending (`UPDATE ... WHERE balance >= amount` and `SELECT FOR UPDATE` pessimistic locks), and strictly FIFO pinned payouts (gateway refunds).
+- Identified and remediated 3 hardening areas: VULN-01 (IP rate limiting on OTP requests), VULN-02 (300-second webhook freshness window), and VULN-03 (storage capability isolation).
 
-### [feat/razorpay-16-upi-cancel-refund] - PR / Step 16
+### [docs/architecture-sequence-diagrams] - Architecture Integration PR
+#### Added
+- Complete endpoint and domain sequence diagrams under `docs/architecture/sequence-diagrams/`:
+  - `01-payment-and-wallet.md`: Razorpay orders, checkout signature verification, top-up capture sweep, FIFO withdrawals, dispute refunds, and idempotency boundaries.
+  - `02-delivery-and-logistics.md`: Multi-carrier dispatch waterfall, vehicle auto-sizing, courier tracking webhooks, delivery milestone state transitions, and arrival radar.
+  - `03-intent-and-procurement.md`: Cart creation, line price snapshotting, multi-supplier order splitting, and atomic transitions.
+  - `04-trust-and-disputes.md`: Evidence upload, dispute life-cycle, manual mediation, and refund settlements.
+  - `05-credit-and-settlement.md`: BNPL supplier credit line underwriting, invoice settlements, and debit adjustments.
+  - `06-identity-and-orgs.md`: Passwordless OTP flow with MSG91, attempt tracking in isolated transactions, JWT issuance, and refresh token rotation with theft detection.
+  - `07-discovery-and-catalog.md`: Product listing, supplier stock checks, and catalog search.
+  - `08-communication-and-admin.md`: Outbox event publishing, notification dispatch, and tenant audit trails.
+  - `README.md`: Architecture directory map and visual guide.
+
+---
+
+## [Procurement & Open Requests]
+
+### [PR #17] [feat/edit-open-request-quantities]
+#### Added
+- Modification support for open procurement requests prior to supplier acceptance.
+- Real-time cart line revalidation against active supplier catalog pricing.
+#### Changed
+- `ProcurementRequestService`: enforces state checks ensuring quantities cannot be altered once a supplier has committed to fulfillment.
+
+---
+
+## [Wallet & QuickScan Payments]
+
+### [PR #15] [feat/wallet-2-history-statements] - Wallet History & Statements (D-108)
+#### Added
+- Database migration `V42__wallet_top_up_payment_method.sql` recording payment method instruments (card last 4, UPI).
+- `WalletHistoryService`: paginated ledger history with cursor-based navigation, Asia/Kolkata month aggregates, and entry kind/status filters.
+- `WalletStatementService`: PDF and CSV statement rendering engine (`WalletStatementPdf`, `WalletStatementCsv`) with strict mathematical reconciliation enforcement ($\text{Opening} + \text{Added} - \text{Spent} = \text{Closing}$).
+- Download endpoint `GET /api/v1/outlets/{outletId}/wallet/statement?range=...&format=PDF|CSV` (max 20,000 entries guard).
+- Integration test suites: `WalletHistoryIT`, `WalletStatementIT`, `StatementPeriodTest`, `WalletStatementFilesTest`.
+#### Security
+- Scoped strictly to outlet with `Permissions.ORDER_VIEW` access control and live database authorization.
+- Masked instrument details: never stores or renders full card numbers or sensitive credentials.
+
+### [PR #14] [feat/wallet-1-razorpay-top-up] - Razorpay Wallet Top-Ups (D-107)
+#### Added
+- Database migration `V41__wallet_top_up.sql` creating `wallet_top_up` ledger table.
+- `WalletTopUpService`: manages the complete lifecycle of prepaid balance loading via Razorpay checkout.
+  - `POST /api/v1/outlets/{outletId}/wallet/top-ups`: validates tiered limits, records top-up intent, and opens a Razorpay order configured for instant capture.
+  - `POST /api/v1/outlets/{outletId}/wallet/top-ups/{topUpId}/confirm`: verifies checkout HMAC signature and inspects provider payment state before crediting.
+  - `GET /api/v1/outlets/{outletId}/wallet/top-ups/{topUpId}`: returns live top-up status.
+- `WalletTopUpJobs`: background reconciliation sweeper crediting unconfirmed captured payments and expiring abandoned intents after 24 hours.
+- Integration tests: `WalletTopUpIT`, `WalletTopUpLimitsIT`, `WalletLimitsTest`.
+#### Security
+- Out-of-band verification: backend calls Razorpay API directly (`provider.inspect`) rather than trusting client-submitted payload amounts.
+- Over-limit protection: if crediting exceeds wallet max balance limits, funds are automatically refunded back to the originating funding instrument.
+
+### [PR #13] [feat/quickscan-1-wallet-payments] - QuickScan Wallet Payments (D-106)
+#### Added
+- Database migration `V40__quickscan.sql` creating `quickscan_payment` table and granting `QUICKSCAN_PAY` permission.
+- `QuickScanService`: allows restaurants to scan third-party merchant UPI QR codes and settle payments directly from their wallet balance.
+- Payout integration port `PayoutProvider` with testbed sandbox simulation `MockPayoutProvider`.
+- `QuickScanController`: endpoints `GET /config`, `POST /pay`, `GET /payments`, `GET /payments/{id}`.
+- Integration tests: `QuickScanFlowIT`, `QuickScanDisabledIT`.
+#### Security
+- Gated rollout: feature is controlled via `costonomy.mp.quickscan.enabled=false` by default; `ProductionProviderGuard` blocks startup if mock payout providers are active in production profiles.
+- Pessimistic locking: wallet is locked (`SELECT FOR UPDATE`) before balance debit, eliminating concurrency race conditions.
+
+---
+
+## [Razorpay Core Payments]
+
+### [PR #12] [feat/razorpay-17-withdrawal-failure-reversal] - Step 17 (D-110)
+#### Added
+- Database migration `V44__withdrawal_failure_reversal.sql` adding failure audit states and operator resolution tracking.
+- `WithdrawalReversalService`: verified bank proof validation before restoring failed withdrawals back to restaurant wallets.
+- `AdminRefundController`: dedicated administrative endpoints (`/api/v1/admin/refunds/...`) for manual audit review and override exits.
+- Concurrency utility `DeadlockRetry` with unit and integration tests.
+#### Security
+- Prevents double-credit reversals: reversal reference `withdrawal-reversal-{refundId}` is unique, guaranteeing single crediting even under concurrent retries.
+
+### [PR #11] [feat/razorpay-16-upi-cancel-refund] - Step 16 (D-109)
 #### Added
 - Database migration `V43__debited_payment_on_cancelled_order.sql`.
-- `CancellationService`: automatic refund orchestration for debited/auto-captured orders (UPI/cards) cancelled prior to fulfilment (D-109).
+- `CancellationService`: automated refund orchestration for debited/auto-captured orders (UPI/cards) cancelled prior to fulfillment.
 - Periodic background worker `cancelDebitedPayments` in `PaymentJobs` running every 15s to auto-refund cancelled orders.
-- Configuration parameters `costonomy.mp.razorpay.manual-expiry-minutes` and `costonomy.mp.razorpay.cancel-refund-speed`.
+- Configuration parameters: `costonomy.mp.razorpay.manual-expiry-minutes` and `costonomy.mp.razorpay.cancel-refund-speed`.
 
-### [feat/razorpay-15-order-payment-status] - PR / Step 15
+### [PR #10] [feat/razorpay-15-order-payment-status] - Step 15
 #### Added
 - Dynamic payment status resolution on `SupplierOrder`: live evaluation of payment state from the underlying funding mechanism (Razorpay, credit line, or wallet).
 - Updated `SupplierOrderMapper` and `CreditFundingAdapter` with live payment state queries.
 
-### [feat/razorpay-12-dispute-refund-requests] - PR / Step 12
+### [PR #9] [feat/razorpay-12-dispute-refund-requests] - Step 12
 #### Added
 - Database migration `V39__dispute_refunds.sql` supporting dispute refund allocations and ledger adjustments.
 - `SupplierRefundLedger`: automatic deduction of approved dispute refunds from supplier settlement balances in `SettlementService`.
 - Currency formatting utility `Rupees` rendering formatted INR amounts with two decimals in user notifications and messages.
 
-### [feat/razorpay-11-dispute-refunds] - PR / Step 11
+### [PR #8] [feat/razorpay-11-dispute-refunds] - Step 11
 #### Added
 - Database migration `V38__refunds_to_wallet.sql` for wallet refund destinations.
 - Wallet refund routing: refunds credit restaurant wallet balances immediately for frictionless re-orders.
 - `WalletWithdrawalService`: bank payouts restricted strictly back to the source payment method.
 
-### [feat/razorpay-10-capture-at-dispatch] - PR / Step 10
+### [PR #7] [feat/razorpay-10-capture-at-dispatch] - Step 10 (D-102)
 #### Added
-- Two-phase authorization & capture model (D-102): authorization holds placed at order creation; funds captured only upon order readiness / dispatch in `OrderReleaseService`.
+- Two-phase authorization & capture model: authorization holds placed at order creation; funds captured only upon order readiness / dispatch in `OrderReleaseService`.
 - Background reconciliation jobs to release/expire uncaptured authorization holds when orders are cancelled.
 
-### [feat/razorpay-9-payment-intent-lookup] - PR / Step 9
+### [PR #6] [feat/razorpay-9-payment-intent-lookup] - Step 9
 #### Added
 - Payment intent lookup endpoint: `GET /api/v1/orders/{id}/payment-intent` returning checkout parameters (order ID, amount in paise, currency, Razorpay key).
 
-### [feat/razorpay-8-review-fixes] - PR / Step 8
+### [PR #5] [feat/razorpay-8-review-fixes] - Step 8
 #### Added
 - Database migration `V37__refund_attempts.sql` for tracking max refund retry counts.
 - `ProductionProviderGuard`: strict startup check ensuring mock payment providers cannot be used in production environments.
 - Resilient failure recovery: secondary declined attempts do not corrupt previously successful order authorizations.
 
-### [feat/razorpay-7-payment-tracing] - PR / Step 7
+### [PR #4] [feat/razorpay-7-payment-tracing] - Step 7
 #### Added
 - Distributed correlation tracing with `TraceScope` and `CorrelatedTaskScheduler` propagating payment IDs across HTTP endpoints, worker threads, and webhook handlers.
 
-### [feat/razorpay-3-small-fixes] - PR / Step 3
+### [PR #3] [feat/razorpay-3-small-fixes] - Step 3
 #### Added
 - Sandbox top-up protection in `WalletController`: prevents test wallet credits when real payment provider mode is active.
 - Quote token reuse prevention in `DeliveryFeeQuoteService`.
 
-### [feat/razorpay-2-hardening] - PR / Step 2
+### [PR #2] [feat/razorpay-2-hardening] - Step 2
 #### Added
 - Non-blocking external HTTP calls: connection release before invoking external Razorpay endpoints.
 - Pessimistic row-level locking on payment transactions to eliminate concurrent update race conditions.
 
-### [feat/razorpay-1-adapter] - PR / Step 1
+### [PR #1] [feat/razorpay-1-adapter] - Step 1 (D-098)
 #### Added
-- Production `RazorpayPaymentProvider` adhering strictly to Razorpay's API contracts (D-098).
+- Production `RazorpayPaymentProvider` adhering strictly to Razorpay's API contracts.
 - Payment ownership enforcement ensuring orders are funded only by their own verified payment intent.
 - `docs/RAZORPAY.md` and test suite `PaymentOwnershipTest` & `RazorpayPaymentProviderTest`.
 
 ---
 
-## [Delivery & Logistics Platform Integrations]
+## [Delivery & Logistics Platform Integrations (Pidge)]
 
-## [feat/pidge-16-outlet-active-deliveries-and-arrival-radar] - PR 16
-### Added
+### [PR 16] [feat/pidge-16-outlet-active-deliveries-and-arrival-radar]
+#### Added
 - Outlet Delivery Radar endpoint: `GET /api/v1/outlets/{outletId}/deliveries/radar`.
-  - Answers *“Which one is approaching the kitchen?”* by ranking active deliveries by arrival urgency (`AT_KITCHEN_DOOR` first, then `APPROACHING` by shortest ETA).
-  - Answers *“Is this supplier still on schedule?”* with real-time `ScheduleStatus` (`ON_SCHEDULE`, `RUNNING_LATE`, `CRITICALLY_DELAYED`) and exact `minutesOverdue`.
-  - Answers *“Did the driver call? Is there a problem?”* via `DriverInfo` contacts, `ProblemDetails` (`hasProblem`, `problemType`, carrier exceptions, stale GPS detection).
-  - Answers *“Which orders should I check in, receive, or escalate?”* with an actionable `KitchenAction` classifier (`CHECK_IN`, `MEET_DRIVER`, `PREPARE_DOCK`, `CALL_DRIVER`, `ESCALATE`, `MONITOR`).
-  - Aggregates `RadarSummaryResponse` counts (`totalActive`, `atDoorCount`, `approachingCount`, `delayedCount`, `pendingCheckInCount`, `requiresEscalationCount`).
-- Outlet Delivery Search & Pagination endpoint: `GET /api/v1/outlets/{outletId}/deliveries?page=0&size=10&status=...`.
-  - Scoped to outlet with `Permissions.ORDER_VIEW` access control and tenant isolation.
-- `OutletDeliveryRadarService` situational engine and comprehensive unit test suite `OutletDeliveryRadarServiceTest`.
+  - Prioritizes active deliveries by urgency (`AT_KITCHEN_DOOR` first, then `APPROACHING` by shortest ETA).
+  - Evaluates `ScheduleStatus` (`ON_SCHEDULE`, `RUNNING_LATE`, `CRITICALLY_DELAYED`) with exact `minutesOverdue`.
+  - Surfaces driver contact info, carrier problem alerts, and actionable `KitchenAction` recommendations.
+- Outlet Delivery Search endpoint: `GET /api/v1/outlets/{outletId}/deliveries?page=0&size=10&status=...`.
+- `OutletDeliveryRadarService` situational engine and unit tests `OutletDeliveryRadarServiceTest`.
 
----
-
-## [feat/pidge-15-admin-delivery-search-and-late-tracking] - PR 15
-### Added
-- Operations Delivery Search & Listing endpoint: `GET /api/v1/admin/deliveries?page=0&size=10&status=...&providerCode=...&supplierStoreId=...`.
-  - Lists last 10 deliveries by default (newest first) with full pagination metadata (`PagedResponse`).
-  - Joins order number (`supplier_order`), outlet name (`outlet`), supplier store name (`supplier_store`), supplier org name (`supplier_organization`), and delivery provider name (`delivery_provider`).
-- Dedicated Missed ETA Tracking endpoint: `GET /api/v1/admin/deliveries/late?liveOnly=true&page=0&size=10`.
-  - Computes `minutesOverdue` live using `estimated_arrival_at` for active deliveries or historical SLA overruns for completed deliveries.
-  - Sorts automatically by urgency (highest `minutesOverdue` first).
-- `AdminDeliverySummaryResponse` and `PagedResponse` DTO records.
+### [PR 15] [feat/pidge-15-admin-delivery-search-and-late-tracking]
+#### Added
+- Operations Delivery Search endpoint: `GET /api/v1/admin/deliveries?page=0&size=10&status=...`.
+- Missed ETA Tracking endpoint: `GET /api/v1/admin/deliveries/late?liveOnly=true&page=0&size=10`.
 - Unit test coverage in `AdminDeliveryServiceTest`.
 
----
+### [PR 14] [feat/pidge-14-webhook-signature-verification]
+#### Added
+- Webhook secret configuration: `costonomy.mp.delivery.webhook-secret`.
+- Unit test suite `PidgeWebhookServiceTest` testing HMAC-SHA256 verification and payload tampering.
+#### Security
+- Constant-time HMAC comparison using `MessageDigest.isEqual` to prevent timing attacks.
 
-## [feat/pidge-14-webhook-signature-verification] - PR 14
-### Added
-- Environment-injected webhook secret binding: `costonomy.mp.delivery.webhook-secret=${DELIVERY_WEBHOOK_SECRET:${PIDGE_WEBHOOK_SECRET:}}`.
-- Unit test suite (`PidgeWebhookServiceTest`) testing HMAC-SHA256 verification, forged signatures, payload tampering, and local-dev pass-through.
-### Security
-- Constant-time HMAC comparison using `MessageDigest.isEqual` to prevent side-channel timing attacks.
-- Outbox audit logging (`PIDGE_WEBHOOK_REJECTED`) when signature fails.
+### [PR 13] [feat/pidge-13-bulk-delivery-export]
+#### Added
+- Streaming CSV and JSON delivery export endpoint: `GET /api/v1/admin/deliveries/export`.
+- `AdminDeliveryExportService` streaming service respecting 10,000-row memory protection limits.
 
----
-
-## [feat/pidge-13-bulk-delivery-export] - PR 13
-### Added
-- Admin streaming bulk delivery export endpoint: `GET /api/v1/admin/deliveries/export?format=csv|json&since=YYYY-MM-DD&status=...`.
-- `DeliveryExportRow` DTO containing flattened delivery journey, vehicle categorization, fees, timestamps, and failure codes.
-- `AdminDeliveryExportService` streaming service respecting `costonomy.mp.admin.export.max-rows=10000` memory guard.
-- RFC 4180 CSV escaping and unit test suite (`AdminDeliveryExportServiceTest`).
-
----
-
-## [feat/pidge-12-provider-metrics] - PR 12
-### Added
+### [PR 12] [feat/pidge-12-provider-metrics]
+#### Added
 - Database migration `V27__delivery_provider_metrics.sql` for 2-hour rolling performance snapshots.
-- `DeliveryProviderMetrics` JPA entity tracking average latency (`avg_latency_ms`), 95th percentile latency (`p95_latency_ms`), total cost (`total_cost_inr`), and order count.
-- `DeliveryMetricsAggregationService` computing latencies from `DRIVER_ASSIGNED` to `DELIVERED` and ledger sums.
-- `DeliveryMetricsJob` running every 2 hours with ShedLock protection (`0 0 0/2 * * *`).
-- Admin endpoints: `GET /api/v1/admin/deliveries/providers/metrics` and `GET /api/v1/admin/deliveries/providers/{code}/metrics`.
-- `DeliveryMetricsAggregationServiceTest` unit tests verifying P95 percentile calculation.
+- `DeliveryMetricsJob` aggregating P95 and average latencies from dispatch to delivery.
 
----
-
-## [feat/pidge-11-delivery-rate-limiting] - PR 11
-### Added
+### [PR 11] [feat/pidge-11-delivery-rate-limiting]
+#### Added
 - Per-endpoint rate limits for delivery API:
   - `delivery-request`: `POST /api/v1/supplier-orders/**` (10/min per user)
-  - `delivery-reassign`: `POST /api/v1/deliveries/**` (5/min per user, covers cancels + reassignments)
-  - `delivery-read`: `GET /api/v1/deliveries/**` (60/min per user for live tracking polls)
-- Environment-configurable variables in `application.properties`:
-  - `costonomy.mp.ratelimit.delivery-request=10`
-  - `costonomy.mp.ratelimit.delivery-reassign=5`
-  - `costonomy.mp.ratelimit.delivery-cancel=5`
-  - `costonomy.mp.ratelimit.delivery-read=60`
-- `DeliveryRateLimitPoliciesTest` unit suite verifying path routing and zero-limit test bypass.
+  - `delivery-reassign`: `POST /api/v1/deliveries/**` (5/min per user)
+  - `delivery-read`: `GET /api/v1/deliveries/**` (60/min per user)
 
----
-
-## [feat/pidge-10-provider-stats] - PR 10
-### Added
+### [PR 10] [feat/pidge-10-provider-stats]
+#### Added
 - Database migration `V26__delivery_provider_stats.sql` for nightly provider reliability aggregation.
-- `DeliveryProviderStats` JPA entity with derived rates: `cancellationRate()`, `etaBreachRate()`, `overallFailureRate()`.
-- `DeliveryStatsAggregationService` combining `delivery`, `delivery_event`, `delivery_quote`, and `delivery_ledger`.
-- `DeliveryStatsJob` scheduled at 02:00 UTC daily under ShedLock.
-- Admin endpoints: `GET /providers/stats`, `GET /providers/{code}/stats`, and `POST /providers/stats/aggregate`.
-- Unit tests (`DeliveryProviderStatsTest`) for derived reliability percentages.
+- `DeliveryStatsJob` scheduled at 02:00 UTC under ShedLock.
 
----
+### [PR 09] [feat/pidge-09-docs-and-specs]
+#### Added
+- Architecture documentation in `docs/specs/06-delivery.md` detailing Pidge Smart Dispatch, waterfall cascade sequence, weight thresholds, and ledger schema.
 
-## [feat/pidge-09-docs-and-specs] - PR 09
-### Added
-- Architecture documentation updates in `docs/specs/06-delivery.md` detailing Pidge Smart Dispatch, waterfall cascade sequence, weight thresholds, and ledger schema.
-- Event-driven waterfall timer explanation and zero-polling architecture guidelines.
+### [PR 08] [feat/pidge-08-integration-tests]
+#### Added
+- Testcontainers integration test suite `PidgeDeliveryFlowIT` using MySQL 8.
 
----
-
-## [feat/pidge-08-integration-tests] - PR 08
-### Added
-- `PidgeDeliveryFlowIT` Testcontainers integration test suite using MySQL 8.
-- End-to-end testing of webhook ingestion, rider details parsing, live tracking URL extraction, signature verification, and admin financial ledger inspection.
-
----
-
-## [feat/pidge-07-ops-reassign] - PR 07
-### Added
+### [PR 07] [feat/pidge-07-ops-reassign]
+#### Added
 - Operations delivery inspection and manual waterfall escalation endpoints:
   - `GET /api/v1/admin/deliveries/{id}/ledger`
   - `POST /api/v1/admin/deliveries/{id}/force-waterfall`
-- `AdminDeliveryController` and `AdminDeliveryService` with `DELIVERY_INSPECT` and `DELIVERY_OPERATE` permission enforcement.
 
----
+### [PR 06] [feat/pidge-06-tracking-notifications]
+#### Added
+- Database migration `V25__delivery_tracking_url.sql` adding `tracking_url` column.
+- Live tracking URL injection into push notifications and SMS templates.
 
-## [feat/pidge-06-tracking-notifications] - PR 06
-### Added
-- Migration `V25__delivery_tracking_url.sql` adding `tracking_url` column to `delivery` table.
-- Notification outbox integration: includes live tracking URL in customer and restaurant SMS/push notifications.
+### [PR 05] [feat/pidge-05-dispatch-triggers]
+#### Added
+- Event-driven dispatch triggers: `ORDER_ACCEPTED` quotes delivery; `READY_FOR_PICKUP` triggers auto-dispatch booking.
 
----
+### [PR 04] [feat/pidge-04-ledger-and-waterfall]
+#### Added
+- Database migration `V24__delivery_vehicle_and_weight.sql` creating `delivery_ledger`.
+- Event-driven waterfall cascading to fallback couriers upon timeout.
 
-## [feat/pidge-05-dispatch-triggers] - PR 05
-### Added
-- `DeliveryDispatchListener` listening to domain events:
-  - `ORDER_ACCEPTED` triggers provider quoting.
-  - `PREPARING` locks vehicle classification.
-  - `READY_FOR_PICKUP` triggers auto-dispatch booking if enabled (`costonomy.mp.delivery.auto-dispatch.enabled=true`).
+### [PR 03] [feat/pidge-03-webhooks-and-security]
+#### Added
+- `/api/v1/webhooks/delivery/pidge` public webhook ingest endpoint with HMAC verification and deduplication.
 
----
+### [PR 02] [feat/pidge-02-provider-adapter]
+#### Added
+- `PidgeDeliveryProvider` adapter with token bucket rate limiting (20 RPS) and circuit breaker guards.
 
-## [feat/pidge-04-ledger-and-waterfall] - PR 04
-### Added
-- Migration `V24__delivery_vehicle_and_weight.sql` adding `delivery_ledger` table.
-- `DeliveryWaterfallService`: event-driven timeout handling without polling loops; cascades unassigned bookings to next best carrier quote.
-- Central ledger audit entries (`DeliveryLedgerEntry`) recording `QUOTED`, `BOOKED`, `ADJUSTED`, and `REFUNDED` entries.
-
----
-
-## [feat/pidge-03-webhooks-and-security] - PR 03
-### Added
-- `/api/v1/webhooks/delivery/pidge` public webhook ingest endpoint.
-- `PidgeWebhookService`: HMAC-SHA256 signature verification, deduplication on provider event ID, and safe state machine transitions.
-
----
-
-## [feat/pidge-02-provider-adapter] - PR 02
-### Added
-- `PidgeDeliveryProvider` adapter implementing domain `DeliveryProvider` port.
-- Resilient `PidgeApiClient` with token bucket rate limiting (20 RPS) and circuit breaker guardrails.
-- `PidgeProperties` with timeout and API credentials.
-
----
-
-## [feat/pidge-01-schema-and-vehicle-sizing] - PR 01
-### Added
-- `VehicleType` enum: `TWO_WHEELER` (<= 20 kg), `THREE_WHEELER` (20-100 kg), `FOUR_WHEELER_TRUCK` (> 100 kg).
-- Dynamic payload calculation aggregating order line items: $\sum (\text{item.quantity} \times \text{sku.effectiveWeightKg})$.
-- Added `weight_kg`, `volume_cbm`, and `vehicle_type` to `delivery` and `delivery_quote` schemas.
+### [PR 01] [feat/pidge-01-schema-and-vehicle-sizing]
+#### Added
+- Vehicle classification: `TWO_WHEELER` (<= 20 kg), `THREE_WHEELER` (20-100 kg), `FOUR_WHEELER_TRUCK` (> 100 kg).
+- Dynamic line item weight calculation: $\sum (\text{item.quantity} \times \text{sku.effectiveWeightKg})$.
