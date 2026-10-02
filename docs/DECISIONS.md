@@ -3608,3 +3608,44 @@ callback URL against a real sandbox order, or direct confirmation from Borzo
 support). Until then, `BorzoDeliveryProvider` reports status only by polling
 `GET /orders`, same as doc 06 §9 says any provider should be able to fall back
 to.
+
+---
+
+## D-099 — Shadowfax delivery provider integration alongside Pidge and Borzo
+**2026-10-02 · Settled**
+
+Shadowfax is integrated as a third carrier in the multi-carrier delivery auction,
+joining Pidge and Borzo. The implementation follows the provider SPI pattern
+established in doc 06 §4 and decisions D-098.
+
+### Dual-gate activation
+Like Borzo, Shadowfax is protected by two distinct gates:
+1. **Application configuration gate**: `costonomy.mp.shadowfax.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `ShadowfaxDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`provider_code = 'SHADOWFAX'`),
+   seeded disabled (`is_active = 0`) via migration `V42__delivery_provider_shadowfax.sql`.
+   Both gates must be active for Shadowfax to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: `Authorization: Token {token}` header on every request.
+- **Serviceability & Quoting**: `GET /v1/clients/serviceability/?service=Regular&pincodes={pincode}`
+  validates drop point serviceability. Distance-based delivery fees and ETAs are computed
+  from pickup/drop coordinates and configured baseline rates.
+- **Booking**: `POST /v3/clients/orders/` with `order_type: "marketplace"`. The response
+  `awb_number` serves as the platform's `providerDeliveryId`.
+- **Status tracking & Polling**: `GET /v4/clients/orders/{awb_number}/track/` inspects
+  `order_details.status` and `order_details.tracking_details`.
+  The status mapper transforms Shadowfax states (`allocating`, `assigned`, `arrived`,
+  `picked_up`, `out_for_delivery`, `delivered`, `cancelled`) into platform `DeliveryStatus`.
+  Historic events from `tracking_details` are synthesized newest-first with deterministic IDs
+  (`sfx_evt_{awb}_{status}_{timestamp}`), guaranteeing that `PICKED_UP` precedes `DELIVERED`
+  so that `DeliveryOrderBridge` transitions the supplier order through `OUT_FOR_DELIVERY`
+  to `DELIVERED`.
+- **Cancellation**: `POST /v3/clients/orders/cancel/` sending `request_id: {awb_number}`.
+  Mapped errors (e.g. already picked up or out for delivery) translate into `CANCEL_WINDOW_ELAPSED`.
+
+### Webhook ingestion deferred
+Shadowfax webhook ingestion is deferred pending live payload and HMAC verification confirmation,
+relying on polling via `DeliveryJobs.pollActiveDeliveries()` for status advancement.
+
