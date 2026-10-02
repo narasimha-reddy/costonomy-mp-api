@@ -35,6 +35,8 @@ public final class Permissions {
     public static final String RATING_CREATE = "RATING_CREATE";
     public static final String CREDIT_REQUEST = "CREDIT_REQUEST";
     public static final String PAYMENT_CREATE = "PAYMENT_CREATE";
+    /** Send wallet money back to the card it came from. D-104, V38. */
+    public static final String WALLET_WITHDRAW = "WALLET_WITHDRAW";
 
     // Supplier
     public static final String SUPPLIER_VIEW = "SUPPLIER_VIEW";

@@ -11,7 +11,6 @@ import com.costonomy.mp.payment.repository.PaymentRepository;
 import com.costonomy.mp.payment.repository.RefundRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -32,6 +31,11 @@ import java.util.Map;
  * <p>Doc 22 requires refunds to be idempotent, and that is not a nicety: a
  * duplicate refund is money leaving twice. Two guards — a unique index on the
  * client's key, and a refundable-balance check against what was actually captured.
+ *
+ * <p><b>A refund goes to the wallet (D-104).</b> Nobody calls a provider refund
+ * directly any more: money comes back to the outlet's wallet at once, and reaches
+ * a card only when the restaurant withdraws it — a provider refund against the
+ * payment it came from, sent by the refund job like every provider refund before.
  */
 @Service
 @RequiredArgsConstructor
@@ -45,6 +49,7 @@ public class RefundService {
     private final AuditService auditService;
     private final OutboxService outbox;
     private final TransactionTemplate txTemplate;
+    private final RefundWalletPort wallet;
 
     /**
      * How long a refund may sit in PROCESSING before we assume the process that
@@ -62,17 +67,43 @@ public class RefundService {
             RefundStatus.FAILED, RefundStatus.NEEDS_REVIEW);
 
     /**
-     * Request a refund.
+     * Refund captured money to the outlet's wallet (D-104).
      *
-     * <p>The record is created and committed before the provider is called, so a
-     * retry finds it rather than starting a second refund. The provider call then
-     * happens against a refund that already exists — which is what makes the
-     * duplicate case safe rather than merely unlikely.
+     * <p>Completed here, in one transaction with the credit: no provider is
+     * involved, so there is nothing to wait for and nothing that can half-happen.
+     * The payment's refunded amount moves now, because the money is no longer the
+     * supplier's — it is owed to the restaurant, as a balance. If they later
+     * withdraw it, that is {@link #requestWithdrawal}, and it does not count again.
+     *
+     * <p>Idempotent on the key, which belongs to its payment: the same key for
+     * another payment is refused rather than answered with this one's refund.
      */
     @Transactional
-    public Refund request(Long actorId, Long paymentId, BigDecimal amount,
-                          RefundReason reason, String note, String idempotencyKey) {
+    public Refund refundToWallet(Long actorId, Long paymentId, BigDecimal amount,
+                                 RefundReason reason, String note, String idempotencyKey) {
+        if (amount == null || amount.signum() <= 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Enter an amount greater than zero.");
+        }
+        return toWallet(actorId, paymentId, amount, reason, note, idempotencyKey);
+    }
 
+    /**
+     * Refund what is left of a payment whose order was cancelled after the money
+     * was taken (D-103), to the wallet (D-104). System-initiated and keyed on the
+     * order, so a second cancellation event cannot refund twice.
+     *
+     * @return the refund, or null if nothing is left to refund
+     */
+    @Transactional
+    public Refund refundCancelled(Payment payment, String note) {
+        return toWallet(null, payment.getId(), null, RefundReason.CANCELLATION, note,
+                "cancel-order-" + payment.getSupplierOrderId());
+    }
+
+    /** @param amount what to refund, or null for everything still refundable */
+    private Refund toWallet(Long actorId, Long paymentId, BigDecimal amount,
+                            RefundReason reason, String note, String idempotencyKey) {
         var existing = refunds.findByIdempotencyKey(idempotencyKey);
         if (existing.isPresent()) {
             if (!existing.get().getPaymentId().equals(paymentId)) {
@@ -86,24 +117,33 @@ public class RefundService {
             return existing.get();
         }
 
-        // Locked, so two requests for the same payment are decided one after the
-        // other against the same figure, not both against a stale one (D-101).
-        var payment = payments.lockById(paymentId)
+        var unlocked = payments.findById(paymentId)
                 .orElseThrow(() -> new com.costonomy.mp.common.error.NotFoundException("Payment", paymentId));
+        // Wallet first, then the payment: the order a withdrawal takes them in
+        // (RefundWalletPort). Both locked, so two refunds of one payment are
+        // decided one after the other against the same figure (D-101).
+        wallet.lock(unlocked.getOutletId());
+        var payment = payments.lockById(paymentId).orElseThrow();
 
         if (payment.getStatus() != PaymentStatus.CAPTURED
                 && payment.getStatus() != PaymentStatus.PARTIALLY_REFUNDED) {
+            if (amount == null) {
+                return null;
+            }
+            // Money merely held is released, not refunded.
             throw new BusinessException(ErrorCode.PAYMENT_STATE_CONFLICT,
                     "Only a captured payment can be refunded.");
         }
 
-        // What is still promised back counts too. Only completed refunds reached
-        // refunded_amount, so two requests with different keys could each ask for
-        // the whole capture, and the second then failed at the provider for ever.
-        BigDecimal inFlight = refunds.sumByPaymentIdAndStatusIn(paymentId, IN_FLIGHT);
-        BigDecimal refundable = payment.refundableAmount().subtract(inFlight);
-        if (amount.signum() <= 0 || amount.compareTo(refundable) > 0) {
-            // Refunding more than was captured would return money we never took.
+        // What is still promised back by an older provider refund counts too.
+        BigDecimal refundable = payment.refundableAmount()
+                .subtract(refunds.sumByPaymentIdAndStatusIn(paymentId, IN_FLIGHT));
+        BigDecimal value = amount == null ? refundable : amount;
+        if (amount == null && value.signum() <= 0) {
+            return null;
+        }
+        if (value.compareTo(refundable) > 0) {
+            // Refunding more than was captured would give back money we never took.
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "The refund can't exceed ₹%s.".formatted(refundable.toPlainString()));
         }
@@ -111,64 +151,113 @@ public class RefundService {
         var refund = new Refund();
         refund.setPaymentId(paymentId);
         refund.setSupplierOrderId(payment.getSupplierOrderId());
-        refund.setAmount(amount);
+        refund.setAmount(value);
         refund.setReason(reason);
+        refund.setDestination(RefundDestination.WALLET);
         refund.setNote(note);
-        refund.setStatus(RefundStatus.REQUESTED);
+        refund.setStatus(RefundStatus.COMPLETED);
+        refund.setCompletedAt(Instant.now());
         refund.setIdempotencyKey(idempotencyKey);
         refund.setRequestedBy(actorId);
+        refunds.saveAndFlush(refund);
 
-        try {
-            refunds.saveAndFlush(refund);
-        } catch (DataIntegrityViolationException ex) {
-            // Two requests with the same key raced. The unique index decided it.
-            return refunds.findByIdempotencyKey(idempotencyKey).orElseThrow(() -> ex);
-        }
+        applyToPayment(payment, refund);
+        payments.flush();
+        // Last: the credit is a bulk update that clears the persistence context,
+        // and nothing loaded before it may be written after it.
+        wallet.creditRefund(payment.getOutletId(), payment.getSupplierOrderId(), refund.getId(),
+                value, reason == RefundReason.CANCELLATION ? "Refund: order cancelled" : "Refund");
 
-        auditService.record(actorId, null, "REFUND_REQUESTED", "REFUND", refund.getId(),
-                null, RefundStatus.REQUESTED.name(),
-                reason.name() + " " + amount.toPlainString(), "API");
-        log.info("Refund {} REQUESTED for {} ({}) against payment {}",
-                refund.getId(), amount.toPlainString(), reason, paymentId);
-
+        auditService.record(actorId, null, "REFUND_TO_WALLET", "REFUND", refund.getId(),
+                null, RefundStatus.COMPLETED.name(),
+                reason.name() + " " + value.toPlainString(), actorId == null ? "SYSTEM" : "API");
+        outbox.publish("RefundCompleted", "REFUND", refund.getId(),
+                Map.of("paymentId", paymentId,
+                        "supplierOrderId", payment.getSupplierOrderId(),
+                        "amount", value.toPlainString(),
+                        "destination", RefundDestination.WALLET.name()),
+                actorId);
+        log.info("Refund {} of {} ({}) against payment {} credited to the wallet of outlet {}",
+                refund.getId(), value.toPlainString(), reason, paymentId, payment.getOutletId());
         return refund;
     }
 
+    /** How much of one payment's wallet refunds can still go back to its card. */
+    public record Withdrawable(Long paymentId, BigDecimal available) {
+    }
+
     /**
-     * Refund what is left of a payment whose order was cancelled after the money
-     * was taken (D-103). System-initiated, keyed on the order, so a second
-     * cancellation event cannot refund twice.
+     * The outlet's payments with wallet money a card can take back, oldest credit
+     * first. Only money that came from a card can go back to one: a top-up or a
+     * wallet-paid order's refund has no card behind it.
      *
-     * @return the refund, or null if nothing is left to refund
+     * <p>Call with the outlet's wallet locked; the figures are only true while no
+     * other withdrawal can run.
+     */
+    @Transactional(readOnly = true)
+    public java.util.List<Withdrawable> withdrawable(Long outletId) {
+        return refunds.withdrawableByPayment(outletId).stream()
+                .map(row -> new Withdrawable(((Number) row[0]).longValue(), (BigDecimal) row[1]))
+                .toList();
+    }
+
+    /**
+     * Send part of a wallet back to the card of the payment it came from (D-104).
+     *
+     * <p>A provider refund like any other — sent by the refund job, retried,
+     * asked about while pending, handed to a person when it cannot finish — but it
+     * does not add to the payment's refunded amount. That moved when the money was
+     * credited to the wallet; this only changes where it ends up.
+     *
+     * <p>Called by the wallet's withdrawal with the wallet locked, which is what
+     * keeps two withdrawals from both spending the same credit. The payment is
+     * deliberately not locked: its withdrawable figure only grows while the wallet
+     * is held, and taking it here would reverse the lock order.
      */
     @Transactional
-    public Refund refundCancelled(Payment payment, String note) {
-        String key = "cancel-order-" + payment.getSupplierOrderId();
-        var existing = refunds.findByIdempotencyKey(key);
-        if (existing.isPresent()) {
-            return existing.get();
+    public Refund requestWithdrawal(Long actorId, Long paymentId, BigDecimal amount, String key) {
+        if (refunds.findByIdempotencyKey(key).isPresent()) {
+            // A key replayed after the idempotency record expired. The withdrawal
+            // it named has already been made; making it again is the one thing
+            // this must not do.
+            throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSE,
+                    "This withdrawal has already been made.");
         }
-        var locked = payments.lockById(payment.getId()).orElseThrow();
-        BigDecimal remaining = locked.refundableAmount()
-                .subtract(refunds.sumByPaymentIdAndStatusIn(locked.getId(), IN_FLIGHT));
-        if (remaining.signum() <= 0) {
-            return null;
+        var payment = paymentService.load(paymentId);
+        var available = withdrawable(payment.getOutletId()).stream()
+                .filter(source -> source.paymentId().equals(paymentId))
+                .map(Withdrawable::available)
+                .findFirst().orElse(BigDecimal.ZERO);
+        if (amount.signum() <= 0 || amount.compareTo(available) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Only ₹%s from this payment can go back to its card.".formatted(available.toPlainString()));
         }
+
         var refund = new Refund();
-        refund.setPaymentId(locked.getId());
-        refund.setSupplierOrderId(locked.getSupplierOrderId());
-        refund.setAmount(remaining);
-        refund.setReason(RefundReason.CANCELLATION);
-        refund.setNote(note);
+        refund.setPaymentId(paymentId);
+        refund.setSupplierOrderId(payment.getSupplierOrderId());
+        refund.setAmount(amount);
+        refund.setReason(RefundReason.WALLET_WITHDRAWAL);
+        refund.setDestination(RefundDestination.ORIGINAL);
         refund.setStatus(RefundStatus.REQUESTED);
         refund.setIdempotencyKey(key);
+        refund.setRequestedBy(actorId);
         refunds.saveAndFlush(refund);
 
-        auditService.record(null, null, "REFUND_REQUESTED", "REFUND", refund.getId(),
-                null, RefundStatus.REQUESTED.name(), "Order cancelled after capture: " + note, "SYSTEM");
-        log.info("Refund {} REQUESTED for {} (order cancelled after capture) against payment {}",
-                refund.getId(), remaining.toPlainString(), locked.getId());
+        auditService.record(actorId, null, "REFUND_REQUESTED", "REFUND", refund.getId(),
+                null, RefundStatus.REQUESTED.name(),
+                "WALLET_WITHDRAWAL " + amount.toPlainString(), "API");
+        log.info("Refund {} REQUESTED for {} (wallet withdrawal) against payment {}",
+                refund.getId(), amount.toPlainString(), paymentId);
         return refund;
+    }
+
+    /** The current status of each of these refunds, for a wallet statement. */
+    @Transactional(readOnly = true)
+    public Map<Long, RefundStatus> statusesOf(java.util.Collection<Long> refundIds) {
+        var statuses = new java.util.HashMap<Long, RefundStatus>();
+        refunds.findAllById(refundIds).forEach(refund -> statuses.put(refund.getId(), refund.getStatus()));
+        return statuses;
     }
 
     /**
@@ -301,9 +390,13 @@ public class RefundService {
         refund.setCompletedAt(Instant.now());
         refunds.save(refund);
 
-        // Locked: a webhook writing the payment meanwhile would otherwise roll this
-        // back on the version check, after the money had already moved.
-        applyToPayment(payments.lockById(refund.getPaymentId()).orElseThrow(), refund);
+        // A withdrawal was counted as refunded when it reached the wallet; this
+        // only moved it on to the card. Counting it again would refund it twice.
+        if (refund.getReason() != RefundReason.WALLET_WITHDRAWAL) {
+            // Locked: a webhook writing the payment meanwhile would otherwise roll
+            // this back on the version check, after the money had already moved.
+            applyToPayment(payments.lockById(refund.getPaymentId()).orElseThrow(), refund);
+        }
 
         outbox.publish("RefundCompleted", "REFUND", refund.getId(),
                 Map.of("paymentId", refund.getPaymentId(),

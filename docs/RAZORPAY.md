@@ -70,6 +70,13 @@ web app and Razorpay's checkout — test cards, the demo bank's Success and
 Failure, in-checkout OTP, netbanking — and covers the failure paths: declines,
 retries within one order, a closed window, a lost confirm (recovered by the
 sweep and by a webhook), forged and duplicate webhooks, and refund idempotency.
+
+**Refunds (D-104).** A refund is credited to the outlet's wallet, with no call to
+Razorpay. Razorpay sees a refund only when the restaurant withdraws: each part of
+a withdrawal is a refund on the original `pay_…`, sent by the refund job with
+`X-Refund-Idempotency: mandi-refund-{id}`, and followed while Razorpay reports it
+pending. In the dashboard, a refunded order therefore shows no refund until the
+money is withdrawn.
 Each case checks our database and Razorpay's own record. Its README lists the
 cases and how to run them.
 

@@ -3,6 +3,11 @@ package com.costonomy.mp.payment;
 import com.costonomy.mp.payment.provider.MockPaymentProvider;
 import com.costonomy.mp.payment.repository.PaymentRepository;
 import com.costonomy.mp.payment.service.PaymentJobs;
+import com.costonomy.mp.payment.service.RefundService;
+import com.costonomy.mp.payment.domain.Refund;
+import com.costonomy.mp.payment.domain.RefundReason;
+import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestOrder;
@@ -47,6 +52,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -67,6 +73,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
     @SpyBean private MockPaymentProvider mockProvider;
     @Autowired private PaymentRepository payments;
     @Autowired private PaymentJobs paymentJobs;
+    @Autowired private RefundService refundService;
 
     private ApiClient api;
     private TestOrder orders;
@@ -121,7 +128,10 @@ class PaymentFlowIT extends AbstractIntegrationTest {
      * card, which keeps the failure path identical to the success path.
      */
     private Submitted submit(String unitPrice, int quantity) throws Exception {
-        var buyer = newBuyer();
+        return submit(newBuyer(), unitPrice, quantity);
+    }
+
+    private Submitted submit(Buyer buyer, String unitPrice, int quantity) throws Exception {
         var seller = newSeller("ABC Foods");
         long productId = TestCatalog.freshProduct(jdbc, "paneer");
 
@@ -535,6 +545,10 @@ class PaymentFlowIT extends AbstractIntegrationTest {
                         assertThat(row.get("status")).isEqualTo("COMPLETED");
                         assertThat(row.get("idempotency_key")).isEqualTo("cancel-order-" + submitted.orderId());
                     });
+            // To the wallet, once (D-104).
+            assertThat(balance(submitted.buyer())).isEqualByComparingTo("400.00");
+            assertThat(jdbc.queryForObject("select count(*) from wallet_transaction where refund_id is not null "
+                    + "and supplier_order_id = ?", Integer.class, submitted.orderId())).isEqualTo(1);
         }
 
         @Test
@@ -729,46 +743,52 @@ class PaymentFlowIT extends AbstractIntegrationTest {
     // ── Refunds ──────────────────────────────────────────────────────────
 
     @Nested
-    @DisplayName("refunds")
+    @DisplayName("refunds go to the wallet (D-104)")
     class Refunds {
 
         @Test
-        @DisplayName("a refund returns captured money and updates the payment")
+        @DisplayName("a refund credits the wallet at once and counts against the payment, with no provider call")
         void refundReturnsMoney() throws Exception {
             var submitted = submit("400", 10);
             payAndConfirm(submitted);
             acceptAndCapture(submitted);
 
-            var refund = requestRefund(submitted, "1000.00", "DISPUTE_RESOLVED",
-                    UUID.randomUUID().toString()).at("/data");
-            assertThat(refund.get("status").asText()).isEqualTo("REQUESTED");
+            var refund = creditWallet(submitted, "1000.00");
 
-            paymentJobs.processRefunds();
-
-            assertThat(decimal(submitted.paymentId(), "refunded_amount"))
-                    .isEqualByComparingTo("1000.00");
+            assertThat(jdbc.queryForMap("select status, destination from refund where id = ?", refund.getId()))
+                    .containsEntry("status", "COMPLETED").containsEntry("destination", "WALLET");
+            assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("1000.00");
             assertThat(jdbc.queryForObject("select status from payment where id = ?",
                     String.class, submitted.paymentId())).isEqualTo("PARTIALLY_REFUNDED");
+            assertThat(balance(submitted.buyer())).isEqualByComparingTo("1000.00");
+            assertThat(jdbc.queryForMap("select kind, direction, reference, refund_id, supplier_order_id "
+                    + "from wallet_transaction where refund_id = ?", refund.getId()))
+                    .containsEntry("kind", "REFUND").containsEntry("direction", "CREDIT")
+                    .containsEntry("reference", "refund-" + refund.getId())
+                    .containsEntry("supplier_order_id", submitted.orderId());
+            // The money has not left the platform: nothing was sent to the provider.
+            paymentJobs.processRefunds();
+            String providerPaymentId = jdbc.queryForObject("select provider_payment_id from payment where id = ?",
+                    String.class, submitted.paymentId());
+            verify(mockProvider, times(0)).refund(eq(providerPaymentId), any(), anyString());
         }
 
         @Test
-        @DisplayName("a repeated refund request returns the original, not a second refund")
+        @DisplayName("a repeated refund returns the original and credits once")
         void refundIsIdempotent() throws Exception {
             var submitted = submit("400", 10);
             payAndConfirm(submitted);
             acceptAndCapture(submitted);
 
             String key = UUID.randomUUID().toString();
-            long first = requestRefund(submitted, "1000.00", "DISPUTE_RESOLVED", key)
-                    .at("/data/id").asLong();
-            long second = requestRefund(submitted, "1000.00", "DISPUTE_RESOLVED", key)
-                    .at("/data/id").asLong();
+            long first = creditWallet(submitted, "1000.00", key).getId();
+            long second = creditWallet(submitted, "1000.00", key).getId();
 
             // Doc 22. A duplicate refund is money leaving twice.
             assertThat(second).isEqualTo(first);
-            assertThat(jdbc.queryForObject(
-                    "select count(*) from refund where payment_id = ?",
+            assertThat(jdbc.queryForObject("select count(*) from refund where payment_id = ?",
                     Integer.class, submitted.paymentId())).isEqualTo(1);
+            assertThat(balance(submitted.buyer())).isEqualByComparingTo("1000.00");
         }
 
         @Test
@@ -779,9 +799,8 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             acceptAndCapture(submitted);
 
             // Returning money we never took.
-            assertThat(requestRefundStatus(submitted, "9999.00", "DISPUTE_RESOLVED",
-                    UUID.randomUUID().toString()))
-                    .isEqualTo(400);
+            assertThat(refusal(() -> creditWallet(submitted, "4000.01"))).isEqualTo(ErrorCode.VALIDATION_ERROR);
+            assertThat(balance(submitted.buyer())).isEqualByComparingTo("0");
         }
 
         @Test
@@ -790,11 +809,206 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             var submitted = submit("400", 10);
             payAndConfirm(submitted);
 
-            // Money merely held is released, not refunded — a refund would appear
-            // on the customer's statement as a reversal of a charge that never was.
-            assertThat(requestRefundStatus(submitted, "100.00", "CANCELLATION",
-                    UUID.randomUUID().toString()))
-                    .isEqualTo(409);
+            // Money merely held is released, not refunded.
+            assertThat(refusal(() -> creditWallet(submitted, "100.00"))).isEqualTo(ErrorCode.PAYMENT_STATE_CONFLICT);
+        }
+
+        @Test
+        @DisplayName("a restaurant cannot refund itself: the endpoint is gone")
+        void noSelfRefund() throws Exception {
+            var submitted = submit("400", 10);
+            payAndConfirm(submitted);
+            acceptAndCapture(submitted);
+
+            int status = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/payments/" + submitted.paymentId() + "/refund")
+                            .header("Authorization", "Bearer " + submitted.buyer().token())
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("amount", "100.00", "reason", "DISPUTE_RESOLVED"))))
+                    .andReturn().getResponse().getStatus();
+
+            // The finding this closes: the buyer could refund their own captured
+            // payment for any reason, with no one on the supplier's side agreeing.
+            assertThat(status).isIn(404, 405);
+            assertThat(jdbc.queryForObject("select count(*) from refund where payment_id = ?",
+                    Integer.class, submitted.paymentId())).isZero();
+        }
+    }
+
+    @Nested
+    @DisplayName("withdrawals go back to the card (D-104)")
+    class Withdrawals {
+
+        @Test
+        @DisplayName("a withdrawal is a provider refund on the source payment, counted once")
+        void withdrawalGoesBackToTheCard() throws Exception {
+            var submitted = submit("400", 10);
+            payAndConfirm(submitted);
+            acceptAndCapture(submitted);
+            creditWallet(submitted, "1000.00");
+
+            var withdrawal = withdraw(submitted.buyer(), "600.00", UUID.randomUUID().toString()).at("/data");
+            assertThat(withdrawal.get("balance").decimalValue()).isEqualByComparingTo("400.00");
+            assertThat(withdrawal.at("/parts/0/paymentId").asLong()).isEqualTo(submitted.paymentId());
+            long refundId = withdrawal.at("/parts/0/refundId").asLong();
+
+            paymentJobs.processRefunds();
+
+            assertThat(jdbc.queryForMap("select status, destination, reason, amount from refund where id = ?", refundId))
+                    .containsEntry("status", "COMPLETED").containsEntry("destination", "ORIGINAL")
+                    .containsEntry("reason", "WALLET_WITHDRAWAL");
+            verify(mockProvider, times(1)).refund(anyString(), any(), eq("mandi-refund-" + refundId));
+            // Counted when it reached the wallet; the trip to the card is not a
+            // second refund of the same money.
+            assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("1000.00");
+            assertThat(balance(submitted.buyer())).isEqualByComparingTo("400.00");
+
+            var statement = api.get(submitted.buyer().token(),
+                    "/api/v1/outlets/" + submitted.buyer().outletId() + "/wallet").at("/data/recent");
+            assertThat(statement.get(0).get("kind").asText()).isEqualTo("WITHDRAWAL");
+            assertThat(statement.get(0).get("refundStatus").asText()).isEqualTo("COMPLETED");
+            assertThat(statement.get(1).get("kind").asText()).isEqualTo("REFUND");
+        }
+
+        @Test
+        @DisplayName("more than the balance is refused and nothing moves")
+        void cannotWithdrawMoreThanTheBalance() throws Exception {
+            var submitted = submit("400", 10);
+            payAndConfirm(submitted);
+            acceptAndCapture(submitted);
+            creditWallet(submitted, "100.00");
+
+            assertThat(withdrawStatus(submitted.buyer(), "100.01", UUID.randomUUID().toString())).isEqualTo(400);
+            assertThat(balance(submitted.buyer())).isEqualByComparingTo("100.00");
+            assertThat(withdrawalsOf(submitted)).isZero();
+        }
+
+        @Test
+        @DisplayName("only refund money can leave: a top-up has no card to go back to")
+        void onlyRefundMoneyLeaves() throws Exception {
+            var submitted = submit("400", 10);
+            payAndConfirm(submitted);
+            acceptAndCapture(submitted);
+            creditWallet(submitted, "100.00");
+            api.post(submitted.buyer().token(), "/api/v1/outlets/" + submitted.buyer().outletId()
+                    + "/wallet/top-up", Map.of("amount", "500.00"));
+
+            assertThat(withdrawStatus(submitted.buyer(), "200.00", UUID.randomUUID().toString())).isEqualTo(400);
+            assertThat(withdraw(submitted.buyer(), "100.00", UUID.randomUUID().toString())
+                    .at("/data/balance").decimalValue()).isEqualByComparingTo("500.00");
+        }
+
+        @Test
+        @DisplayName("a withdrawal is split across the payments it came from, oldest first")
+        void splitAcrossPayments() throws Exception {
+            var buyer = newBuyer();
+            var older = submit(buyer, "400", 1);
+            payAndConfirm(older);
+            acceptAndCapture(older);
+            var newer = submit(buyer, "400", 1);
+            payAndConfirm(newer);
+            acceptAndCapture(newer);
+            creditWallet(older, "150.00");
+            creditWallet(newer, "300.00");
+
+            var parts = withdraw(buyer, "400.00", UUID.randomUUID().toString()).at("/data/parts");
+
+            assertThat(parts).hasSize(2);
+            assertThat(parts.get(0).get("paymentId").asLong()).isEqualTo(older.paymentId());
+            assertThat(parts.get(0).get("amount").decimalValue()).isEqualByComparingTo("150.00");
+            assertThat(parts.get(1).get("paymentId").asLong()).isEqualTo(newer.paymentId());
+            assertThat(parts.get(1).get("amount").decimalValue()).isEqualByComparingTo("250.00");
+            // Each card gets back no more than was refunded from it.
+            assertThat(withdrawStatus(buyer, "50.01", UUID.randomUUID().toString())).isEqualTo(400);
+            assertThat(balance(buyer)).isEqualByComparingTo("50.00");
+        }
+
+        @Test
+        @DisplayName("the same key returns the first withdrawal; a different amount on it is refused")
+        void withdrawalIsIdempotent() throws Exception {
+            var submitted = submit("400", 10);
+            payAndConfirm(submitted);
+            acceptAndCapture(submitted);
+            creditWallet(submitted, "500.00");
+
+            String key = UUID.randomUUID().toString();
+            long first = withdraw(submitted.buyer(), "200.00", key).at("/data/parts/0/refundId").asLong();
+            long again = withdraw(submitted.buyer(), "200.00", key).at("/data/parts/0/refundId").asLong();
+
+            assertThat(again).isEqualTo(first);
+            assertThat(withdrawStatus(submitted.buyer(), "300.00", key)).isEqualTo(409);
+            assertThat(withdrawalsOf(submitted)).isEqualTo(1);
+            assertThat(balance(submitted.buyer())).isEqualByComparingTo("300.00");
+        }
+
+        @Test
+        @DisplayName("another restaurant cannot withdraw from this wallet")
+        void anotherTenantCannotWithdraw() throws Exception {
+            var submitted = submit("400", 10);
+            payAndConfirm(submitted);
+            acceptAndCapture(submitted);
+            creditWallet(submitted, "500.00");
+            var stranger = newBuyer();
+
+            int status = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/outlets/" + submitted.buyer().outletId() + "/wallet/withdraw")
+                            .header("Authorization", "Bearer " + stranger.token())
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("amount", "100.00"))))
+                    .andReturn().getResponse().getStatus();
+
+            assertThat(status).isEqualTo(404);
+            assertThat(balance(submitted.buyer())).isEqualByComparingTo("500.00");
+        }
+
+        @Test
+        @DisplayName("two withdrawals of the whole balance at once: one succeeds, five races in a row")
+        void concurrentWithdrawalsSpendOnce() throws Exception {
+            for (int race = 0; race < 5; race++) {
+                var submitted = submit("400", 1);
+                payAndConfirm(submitted);
+                acceptAndCapture(submitted);
+                creditWallet(submitted, "400.00");
+
+                var start = new CountDownLatch(1);
+                var pool = Executors.newFixedThreadPool(2);
+                var a = pool.submit(() -> { start.await(); return withdrawStatus(submitted.buyer(), "400.00", UUID.randomUUID().toString()); });
+                var b = pool.submit(() -> { start.await(); return withdrawStatus(submitted.buyer(), "400.00", UUID.randomUUID().toString()); });
+                start.countDown();
+                var outcomes = List.of(a.get(30, TimeUnit.SECONDS), b.get(30, TimeUnit.SECONDS));
+                pool.shutdown();
+
+                // The wallet lock decides it: the second finds nothing left, rather
+                // than both sending the same 400 back to the card — and is told
+                // that, not that something changed underneath it.
+                assertThat(outcomes).containsExactlyInAnyOrder(200, 400);
+                assertThat(withdrawalsOf(submitted)).isEqualTo(1);
+                assertThat(balance(submitted.buyer())).isEqualByComparingTo("0");
+            }
+        }
+
+        @Test
+        @DisplayName("a cancelled order whose money was taken is refunded to the wallet")
+        void cancellationRefundsToTheWallet() throws Exception {
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+            acceptAndCapture(submitted);
+            jdbc.update("update supplier_order set status = 'CONFIRMED' where id = ?", submitted.orderId());
+
+            int cancelled = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/supplier-orders/" + submitted.orderId() + "/supplier-cancel")
+                            .header("Authorization", "Bearer " + submitted.seller().token())
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("reason", "OUT_OF_STOCK"))))
+                    .andReturn().getResponse().getStatus();
+            assertThat(cancelled).isEqualTo(200);
+
+            assertThat(balance(submitted.buyer())).isEqualByComparingTo("400.00");
+            assertThat(jdbc.queryForObject("select destination from refund where payment_id = ?",
+                    String.class, submitted.paymentId())).isEqualTo("WALLET");
         }
     }
 
@@ -832,7 +1046,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             payAndConfirm(submitted);
             dispatch(submitted);
             paymentJobs.capturePending();
-            requestRefund(submitted, "100.00", "CANCELLATION", UUID.randomUUID().toString());
+            refundToCard(submitted, "100.00");
             paymentJobs.processRefunds();
 
             // The pool is ten connections; a provider call holding one is how ten
@@ -850,8 +1064,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             payAndConfirm(submitted);
             dispatch(submitted);
             paymentJobs.capturePending();
-            long refundId = requestRefund(submitted, "50.00", "CANCELLATION",
-                    UUID.randomUUID().toString()).at("/data/id").asLong();
+            long refundId = refundToCard(submitted, "50.00");
 
             // What a process that died mid-call leaves behind.
             jdbc.update("update refund set status = 'PROCESSING', updated_at = "
@@ -873,8 +1086,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             payAndConfirm(submitted);
             dispatch(submitted);
             paymentJobs.capturePending();
-            long refundId = requestRefund(submitted, "10.00", "CANCELLATION",
-                    UUID.randomUUID().toString()).at("/data/id").asLong();
+            long refundId = refundToCard(submitted, "10.00");
 
             paymentJobs.processRefunds();
             paymentJobs.processRefunds();
@@ -884,9 +1096,10 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             assertThat(jdbc.queryForObject("select status from refund where id = ?",
                     String.class, refundId)).isEqualTo("NEEDS_REVIEW");
             verify(mockProvider, times(1)).refund(anyString(), any(), eq("mandi-refund-" + refundId));
-            assertThat(jdbc.queryForObject("select count(*) from refund where payment_id = ?",
-                    Integer.class, submitted.paymentId())).isEqualTo(1);
-            assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("0");
+            assertThat(withdrawalsOf(submitted)).isEqualTo(1);
+            // Out of the wallet and not on the card: exactly the state a person
+            // has to see, which is why it is NEEDS_REVIEW and logged at error.
+            assertThat(balance(submitted.buyer())).isEqualByComparingTo("0");
         }
 
         @Test
@@ -897,20 +1110,17 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             dispatch(submitted);
             paymentJobs.capturePending();
 
-            requestRefund(submitted, "150.00", "CANCELLATION", UUID.randomUUID().toString());
-            paymentJobs.processRefunds();
+            creditWallet(submitted, "150.00");
             assertThat(jdbc.queryForObject("select status from payment where id = ?",
                     String.class, submitted.paymentId())).isEqualTo("PARTIALLY_REFUNDED");
 
-            requestRefund(submitted, "250.00", "CANCELLATION", UUID.randomUUID().toString());
-            paymentJobs.processRefunds();
+            creditWallet(submitted, "250.00");
 
             assertThat(jdbc.queryForObject("select status from payment where id = ?",
                     String.class, submitted.paymentId())).isEqualTo("FULLY_REFUNDED");
             assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("400.00");
             // And nothing more can go back than came in.
-            assertThat(requestRefundStatus(submitted, "0.01", "CANCELLATION",
-                    UUID.randomUUID().toString())).isGreaterThanOrEqualTo(400);
+            assertThat(refusal(() -> creditWallet(submitted, "0.01"))).isNotNull();
         }
 
         @Test
@@ -1091,13 +1301,12 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             dispatch(submitted);
             paymentJobs.capturePending();
             // .23 makes the mock accept the refund as pending.
-            long refundId = requestRefund(submitted, "10.23", "CANCELLATION",
-                    UUID.randomUUID().toString()).at("/data/id").asLong();
+            long refundId = refundToCard(submitted, "10.23");
 
             paymentJobs.processRefunds();
             assertThat(jdbc.queryForObject("select status from refund where id = ?",
                     String.class, refundId)).isEqualTo("PROCESSING");
-            assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("0");
+            assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("10.23");
 
             jdbc.update("update refund set updated_at = date_sub(utc_timestamp(6), interval 5 minute) "
                     + "where id = ?", refundId);
@@ -1118,12 +1327,27 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             dispatch(submitted);
             paymentJobs.capturePending();
 
-            requestRefund(submitted, "300.00", "CANCELLATION", UUID.randomUUID().toString());
+            // A provider refund from before D-104, requested and not yet sent.
+            jdbc.update("insert into refund (payment_id, supplier_order_id, amount, reason, status, "
+                    + "idempotency_key, attempts) values (?, ?, 300.00, 'CANCELLATION', 'REQUESTED', ?, 0)",
+                    submitted.paymentId(), submitted.orderId(), UUID.randomUUID().toString());
             // Not sent yet — and still, only 100.00 is left to promise.
-            assertThat(requestRefundStatus(submitted, "200.00", "CANCELLATION",
-                    UUID.randomUUID().toString())).isEqualTo(400);
-            assertThat(jdbc.queryForObject("select count(*) from refund where payment_id = ?",
-                    Integer.class, submitted.paymentId())).isEqualTo(1);
+            assertThat(refusal(() -> creditWallet(submitted, "200.00"))).isEqualTo(ErrorCode.VALIDATION_ERROR);
+            assertThat(creditWallet(submitted, "100.00").getStatus().name()).isEqualTo("COMPLETED");
+        }
+
+        @Test
+        @DisplayName("a withdrawal on its way does not block a refund the payment can still cover")
+        void withdrawalsAreNotCountedTwice() throws Exception {
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+            dispatch(submitted);
+            paymentJobs.capturePending();
+
+            refundToCard(submitted, "300.00");
+            // 300 is refunded (to the wallet, then on to the card); 100 is left.
+            assertThat(creditWallet(submitted, "100.00").getStatus().name()).isEqualTo("COMPLETED");
+            assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("400.00");
         }
 
         @Test
@@ -1138,8 +1362,8 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             paymentJobs.capturePending();
 
             String key = UUID.randomUUID().toString();
-            requestRefund(first, "10.00", "CANCELLATION", key);
-            assertThat(requestRefundStatus(second, "10.00", "CANCELLATION", key)).isEqualTo(409);
+            creditWallet(first, "10.00", key);
+            assertThat(refusal(() -> creditWallet(second, "10.00", key))).isEqualTo(ErrorCode.IDEMPOTENCY_KEY_REUSE);
         }
 
         @Test
@@ -1149,8 +1373,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             payAndConfirm(submitted);
             dispatch(submitted);
             paymentJobs.capturePending();
-            long refundId = requestRefund(submitted, "10.00", "CANCELLATION",
-                    UUID.randomUUID().toString()).at("/data/id").asLong();
+            long refundId = refundToCard(submitted, "10.00");
             doThrow(PaymentProviderException.unreachable("down", new RuntimeException()))
                     .when(mockProvider).refund(anyString(), any(), anyString());
 
@@ -1310,29 +1533,64 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         paymentJobs.capturePending();
     }
 
-    private JsonNode requestRefund(Submitted submitted, String amount, String reason, String key)
-            throws Exception {
-        String body = mvc.perform(MockMvcRequestBuilders
-                        .post("/api/v1/payments/" + submitted.paymentId() + "/refund")
-                        .header("Authorization", "Bearer " + submitted.buyer().token())
-                        .header("Idempotency-Key", key)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(
-                                Map.of("amount", amount, "reason", reason))))
-                .andReturn().getResponse().getContentAsString();
-        return json.readTree(body);
+    /** Refund to the outlet's wallet, as an approved dispute or a cancellation does (D-104). */
+    private Refund creditWallet(Submitted submitted, String amount) {
+        return creditWallet(submitted, amount, UUID.randomUUID().toString());
     }
 
-    private int requestRefundStatus(Submitted submitted, String amount, String reason, String key)
+    private Refund creditWallet(Submitted submitted, String amount, String key) {
+        return refundService.refundToWallet(null, submitted.paymentId(), new BigDecimal(amount),
+                RefundReason.DISPUTE_RESOLVED, "test", key);
+    }
+
+    private org.springframework.mock.web.MockHttpServletResponse withdrawCall(Buyer buyer, String amount, String key)
             throws Exception {
         return mvc.perform(MockMvcRequestBuilders
-                        .post("/api/v1/payments/" + submitted.paymentId() + "/refund")
-                        .header("Authorization", "Bearer " + submitted.buyer().token())
+                        .post("/api/v1/outlets/" + buyer.outletId() + "/wallet/withdraw")
+                        .header("Authorization", "Bearer " + buyer.token())
                         .header("Idempotency-Key", key)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(
-                                Map.of("amount", amount, "reason", reason))))
-                .andReturn().getResponse().getStatus();
+                        .content(json.writeValueAsString(Map.of("amount", amount))))
+                .andReturn().getResponse();
+    }
+
+    private JsonNode withdraw(Buyer buyer, String amount, String key) throws Exception {
+        var response = withdrawCall(buyer, amount, key);
+        assertThat(response.getStatus()).describedAs(response.getContentAsString()).isEqualTo(200);
+        return json.readTree(response.getContentAsString());
+    }
+
+    private int withdrawStatus(Buyer buyer, String amount, String key) throws Exception {
+        return withdrawCall(buyer, amount, key).getStatus();
+    }
+
+    /**
+     * A provider refund, the only kind left (D-104): the money is credited to the
+     * wallet and sent straight back to the card.
+     *
+     * @return the withdrawal's refund id
+     */
+    private long refundToCard(Submitted submitted, String amount) throws Exception {
+        creditWallet(submitted, amount);
+        return withdraw(submitted.buyer(), amount, UUID.randomUUID().toString())
+                .at("/data/parts/0/refundId").asLong();
+    }
+
+    private BigDecimal balance(Buyer buyer) {
+        return jdbc.queryForObject("select coalesce((select balance from wallet where outlet_id = ?), 0)",
+                BigDecimal.class, buyer.outletId());
+    }
+
+    private int withdrawalsOf(Submitted submitted) {
+        return jdbc.queryForObject("select count(*) from refund where payment_id = ? "
+                + "and reason = 'WALLET_WITHDRAWAL'", Integer.class, submitted.paymentId());
+    }
+
+    /** The error code a refused call failed with. */
+    private ErrorCode refusal(org.assertj.core.api.ThrowableAssert.ThrowingCallable call) {
+        var thrown = org.assertj.core.api.Assertions.catchThrowable(call);
+        assertThat(thrown).isInstanceOf(BusinessException.class);
+        return ((BusinessException) thrown).code();
     }
 
     private int postWebhook(String body) throws Exception {

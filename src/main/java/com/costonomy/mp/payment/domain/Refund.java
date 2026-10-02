@@ -33,6 +33,11 @@ public class Refund extends BaseEntity {
     @Column(name = "reason", nullable = false, length = 64)
     private RefundReason reason;
 
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(name = "destination", nullable = false, length = 16)
+    private RefundDestination destination = RefundDestination.ORIGINAL;
+
     @Column(name = "note", length = 500)
     private String note;
 

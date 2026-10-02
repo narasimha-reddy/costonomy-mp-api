@@ -4,6 +4,7 @@ import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.wallet.domain.Wallet;
 import com.costonomy.mp.wallet.domain.WalletDirection;
+import com.costonomy.mp.wallet.domain.WalletEntryKind;
 import com.costonomy.mp.wallet.domain.WalletTransaction;
 import com.costonomy.mp.wallet.repository.WalletRepository;
 import com.costonomy.mp.wallet.repository.WalletTransactionRepository;
@@ -80,7 +81,7 @@ public class WalletService {
         wallets.flush();
 
         var refreshed = wallets.findById(wallet.getId()).orElseThrow();
-        record(refreshed, null, WalletDirection.CREDIT, amount, reason);
+        record(refreshed, null, WalletDirection.CREDIT, WalletEntryKind.TOP_UP, amount, reason, null, null);
         return refreshed;
     }
 
@@ -100,8 +101,8 @@ public class WalletService {
 
         // Already paid for. A retry that reached this far twice must not charge
         // twice, and the unique constraint on (order, direction) is the backstop.
-        if (entries.findBySupplierOrderIdAndDirection(
-                supplierOrderId, WalletDirection.DEBIT).isPresent()) {
+        if (entries.findBySupplierOrderIdAndKind(
+                supplierOrderId, WalletEntryKind.ORDER_PAYMENT).isPresent()) {
             return true;
         }
 
@@ -113,7 +114,8 @@ public class WalletService {
         wallets.flush();
 
         var refreshed = wallets.findById(wallet.getId()).orElseThrow();
-        record(refreshed, supplierOrderId, WalletDirection.DEBIT, amount, "Order payment");
+        record(refreshed, supplierOrderId, WalletDirection.DEBIT, WalletEntryKind.ORDER_PAYMENT,
+                amount, "Order payment", null, null);
         return true;
     }
 
@@ -125,13 +127,13 @@ public class WalletService {
      */
     @Transactional
     public void refundFor(Long supplierOrderId, String reason) {
-        var debit = entries.findBySupplierOrderIdAndDirection(
-                supplierOrderId, WalletDirection.DEBIT).orElse(null);
+        var debit = entries.findBySupplierOrderIdAndKind(
+                supplierOrderId, WalletEntryKind.ORDER_PAYMENT).orElse(null);
         if (debit == null) {
             return;
         }
-        if (entries.findBySupplierOrderIdAndDirection(
-                supplierOrderId, WalletDirection.CREDIT).isPresent()) {
+        if (entries.findBySupplierOrderIdAndKind(
+                supplierOrderId, WalletEntryKind.ORDER_REFUND).isPresent()) {
             return;
         }
 
@@ -139,24 +141,93 @@ public class WalletService {
         wallets.flush();
 
         var refreshed = wallets.findById(debit.getWalletId()).orElseThrow();
-        record(refreshed, supplierOrderId, WalletDirection.CREDIT, debit.getAmount(), reason);
+        record(refreshed, supplierOrderId, WalletDirection.CREDIT, WalletEntryKind.ORDER_REFUND,
+                debit.getAmount(), reason, null, null);
     }
 
     /** Whether this order's money has been taken and not given back. */
     @Transactional(readOnly = true)
     public boolean isPaid(Long supplierOrderId) {
-        return entries.findBySupplierOrderIdAndDirection(
-                        supplierOrderId, WalletDirection.DEBIT).isPresent()
-                && entries.findBySupplierOrderIdAndDirection(
-                        supplierOrderId, WalletDirection.CREDIT).isEmpty();
+        return entries.findBySupplierOrderIdAndKind(
+                        supplierOrderId, WalletEntryKind.ORDER_PAYMENT).isPresent()
+                && entries.findBySupplierOrderIdAndKind(
+                        supplierOrderId, WalletEntryKind.ORDER_REFUND).isEmpty();
+    }
+
+    /**
+     * Hold this outlet's wallet until the transaction ends, opening it first if it
+     * has none (D-104). Everything that decides what a wallet can give back does
+     * so while holding it.
+     */
+    @Transactional
+    public Wallet lock(Long outletId) {
+        // Locked before anything loads it. A wallet already in the persistence
+        // context is not re-read by the locking query, only version-checked — so a
+        // withdrawal that waited on the lock saw the balance from before the one
+        // ahead of it, and failed on a stale version instead of finding the money
+        // gone.
+        if (!wallets.existsByOutletId(outletId)) {
+            forOutlet(outletId);
+            wallets.flush();
+        }
+        return wallets.lockByOutletId(outletId).orElseThrow();
+    }
+
+    /**
+     * Credit a refund of a card payment (D-104). Idempotent on the refund: the
+     * reference is unique, so a second call is a no-op rather than a second credit.
+     */
+    @Transactional
+    public void creditRefund(Long outletId, Long supplierOrderId, Long refundId,
+                             BigDecimal amount, String reason) {
+        String reference = "refund-" + refundId;
+        if (entries.existsByReference(reference)) {
+            return;
+        }
+        var wallet = forOutlet(outletId);
+        wallets.credit(wallet.getId(), amount);
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, supplierOrderId, WalletDirection.CREDIT, WalletEntryKind.REFUND,
+                amount, reason, reference, refundId);
+        log.info("Wallet {} credited {} for refund {}; balance {}",
+                wallet.getId(), amount.toPlainString(), refundId, refreshed.getBalance().toPlainString());
+    }
+
+    /**
+     * Take the part of a withdrawal that one refund sends back to a card.
+     *
+     * <p>Called with the wallet locked and the amount already checked against the
+     * balance, so a short balance here means something else moved it — which is
+     * a bug, and the whole withdrawal rolls back rather than sending money the
+     * wallet no longer has.
+     */
+    @Transactional
+    public Wallet debitWithdrawal(Long outletId, Long refundId, BigDecimal amount) {
+        var wallet = forOutlet(outletId);
+        if (wallets.debit(wallet.getId(), amount) == 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Your wallet doesn't have ₹%s to withdraw.".formatted(amount.toPlainString()));
+        }
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.WITHDRAWAL, amount,
+                "Withdrawal to the original payment method", "withdrawal-" + refundId, refundId);
+        return refreshed;
     }
 
     private void record(Wallet wallet, Long supplierOrderId, WalletDirection direction,
-                        BigDecimal amount, String reason) {
+                        WalletEntryKind kind, BigDecimal amount, String reason,
+                        String reference, Long refundId) {
         var entry = new WalletTransaction();
         entry.setWalletId(wallet.getId());
         entry.setSupplierOrderId(supplierOrderId);
         entry.setDirection(direction);
+        entry.setKind(kind);
+        entry.setReference(reference);
+        entry.setRefundId(refundId);
         entry.setAmount(amount);
         entry.setBalanceAfter(wallet.getBalance());
         entry.setReason(reason);
