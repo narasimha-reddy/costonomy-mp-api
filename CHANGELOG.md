@@ -4,6 +4,32 @@ All notable changes to the Costonomy MP (Mandi) Delivery & Logistics Platform ac
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [feat/blowhorn-provider] - Blowhorn Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Blowhorn** (`BLOWHORN`) alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, and LoadShare Networks.
+- Database migration `V46__delivery_provider_blowhorn.sql` seeding `BLOWHORN` row into `delivery_provider` table (seeded disabled, `enabled = 0`, priority 23).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.blowhorn.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `BlowhornDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `BlowhornApiClient` HTTP client for Blowhorn Logistics API:
+  - Header authentication via `API_KEY` and `Authorization: Bearer <apiKey>`.
+  - Rate limiting with 20 RPS local token-bucket throttle protection.
+  - Hard 30 km intra-city radius ceiling enforcement (D-101).
+  - Quoting / Serviceability via `POST /v1/serviceability` extracting verified carrier fare (`fare.amount`, `currency`), distance, and ETA (fails closed per D-102 if missing fare).
+  - Vehicle type mapping for 2-wheelers, 3-wheelers, and mini-trucks (`TATA_ACE`).
+  - Order creation via `POST /v1/orders` with structured pickup and delivery points, normalized phone numbers (`+91XXXXXXXXXX`), and coordinates, returning `awb_number` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /v1/orders/{orderId}/track` parsing current status, driver details, and events.
+  - Driver location tracking via `GET /v1/orders/{orderId}/track` parsing `current_location` (`latitude`, `longitude`, `bearing`, `speed`).
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first with duplicate event suppression via `uk_delivery_event_provider`.
+  - Cancellation via `POST /v1/orders/{orderId}/cancel` with `cancellation_reason`.
+- `BlowhornStatusMapper` mapping Blowhorn status strings to domain `ProviderDeliveryStatus`.
+- Test suites:
+  - `BlowhornStatusMappingTest` (2 tests).
+  - `BlowhornApiClientContractTest` WireMock tests (11 tests).
+  - `BlowhornDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-105) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-016).
+
 ## [feat/loadshare-provider] - LoadShare Networks Delivery Provider Integration
 ### Added
 - Multi-carrier delivery provider integration for **LoadShare Networks** (`LOADSHARE`) alongside Pidge, Borzo, Shadowfax, Porter, and Shiprocket.

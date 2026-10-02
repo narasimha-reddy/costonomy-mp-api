@@ -3824,3 +3824,37 @@ LoadShare is gated by:
 - **Cancellation**: `POST /hyperlocal/v2/order/{orderId}/cancel` sending `cancellationReason`.
 - **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
 
+---
+
+## D-105 — Blowhorn delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket and LoadShare
+**2026-10-02 · Settled**
+
+Blowhorn is integrated as a seventh carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, Shadowfax, Porter, Shiprocket, and LoadShare Networks. The implementation adheres to the provider SPI pattern
+established in doc 06 §3 and decisions D-098, D-100, D-101, and D-102.
+
+### Dual-gate activation
+Blowhorn is gated by:
+1. **Application configuration gate**: `costonomy.mp.blowhorn.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `BlowhornDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`code = 'BLOWHORN'`),
+   seeded disabled (`enabled = 0`, `priority = 23`) via migration `V46__delivery_provider_blowhorn.sql`.
+   Both gates must be active for Blowhorn to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Secured via `API_KEY: {apiKey}` and `Authorization: Bearer {apiKey}` headers.
+- **Serviceability & Fare Estimation**: `POST /v1/serviceability` passing structured coordinates, vehicle type, weight, and addresses.
+  Extracts real carrier fare (`fare.amount`, `currency`), distance (`distance_km`), and ETA (`estimated_delivery_time_minutes`).
+  Fails closed (D-102) if no carrier fare is returned.
+- **30 km Intra-City Boundary (D-101)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  without making an HTTP call.
+- **Booking**: `POST /v1/orders` with pickup/delivery points, vehicle type (`2_WHEELER`, `3_WHEELER`, `TATA_ACE`), normalized phone numbers (`+91XXXXXXXXXX`),
+  and coordinates. Returns Blowhorn `awb_number` / `order_id` as `providerDeliveryId`.
+- **Status Tracking & Polling**: `GET /v1/orders/{orderId}/track` retrieving status, driver details (`name`, `phone`, `vehicle_number`), and `events`.
+  `BlowhornStatusMapper` transforms status codes (`assigned`, `arrived_at_pickup`, `picked_up`, `in_transit`, `reached_drop`, `delivered`, `cancelled`, etc.)
+  into `ProviderDeliveryStatus`. Deduplicated on `uk_delivery_event_provider`. Synthetic event sequencing ensures `PICKED_UP` precedes `DELIVERED`.
+- **Driver Location**: `GET /v1/orders/{orderId}/track` extracting `current_location` (`latitude`, `longitude`, `bearing`, `speed`).
+- **Cancellation**: `POST /v1/orders/{orderId}/cancel` sending `cancellation_reason`.
+- **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
+
