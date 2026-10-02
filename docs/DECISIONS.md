@@ -3790,3 +3790,37 @@ Shiprocket is gated by:
   to `DELIVERED` while `uk_delivery_event_provider` suppresses duplicate event rows.
 - **Cancellation**: `POST /v1/external/orders/cancel` sending `ids: [shipment_id]`.
 
+---
+
+## D-104 — LoadShare Networks delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter and Shiprocket
+**2026-10-02 · Settled**
+
+LoadShare Networks is integrated as a sixth carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, Shadowfax, Porter, and Shiprocket. The implementation adheres to the provider SPI pattern
+established in doc 06 §3 and decisions D-098, D-100, D-101, and D-102.
+
+### Dual-gate activation
+LoadShare is gated by:
+1. **Application configuration gate**: `costonomy.mp.loadshare.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `LoadshareDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`code = 'LOADSHARE'`),
+   seeded disabled (`enabled = 0`, `priority = 22`) via migration `V45__delivery_provider_loadshare.sql`.
+   Both gates must be active for LoadShare to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Secured via `Customer-Code: {customer-code}` and `Checksum: {sha256}` headers calculated via
+  `SHA-256(${authToken}|${customerCode}|${orderId})`.
+- **Serviceability & Fare Estimation**: `POST /hyperlocal/v2/order/checkServiceability` passing structured pickup and drop
+  tasks with coordinates, address, and goods value. Extracts real carrier fare (`fare.value`, `unit`), distance (`predictedDistanceInMetre`),
+  and SLA (`promisedSlaInEpoch`). Fails closed (D-102) if no fare is returned.
+- **30 km Intra-City Boundary (D-101)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  without making an HTTP call.
+- **Booking**: `POST /hyperlocal/v2/order` with task payloads, normalized phone numbers (`+91XXXXXXXXXX`), and coordinates. Returns LoadShare `orderId` as `providerDeliveryId`.
+- **Status Tracking & Polling**: `GET /hyperlocal/v2/order/{orderId}/track` retrieving status and `statusHistory`.
+  `LoadshareStatusMapper` transforms status codes (`assigned`, `arrived_at_pickup`, `picked_up`, `in_transit`, `reached_drop`, `delivered`, `cancelled`, etc.)
+  into `ProviderDeliveryStatus`. Deduplicated on `uk_delivery_event_provider`. Synthetic event sequencing ensures `PICKED_UP` precedes `DELIVERED`.
+- **Driver Location**: `GET /hyperlocal/v2/order/{orderId}/track` extracting `currentLocation` (`latitude`, `longitude`, `bearing`, `speed`).
+- **Cancellation**: `POST /hyperlocal/v2/order/{orderId}/cancel` sending `cancellationReason`.
+- **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
+

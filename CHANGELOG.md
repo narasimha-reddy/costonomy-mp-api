@@ -4,6 +4,31 @@ All notable changes to the Costonomy MP (Mandi) Delivery & Logistics Platform ac
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [feat/loadshare-provider] - LoadShare Networks Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **LoadShare Networks** (`LOADSHARE`) alongside Pidge, Borzo, Shadowfax, Porter, and Shiprocket.
+- Database migration `V45__delivery_provider_loadshare.sql` seeding `LOADSHARE` row into `delivery_provider` table (seeded disabled, `enabled = 0`, priority 22).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.loadshare.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `LoadshareDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `LoadshareApiClient` HTTP client for LoadShare Hyperlocal v2 Delivery API:
+  - Header authentication via `Customer-Code` and SHA-256 `Checksum` (`${authToken}|${customerCode}|${orderId}`).
+  - Rate limiting with 20 RPS local token-bucket throttle protection.
+  - Hard 30 km intra-city radius ceiling enforcement (D-101).
+  - Quoting / Serviceability via `POST /hyperlocal/v2/order/checkServiceability` extracting verified carrier fare (`fare.value`, `unit`), predicted distance, and promised SLA (fails closed per D-102 if missing fare).
+  - Order creation via `POST /hyperlocal/v2/order` with structured pickup and drop tasks, normalized phone numbers (`+91XXXXXXXXXX`), and coordinates, returning `orderId` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /hyperlocal/v2/order/{orderId}/track` parsing current status and `statusHistory`.
+  - Driver location tracking via `GET /hyperlocal/v2/order/{orderId}/track` parsing `currentLocation` (`latitude`, `longitude`, `bearing`, `speed`).
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first so `DeliveryOrderBridge` transitions `supplier_order` through `OUT_FOR_DELIVERY` to `DELIVERED` with duplicate event suppression via `uk_delivery_event_provider`.
+  - Cancellation via `POST /hyperlocal/v2/order/{orderId}/cancel` with `cancellationReason`.
+- `LoadshareStatusMapper` mapping LoadShare Hyperlocal status codes to domain `ProviderDeliveryStatus`.
+- Test suites:
+  - `LoadshareStatusMappingTest` (2 tests).
+  - `LoadshareApiClientContractTest` WireMock tests (11 tests).
+  - `LoadshareDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-104) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-014).
+
 ## [feat/shiprocket-provider] - Shiprocket Delivery Provider Integration
 ### Added
 - Multi-carrier delivery provider integration for **Shiprocket** alongside Pidge, Borzo, Shadowfax, and Porter.
