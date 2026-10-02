@@ -426,7 +426,11 @@ of the two it is.
 Suspension stops new trade but leaves accepted orders alone; disabling a SKU
 supersedes its offer rather than deleting it; an operator resolving a dispute
 records an outcome rather than imposing one, and moves no money. Every mutation
-needs a reason and is audited.
+needs a reason and is audited. **The one exception is a refund the supplier
+declined or left unanswered for 48 hours** (D-104): an operator with
+`REFUND_DECIDE` may approve it, which credits the restaurant and charges the
+supplier's payout — the product owner's ruling, with its own permission so that
+`DISPUTE_MODERATE` still moves nothing.
 
 **A configuration change supersedes, never overwrites.** D-047. Settlement must
 stay reproducible (doc 09 §11), which is impossible if the rate that applied in
@@ -466,8 +470,14 @@ would have the restaurant order the same goods twice.
 quantities, not its payment — and the response carries the order status so the app
 can say so (§23A.26). Several disputes per order are allowed, because a delivery
 can be short *and* damaged. A supplier answers and proposes; only the restaurant
-resolves. **Mandi records disputes, it does not adjudicate them** — nothing here
-issues a refund or a credit note on anyone's behalf.
+resolves. **Mandi records disputes, it does not adjudicate them** — with one
+exception, D-104's refunds: a restaurant may ask for money back on a dispute
+(`DisputeRefundService`), the supplier approves or declines, and operations
+decides only after a decline or 48 hours of silence. An approval credits the
+wallet and charges the supplier's payout in one transaction
+(`SupplierRefundLedger`), capped at that payout and refused once it is approved;
+a payout cannot be approved while a refund on it is undecided. **Costonomy never
+funds a refund** — keep all three of those checks. Nothing issues a credit note.
 
 **Ratings publish on write and are removed by moderation, never gated by it.**
 D-037. Hiding one removes it from the public average *and* from ranking, which is

@@ -253,10 +253,11 @@ app is built across both roles.
 
 ### Latest: Razorpay payments (D-098 … D-104)
 
-Stacked PRs. **Two migrations**: `V37` (`refund.attempts`) and `V38` (refunds to
+Stacked PRs. **Three migrations**: `V37` (`refund.attempts`), `V38` (refunds to
 the wallet: `refund.destination`, the wallet ledger's kind and reference, the
-`WALLET_WITHDRAW` permission). Otherwise the payment tables from `V11` are used as
-they were.
+`WALLET_WITHDRAW` permission) and `V39` (`dispute_refund`, `supplier_deduction`,
+`DISPUTE_REFUND_DECIDE`, `REFUND_DECIDE`). Otherwise the payment tables from `V11`
+are used as they were.
 
 | PR | What it changed |
 |---|---|
@@ -267,7 +268,8 @@ they were.
 | `feat/razorpay-8-review-fixes` | Fixes from three independent reviews: a declined attempt can no longer fail a paid order; the sweep cannot be starved; pending refunds wait for the provider; refunds cannot be over-promised and go to `NEEDS_REVIEW` instead of retrying for ever; a production profile refuses mock providers (D-101) |
 | `feat/razorpay-9-payment-intent-lookup` | `GET /supplier-orders/{id}/payment-intent`, so the pay screen asks the server for an order's checkout; a repeated Create Order returns it (D-102) |
 | `feat/razorpay-10-capture-at-dispatch` | **Money is held until the supplier marks the order ready, and taken there** (D-103). A cancellation before ready drops the hold — nothing charged. "Ready" is refused when a hold is about to lapse |
-| `feat/razorpay-11-dispute-refunds` | **Refunds go to the wallet; a withdrawal goes back to the card** (D-104, part one). The restaurant's own refund endpoint is gone. `POST /outlets/{id}/wallet/withdraw` sends refund money back to the payments it came from. Part two — refunds decided inside disputes, charged to the supplier — is next |
+| `feat/razorpay-11-dispute-refunds` | **Refunds go to the wallet; a withdrawal goes back to the card** (D-104, part one). The restaurant's own refund endpoint is gone. `POST /outlets/{id}/wallet/withdraw` sends refund money back to the payments it came from. Part two is the next PR |
+| `feat/razorpay-12-dispute-refund-requests` | **Refunds are asked for on a dispute** (D-104 part two). The supplier approves or declines; operations decides after a decline or 48 hours. An approval credits the wallet and is taken from the supplier's payout for the order — capped at it, refused once it is approved, and a payout cannot be approved while a refund on it is undecided. **Costonomy never funds a refund.** Dispute lists per outlet and per store |
 
 What you will notice:
 
@@ -290,10 +292,18 @@ What you will notice:
   `Idempotency-Key`) sends refund money back to its card. Only refund money can
   be withdrawn. Wallet statement rows now carry `kind`, and a withdrawal's
   `refundStatus`.
+- **Settlement approval can now be refused** with "Refund requests on this
+  settlement's orders need a decision first" (409), and a settlement can carry
+  DEBIT `REFUND` adjustments it did not have before (D-104).
+- New endpoints: `GET /outlets/{id}/disputes`, `GET /supplier-stores/{id}/disputes`,
+  `GET /disputes/{id}/refund-limit`, `POST /disputes/{id}/refund-request`,
+  `POST /dispute-refunds/{id}/approve|decline`, and `GET /admin/dispute-refunds`
+  with `POST /admin/dispute-refunds/{id}/approve|decline`. Dispute responses carry
+  `refundRequest`.
 - `costonomy-mp-mobile/tools/razorpay-e2e` pays real test-mode orders end to end,
   31 cases, mostly failures. It needs this API on Razorpay test keys.
 
-Tests after these PRs: 329 unit, 351 integration.
+Tests after these PRs: 329 unit, 367 integration.
 
 ### Earlier, on `feat/edit-open-request-quantities`
 
@@ -346,9 +356,10 @@ These are live questions, not omissions. Do not close one silently.
 11. **Refund money held in a wallet needs a legal answer** (D-104) — RBI's rules on
     prepaid payment instruments. Do not go live with wallet refunds until someone
     qualified has said it is allowed.
-12. **Dispute refunds are not built yet** (D-104 part two): a supplier approves or
-    declines, ops decides after a decline or 48 hours, and the supplier's payout
-    bears it. Until then only a cancellation after capture credits a wallet.
+12. **A refund after the supplier's payout is approved is refused** (D-104) — the
+    restaurant is told to contact support, and there is no in-app way for ops to
+    recover it from the supplier. Deliberate, so Costonomy never funds one; worth
+    revisiting if disputes commonly arrive after payout.
 13. **A withdrawal that cannot finish** (Razorpay's refund window, a short Razorpay
     balance) sits in NEEDS_REVIEW with the money out of the wallet. There is no ops
     screen to put it back yet.

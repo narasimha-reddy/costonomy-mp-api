@@ -3,6 +3,7 @@ package com.costonomy.mp.trust.web;
 import com.costonomy.mp.common.api.ApiResponse;
 import com.costonomy.mp.common.idempotency.IdempotencyService;
 import com.costonomy.mp.identity.security.ActorContext;
+import com.costonomy.mp.trust.service.DisputeRefundService;
 import com.costonomy.mp.trust.service.DisputeService;
 import com.costonomy.mp.trust.service.RatingService;
 import com.costonomy.mp.trust.service.ReceivingService;
@@ -31,6 +32,7 @@ public class TrustController {
 
     private final ReceivingService receiving;
     private final DisputeService disputes;
+    private final DisputeRefundService disputeRefunds;
     private final RatingService ratings;
     private final IdempotencyService idempotency;
 
@@ -138,6 +140,80 @@ public class TrustController {
             @PathVariable Long id,
             @Valid @RequestBody TrustDtos.ResolveDisputeRequest request) {
         return ApiResponse.ok(disputes.reject(ActorContext.requireUserId(), id, request));
+    }
+
+    @GetMapping("/outlets/{outletId}/disputes")
+    @Operation(summary = "This outlet's disputes, newest first",
+            description = "The restaurant's Disputes section, with each dispute's refund request (D-104).")
+    public ApiResponse<List<TrustDtos.DisputeResponse>> outletDisputes(@PathVariable Long outletId) {
+        return ApiResponse.ok(disputes.forOutlet(ActorContext.requireUserId(), outletId));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/disputes")
+    @Operation(summary = "This store's disputes, newest first",
+            description = "The supplier's Disputes section, with each dispute's refund request (D-104).")
+    public ApiResponse<List<TrustDtos.DisputeResponse>> storeDisputes(@PathVariable Long storeId) {
+        return ApiResponse.ok(disputes.forStore(ActorContext.requireUserId(), storeId));
+    }
+
+    // ── Refunds on a dispute (D-104) ─────────────────────────────────────
+
+    @GetMapping("/disputes/{id}/refund-limit")
+    @Operation(summary = "How much could be asked for on this dispute",
+            description = "The lower of what the order's money and the supplier's payout for it "
+                    + "can cover, or why nothing can be. For the form, before asking.")
+    public ApiResponse<TrustDtos.DisputeRefundLimitResponse> refundLimit(@PathVariable Long id) {
+        return ApiResponse.ok(disputeRefunds.limit(ActorContext.requireUserId(), id));
+    }
+
+    @PostMapping("/disputes/{id}/refund-request")
+    @Operation(
+            summary = "Ask for money back on a dispute",
+            description = """
+                    Restaurant only (`DISPUTE_CREATE`), once per dispute, once the order is
+                    delivered. The supplier approves or declines; if they decline, or do not
+                    answer within 48 hours, Mandi's operations team decides. An approved
+                    refund goes to the outlet's wallet and comes out of the supplier's
+                    payout for the order, so it is capped at that payout and refused once
+                    the supplier has been paid for the order.
+                    """)
+    public ApiResponse<TrustDtos.DisputeRefundResponse> requestRefund(
+            @PathVariable Long id,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody TrustDtos.RequestDisputeRefundRequest request) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(idempotency.execute(actorId, "dispute.refund.request", idempotencyKey,
+                Map.of("disputeId", id, "amount", request.amount().toPlainString()),
+                TrustDtos.DisputeRefundResponse.class,
+                () -> disputeRefunds.request(actorId, id, request)));
+    }
+
+    @PostMapping("/dispute-refunds/{id}/approve")
+    @Operation(summary = "Approve a refund asked for on your order",
+            description = "Supplier only (`DISPUTE_REFUND_DECIDE`). Credits the restaurant's wallet "
+                    + "now and takes the amount from your payout for the order.")
+    public ApiResponse<TrustDtos.DisputeRefundResponse> approveRefund(
+            @PathVariable Long id,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody(required = false) TrustDtos.DisputeRefundDecisionRequest request) {
+        Long actorId = ActorContext.requireUserId();
+        String note = request == null ? null : request.note();
+        return ApiResponse.ok(idempotency.execute(actorId, "dispute.refund.approve", idempotencyKey,
+                Map.of("requestId", id), TrustDtos.DisputeRefundResponse.class,
+                () -> disputeRefunds.supplierApprove(actorId, id, note)));
+    }
+
+    @PostMapping("/dispute-refunds/{id}/decline")
+    @Operation(summary = "Decline a refund asked for on your order",
+            description = "Supplier only, with a reason. Mandi's operations team then decides.")
+    public ApiResponse<TrustDtos.DisputeRefundResponse> declineRefund(
+            @PathVariable Long id,
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody TrustDtos.DisputeRefundDecisionRequest request) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(idempotency.execute(actorId, "dispute.refund.decline", idempotencyKey,
+                Map.of("requestId", id), TrustDtos.DisputeRefundResponse.class,
+                () -> disputeRefunds.supplierDecline(actorId, id, request.note())));
     }
 
     // ── Ratings ──────────────────────────────────────────────────────────
