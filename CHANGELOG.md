@@ -4,6 +4,30 @@ All notable changes to the Costonomy MP (Mandi) Delivery & Logistics Platform ac
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [feat/xpressbees-provider] - Xpressbees Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Xpressbees** (`XPRESSBEES`) alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, Blowhorn, and Delhivery.
+- Database migration `V48__delivery_provider_xpressbees.sql` seeding `XPRESSBEES` row into `delivery_provider` table (seeded disabled, `enabled = 0`, priority 25).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.xpressbees.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `XpressbeesDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `XpressbeesApiClient` HTTP client for Xpressbees Logistics API:
+  - Header authentication via `Authorization: Bearer <token>`.
+  - Rate limiting with 20 RPS local token-bucket throttle protection.
+  - Hard 30 km intra-city radius ceiling enforcement (D-101).
+  - Quoting / Pricing via `POST /v1/courier/serviceability` extracting verified carrier fare (`data.rate`, `charges.total_amount`) based on pincodes and weight (fails closed per D-102 if missing fare).
+  - Order creation via `POST /v1/shipments/create` with structured pickup and delivery details, normalized phone numbers (`+91XXXXXXXXXX`), and pincodes, returning `awb_number` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /v1/shipments/track/{awb_number}` parsing `status` and `history`.
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first with duplicate event suppression via `uk_delivery_event_provider`.
+  - Cancellation via `POST /v1/shipments/cancel` with `awb_number` and `reason`.
+- `XpressbeesStatusMapper` mapping Xpressbees status strings to domain `ProviderDeliveryStatus`.
+- Test suites:
+  - `XpressbeesStatusMappingTest` (2 tests).
+  - `XpressbeesApiClientContractTest` WireMock tests (10 tests).
+  - `XpressbeesDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-107) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-020).
+
 ## [feat/delhivery-provider] - Delhivery Delivery Provider Integration
 ### Added
 - Multi-carrier delivery provider integration for **Delhivery** (`DELHIVERY`) alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, and Blowhorn.

@@ -3889,3 +3889,34 @@ Delhivery is gated by:
 - **Cancellation**: `POST /api/p/edit` sending `cancellation: true`.
 - **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
 
+---
+
+## D-107 — Xpressbees delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare, Blowhorn and Delhivery
+**2026-10-02 · Settled**
+
+Xpressbees is integrated as a ninth carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, Blowhorn, and Delhivery. The implementation adheres to the provider SPI pattern
+established in doc 06 §3 and decisions D-098, D-100, D-101, and D-102.
+
+### Dual-gate activation
+Xpressbees is gated by:
+1. **Application configuration gate**: `costonomy.mp.xpressbees.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `XpressbeesDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`code = 'XPRESSBEES'`),
+   seeded disabled (`enabled = 0`, `priority = 25`) via migration `V48__delivery_provider_xpressbees.sql`.
+   Both gates must be active for Xpressbees to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Secured via `Authorization: Bearer {token}` header.
+- **Serviceability & Fare Estimation**: `POST /v1/courier/serviceability` querying serviceability with origin and destination pincodes, order amount, and weight in kg.
+  Extracts real carrier fare (`data.rate` or `charges.total_amount`). Fails closed (D-102) if no carrier fare is returned.
+- **30 km Intra-City Boundary (D-101)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  without making an HTTP call.
+- **Booking**: `POST /v1/shipments/create` pushing order and pickup/delivery details with normalized phone numbers (`+91XXXXXXXXXX`) and pincodes. Returns Xpressbees `awb_number` as `providerDeliveryId`.
+- **Status Tracking & Polling**: `GET /v1/shipments/track/{awb_number}` retrieving `status` and `history`.
+  `XpressbeesStatusMapper` transforms status codes (`manifested`, `pickup_scheduled`, `reached_pickup`, `picked_up`, `in_transit`, `out_for_delivery`, `delivered`, `cancelled`, etc.)
+  into `ProviderDeliveryStatus`. Deduplicated on `uk_delivery_event_provider`. Synthetic event sequencing ensures `PICKED_UP` precedes `DELIVERED`.
+- **Cancellation**: `POST /v1/shipments/cancel` sending `awb_number` and cancellation reason.
+- **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
+
