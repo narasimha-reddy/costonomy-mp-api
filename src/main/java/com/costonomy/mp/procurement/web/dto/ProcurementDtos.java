@@ -256,7 +256,21 @@ public final class ProcurementDtos {
             BigDecimal acceptedSubtotal,
             BigDecimal acceptedGst,
             String paymentMethod,
+            /**
+             * Where the money stands, live. Beside AUTHORIZED, CAPTURED, RELEASED and the
+             * refund states: {@code RETURNING} (a cancelled order's debited money is on its
+             * way back), {@code RETURNED} (the payment provider returned it itself) and
+             * {@code RETURN_DELAYED} (the return is taking longer than it should and a
+             * person has been told). D-109.
+             */
             String paymentStatus,
+            /**
+             * How the order was paid for — {@code card}, {@code upi}, {@code netbanking},
+             * {@code wallet}, {@code emi}, {@code paylater} — or null when unknown or not
+             * applicable. For wording only: "you were not charged" is true of a released
+             * card hold and false of a UPI payment, so no client may say it without this.
+             */
+            String paymentInstrument,
             /**
              * How the goods travel, and what the carriage costs. D-091.
              *
@@ -274,6 +288,20 @@ public final class ProcurementDtos {
              */
             CancelledBy cancelledBy,
             String cancellationReason,
+            /**
+             * How much of a cancelled order's money is being sent back to the account it
+             * was paid from (D-109): the amount of the cancellation refund, present from
+             * the moment it is raised. Null on any order that has no such refund: not
+             * cancelled, a card hold that was simply dropped, paid another way, or not
+             * refunded yet. Additive: a client that does not read it is unaffected.
+             */
+            BigDecimal refundAmount,
+            /**
+             * When that refund completed at the payment provider, null until then (and
+             * whenever {@code refundAmount} is null). Money "on its way back" is
+             * {@code refundAmount != null && refundedAt == null}.
+             */
+            Instant refundedAt,
             List<SupplierOrderItemResponse> items) {
     }
 

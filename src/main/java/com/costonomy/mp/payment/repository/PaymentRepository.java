@@ -62,6 +62,34 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     List<Payment> findPendingCaptures(Pageable batch);
 
     /**
+     * Cancelled orders whose debited money is still on its way back (D-109). Read by
+     * the cancellation job, least recently worked first, so one payment the provider
+     * keeps refusing cannot starve the rest. A payment a person has been asked to
+     * look at is skipped until they have.
+     */
+    @Query("""
+            select p from Payment p
+            where p.status = com.costonomy.mp.payment.domain.PaymentStatus.CANCEL_PENDING
+              and p.reviewRequiredAt is null
+            order by p.updatedAt asc, p.id asc
+            """)
+    List<Payment> findPendingCancellations(Pageable batch);
+
+    /**
+     * Cancelled orders whose return a person was asked to look at (D-109), least recently
+     * checked first. Read by the cancellation job to re-check them slowly, and to keep
+     * reminding: a payment in review is not forgotten, and can still turn out to have been
+     * returned by the provider itself.
+     */
+    @Query("""
+            select p from Payment p
+            where p.status = com.costonomy.mp.payment.domain.PaymentStatus.CANCEL_PENDING
+              and p.reviewRequiredAt is not null
+            order by coalesce(p.reconciledAt, p.reviewRequiredAt) asc, p.id asc
+            """)
+    List<Payment> findReviewedCancellations(Pageable batch);
+
+    /**
      * Authorisations that were never resolved. Read by the reconciliation job
      * (doc 21, doc 38).
      *

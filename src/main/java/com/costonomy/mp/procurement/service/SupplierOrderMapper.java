@@ -61,6 +61,7 @@ public class SupplierOrderMapper {
         var descriptors = skuDirectory.describe(
                 items.stream().map(SupplierOrderItem::getSupplierSkuId).toList());
 
+        var cancelRefund = funding.cancelRefund(order).orElse(null);
         return new ProcurementDtos.SupplierOrderResponse(
                 order.getId(), order.getOrderNumber(), order.getSupplierStoreId(),
                 store == null ? null : store.supplierName(),
@@ -78,8 +79,11 @@ public class SupplierOrderMapper {
                 // Live, from the funding method: the stored copy is written once,
                 // at release, and goes stale the moment the money moves again.
                 order.getPaymentMethod(), funding.paymentState(order),
+                funding.paymentInstrument(order),
                 order.getDeliveryMode(), order.getDeliveryFee(),
                 order.getCancelledBy(), order.getCancellationReason(),
+                cancelRefund == null ? null : cancelRefund.amount(),
+                cancelRefund == null ? null : cancelRefund.completedAt(),
                 items.stream()
                         .map(item -> new ProcurementDtos.SupplierOrderItemResponse(
                                 item.getId(), item.getCanonicalProductId(),

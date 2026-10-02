@@ -58,6 +58,11 @@ public final class AdminDtos {
             @NotBlank(message = "Give a reason") @Size(max = 500) String reason) {
     }
 
+    /** Why a payment stopped for a person is being put back in the job's hands. */
+    public record ClearPaymentReviewRequest(
+            @NotBlank(message = "Say what you checked") @Size(max = 500) String reason) {
+    }
+
     // ── Orders ───────────────────────────────────────────────────────────
 
     public record OrderSummary(
@@ -119,6 +124,15 @@ public final class AdminDtos {
             String failureCode,
             String failureReason,
             Instant reconciledAt,
+            /** How the payer paid, as the provider names it; null until read (D-109). */
+            String providerMethod,
+            /** CARD_HOLD_DROPPED or PROVIDER_AUTO_REFUND, on a released payment. */
+            String releaseReason,
+            /** What the provider kept on capture, in rupees; null until captured by a cancellation. */
+            BigDecimal providerFee,
+            /** Set when a cancellation of debited money is stopped for a person to look at. */
+            Instant reviewRequiredAt,
+            String reviewReason,
             List<TransactionSummary> transactions,
             List<RefundSummary> refunds) {
     }

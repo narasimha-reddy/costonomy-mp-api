@@ -4040,3 +4040,212 @@ still lag behind a later capture or refund.
 Tests: `PaymentFlowIT$Capture.orderShowsItsPaymentLive` (held, taken, released),
 `DisputeRefundFlowIT` (wallet: paid, then partly refunded), `CreditFlowIT` (on
 credit, in the response and the column).
+
+## D-109 — Cancelling an order whose money was debited captures it and refunds it, and a lapsed hold is noticed
+**Raised 2026-09-30 · Settled 2026-09-30** (owner recommendations E-1 to E-6 accepted as defaults; the fee and instant-refund choices are still the owner's, see below)
+
+**The finding.** A live test-mode run (e2e O2) paid an order by UPI, had the supplier
+cancel it before "ready", and looked at Razorpay two and a half minutes later: the payment
+was still `authorized`, the payer's account debited, no refund, no capture. Our database
+said `RELEASED`, "nothing was taken". A card is only a hold; **UPI, netbanking, a wallet
+app, pay-later and cardless EMI debit the payer the moment they are authorised**, and
+Razorpay will not refund an authorised payment until it is captured. D-103's "a cancellation
+drops the hold, nothing is charged" is true of a card and false of everything else, and the
+restaurant was out of pocket until Razorpay's own expiry gave the money back.
+
+Two defects in the same code, fixed here because the cancel flow cannot be right without them:
+- **The cancel transaction called Razorpay.** `releaseOrRefund` fetched the payment inside the
+  transaction that cancelled the order, a fifteen-second read with the transaction open, which
+  breaks D-099. Its answer was only logged.
+- **A lapsed hold was never noticed.** Razorpay returning an uncaptured authorisation at
+  expiry arrived as "refunded", which no transition allows from `AUTHORIZED`, so it was logged
+  as out of order and the payment stayed `AUTHORIZED` for good. `canTakeFunds` then trusted our
+  own clock: five days less six hours, while Razorpay's documents say both three and five. If
+  the limit is three days, a supplier could mark ready on day four against money already
+  returned, and the goods would leave unpaid.
+
+**Options.** A: capture on cancel, then refund (capture at ready unchanged). B: capture UPI at
+authorisation. C: shorten `manual_expiry_period`. D: UPI Reserve Pay.
+- **A, chosen.** It changes only the cancel path, decides from Razorpay's live answer at the
+  moment it matters, works when the method was not known at order creation, and needs no
+  backfill. Cost: the gateway fee on each cancelled non-card order, which Razorpay is believed
+  to keep on refund (unverified, V-4).
+- B rewrites the happy path for the dominant method and reverses D-103 for it; it stays a valid
+  later choice, and A's machinery would not change if it were added. C is impossible: the order
+  is created before the payer picks a method, so a short expiry would also lapse card holds.
+  D is the only true UPI hold and is a separate product, for later.
+
+**The rule is an allow-list: only `method = card` may lapse.** Anything else, and a method we
+have not read, is debited money and is returned. A new or unfamiliar method is therefore
+refunded, never left to lapse. Cards are exactly as before: `RELEASED`, no Razorpay call.
+
+**State machine.** `payment` gains `CANCEL_PENDING` (allowed to `CAPTURED`, `RELEASED`, `FAILED`),
+reached from `AUTHORIZED`, and `release_reason` (`CARD_HOLD_DROPPED`, `PROVIDER_AUTO_REFUND`).
+`CANCEL_PENDING` is neither `fundsSecured` nor holding funds, so nothing releases the order to a
+supplier or takes the money for it; `markForCapture` refuses it; and `applyProviderState` never
+moves it, so the `payment.captured` webhook for our own cancel-capture cannot write CAPTURED
+with no refund behind it (the job writes CAPTURED and the refund in one transaction).
+
+1. **Cancel transaction** (`OrderFundingAdapter.onOrderUnfulfilled` → `PaymentService.onOrderCancelled`).
+   No provider call. Sets `cancel_requested_at`, then: a card hold is released; anything else
+   goes to `CANCEL_PENDING`; a payment still `CREATED` is only marked (money that arrives later
+   is sent back); a captured payment is refunded as before, to the wallet (legacy, orders
+   captured before D-103). The order is CANCELLED and the payment says what is owed, atomically.
+2. **`PaymentJobs.settleCancellations`** (every 15 s, ShedLock `payment-cancel`, 50 a run, least
+   recently worked first) calls `CancellationService.settle` per payment in three steps: claim
+   under the lock and count the attempt; ask Razorpay (`inspect`, no transaction); write the
+   outcome under the lock, re-checking the payment is still `CANCEL_PENDING`. **Razorpay's
+   answer decides, not our stored method:** a card is released; an authorised non-card payment is
+   captured with key `cancel-capture-{paymentId}`; a payment already captured (our capture's
+   answer was lost) is recorded without a second capture; a hold Razorpay returned itself is
+   recorded `RELEASED`/`PROVIDER_AUTO_REFUND`. A payment that is not exactly the order's own, or
+   one refunded outside Mandi, or failed, is stopped (`review_required_at`, ERROR) and **never
+   captured or released on a guess**; the job skips it until a person looks. **Only Razorpay
+   saying it does not know the payment stops a payment this way: HTTP 404, or the HTTP 400
+   `BAD_REQUEST_ERROR` "The id provided does not exist" that Razorpay really answers on `GET
+   /v1/payments/{id}` (the provider maps that body, and no other 400, to NOT_FOUND).** A
+   rate limit (429), refused credentials (401/403), an outage (5xx) or any other refusal says
+   something about the call, not the payment: the payment stays `CANCEL_PENDING` with no state
+   change and is asked about again next run (429 also stops the rest of that run, WARN; 401/403
+   is an ERROR line, "refused our credentials"). Review is not a dead end: a payment in review
+   is asked about again every three hours and moves only where the provider's answer is final
+   and matches the order (returned by Razorpay itself: `RELEASED`/`PROVIDER_AUTO_REFUND`;
+   captured with nothing refunded: the refund is raised), it is written to the ERROR log again
+   after three hours and then daily while it stays, and operations can clear the flag
+   (`POST /api/v1/admin/payments/{id}/clear-review`, `PAYMENT_RECONCILE`, a reason, audited)
+   to hand it back to the normal run.
+3. **The refund** is one row, key `cancel-order-{orderId}`, the same key the legacy wallet path
+   uses, so at most one cancellation refund can exist whichever path raises it. It goes
+   through the ordinary refund job, now sending `receipt = mandi-refund-{id}`, `notes`
+   (`mandi_refund_id`, `mandi_payment_id`, `purpose`) and `speed`. A refund Razorpay rejects goes
+   to `NEEDS_REVIEW`; **it is never credited to a wallet, because the money never came from one.**
+   A refund answered 429 or 401/403 is not "declined": it goes back to `FAILED` and is retried
+   every run with the same key however many times it takes (past the usual five attempts too),
+   with an ERROR line for refused credentials, never `NEEDS_REVIEW`.
+
+**Crashes.** Before the cancel commits, nothing changed. After it, `CANCEL_PENDING` and the job
+finds it. Capture sent, answer lost: the next run's `inspect` says captured and the capture is
+never re-sent. Crash between the capture and the refund row: same, the job records both together
+next run. Razorpay's own expiry racing our capture: either wins and the payer is repaid exactly
+once, and the loser's refusal is not an error, the next `inspect` says which.
+
+**Races.** Cancel against "ready" is settled by the supplier order's version, as before: one
+save wins and the loser writes no payment state (`concurrentCancelAndReadyOneWins`, five rounds).
+Two runs settling one payment, or two job runs, are made safe by the payment lock, the status
+re-check in every transaction, and the unique refund key.
+
+**Late money.** A payment finished after the restaurant cancelled a draft (`cancel_requested_at`
+set on a `CREATED` payment) goes `AUTHORIZED → CANCEL_PENDING` in the same transaction, so no
+reader sees it funded and the supplier never sees the order. Money that reaches a payment whose
+intent had already expired (`FAILED`/`INTENT_EXPIRED`) is moved to `CANCEL_PENDING` by an explicit
+`reopenForReturn`, not a generic transition (`FAILED` stays terminal), and only after checking
+the amount is ours. Any other `FAILED` payment is never reopened.
+
+**One hold limit, stored on the payment.** `costonomy.mp.razorpay.manual-expiry-minutes` (12 to
+7200) is the `manual_expiry_period` sent with every **new** order, and `PaymentHoldPolicy` reads
+it once, when the order's payment is created, and stores it on the payment
+(`payment.hold_minutes`, what Razorpay was told). The guard on "ready", the four-day warning and
+the past-the-limit alert all measure against **the payment's own figure**, not the setting as it
+reads today: Razorpay fixes an order's expiry when the order is made, so raising the setting to
+7200 must not stretch the guard for the orders already made at 4320, which Razorpay still returns
+at 72 hours (the failure this decision exists to prevent, reintroduced by its own change
+procedure). A payment with no stored value falls back to the current setting. So the setting can
+be raised at any time; it only takes effect for orders made afterwards. **Default 4320 (three days), until Razorpay confirms the limit**,
+so "ready" is refused after 66 hours instead of 114 (E-6). The sweep now recognises a returned
+authorisation as `RELEASED`/`PROVIDER_AUTO_REFUND` (the adapter reads Razorpay's `refunded` with
+`captured = false` as a returned hold; silence is read as taken), logs ERROR, and `canTakeFunds`
+is false from then. A provider "refunded" on a payment we hold as captured is ignored with a WARN:
+refund rows decide `FULLY_REFUNDED`, not a webhook ahead of them.
+
+**Money captured only to be refunded funds nothing.** A payment the job captured to send back
+is `CAPTURED` like any other, and reading it as funded would let an order released to its
+supplier and marked ready against money that is on its way to the payer. So "funded" is
+`Payment.fundsSecuredForOrder()`: the status says the provider holds or has taken the money
+**and** `cancel_requested_at` is null. It is the one test behind `isFundingSecured` (and so
+`releaseIfFunded`), the payment API's `fundsSecured`, and the webhook/sweep/confirm follow-up,
+which now share one rule (`PaymentFollowUp`): release if funded, end the draft if the payment
+failed, and end the draft if the order was cancelled (the confirm call had no such branch, so a
+draft that the sweep expired but never abandoned could stay open and be released by the webhook
+for our own capture). `canTakeFunds` is false whenever `cancel_requested_at` is set. Both
+the confirm and the webhook path are covered by
+`PaymentFlowIT$CancelDebited.draftPaidLateAfterExpiryIsNeverReleasedWhileItsMoneyIsReturned`.
+
+**Money analysis.** The restaurant is repaid in full, exactly once, or the payment is stopped
+with an ERROR for a person. A cancelled-before-ready order has no supplier payout and no
+commission, so nothing is clawed back. Costonomy bears the gateway fee on each cancelled
+non-card order (recorded per payment in `provider_fee`: Razorpay's `fee`, which already
+includes the GST on it; `tax` is a part of `fee`, not an addition), and needs Razorpay balance for the
+refund straight after the capture: the fee must come from other money, and a refund declined for
+balance goes to `NEEDS_REVIEW` with the money still in Costonomy's Razorpay account.
+
+**Owner choices left open.** E-2 who bears the fee (built: Costonomy absorbs, recorded; a
+supplier deduction is not built). E-3 instant refund: `costonomy.mp.razorpay.cancel-refund-speed`
+(`normal` default; `optimum` refunds instantly where Razorpay can, at a per-refund fee Costonomy
+pays; never deducted from the restaurant, and withdrawals are always normal). E-5 debit-card
+holds block funds until expiry, and card EMI is refunded as non-card. E-8 keep a Razorpay balance
+float. E-4 capture-at-authorisation for UPI (B) stays a later option.
+
+**What the apps read.** `paymentStatus` on an order gains `RETURNING` (CANCEL_PENDING, or captured
+with the cancellation refund still open), `RETURNED` (Razorpay returned it itself) and
+`RETURN_DELAYED` (a person has been told); `paymentInstrument` (`card`, `upi`, `netbanking`…) is
+new, for wording only: **"not charged" is true only of `card` + `RELEASED`.** The restaurant is
+notified when the refund starts (`RefundRequested`, without "5-7 working days" when instant
+refund is on) and when it lands (`RefundCompleted`, worded for where the money went); completed
+refunds now name their outlet, so they reach someone. Two refunds send no `RefundCompleted` of
+their own, by explicit variant: a dispute refund to the wallet (the dispute's own
+`DisputeRefundApproved` already told the restaurant, so a second push was noise) and each part of
+a wallet withdrawal (it would read "refunded" and open whichever old order the money was drawn
+from; before this branch nobody was told at all, so this is no loss). The order JSON also gains
+`refundAmount` (the amount of the cancellation refund to the source account, from the moment it is
+raised) and `refundedAt` (when it completed, null until then), both null on any other order.
+
+**Alerts.** The "still CANCEL_PENDING after 15 minutes" and "past the provider's hold limit" ERROR
+lines are written once an hour per payment, not every run (a run is every 15 seconds); the wait is
+counted from the later of the cancel and the money's arrival, so a draft cancelled last week and
+paid this morning does not report thousands of minutes. A run of the cancellation job has a
+three-minute budget inside its five-minute lock and always settles at least one payment, so it
+cannot outlive its lock and start a second instance on the same batch.
+
+**Known limitations, unchanged by this decision (F10).** (1) A `CREATED` payment past the
+one-day lookup window whose Razorpay order has only a returned attempt (refunded, now read as
+`RELEASED`) is not expired by the sweep, because the lookup finds something: it is asked about at
+every sweep run for good and its order stays a draft. Behaviour identical to before; ops can
+end it by hand. (2) An `AUTHORIZED` payment that Razorpay shows `refunded` **with** `captured =
+true` (captured and refunded by hand in the dashboard) is ignored as an out-of-order event, so
+its order can still be marked ready and the capture then fails. Ops-only, and not something the
+apps can cause. Neither is made worse here; both are recorded in `docs/RAZORPAY.md`.
+
+**Second review (N1-N6).** (N1) Razorpay answers an unknown payment id with HTTP 400, not 404, so
+"only a 404 goes to review" never fired in production and such a payment waited for ever, order
+`RETURNING`. The provider now reports that one body (`BAD_REQUEST_ERROR`, "The id provided does not
+exist") as NOT_FOUND; other 400s still wait, with their warning once an hour per payment. The exact
+body is unverified in test mode (V-7). (N2) A send refused with 429 or 401/403 no longer counts toward
+the five attempts, so a rate limit then one 5xx cannot send a refund to `NEEDS_REVIEW`. (N3) The
+payment-intent read is not payable, and hands out no checkout key, once the order was cancelled: a
+payer who paid it would have cost Costonomy the gateway fee. (N4, part) A 429 or 401/403 stops the
+refund run as it stops the cancellation run, and a refund `FAILED` for more than an hour is an hourly
+ERROR. Looking a refund up at Razorpay by receipt before resending it is **not** built here; it
+belongs to the next branch (withdrawal failure). (N5) The credentials ERROR lines and the "run
+stopped" warnings are throttled (one shared `AlertThrottle`), and a run that stops early still
+writes the reminders for payments waiting for a person. (N6) The concurrent-refund test now calls
+`RefundService.process` from two threads instead of the ShedLock-serialised job. (N7) not built:
+a refund made by hand in the dashboard has no API exit (runbook in `docs/RAZORPAY.md`).
+
+**Tests.** `PaymentFlowIT$CancelDebited` (40 at the first cut, 89 after the second review, 76 with the first review's
+regression tests: F1 draft paid late, F2 429/401/403/5xx/400/404 on the lookup and recovery, a
+payment in review that Razorpay then returned, the ops clear, a rate-limited refund, F3 the
+stored hold, F5 notifications, F6 the method, F7 alerts, F8 the run budget, two real pending rows
+in one run, a second refund run during the first one's provider call) and `OperationsIT`; before that: UPI, every non-card method, unknown method decided
+live (card and UPI), restaurant and supplier cancel, duplicates, a lost capture answer, Razorpay
+expiry before and during, transient and persistent failures, the webhook for our own capture, a
+draft cancelled then paid (by confirm and by the sweep), late money after intent expiry, cancel
+against ready and simultaneous settle runs (five rounds each), a rejected refund, a mismatched
+payment, a payment refunded outside Mandi, the hold limit, receipt/notes/speed, instant refund on
+and off, the notifications, the alert, and the log story with the job's run id. Unit: state
+machine, adapter (method, fee, `amount_refunded`, returned-hold reading, expiry setting),
+`PaymentHoldPolicy`, notification wording.
+
+**Open verifications (test mode, before sign-off).** V-1 Razorpay really returns an uncaptured
+UPI and card authorisation at `manual_expiry_period` (12 minutes is the minimum). V-2 the longest
+hold: 4320, 4321, 7200 and 7201, then ask support. V-3 the exact error text for a capture after
+expiry. V-4 whether the fee is kept on refund, and the instant-refund fee.

@@ -286,6 +286,28 @@ public class AdminController {
         return ApiResponse.ok(Map.of("resolved", true));
     }
 
+    // ── Payments ─────────────────────────────────────────────────────────
+
+    @PostMapping("/payments/{id}/clear-review")
+    @Operation(
+            summary = "Put a payment stopped for a person back in the cancellation job's hands",
+            description = """
+                    Requires PAYMENT_RECONCILE and a `reason` (what was checked), which is
+                    audited. A cancelled order's payment is stopped for a person when it
+                    cannot safely be returned automatically (Razorpay does not know it, it
+                    does not match the order, it was refunded outside Mandi); this clears
+                    that flag so the job asks Razorpay again on its next run. It does not
+                    capture, release or refund anything itself, and it decides nothing about
+                    the money: fix or check the cause first, then clear. Refused if the
+                    payment is not waiting for a person.
+                    """)
+    public ApiResponse<Map<String, Object>> clearPaymentReview(
+            @PathVariable Long id,
+            @Valid @RequestBody AdminDtos.ClearPaymentReviewRequest request) {
+        moderation.clearPaymentReview(ActorContext.requireUserId(), id, request.reason());
+        return ApiResponse.ok(Map.of("cleared", true));
+    }
+
     // ── Dispute refunds (D-104) ──────────────────────────────────────────
 
     @GetMapping("/dispute-refunds")

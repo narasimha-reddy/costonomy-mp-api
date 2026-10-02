@@ -7,6 +7,7 @@ import java.util.Set;
  *
  * <pre>
  * CREATED → AUTHORIZED → CAPTURE_PENDING → CAPTURED
+ *              AUTHORIZED → CANCEL_PENDING → CAPTURED (then refunded) | RELEASED
  * </pre>
  *
  * <p>{@code CAPTURE_PENDING} is not bookkeeping — it is the state that makes
@@ -41,16 +42,36 @@ public enum PaymentStatus {
      * customer faster and does not appear on their statement as a reversal.
      */
     RELEASED,
+    /**
+     * The order was cancelled while the payer's money was already debited, and it
+     * is being sent back (D-109).
+     *
+     * <p>A UPI, netbanking or wallet-app payment leaves the payer's account when
+     * it is authorised, and Razorpay will not refund it until it is captured.
+     * So "release" is not an option for it: the payment is captured and then
+     * refunded to where it came from, by the cancellation job, outside the
+     * transaction that cancelled the order. This is the state in between, and
+     * the only thing that keeps the money from being forgotten in the gap.
+     *
+     * <p>Deliberately neither {@link #fundsSecured} nor {@link #isHoldingFunds}:
+     * nothing may release the order to a supplier or take the money for it, and
+     * a provider event must not move it. Only the cancellation job does.
+     */
+    CANCEL_PENDING,
     PARTIALLY_REFUNDED,
     FULLY_REFUNDED;
 
     public Set<PaymentStatus> allowedTransitions() {
         return switch (this) {
             case CREATED -> Set.of(AUTHORIZED, FAILED);
-            case AUTHORIZED -> Set.of(CAPTURE_PENDING, RELEASED, FAILED);
+            case AUTHORIZED -> Set.of(CAPTURE_PENDING, RELEASED, CANCEL_PENDING, FAILED);
             // Back to AUTHORIZED when a capture fails and is worth retrying — the
             // money is still held, so the payment is exactly where it was.
             case CAPTURE_PENDING -> Set.of(CAPTURED, AUTHORIZED, FAILED);
+            // CAPTURED: our own capture, to return the money. RELEASED: the card hold
+            // dropped, or Razorpay returned the money itself. FAILED is kept for a
+            // provider that says the payment never was.
+            case CANCEL_PENDING -> Set.of(CAPTURED, RELEASED, FAILED);
             case CAPTURED -> Set.of(PARTIALLY_REFUNDED, FULLY_REFUNDED);
             case PARTIALLY_REFUNDED -> Set.of(PARTIALLY_REFUNDED, FULLY_REFUNDED);
             case FAILED, RELEASED, FULLY_REFUNDED -> Set.of();
@@ -76,6 +97,7 @@ public enum PaymentStatus {
         return this == AUTHORIZED || this == CAPTURE_PENDING || this == CAPTURED;
     }
 
+    /** CANCEL_PENDING is not settled: the money is still on its way back. */
     public boolean isSettled() {
         return this == CAPTURED || this == RELEASED || this == FAILED
                 || this == FULLY_REFUNDED || this == PARTIALLY_REFUNDED;

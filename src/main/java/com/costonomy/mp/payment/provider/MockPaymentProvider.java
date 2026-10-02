@@ -54,6 +54,14 @@ public class MockPaymentProvider implements PaymentProvider {
     /** Intent → the payment that completed it, for {@link #findPaymentForOrder}. */
     private final Map<String, String> paymentByOrder = new ConcurrentHashMap<>();
     private final Map<String, ProviderRefund> refunds = new ConcurrentHashMap<>();
+    /** Idempotency key → the refund it made, so a resend returns it as Razorpay does. */
+    private final Map<String, ProviderRefund> refundsByKey = new ConcurrentHashMap<>();
+    /** Payment → what has been refunded of it, for {@link #inspect}. */
+    private final Map<String, BigDecimal> refundedByPayment = new ConcurrentHashMap<>();
+    /** Payment → when it was made, for {@link #inspect}. */
+    private final Map<String, java.time.Instant> createdAt = new ConcurrentHashMap<>();
+    /** Payments the provider returned to the payer unused, as Razorpay does at expiry. */
+    private final java.util.Set<String> expired = ConcurrentHashMap.newKeySet();
 
     /** Refund amount ending in this: accepted as PENDING, completed when fetched. */
     private static final String REFUND_PENDING_SUFFIX = "23";
@@ -83,26 +91,67 @@ public class MockPaymentProvider implements PaymentProvider {
      * it. Doc 19's protected simulation endpoints follow the same principle.
      */
     public ProviderPayment completeCheckout(String providerOrderId) {
+        return completeCheckout(providerOrderId, "card");
+    }
+
+    /**
+     * As {@link #completeCheckout(String)}, paid with the given method: {@code card},
+     * {@code upi}, {@code netbanking}, {@code wallet}, {@code emi}. What decides
+     * whether cancelling the order drops a hold or returns debited money (D-109),
+     * so the tests can pay each way.
+     */
+    public ProviderPayment completeCheckout(String providerOrderId, String method) {
         BigDecimal amount = intents.get(providerOrderId);
         if (amount == null) {
             throw new PaymentProviderException("Unknown mock order " + providerOrderId, false, null);
         }
 
         String paymentId = "mock_pay_" + UUID.randomUUID().toString().replace("-", "");
+        createdAt.put(paymentId, java.time.Instant.now());
+        String detail = "card".equals(method) ? "1111" : null;
 
         if (endsWith(amount, DECLINE_SUFFIX)) {
             var declined = new ProviderPayment(paymentId, providerOrderId, ProviderPaymentStatus.FAILED,
                     BigDecimal.ZERO, BigDecimal.ZERO, "CARD_DECLINED",
-                    "The card was declined by the issuing bank.");
+                    "The card was declined by the issuing bank.", method, detail);
             payments.put(paymentId, declined);
             return declined;
         }
 
         var authorized = new ProviderPayment(paymentId, providerOrderId, ProviderPaymentStatus.AUTHORIZED,
-                amount, BigDecimal.ZERO, null, null);
+                amount, BigDecimal.ZERO, null, null, method, detail);
         payments.put(paymentId, authorized);
         paymentByOrder.put(providerOrderId, paymentId);
         return authorized;
+    }
+
+    /**
+     * Simulate the provider returning an uncaptured authorisation to the payer
+     * because its hold ran out — Razorpay's auto-refund at expiry (D-109). Test-facing.
+     * It is then RELEASED as the port normalises it, and cannot be captured.
+     */
+    public ProviderPayment expire(String providerPaymentId) {
+        var payment = fetchPayment(providerPaymentId);
+        if (payment.status() != ProviderPaymentStatus.AUTHORIZED) {
+            throw new PaymentProviderException(
+                    "Only an authorised payment can expire, not " + payment.status(), false, "INVALID_STATE");
+        }
+        var released = new ProviderPayment(providerPaymentId, payment.providerOrderId(),
+                ProviderPaymentStatus.RELEASED, payment.authorizedAmount(), BigDecimal.ZERO,
+                null, null, payment.method(), payment.methodDetail());
+        payments.put(providerPaymentId, released);
+        expired.add(providerPaymentId);
+        return released;
+    }
+
+    /** How many refunds this mock has made in all, for asserting that money went out once. */
+    public int refundCount() {
+        return refunds.size();
+    }
+
+    /** What the mock has refunded of one payment so far. */
+    public BigDecimal refundedOf(String providerPaymentId) {
+        return refundedByPayment.getOrDefault(providerPaymentId, BigDecimal.ZERO);
     }
 
     /**
@@ -116,7 +165,8 @@ public class MockPaymentProvider implements PaymentProvider {
         }
         String paymentId = "mock_pay_" + UUID.randomUUID().toString().replace("-", "");
         var declined = new ProviderPayment(paymentId, providerOrderId, ProviderPaymentStatus.FAILED,
-                BigDecimal.ZERO, BigDecimal.ZERO, "BAD_REQUEST_ERROR", "Payment was declined by the bank.");
+                BigDecimal.ZERO, BigDecimal.ZERO, "BAD_REQUEST_ERROR", "Payment was declined by the bank.",
+                "card", "1111");
         payments.put(paymentId, declined);
         return declined;
     }
@@ -163,7 +213,8 @@ public class MockPaymentProvider implements PaymentProvider {
 
         var captured = new ProviderPayment(providerPaymentId, payment.providerOrderId(),
                 ProviderPaymentStatus.CAPTURED,
-                payment.authorizedAmount(), amount, null, null);
+                payment.authorizedAmount(), amount, null, null,
+                payment.method(), payment.methodDetail());
         payments.put(providerPaymentId, captured);
         return captured;
     }
@@ -176,13 +227,22 @@ public class MockPaymentProvider implements PaymentProvider {
         }
         var released = new ProviderPayment(providerPaymentId, payment.providerOrderId(),
                 ProviderPaymentStatus.RELEASED,
-                payment.authorizedAmount(), BigDecimal.ZERO, null, null);
+                payment.authorizedAmount(), BigDecimal.ZERO, null, null,
+                payment.method(), payment.methodDetail());
         payments.put(providerPaymentId, released);
         return released;
     }
 
     @Override
-    public ProviderRefund refund(String providerPaymentId, BigDecimal amount, String idempotencyKey) {
+    public ProviderRefund refund(String providerPaymentId, BigDecimal amount, String idempotencyKey,
+                                 RefundOptions options) {
+        // A resend of the same key is the same refund, as at Razorpay: what makes a
+        // lost answer safe to ask again. Checked first, before anything about the
+        // payment, so a replay is answered even where the payment has since changed.
+        var replay = refundsByKey.get(idempotencyKey);
+        if (replay != null) {
+            return replay;
+        }
         var payment = fetchPayment(providerPaymentId);
         if (payment.status() != ProviderPaymentStatus.CAPTURED) {
             throw new PaymentProviderException(
@@ -197,7 +257,30 @@ public class MockPaymentProvider implements PaymentProvider {
                 endsWith(amount, REFUND_PENDING_SUFFIX) ? ProviderRefundStatus.PENDING
                         : ProviderRefundStatus.COMPLETED, amount, null, null);
         refunds.put(refundId, refund);
+        refundsByKey.put(idempotencyKey, refund);
+        refundedByPayment.merge(providerPaymentId, amount, BigDecimal::add);
         return refund;
+    }
+
+    @Override
+    public ProviderPaymentFacts inspect(String providerPaymentId) {
+        var payment = fetchPayment(providerPaymentId);
+        BigDecimal refunded = refundedOf(providerPaymentId);
+        boolean captured = payment.status() == ProviderPaymentStatus.CAPTURED;
+        // As Razorpay reports it: a captured payment that has been refunded in full is
+        // "refunded" and still captured; an authorisation the provider returned is
+        // "refunded" and never was.
+        ProviderPaymentStatus status = expired.contains(providerPaymentId)
+                ? ProviderPaymentStatus.REFUNDED
+                : captured && refunded.compareTo(payment.authorizedAmount()) >= 0
+                        ? ProviderPaymentStatus.REFUNDED : payment.status();
+        return new ProviderPaymentFacts(providerPaymentId, payment.providerOrderId(), status,
+                captured, payment.authorizedAmount(), refunded,
+                payment.method(), payment.methodDetail(),
+                // A captured payment has a fee, GST included as Razorpay reports it: 2% plus 18% on that, to the paisa.
+                captured ? payment.authorizedAmount().multiply(new BigDecimal("0.0236"))
+                        .setScale(2, java.math.RoundingMode.HALF_UP) : null,
+                createdAt.get(providerPaymentId));
     }
 
     @Override
