@@ -4041,6 +4041,316 @@ Tests: `PaymentFlowIT$Capture.orderShowsItsPaymentLive` (held, taken, released),
 `DisputeRefundFlowIT` (wallet: paid, then partly refunded), `CreditFlowIT` (on
 credit, in the response and the column).
 
+## D-106 — QuickScan, part one: pay any UPI merchant from the wallet
+**Raised 2026-09-28 · Settled 2026-09-28**
+
+**Why.** Everything Mandi has funded so far pays a supplier the restaurant
+already has an order with. A kitchen also buys from shops that will never be on
+Mandi — the corner vegetable seller, an ice supplier paid in person — and today
+that means cash or a personal UPI app, off the platform and off the wallet
+balance entirely. QuickScan lets a restaurant scan any shop's UPI QR code and pay
+from the wallet the same way a UPI app pays from a bank account.
+
+**What.** `POST /outlets/{id}/quickscan/payments` (new `QUICKSCAN_PAY`, granted
+by default to owner, admin, purchase manager and finance staff — the same set
+`WALLET_WITHDRAW` uses): a VPA, an amount, an optional name and note. The wallet
+is debited for the amount plus a flat fee (`costonomy.mp.quickscan.fee`, zero for
+now — the fee policy is undecided) in the same transaction the `quickscan_payment`
+row is created in, `WalletService.lock` first, before any payout has been
+attempted — the same shape as every other wallet write (D-104): the debit that
+must never race a second click happens first, and the payout catches up with what
+the ledger already recorded. A `PayoutProvider` port takes it from there
+(`createPayout`/`fetchPayout`; only `MOCK` exists — RazorpayX is the natural next
+adapter, once a test account exists to build it against), in the same claim →
+call the provider outside any transaction → record the outcome shape as
+`RefundService.process`, with the same `NEEDS_REVIEW` after `MAX_ATTEMPTS` (5)
+for an outcome retries never resolved. `GET /outlets/{id}/quickscan/config` tells
+the client whether WALLET is available (and why not, if the flag is off) and that
+UPI-direct is not built yet.
+
+**The legal flag.** `costonomy.mp.quickscan.enabled` (default `false`) gates the
+whole feature, and `ProductionProviderGuard` now refuses to start a production
+profile with it on, or with the payout provider left at `MOCK` — paying third
+parties out of a wallet balance is the same open RBI/prepaid-instrument question
+D-104 raised and left unanswered, and this is a second reason it should not go
+live until a lawyer has answered it.
+
+**Outcomes.** `PAYOUT_PENDING` (debited, payout not finished) → `PAID` (reached
+the shop); `FAILED` (refused or reversed — the money goes back to the wallet,
+`WalletService.returnQuickScan`, idempotent on `quickscan-return-{id}` so a
+REVERSED arriving after a PAID settlement cannot return it twice); or
+`NEEDS_REVIEW` (retries exhausted, outcome unknown) — deliberately **not**
+auto-returned, because the payout may already have reached the shop, the same
+reasoning D-101 uses for a refund NEEDS_REVIEW. `QuickScanJobs` is the safety net
+for whatever the synchronous call inside the request does not settle: a PENDING
+answer, a transient failure, or a process that dies mid-call. VPAs are masked in
+every log line (first two characters, then the handle) the same way a card
+number or token would be.
+
+**Fees are undecided.** The column and the config response carry a fee today so
+adding one later is a number, not a migration or an API change — `fee` defaults
+to zero and nothing charges it until a rate is set.
+
+**Two defects found after the above went in, both about the gap between the
+wallet debit committing and the payout settling.** First: `QuickScanJobs`'
+`findClaimable` used to treat any `attempts = 0` row as claimable immediately,
+so a job run landing in the few milliseconds between `payFromWallet`'s debit
+commit and its own synchronous `sendPayout` claim could win that claim first —
+the request's own `saveAndFlush` then lost the optimistic-lock race and
+`payFromWallet` threw, telling a restaurant its payment had failed (and marking
+the idempotency key failed) although the wallet was already debited and the
+payout was already in flight. Fixed two ways: `findClaimable` now only takes a
+fresh (`attempts = 0`) row once it is older than `JOB_CLAIM_DELAY` (30s) — the
+request that created it owns the claim until then — and `payFromWallet` never
+lets a failure from its own `sendPayout` call escape after the debit has
+committed; it logs a warning and returns the row's true state instead, because
+the money has already moved and `QuickScanJobs` will finish the payout regardless.
+Second: `findSettleable` had no age bound and nothing actually recorded a
+check — `payments.save` on an entity with no changed field is a Hibernate
+no-op, so a PENDING "touch" and an already-PAID row confirmed still PAID never
+moved `updated_at` — so every open QuickScan payout was re-fetched from the
+provider on every ten-second job run forever, a rate-limit and cost problem
+against a real provider. Fixed with a `checked_at` column (V40, edited before
+it shipped) that `settlePending` sets explicitly on every outcome it gets an
+answer for, and a bounded, named backoff: a PENDING row is asked about at most
+once a minute (`PENDING_CHECK_EVERY`), and a PAID row at most once every six
+hours (`PAID_CHECK_EVERY`) and only for 48 hours after paying
+(`PAID_WATCH_FOR`) — a reversal, if one comes, almost always shows within
+hours of paying, and a later one is an ops matter, not something to poll for
+indefinitely.
+
+Tests: `MockPayoutProviderTest` (6, the amount-driven scenarios) and
+`QuickScanValidationTest` (17, the VPA shape) as units;
+`ProductionProviderGuardTest` (+2, the legal flag and the mock payout provider);
+`QuickScanFlowIT` (18) — paid synchronously within the request, a refused payout
+returned once even after a second job run, a pending payout settled to PAID, a
+pending payout reversed and returned once (and not twice), a transient failure
+retried to the cap then NEEDS_REVIEW with the money left out, an unexpected
+(non-`PayoutProviderException`) error right after the debit commits still
+returns 200 `PAYOUT_PENDING` with the wallet debited once and the job finishing
+the payout on the next run, a fresh job-inserted row excluded from
+`findClaimable` under 30s old and included once past it, a PAID row not
+re-fetched within six hours of its last check but re-fetched once that passes
+and never once 48 hours old, a PENDING row fetched at most once a minute,
+over-balance, over-max, an invalid VPA and UPI-direct all refused with nothing
+written, the same idempotency key replayed and a different amount on it
+refused, another tenant 404 on pay and on read, a member without
+`QUICKSCAN_PAY` 404 with nothing debited, two concurrent payments over the
+balance settling to exactly one (five races), and the config endpoint;
+`QuickScanDisabledIT` (2) — the flag off refuses the payment and says so on the
+config endpoint, both with the wallet otherwise fully funded.
+
+## D-107 — Adding money to the wallet through Razorpay, and where that money physically is
+**Raised 2026-09-29 · Settled 2026-09-29**
+
+**Where the money lives, plainly.** The wallet balance is a number in our MySQL
+database: a ledger (`wallet_transaction`) and a total (`wallet.balance`) saying
+how much we owe a restaurant. It is not money. The money is the cash Razorpay
+collected when the restaurant paid: it sits in *our* Razorpay balance and settles
+to *our* bank account on Razorpay's schedule. So a wallet is a **liability** —
+rupees we hold for a restaurant and must be able to pay out (to an order's
+supplier, back to a card on withdrawal, or to a shop by QuickScan) — and the
+promise behind every rupee of it is that the same rupee is in our Razorpay
+balance or our bank. A credit with no captured payment behind it is money we owe
+and do not have; that is the one thing this design exists to prevent, and it is
+why the mock top-up (D-099) is refused on a real provider.
+
+**What.** `POST /outlets/{id}/wallet/top-ups` (`PROCUREMENT_SUBMIT`, scoped to the
+outlet, `Idempotency-Key` required) validates the amount and the limits, writes a
+`wallet_top_up` row (V41) and opens a Razorpay order for exactly that amount with
+**`payment.capture = automatic`** — a top-up is captured when paid, unlike an
+order (D-103), because there is nothing to wait for and a held authorisation
+would lapse into money we never took. `PaymentProvider.AuthorizationRequest`
+gained `autoCapture` (default false, so every order is unchanged). The client
+opens Razorpay's checkout with `{ topUpId, razorpayOrderId, keyId, amount,
+currency }` and calls `POST .../top-ups/{id}/confirm` with `{ razorpayPaymentId,
+razorpaySignature }`. `GET .../top-ups/{id}` gives the status, and
+`GET /outlets/{id}/wallet` now carries a `limits` object.
+
+**Confirm trusts nothing the client sent.** The signature is checked first
+(`PaymentProvider.verifyCheckoutSignature`: HMAC-SHA256 of `order_id|payment_id`
+under the API secret — not the webhook secret, and the two are never accepted for
+one another). Then Razorpay is asked what the payment is, and it is credited only
+if it belongs to *this top-up's order*, is *captured*, and its amount equals the
+amount *we stored*. A payment that is authorised but not yet captured, or a
+Razorpay that cannot be reached, answers `TOP_UP_PROCESSING` (409): the money is
+safe and the poller credits it.
+
+**One method credits, so nothing can credit twice.** The client's confirm and the
+background poller both end in `WalletTopUpService.settle`. In one transaction it
+locks the outlet's wallet, then the top-up row (that order, always), re-checks the
+limits against the freshly locked balance, moves the row out of CREATED/EXPIRED
+with a conditional `UPDATE ... WHERE status IN (...)`, and writes the ledger
+credit through `WalletService.creditTopUp`. Behind it: a unique
+`razorpay_payment_id` per top-up, a unique ledger `reference` (`topup-{id}`), and
+the unique `razorpay_order_id`. The transaction runs at READ COMMITTED: under
+MySQL's default REPEATABLE READ a transaction that waited for the wallet lock
+still read the month's total as it stood before the wait, and two top-ups could
+each pass a limit that together they break. (A test that removes the wallet lock
+fails, five races in a row, on exactly this.) No provider call holds a
+connection (D-099).
+
+**No captured money is ever left without a credit or a refund.**
+- *Confirm never arrives* (app killed, network gone): `WalletTopUpJobs.poll`
+  finds CREATED top-ups older than a minute, asks Razorpay for the payment on the
+  order, and credits a captured one through `settle`. Asked every minute in the
+  first hour, every half hour after (an abandoned checkout costs about fifty
+  calls, not 1,440). After a day with nothing paid — checked at Razorpay first,
+  never assumed — the row is EXPIRED. A payment that turns up after that is still
+  credited: EXPIRED can become CREDITED.
+- *Crediting would break a limit* (two top-ups racing past the maximum balance,
+  say): the payment is not credited and not dropped. The row moves to
+  REFUND_PENDING in the same transaction, and a provider refund of that payment
+  is sent straight after commit with a key derived from the top-up
+  (`mandi-topup-refund-{id}`), so a retry reaches the same refund. A refund
+  Razorpay accepts as pending is followed up by asking, never sent twice; one that
+  fails is retried by the refund job up to five times and then logged at ERROR as
+  needing a person, with the balance untouched. The refund goes straight to
+  Razorpay rather than through `RefundService`, deliberately: that machinery is
+  built around an order's `payment` row and a supplier order, which a top-up has
+  neither of. It borrows its shape (claim, send without a transaction, record,
+  retry, hand to a person) rather than its tables.
+- *A captured payment whose amount is not the stored amount* is neither credited
+  nor refunded, and is logged at ERROR. Razorpay fixes an order's amount, so this
+  should never happen; if it does, a person decides.
+
+**Limits stand in for KYC.** `costonomy.mp.wallet.max-balance` (₹1,00,000),
+`monthly-top-up-limit` (₹10,00,000), `min-top-up` (₹10) and `max-top-up`
+(₹1,00,000) are checked when the top-up is created and again when it lands. A
+wallet anyone can fill without limit is a place to park money whose owner we know
+nothing about; KYC is what would allow that, and **KYC is not being built**, so
+the limits keep the exposure small without it. A future KYC tier would raise them
+per outlet, and `WalletLimits` is the one place they are read. "Month" is the
+calendar month in Asia/Kolkata; `addedThisMonth` counts CREDITED top-ups only, so
+the mock top-up, a refunded one and one still waiting do not count.
+
+**Open item — legal, not code.** Holding restaurants' money in a balance they can
+spend on orders, withdraw, and (D-106) pay third parties from is very likely a
+prepaid payment instrument under RBI's PPI rules, which need authorisation or a
+licensed partner holding the funds (an escrow or nodal account, or a PA/PPI
+partner). Limits are a risk control, not a licence. Whether this may go live, and
+under whose licence, is unanswered; it is the same question D-104 and D-106
+raised. Until it is answered this should be treated as sandbox only.
+
+**Known gaps.**
+- The payment webhook is not wired to top-ups. A `payment.captured` event for a
+  top-up's order is recorded as IGNORED (it matches no `payment` row); the poller
+  is what credits an unconfirmed payment, within about a minute and a half. Wiring
+  the webhook would make it instant; the poller would still be the net.
+- After a FAILED top-up (Razorpay refused the order) a retry needs a new
+  `Idempotency-Key`; the same key answers that the top-up has ended.
+- The auto-capture order body (`payment.capture = automatic`) follows Razorpay's
+  documented Orders API and is tested against a stand-in HTTP server, not the real
+  sandbox.
+
+Tests: `WalletTopUpIT` (52 across seven groups), `WalletTopUpLimitsIT` (5, small
+configured limits), `WalletLimitsTest` (3, the IST month), `RazorpayPaymentProviderTest`
+(+3: automatic capture, exact paise, checkout signature).
+
+
+## D-108 — Wallet history and statements, and where each kind of money movement is recorded
+**Raised 2026-09-29 · Settled 2026-09-29**
+
+A restaurant needs to see what happened to its wallet (a scrollable history with month
+headings and filters) and to hand its accountant a file (a statement). Both are *read
+models*: nothing here moves money, and neither keeps a second copy of it.
+
+**Where each kind of movement lives.** "Wallet money" is spread over five places, on
+purpose, and the history and statements read only the first two:
+
+| What | Where | Notes |
+|---|---|---|
+| Every change to the wallet balance | `wallet_transaction` (the ledger) | Append-only. Every row has `direction`, `kind`, `amount` and `balance_after`, written under the wallet lock in the same transaction as the balance, so `(created_at, id)` order is balance order. The source of truth for history and statements. |
+| A payment made to add money | `wallet_top_up` (V41, D-107) | The attempt. A credited one also has a ledger row (`reference = topup-{id}`); one that was paid and *returned* (status REFUNDED) has none, because the balance never moved. |
+| Money paid for an order | `payment`, `payment_transaction`, `refund` | Card, prepaid and credit orders. A refund credited to the wallet writes a ledger row (`REFUND`); a withdrawal writes a `WITHDRAWAL` ledger row pointing at its `refund`. The refund row's status is what says whether a withdrawal has reached the card. |
+| A wallet-paid order | `wallet_transaction` (`ORDER_PAYMENT`, `ORDER_REFUND`, `DISPUTE_REFUND`) | No `payment` row: the ledger *is* the record (D-105). |
+| QuickScan | `quickscan_payment` (D-106) | The payment and its payout. Its wallet effect is a `QUICKSCAN_PAYMENT` debit and, if returned, a `QUICKSCAN_RETURN` credit in the ledger. |
+
+**History: `GET /outlets/{id}/wallet/transactions`** (`ORDER_VIEW`, scoped to the outlet,
+like the wallet itself). Query `months`, `kinds`, `statuses`, `cursor`, `size`; all
+optional. Newest first.
+
+- **Keyset pagination on `(created_at, source, id)`, never offset.** A movement that lands
+  while someone scrolls arrives at the front of a newest-first list, so a page boundary
+  cannot repeat or skip a row; an offset would shift by exactly the number of new rows.
+  Rows at the same microsecond are ordered by `id`, which is balance order. The cursor is
+  opaque to clients and strictly validated (400).
+- **Two sources in one list.** Ledger rows, plus top-ups that were paid and returned,
+  shown as `TOP_UP` with status `RETURNED`, `balanceAfter` null and no effect on any
+  total. The customer will look for a debit on their bank statement; the history has to
+  explain it. Ids of the two tables can coincide, so each item also carries `key`
+  (`L12` / `T12`). A returned top-up is dated when it was *started* (`created_at`), the one
+  timestamp on that row that never changes, which a cursor needs.
+- **Status is what the customer needs to know, not our state machine.** Ledger rows are
+  `COMPLETED`, except a `WITHDRAWAL` whose refund is not `COMPLETED` yet: `IN_PROGRESS`,
+  including when the refund is FAILED (being retried) or NEEDS_REVIEW (a person has it),
+  because the customer's question is "has it arrived". `refundStatus` carries the detail.
+  `FAILED` is accepted as a filter and matches nothing today: a top-up whose Razorpay
+  order could not be created, or that expired unpaid, cost the customer nothing and is not
+  shown.
+- **Months are Asia/Kolkata months, computed in Java.** Each is turned into an instant range
+  and sent to the database as instants; no SQL time-zone conversion, so the answer cannot
+  depend on a database session's zone. 30 September 19:00 UTC is 1 October in India.
+- **`monthTotals` are ledger truth, unfiltered by kind and status.** `added` is the sum of
+  CREDIT rows, `spent` of DEBIT rows, for the months asked for (or, when none is asked for,
+  the months on the page). A returned top-up is in neither. This is what the statement for
+  that month says, so the header and the file cannot disagree because a filter was on.
+  `availableMonths` lists every month with anything to show, whatever the filters.
+- **`instrument`** ("Card •1007", "UPI", "Netbanking") says where a top-up's money came
+  from. V42 adds `wallet_top_up.payment_method` and `payment_detail`, set once, from the
+  payment Razorpay returns, at the moment the top-up is credited or returned
+  (`PaymentProvider.ProviderPayment` gained `method` and `methodDetail`). Only a card's last
+  four digits or a provider wallet's name is kept; never a full card number, a UPI address
+  or a bank account, and anything that is not exactly four digits is dropped at the
+  adapter. Null for every top-up before V42 and for a method Razorpay did not report; the
+  history shows those without an instrument rather than guessing.
+
+**Statement: `GET /outlets/{id}/wallet/statement`** (same permission). `range` LAST_30,
+LAST_90, LAST_180, LAST_365 or CUSTOM (`from`, `to` as `yyyy-MM-dd`, inclusive, at most 366
+days, `to` not in the future, `from` not after `to`), or `financialYear=2025-26` (1 April to
+31 March; the year in progress runs to today; one that has not started is refused);
+`format` PDF or CSV. LAST_n is n days ending today, today included. A period is whole IST
+days: `from` 00:00 IST up to, not including, midnight after `to`.
+
+- **Contents:** outlet name, period, opening and closing balance, total added, total spent,
+  then every ledger row of the period oldest first: date-time IST, description (the same
+  wording as the mobile app's `entryLabel`, `lib/wallet/entryCopy.ts`), reference (the
+  order number, if the movement was about an order), direction, amount, balance after.
+  The CSV adds the ledger's own note as a last column. A returned top-up is **not** on it:
+  it never moved the balance.
+- **It reconciles or it does not exist.** Opening is `balance_after` of the last row before
+  the period (0 if there is none); closing is the last row's `balance_after` in the period
+  (else opening). Before a file is written, every row's `balance_after` must follow from
+  the row before it, `opening + added - spent` must equal `closing`, and, when the period
+  reaches the last row, closing must equal `wallet.balance` (a different statement, in the
+  same transactions). Any mismatch logs at ERROR and answers 500 rather than emit a
+  plausible wrong statement: this is the file a restaurant gives its accountant. All reads
+  are in one read-only transaction so they see one moment.
+- **Bounded:** more than 20,000 rows is `422 STATEMENT_TOO_LARGE` ("choose a shorter
+  period"), checked with a count before any row is loaded.
+- **CSV:** RFC 4180 (CRLF, quoting, every line the same width). Text cells that start with
+  `= + - @` (or tab or carriage return) are prefixed with a single quote so a spreadsheet
+  does not run them: an outlet's name and a ledger note are text a person wrote. Amounts are
+  plain numbers, never prefixed.
+- **PDF: written by hand, no library.** openpdf, pdfbox and iText are not in the local
+  Maven repository and the build runs offline, so adding one would break every build but
+  the author's. `WalletStatementPdf` writes A4 pages with Helvetica and Helvetica-Bold (the
+  standard fonts, nothing embedded), the table header repeated on each page and
+  "Page n of m". The standard fonts have no ₹ glyph, so amounts read "Rs."; any character
+  the fonts cannot draw becomes "?". If richer layout or Indic scripts are ever wanted, that
+  is the time to bring in a library, with a font that has the glyphs.
+- One INFO log line per statement (outlet, period, row count); no amounts.
+
+**Not done.** No push notification or e-mail of a statement; no XLSX; no per-kind filter on
+statements; the history does not show top-ups that are still waiting (CREATED) or being
+returned (REFUND_PENDING), which the wallet home shows as before. The statement file's
+wording is duplicated from the mobile app, not shared, because the two are in different
+repositories.
+
+Tests: `WalletHistoryIT` (18), `WalletStatementIT` (19), `StatementPeriodTest` (8),
+`WalletStatementFilesTest` (9), one more in `RazorpayPaymentProviderTest` and in
+`WalletTopUpLimitsIT` (a returned top-up in the history through the real flow).
+
 ## D-109 — Cancelling an order whose money was debited captures it and refunds it, and a lapsed hold is noticed
 **Raised 2026-09-30 · Settled 2026-09-30** (owner recommendations E-1 to E-6 accepted as defaults; the fee and instant-refund choices are still the owner's, see below)
 
@@ -4648,3 +4958,39 @@ mutation (see the PR); the tests added after the second and third reviews were e
 **Open verifications (test mode, before sign-off).** V-5 the idempotency key's retention (no longer relied on). V-6 the
 refund window. V-7 the exact 400 text for each row of the table, and whether a `failed` refund can become `processed`. V-8
 whether `amount_refunded` includes a pending refund.
+
+## D-111 — QuickScan, top-ups, history and statements meet the money-safety stack
+**Raised 2026-09-30 · Settled 2026-09-30**
+
+D-106 to D-108 were built on the code as it stood before D-109 and D-110, and share one wallet with them. Put together, what
+each side must do for the other:
+
+1. **Only card refund money can go back to a card.** What a wallet can give back is computed from the `refund` table alone
+   (`RefundRepository.withdrawableByPayment`): wallet refunds credited, less withdrawals not reversed. A top-up
+   (`TOP_UP`) and a returned QuickScan payment (`QUICKSCAN_RETURN`) never appear there, so neither is withdrawable. Refund money
+   that QuickScan spent and that came back (a declined payout) is still that card's refund, so it can go back once and no more
+   than was refunded; the balance still caps every withdrawal. A `WITHDRAWAL_REVERSAL` credit puts refund money back into what
+   can be withdrawn, because its refund is `REVERSED` and no longer counted.
+2. **One way to move a balance.** History and statements read the wallet through `WalletService.find`, not the repository:
+   `WalletBalanceWritersTest` says only `WalletService` holds `WalletRepository`. QuickScan's debit and return and the top-up
+   credit are `WalletService` methods, each an atomic update with its ledger row.
+3. **Lock order.** The wallet is locked first (`WalletService.lock`, a locking read before anything is loaded); a top-up
+   then locks its own row, a QuickScan payment inserts its own new row. A QuickScan return runs holding its payment row and
+   then takes the wallet by an atomic credit; nothing that holds the wallet ever waits for a QuickScan row, so the order
+   wallet, refund, payment of the withdrawal is not crossed.
+4. **What a person reads.** A withdrawal whose refund is `REVERSED` is `RETURNED` (the money is back, its own
+   `WITHDRAWAL_REVERSAL` credit says so); `REJECTED`, `FAILED`, `NEEDS_REVIEW` and the rest not yet complete are
+   `IN_PROGRESS`. A statement labels the reversal "Withdrawal returned to your wallet" and still reconciles: it is a ledger
+   credit like any other. The mobile `entryCopy.ts` must carry the same wording (see D-108).
+5. **The provider port carries both sides' fields.** `AuthorizationRequest` has `holdMinutes` (orders, D-109) and `autoCapture`
+   (top-ups, D-107); a top-up sends no hold. A top-up's refund to its source goes with a receipt and notes of its own
+   (`mandi-topup-refund-{id}`, `mandi_topup_id`), which the order refunds' matching (`mandi-refund-`) does not mistake for a refund of
+   an order's payment. A `payout` provider left at MOCK under a production profile refuses to start, as does `withdraw-precheck`
+   set to anything but true.
+
+**Migrations.** V40 to V42 (QuickScan, top-ups, top-up payment method) and V43 and V44 (the stack) are independent and apply in that order
+on a fresh database and on one already at V42, where V43 and V44 are simply the next two.
+
+**Tests.** `PaymentFlowIT$WalletInterplay`: top-up money and QuickScan returns against the withdrawal pre-check, a reversal on
+the history and a statement, a QuickScan payment and a withdrawal of one wallet at once, and top-ups, QuickScan, withdrawals and a
+reversal together (ledger equals balance). `WalletEntryCopyTest`.

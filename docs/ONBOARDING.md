@@ -271,6 +271,8 @@ are used as they were.
 | `feat/razorpay-11-dispute-refunds` | **Refunds go to the wallet; a withdrawal goes back to the card** (D-104, part one). The restaurant's own refund endpoint is gone. `POST /outlets/{id}/wallet/withdraw` sends refund money back to the payments it came from. Part two is the next PR |
 | `feat/razorpay-12-dispute-refund-requests` | **Refunds are asked for on a dispute** (D-104 part two). The supplier approves or declines; operations decides after a decline or 48 hours. An approval credits the wallet and is taken from the supplier's payout for the order — capped at it, refused once it is approved, and a payout cannot be approved while a refund on it is undecided. **Costonomy never funds a refund.** Dispute lists per outlet and per store |
 | `feat/razorpay-15-order-payment-status` | **An order's payment status is read live from how it was paid** (D-105). It was a copy written once as "AUTHORIZED" for every order: wallet orders, credit orders and card orders already charged, refunded or released all said "Authorized" |
+| `feat/quickscan-1-wallet-payments` | **QuickScan, part one: pay any UPI merchant from the wallet** (D-106), sandbox only — behind `costonomy.mp.quickscan.enabled` (default off), which `ProductionProviderGuard` now refuses under a production profile until legal has signed off. `V40` adds `quickscan_payment` and `QUICKSCAN_PAY`. A `PayoutProvider` port (mock only, RazorpayX later) sends the payout after the wallet debit, in the `RefundService.process` shape — `PAYOUT_PENDING` → `PAID`/`FAILED` (money returned) or `NEEDS_REVIEW` after 5 attempts (money left out — the payout may have reached the shop) |
+| `feat/wallet-1-razorpay-top-up` | **Add money to the wallet through Razorpay** (D-107). `POST /outlets/{id}/wallet/top-ups` opens an auto-captured Razorpay order; `.../{id}/confirm` verifies the checkout signature, asks Razorpay what the payment is and credits the wallet once; `GET .../{id}` gives the status. Limits (max balance, monthly, min/max single — a stand-in for KYC) are checked at creation and again at credit time; a captured payment that would break one is refunded to its source, never dropped. `WalletTopUpJobs` credits a captured payment whose confirm never arrived. `V41` adds `wallet_top_up`; `GET /outlets/{id}/wallet` gains `limits` |
 
 What you will notice:
 
@@ -278,6 +280,9 @@ What you will notice:
   mock (`costonomy.mp.providers.payment`, set by `PAYMENT_PROVIDER`). It credited
   money that didn't exist.
 - New setting `SCHEDULER_THREADS` (default 8).
+- New settings `QUICKSCAN_ENABLED` (default `false`), `QUICKSCAN_MAX_AMOUNT`
+  (default 10000), `QUICKSCAN_FEE` (default 0) and `PAYOUT_PROVIDER` (default
+  `MOCK`) — see D-106.
 - Refund keys sent to the provider are `mandi-refund-{id}` (Razorpay needs ten
   characters).
 - **Money is held, not taken, until "ready"** (D-103). A payment is AUTHORIZED
@@ -304,7 +309,7 @@ What you will notice:
 - `costonomy-mp-mobile/tools/razorpay-e2e` pays real test-mode orders end to end,
   31 cases, mostly failures. It needs this API on Razorpay test keys.
 
-Tests after these PRs: 329 unit, 368 integration.
+Tests after these PRs: 354 unit, 384 integration.
 
 ### Earlier, on `feat/edit-open-request-quantities`
 

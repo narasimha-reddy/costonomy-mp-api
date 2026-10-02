@@ -7,7 +7,11 @@ package com.costonomy.mp.wallet.domain;
  */
 public enum WalletEntryKind {
 
-    /** Money put in directly. Only on the mock provider (D-099). */
+    /**
+     * Money put in. Either a Razorpay top-up that was captured (D-107), whose
+     * ledger reference is {@code topup-{id}}, or the mock endpoint's credit with
+     * no reference and no money behind it (D-099).
+     */
     TOP_UP,
     /** An order paid from the wallet. */
     ORDER_PAYMENT,
@@ -32,5 +36,12 @@ public enum WalletEntryKind {
      * the provider showed no refund of ours. Money that came from a card, so it is
      * withdrawable again unless its source payment has since been blocked.
      */
-    WITHDRAWAL_REVERSAL
+    WITHDRAWAL_REVERSAL,
+    /** A QuickScan payment to a UPI merchant, debited up front (D-106). */
+    QUICKSCAN_PAYMENT,
+    /**
+     * A QuickScan payment's money given back — the payout was refused or
+     * reversed. No card behind it, like an order's return.
+     */
+    QUICKSCAN_RETURN
 }
