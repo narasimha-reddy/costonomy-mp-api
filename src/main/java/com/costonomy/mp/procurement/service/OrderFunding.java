@@ -73,6 +73,14 @@ public class OrderFunding {
         forOrder(supplierOrderId).onOrderAccepted(supplierOrderId, acceptedAmount);
     }
 
+    public void onOrderDispatched(Long supplierOrderId, BigDecimal amount) {
+        forOrder(supplierOrderId).onOrderDispatched(supplierOrderId, amount);
+    }
+
+    public boolean canTakeFunds(Long supplierOrderId) {
+        return forOrder(supplierOrderId).canTakeFunds(supplierOrderId);
+    }
+
     public java.util.Optional<OrderFundingPort.FundingIntent> openIntent(Long supplierOrderId) {
         return forOrder(supplierOrderId).openIntent(supplierOrderId);
     }

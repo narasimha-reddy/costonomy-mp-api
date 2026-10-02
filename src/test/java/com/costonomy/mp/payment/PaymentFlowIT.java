@@ -148,6 +148,35 @@ class PaymentFlowIT extends AbstractIntegrationTest {
                 Map.of("providerPaymentId", providerPayment.providerPaymentId())).at("/data");
     }
 
+    /**
+     * The supplier marks the order preparing, then ready — the moment its money
+     * is taken since D-103. Before it the payment is only held.
+     */
+    private void dispatch(Submitted submitted) throws Exception {
+        dispatch(submitted.orderId(), submitted.seller().token());
+    }
+
+    private int supplierStep(Submitted submitted, String step) throws Exception {
+        return mvc.perform(MockMvcRequestBuilders
+                        .post("/api/v1/supplier-orders/" + submitted.orderId() + "/" + step)
+                        .header("Authorization", "Bearer " + submitted.seller().token())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andReturn().getResponse().getStatus();
+    }
+
+    private void dispatch(long orderId, String sellerToken) throws Exception {
+        for (String step : List.of("preparing", "ready")) {
+            int status = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/supplier-orders/" + orderId + "/" + step)
+                            .header("Authorization", "Bearer " + sellerToken)
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON))
+                    .andReturn().getResponse().getStatus();
+            assertThat(status).describedAs("supplier " + step).isEqualTo(200);
+        }
+    }
+
     private String orderStatus(long orderId) {
         return jdbc.queryForObject(
                 "select status from supplier_order where id = ?", String.class, orderId);
@@ -240,7 +269,10 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             // confirmation: it used to wait for the supplier to accept, and
             // there is no longer an acceptance to wait for. The money is marked
             // the instant the order is confirmed and taken by the job.
-            assertThat(payment.get("status").asText()).isEqualTo("CAPTURE_PENDING");
+            // Held, not yet taken: since D-103 the money is taken when the supplier
+            // marks the order ready, so the order is funded but a cancellation
+            // before then only drops the hold.
+            assertThat(payment.get("status").asText()).isEqualTo("AUTHORIZED");
             assertThat(payment.get("fundsSecured").asBoolean()).isTrue();
             assertThat(payment.get("authorizedAmount").asDouble()).isEqualTo(4000.00);
 
@@ -337,14 +369,23 @@ class PaymentFlowIT extends AbstractIntegrationTest {
     class Capture {
 
         @Test
-        @DisplayName("confirming captures the full amount")
-        void fullAcceptanceCapturesEverything() throws Exception {
+        @DisplayName("confirming only holds the money; marking the order ready takes it")
+        void heldUntilReadyThenCaptured() throws Exception {
             var submitted = submit("400", 10);
             payAndConfirm(submitted);
 
+            // Held, not taken (D-103): the order is confirmed and the supplier can
+            // see it, but a cancellation now only drops the hold.
+            assertThat(jdbc.queryForObject("select status from payment where id = ?",
+                    String.class, submitted.paymentId())).isEqualTo("AUTHORIZED");
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+            paymentJobs.capturePending();
+            assertThat(decimal(submitted.paymentId(), "captured_amount")).isEqualByComparingTo("0");
 
-            // Marked, not yet taken — the provider call happens outside the
-            // acceptance transaction.
+            dispatch(submitted);
+
+            // Marked at "ready", not yet taken — the provider call happens outside
+            // the transaction that moved the order.
             assertThat(jdbc.queryForObject("select status from payment where id = ?",
                     String.class, submitted.paymentId())).isEqualTo("CAPTURE_PENDING");
 
@@ -378,6 +419,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             var providerPayment = mockProvider.completeCheckout(placed.providerOrderId());
             api.post(buyer.token(), "/api/v1/payments/" + placed.paymentId() + "/confirm",
                     Map.of("providerPaymentId", providerPayment.providerPaymentId()));
+            dispatch(placed.orderId(), seller.token());
             paymentJobs.capturePending();
 
             assertThat(decimal(placed.paymentId(), "captured_amount"))
@@ -392,9 +434,9 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         @Test
         @DisplayName("a supplier cancelling returns the money")
         void supplierCancellationReturnsTheMoney() throws Exception {
-            // What rejection became. The money has already moved by the time a
-            // supplier backs out -- they committed on the request and were paid
-            // against that answer -- so this refunds rather than releasing.
+            // What rejection became. Since D-103 the money is only held until the
+            // order is ready, and a supplier can back out only before that — so
+            // the hold is dropped and nothing is ever charged or refunded.
             var submitted = submit("400", 10);
             payAndConfirm(submitted);
             paymentJobs.capturePending();
@@ -410,6 +452,89 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             assertThat(jdbc.queryForObject(
                     "select cancelled_by from supplier_order where id = ?",
                     String.class, submitted.orderId())).isEqualTo("SUPPLIER");
+            // The side effect: released, never taken, nothing to refund.
+            assertThat(jdbc.queryForObject("select status from payment where id = ?",
+                    String.class, submitted.paymentId())).isEqualTo("RELEASED");
+            assertThat(decimal(submitted.paymentId(), "captured_amount")).isEqualByComparingTo("0");
+            assertThat(decimal(submitted.paymentId(), "released_amount")).isEqualByComparingTo("4000");
+            assertThat(jdbc.queryForObject("select count(*) from refund where payment_id = ?",
+                    Integer.class, submitted.paymentId())).isZero();
+            // And the capture job has nothing to take.
+            paymentJobs.capturePending();
+            assertThat(decimal(submitted.paymentId(), "captured_amount")).isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("an order cannot be cancelled once ready, and its money is taken there")
+        void readyIsWhereMoneyIsTaken() throws Exception {
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+            dispatch(submitted);
+
+            int status = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/supplier-orders/" + submitted.orderId() + "/supplier-cancel")
+                            .header("Authorization", "Bearer " + submitted.seller().token())
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("reason", "OUT_OF_STOCK"))))
+                    .andReturn().getResponse().getStatus();
+
+            // Past "ready" the path is a dispute, not a cancellation (doc 01 §13),
+            // which is why taking the money here can never race a cancellation.
+            assertThat(status).isGreaterThanOrEqualTo(400);
+            paymentJobs.capturePending();
+            assertThat(jdbc.queryForObject("select status from payment where id = ?",
+                    String.class, submitted.paymentId())).isEqualTo("CAPTURED");
+        }
+
+        @Test
+        @DisplayName("an order whose hold is about to lapse cannot be marked ready")
+        void expiringHoldBlocksDispatch() throws Exception {
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+            // Five days is Razorpay's limit; past its margin the goods must not
+            // leave against money that is about to go back to the restaurant.
+            jdbc.update("update payment set authorized_at = date_sub(utc_timestamp(6), interval 5 day) "
+                    + "where id = ?", submitted.paymentId());
+            supplierStep(submitted, "preparing");
+
+            int status = supplierStep(submitted, "ready");
+
+            assertThat(status).isEqualTo(409);
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("PREPARING");
+            assertThat(jdbc.queryForObject("select status from payment where id = ?",
+                    String.class, submitted.paymentId())).isEqualTo("AUTHORIZED");
+        }
+
+        @Test
+        @DisplayName("an order cancelled after its money was taken is refunded in full, once")
+        void cancelledAfterCaptureIsRefundedOnce() throws Exception {
+            // Only reachable for an order captured before D-103 moved capture to
+            // "ready" — the safety net for it, which used to log and stop.
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+            dispatch(submitted);
+            paymentJobs.capturePending();
+            jdbc.update("update supplier_order set status = 'CONFIRMED' where id = ?", submitted.orderId());
+
+            for (int event = 0; event < 2; event++) {
+                mvc.perform(MockMvcRequestBuilders
+                        .post("/api/v1/supplier-orders/" + submitted.orderId() + "/supplier-cancel")
+                        .header("Authorization", "Bearer " + submitted.seller().token())
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("reason", "OUT_OF_STOCK"))));
+            }
+            paymentJobs.processRefunds();
+
+            assertThat(jdbc.queryForList("select amount, status, idempotency_key from refund where payment_id = ?",
+                    submitted.paymentId()))
+                    .singleElement()
+                    .satisfies(row -> {
+                        assertThat((BigDecimal) row.get("amount")).isEqualByComparingTo("400.00");
+                        assertThat(row.get("status")).isEqualTo("COMPLETED");
+                        assertThat(row.get("idempotency_key")).isEqualTo("cancel-order-" + submitted.orderId());
+                    });
         }
 
         @Test
@@ -418,6 +543,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             // .17 makes the mock fail the capture.
             var submitted = submit("400.17", 1);
             payAndConfirm(submitted);
+            dispatch(submitted);
 
             paymentJobs.capturePending();
             paymentJobs.capturePending();
@@ -430,8 +556,8 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             assertThat(jdbc.queryForObject("select count(*) from payment_transaction "
                     + "where payment_id = ? and transaction_type = 'CAPTURE' and status = 'FAILED'",
                     Integer.class, submitted.paymentId())).isEqualTo(2);
-            // And the acceptance stands: a gateway problem is not the supplier's.
-            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+            // And the order stands: a gateway problem is not the supplier's.
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("READY_FOR_PICKUP");
         }
     }
 
@@ -495,6 +621,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
 
             postWebhook(webhookBody("evt_" + UUID.randomUUID(), "payment.authorized",
                     providerPayment.providerPaymentId(), submitted.providerOrderId()));
+            dispatch(submitted);
 
             paymentJobs.capturePending();
 
@@ -703,6 +830,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
 
             var submitted = submit("400", 1);
             payAndConfirm(submitted);
+            dispatch(submitted);
             paymentJobs.capturePending();
             requestRefund(submitted, "100.00", "CANCELLATION", UUID.randomUUID().toString());
             paymentJobs.processRefunds();
@@ -720,6 +848,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         void stuckRefundIsResent() throws Exception {
             var submitted = submit("400", 1);
             payAndConfirm(submitted);
+            dispatch(submitted);
             paymentJobs.capturePending();
             long refundId = requestRefund(submitted, "50.00", "CANCELLATION",
                     UUID.randomUUID().toString()).at("/data/id").asLong();
@@ -742,6 +871,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             // .19 makes the mock decline the refund.
             var submitted = submit("400.19", 1);
             payAndConfirm(submitted);
+            dispatch(submitted);
             paymentJobs.capturePending();
             long refundId = requestRefund(submitted, "10.00", "CANCELLATION",
                     UUID.randomUUID().toString()).at("/data/id").asLong();
@@ -764,6 +894,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         void partialThenPartial() throws Exception {
             var submitted = submit("400", 1);
             payAndConfirm(submitted);
+            dispatch(submitted);
             paymentJobs.capturePending();
 
             requestRefund(submitted, "150.00", "CANCELLATION", UUID.randomUUID().toString());
@@ -904,7 +1035,8 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             var paid = mockProvider.completeCheckout(submitted.providerOrderId());
             api.post(submitted.buyer().token(), "/api/v1/payments/" + submitted.paymentId() + "/confirm",
                     Map.of("providerPaymentId", paid.providerPaymentId()));
-            assertThat(status(submitted.paymentId())).isEqualTo("CAPTURE_PENDING");
+            // Held until the order is ready (D-103).
+            assertThat(status(submitted.paymentId())).isEqualTo("AUTHORIZED");
 
             // Another attempt on the same order, declined, reported afterwards.
             var declined = mockProvider.declineAttempt(submitted.providerOrderId());
@@ -913,11 +1045,12 @@ class PaymentFlowIT extends AbstractIntegrationTest {
 
             // Before (D-101) this failed the payment: the order went ahead, capture
             // never ran, and the supplier delivered for nothing.
-            assertThat(status(submitted.paymentId())).isEqualTo("CAPTURE_PENDING");
+            assertThat(status(submitted.paymentId())).isEqualTo("AUTHORIZED");
             assertThat(providerPaymentIdOf(submitted.paymentId())).isEqualTo(paid.providerPaymentId());
+            dispatch(submitted);
             paymentJobs.capturePending();
             assertThat(status(submitted.paymentId())).isEqualTo("CAPTURED");
-            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("READY_FOR_PICKUP");
         }
 
         @Test
@@ -955,6 +1088,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         void pendingRefundWaits() throws Exception {
             var submitted = submit("400", 1);
             payAndConfirm(submitted);
+            dispatch(submitted);
             paymentJobs.capturePending();
             // .23 makes the mock accept the refund as pending.
             long refundId = requestRefund(submitted, "10.23", "CANCELLATION",
@@ -981,6 +1115,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         void inFlightRefundsCount() throws Exception {
             var submitted = submit("400", 1);
             payAndConfirm(submitted);
+            dispatch(submitted);
             paymentJobs.capturePending();
 
             requestRefund(submitted, "300.00", "CANCELLATION", UUID.randomUUID().toString());
@@ -996,8 +1131,10 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         void refundKeyIsScoped() throws Exception {
             var first = submit("400", 1);
             payAndConfirm(first);
+            dispatch(first);
             var second = submit("400", 1);
             payAndConfirm(second);
+            dispatch(second);
             paymentJobs.capturePending();
 
             String key = UUID.randomUUID().toString();
@@ -1010,6 +1147,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         void transientRefundFailureIsCapped() throws Exception {
             var submitted = submit("400", 1);
             payAndConfirm(submitted);
+            dispatch(submitted);
             paymentJobs.capturePending();
             long refundId = requestRefund(submitted, "10.00", "CANCELLATION",
                     UUID.randomUUID().toString()).at("/data/id").asLong();
@@ -1116,6 +1254,9 @@ class PaymentFlowIT extends AbstractIntegrationTest {
                                     Map.of("providerPaymentId", paid.providerPaymentId()))))
                     .andExpect(status().isOk());
 
+            // The supplier marks it ready — the moment its money is taken (D-103).
+            dispatch(submitted);
+
             // Capture through the real scheduler, so the run gets its job id the
             // way production does — not by calling the job directly.
             scheduler.schedule(new ScheduledMethodRunnable(paymentJobs,
@@ -1132,8 +1273,9 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             String authorised = lineWith(log, "Payment " + pid + " CREATED → AUTHORIZED via CONFIRM");
             assertThat(authorised).contains("[costonomy-mp-api," + requestId + "]")
                     .contains(" payment=" + pid + " ").contains(" order=" + submitted.orderId() + " ");
+            // Marked by the supplier's "ready", so it carries their request, and the order.
             assertThat(lineWith(log, "Payment " + pid + " AUTHORIZED → CAPTURE_PENDING"))
-                    .contains(requestId);
+                    .contains(" order=" + submitted.orderId());
             String captured = lineWith(log, "Payment " + pid + " CAPTURE_PENDING → CAPTURED via CAPTURE_JOB");
             assertThat(captured).containsPattern("\\[costonomy-mp-api,job-capturePending-[0-9a-f]{8}\\]")
                     .contains(" payment=" + pid + " ");
@@ -1164,6 +1306,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
     // ── helpers ──────────────────────────────────────────────────────────
 
     private void acceptAndCapture(Submitted submitted) throws Exception {
+        dispatch(submitted);
         paymentJobs.capturePending();
     }
 
