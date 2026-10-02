@@ -50,6 +50,7 @@ public class PaymentJobs {
     private final PaymentProvider provider;
     private final CancellationService cancellations;
     private final PaymentHoldPolicy holdPolicy;
+    private final WithdrawalReversalService reversals;
 
     /**
      * How long an unpaid intent is still worth asking about. A day comfortably
@@ -528,17 +529,37 @@ public class PaymentJobs {
         // person must know about, and each send below that fails only writes a WARN (N4).
         alertFailedRefunds(pending);
 
+        // Payments the provider said it does not know, since the last refund it answered about. Two different
+        // ones in a row is a configuration fault, not two dead payments: nothing more is sent this run (D-110).
+        var unknownPayments = new java.util.LinkedHashSet<Long>();
+        boolean backedOff = false;
         for (var refund : pending) {
             try (var trace = PaymentTrace.of(refund)) {
                 try {
-                    if (refundService.process(refund.getId()) == RefundService.Outcome.BACK_OFF) {
+                    var outcome = refundService.process(refund.getId());
+                    if (outcome == RefundService.Outcome.BACK_OFF) {
                         // Rate limited or keys refused: every other refund would meet the same answer
                         // and add to the load. Stop, as the cancellation job does; the next run resends.
                         if (alertDue("refund-backoff", Instant.now(), BACK_OFF_ALERT_EVERY)) {
                             log.warn("Refund run stopped after refund {}: the provider is not accepting "
                                     + "calls; the next run tries again", refund.getId());
                         }
-                        return;
+                        backedOff = true;
+                        break;
+                    }
+                    if (outcome == RefundService.Outcome.UNKNOWN_PAYMENT) {
+                        unknownPayments.add(refund.getPaymentId());
+                        if (unknownPayments.size() >= 2) {
+                            if (alertDue("refund-unknown-config", Instant.now(), BACK_OFF_ALERT_EVERY)) {
+                                log.error("Configuration fault: the provider does not know payments {} in a row "
+                                        + "when sending refunds: check the API keys, mode and base URL. Nothing more "
+                                        + "is sent, blocked or put back", unknownPayments);
+                            }
+                            backedOff = true;
+                            break;
+                        }
+                    } else {
+                        unknownPayments.clear();
                     }
                 } catch (RuntimeException ex) {
                     log.error("Could not process refund {}", refund.getId(), ex);
@@ -546,15 +567,195 @@ public class PaymentJobs {
             }
         }
 
-        // Accepted by the provider but not finished there: ask, never resend.
-        for (var refund : refunds.findByStatusAndProviderRefundIdIsNotNullAndUpdatedAtBefore(
-                RefundStatus.PROCESSING, Instant.now().minus(Duration.ofMinutes(2)))) {
+        // Accepted by the provider but not finished there: ask, never resend. Not while the provider is
+        // limiting our calls or refusing our keys: every one of these would meet the same answer.
+        if (!backedOff) {
+            for (var refund : refunds.findByStatusAndProviderRefundIdIsNotNullAndUpdatedAtBefore(
+                    RefundStatus.PROCESSING, Instant.now().minus(Duration.ofMinutes(2)))) {
+                try (var trace = PaymentTrace.of(refund)) {
+                    try {
+                        refundService.settlePending(refund.getId());
+                    } catch (RuntimeException ex) {
+                        log.error("Could not settle refund {}", refund.getId(), ex);
+                    }
+                }
+            }
+        }
+
+        // Refused for good by the provider (D-110): its refunds are read, and only then is anything decided
+        // about the money. Last, so a refusal made by a send or a pending check above is settled in this
+        // same run, and every run, so a process that died between the refusal and the credit finishes it.
+        settleRejected();
+    }
+
+    /** A refund REJECTED for longer than this is an error for someone to see (D-110). */
+    static final Duration REJECTED_ALERT_AFTER = Duration.ofMinutes(30);
+    static final Duration REJECTED_ALERT_EVERY = Duration.ofHours(1);
+
+    /** Refunds whose ambiguous send may have gone through are read again this often, for this long (D-110). */
+    static final Duration AMBIGUOUS_RECHECK_EVERY = Duration.ofHours(1);
+    static final Duration AMBIGUOUS_RECHECK_FOR = Duration.ofDays(7);
+
+    /**
+     * A reversed refund is watched for a late success on the schedule in {@link WithdrawalReversalService#AUDIT_SCHEDULE},
+     * which ends at fourteen days; a refund older than this, with its last check, is left alone (D-110).
+     */
+    static final Duration REVERSED_AUDIT_FOR = Duration.ofDays(14).plusHours(12);
+
+    /** How many reversed refunds the audit reads per page. A field, so a test can make it small. */
+    int auditPageSize = 200;
+
+    /** How many rejected refunds one run reads. A field, so a test can make it small. */
+    int settlePageSize = 100;
+
+    /**
+     * Read the provider's refunds for each REJECTED refund and act on what they show: adopt ours, put a
+     * withdrawal part back, or leave it for a person (D-110). Idempotent, so it is safe every run.
+     *
+     * <p>Refunds whose payment the provider does not know are held back until it is clear whether that is the
+     * payment or our keys. The whole page is read first, and the answer comes from the rest of it: as soon as
+     * the provider answers normally about any other refund, the keys are the right ones and what it did not
+     * know is a payment that is gone (sent to a person, once). Only if <em>nothing</em> on the page was answered
+     * and two different payments were unknown is it a configuration fault, and then nothing is decided. Those
+     * refunds are then moved behind the others in the queue, so that a few payments the provider cannot place
+     * cannot sit at its head for ever and starve every refund behind them.
+     */
+    void settleRejected() {
+        Instant now = Instant.now();
+        var held = new java.util.LinkedHashMap<Long, java.util.List<Long>>();
+        boolean keysWork = false;
+        for (var refund : refunds.rejectedToSettle(org.springframework.data.domain.PageRequest.of(0, settlePageSize))) {
             try (var trace = PaymentTrace.of(refund)) {
                 try {
-                    refundService.settlePending(refund.getId());
+                    var result = reversals.verifyAndReverse(refund.getId());
+                    if (result == WithdrawalReversalService.Result.UNKNOWN_AT_PROVIDER) {
+                        if (keysWork) {
+                            reversals.reviewUnknown(refund.getId());
+                        } else {
+                            held.computeIfAbsent(refund.getPaymentId(), k -> new java.util.ArrayList<>()).add(refund.getId());
+                        }
+                        continue;
+                    }
+                    if (result != WithdrawalReversalService.Result.WAITING
+                            && result != WithdrawalReversalService.Result.NOT_APPLICABLE) {
+                        // The provider answered about a payment: the keys are the right ones, and what it does not
+                        // know is not known.
+                        keysWork = true;
+                        held.values().forEach(ids -> ids.forEach(reversals::reviewUnknown));
+                        held.clear();
+                    }
                 } catch (RuntimeException ex) {
-                    log.error("Could not settle refund {}", refund.getId(), ex);
+                    log.error("Could not verify rejected refund {}", refund.getId(), ex);
                 }
+            }
+        }
+        if (held.size() >= 2) {
+            if (alertDue("reversal-unknown-config", now, BACK_OFF_ALERT_EVERY)) {
+                log.error("Configuration fault: the provider does not know payments {} when reading "
+                        + "their refunds, and answered about no other: check the API keys, mode and base URL. "
+                        + "Nothing is put back, blocked or sent", held.keySet());
+            }
+            refunds.markHeld(held.values().stream().flatMap(java.util.List::stream).toList(), now);
+        } else {
+            // One payment unknown to the provider and nothing else said otherwise: a payment that is gone.
+            held.values().forEach(ids -> ids.forEach(reversals::reviewUnknown));
+        }
+        alertLongRejected(now);
+    }
+
+    /**
+     * Every refund still REJECTED after {@link #REJECTED_ALERT_AFTER} is an error line for someone to see, whatever
+     * it was read as this run, and however far down the queue it is: a refund the run never got to, or one held
+     * back, must not be the one nobody hears about (D-110).
+     */
+    private void alertLongRejected(Instant now) {
+        long afterId = 0;
+        while (true) {
+            var page = refunds.rejectedSince(now.minus(REJECTED_ALERT_AFTER), afterId,
+                    org.springframework.data.domain.PageRequest.of(0, 200));
+            for (var refund : page) {
+                afterId = refund.getId();
+                if (alertDue("refund-rejected-" + refund.getId(), now, REJECTED_ALERT_EVERY)) {
+                    log.error("Refund {} REJECTED for {} min and not yet verified with the provider; money owed "
+                            + "back is waiting", refund.getId(),
+                            Duration.between(refund.getUpdatedAt(), now).toMinutes());
+                }
+            }
+            if (page.size() < 200) {
+                break;
+            }
+        }
+    }
+
+    /**
+     * A refund that went to a person after an ambiguous send is read again, hourly for a week: the
+     * refund may well exist at the provider, and finding it is what closes the case (D-110).
+     */
+    @Scheduled(fixedDelayString = "${costonomy.mp.payments.refund-audit-interval:PT10M}")
+    @SchedulerLock(name = "payment-refund-audit", lockAtMostFor = "PT10M", lockAtLeastFor = "PT0S")
+    public void reconcileAmbiguousRefunds() {
+        Instant now = Instant.now();
+        for (var refund : refunds.ambiguousToReconcile(now.minus(AMBIGUOUS_RECHECK_FOR),
+                now.minus(AMBIGUOUS_RECHECK_EVERY), org.springframework.data.domain.PageRequest.of(0, 100))) {
+            try (var trace = PaymentTrace.of(refund)) {
+                try {
+                    // Found: adopted. Not found: noted, and checked again in an hour.
+                    reversals.run(refund.getId(), null, WithdrawalReversalService.Intent.VERIFY);
+                } catch (RuntimeException ex) {
+                    log.warn("Could not reconcile refund {} with the provider: {}", refund.getId(), ex.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * A refund put back in a wallet is looked for at the provider ten minutes, an hour and six hours after, and
+     * then daily for fourteen days (D-110). Finding it means the restaurant was credited twice: withdrawals of its
+     * outlet are paused until a person resolves it. Runs every minute so the first look is not a whole interval
+     * late; which refunds are due is worked out from the schedule and two persisted times, never from memory.
+     */
+    @Scheduled(fixedDelayString = "${costonomy.mp.payments.reversal-audit-interval:PT1M}")
+    @SchedulerLock(name = "payment-reversal-audit", lockAtMostFor = "PT10M", lockAtLeastFor = "PT0S")
+    public void auditReversedRefunds() {
+        Instant now = Instant.now();
+        long afterId = 0;
+        boolean backedOff = false;
+        while (!backedOff) {
+            var page = refunds.reversedToAudit(now.minus(REVERSED_AUDIT_FOR), afterId,
+                    org.springframework.data.domain.PageRequest.of(0, auditPageSize));
+            for (var refund : page) {
+                afterId = refund.getId();
+                if (!WithdrawalReversalService.auditDue(refund.getReversedAt(), refund.getVerifiedAt(),
+                        refund.getVerifiedResult(), now)) {
+                    continue;
+                }
+                try (var trace = PaymentTrace.of(refund)) {
+                    try {
+                        reversals.auditReversed(refund.getId());
+                    } catch (com.costonomy.mp.payment.provider.PaymentProviderException ex) {
+                        // Rate limited or keys refused: every other refund due now would meet the same answer, and the
+                        // capture job shares the limit. Stopped, as the other jobs are; still due, so the next run asks.
+                        if (alertDue("reversal-audit-backoff", now, BACK_OFF_ALERT_EVERY)) {
+                            log.warn("Reversal audit stopped at refund {}: the provider is not accepting calls; "
+                                    + "the next run tries again", refund.getId());
+                        }
+                        backedOff = true;
+                        break;
+                    } catch (RuntimeException ex) {
+                        log.error("Could not audit reversed refund {}", refund.getId(), ex);
+                    }
+                }
+            }
+            if (page.size() < auditPageSize) {
+                break;
+            }
+        }
+        // A double credit that nobody has resolved is a standing condition: a reminder every six hours.
+        for (var refund : refunds.lateSuccessOpen(org.springframework.data.domain.PageRequest.of(0, 50))) {
+            if (alertDue("late-success-" + refund.getId(), now, Duration.ofHours(6))) {
+                log.error("CRITICAL refund {} was put back in a wallet and was also sent by the provider (since {}); "
+                        + "withdrawals of the outlet stay paused until a person resolves it", refund.getId(),
+                        refund.getLateSuccessAt());
             }
         }
     }

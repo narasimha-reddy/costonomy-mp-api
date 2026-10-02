@@ -22,4 +22,13 @@ public interface RefundWalletPort {
      */
     void creditRefund(Long outletId, Long supplierOrderId, Long refundId,
                       BigDecimal amount, String reason);
+
+    /**
+     * Put a withdrawal part the provider did not send back in the wallet (D-110). Call with the
+     * wallet held. Idempotent on the refund, through a unique ledger reference.
+     */
+    void creditWithdrawalReversal(Long outletId, Long refundId, BigDecimal amount);
+
+    /** The wallet's balance, for operations to see what a decision would leave (D-110). */
+    BigDecimal balanceOf(Long outletId);
 }

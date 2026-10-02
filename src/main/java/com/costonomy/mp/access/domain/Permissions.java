@@ -108,4 +108,10 @@ public final class Permissions {
     /** Decide a dispute refund the supplier declined or did not answer. Moves money. D-104, V39. */
     public static final String REFUND_DECIDE = "REFUND_DECIDE";
     public static final String CONFIG_VIEW = "CONFIG_VIEW";
+    /**
+     * Decide what happens to a refund the provider did not send: verify it, retry it, put a
+     * withdrawal back in the wallet, send a cancellation refund to the wallet, mark it done, block
+     * a payment as a refund source. Moves money. Its read side is PAYMENT_INSPECT. D-110, V44.
+     */
+    public static final String REFUND_OPERATE = "REFUND_OPERATE";
 }

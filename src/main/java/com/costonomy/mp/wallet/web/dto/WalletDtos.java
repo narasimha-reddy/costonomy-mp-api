@@ -27,7 +27,10 @@ public final class WalletDtos {
     public record EntryResponse(
             Long id,
             WalletDirection direction,
-            /** Why it moved: TOP_UP, ORDER_PAYMENT, ORDER_REFUND, REFUND or WITHDRAWAL. */
+            /**
+             * Why it moved: TOP_UP, ORDER_PAYMENT, ORDER_REFUND, REFUND, WITHDRAWAL, DISPUTE_REFUND or
+             * WITHDRAWAL_REVERSAL (a withdrawal part the provider did not send, put back).
+             */
             String kind,
             BigDecimal amount,
             /** What the balance became, so a statement reads without arithmetic. */
@@ -36,8 +39,9 @@ public final class WalletDtos {
             String reason,
             /**
              * For a withdrawal, where its refund to the card has got to: REQUESTED,
-             * PROCESSING, COMPLETED, FAILED (being retried) or NEEDS_REVIEW (our team
-             * has it). Null for every other kind.
+             * PROCESSING, COMPLETED, FAILED (being retried), REJECTED (the provider refused it; being
+             * checked before anything is decided), NEEDS_REVIEW (our team has it) or REVERSED (it was not
+             * sent and the money is back in the wallet). Null for every other kind.
              */
             String refundStatus,
             Instant at) {
@@ -60,7 +64,11 @@ public final class WalletDtos {
             Long outletId,
             BigDecimal amount,
             BigDecimal balance,
-            List<WithdrawalPart> parts) {
+            List<WithdrawalPart> parts,
+            /** Payments of the outlet the provider was asked about for this withdrawal; null on a replay of one made before this was recorded. */
+            Integer checkedSources,
+            /** Payments not asked about (enough was covered first, or the ten-source / twenty-second budget was used); more may be withdrawable in a further step. */
+            Integer uncheckedSources) {
     }
 
     public record TopUpRequest(

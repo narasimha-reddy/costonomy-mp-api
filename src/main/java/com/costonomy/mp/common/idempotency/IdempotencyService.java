@@ -77,7 +77,14 @@ public class IdempotencyService {
             store.complete(actorId, operation, idempotencyKey, result);
             return result;
         } catch (RuntimeException ex) {
-            store.fail(actorId, operation, idempotencyKey);
+            if (ex instanceof BusinessException refusal && refusal.code() == ErrorCode.WITHDRAWALS_PAUSED) {
+                // Refused before anything was done, for a reason that will pass: a FAILED key would answer the
+                // app's retry with "the previous attempt failed" for as long as it kept the key, which a client
+                // keeps for a server error, and the pause would outlast itself.
+                store.release(actorId, operation, idempotencyKey);
+            } else {
+                store.fail(actorId, operation, idempotencyKey);
+            }
             throw ex;
         }
     }

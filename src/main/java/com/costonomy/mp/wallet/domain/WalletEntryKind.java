@@ -25,5 +25,12 @@ public enum WalletEntryKind {
      * A dispute refund on an order paid from the wallet (D-104). No card behind
      * it, so like a wallet order's return it can be spent and not withdrawn.
      */
-    DISPUTE_REFUND
+    DISPUTE_REFUND,
+    /**
+     * A withdrawal part the provider did not send, put back (D-110). A credit, unique per
+     * refund (reference {@code withdrawal-reversal-{refundId}}), written only after a look at
+     * the provider showed no refund of ours. Money that came from a card, so it is
+     * withdrawable again unless its source payment has since been blocked.
+     */
+    WITHDRAWAL_REVERSAL
 }

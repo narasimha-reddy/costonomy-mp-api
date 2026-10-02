@@ -7,6 +7,7 @@ import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
+import com.costonomy.mp.common.db.DeadlockRetry;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.common.outbox.OutboxService;
 import com.costonomy.mp.procurement.service.OrderFunding;
@@ -23,6 +24,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -62,6 +64,7 @@ public class DisputeRefundService {
     private final SupplierRefundLedger ledger;
     private final AuditService auditService;
     private final OutboxService outbox;
+    private final TransactionTemplate txTemplate;
 
     // ── The restaurant ───────────────────────────────────────────────────
 
@@ -117,8 +120,16 @@ public class DisputeRefundService {
 
     // ── The supplier ─────────────────────────────────────────────────────
 
-    @Transactional
+    /**
+     * The supplier approves. Its own transaction, run once more if the database rolls it back as the loser of a
+     * deadlock: the whole approval (the supplier's charge and the wallet credit) is undone together, so running it
+     * again is safe, and an approval should not fail on a collision with another outlet's refund.
+     */
     public TrustDtos.DisputeRefundResponse supplierApprove(Long actorId, Long requestId, String note) {
+        return DeadlockRetry.once(() -> txTemplate.execute(status -> approveAsSupplier(actorId, requestId, note)));
+    }
+
+    private TrustDtos.DisputeRefundResponse approveAsSupplier(Long actorId, Long requestId, String note) {
         var refund = lockForSupplier(actorId, requestId);
         if (refund.getStatus() == DisputeRefundStatus.APPROVED) {
             return toResponse(refund);
@@ -163,8 +174,12 @@ public class DisputeRefundService {
                 .toList();
     }
 
-    @Transactional
+    /** Operations approve: one transaction, run once more after a lost deadlock (see {@link #supplierApprove}). */
     public TrustDtos.DisputeRefundResponse opsApprove(Long actorId, Long requestId, String note) {
+        return DeadlockRetry.once(() -> txTemplate.execute(status -> approveAsOperations(actorId, requestId, note)));
+    }
+
+    private TrustDtos.DisputeRefundResponse approveAsOperations(Long actorId, Long requestId, String note) {
         accessControl.require(actorId, Permissions.REFUND_DECIDE, ScopeType.PLATFORM, null);
         requireNote(note);
         var refund = lockForOps(requestId);

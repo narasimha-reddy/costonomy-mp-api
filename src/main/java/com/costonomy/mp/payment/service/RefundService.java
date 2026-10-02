@@ -8,6 +8,7 @@ import com.costonomy.mp.common.outbox.OutboxService;
 import com.costonomy.mp.payment.domain.*;
 import com.costonomy.mp.payment.provider.PaymentProvider;
 import com.costonomy.mp.payment.provider.PaymentProviderException;
+import com.costonomy.mp.payment.provider.ProviderFailureKind;
 import com.costonomy.mp.payment.repository.PaymentRepository;
 import com.costonomy.mp.payment.repository.RefundRepository;
 import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
@@ -65,6 +66,9 @@ public class RefundService {
     /** Sends before a refund that keeps failing goes to a person instead (D-101). */
     static final int MAX_ATTEMPTS = 5;
 
+    /** How long a refund the provider reported failed is left before it is asked about again and the failure believed (D-110). */
+    static final Duration FAILED_RECHECK_AFTER = Duration.ofHours(1);
+
     /** How often "Razorpay refused our credentials" is repeated while it lasts (N5). */
     private static final Duration CREDENTIALS_ALERT_EVERY = Duration.ofMinutes(15);
 
@@ -76,13 +80,18 @@ public class RefundService {
         /** Carry on with the next refund. */
         DONE,
         /** Razorpay is limiting our calls or refuses our keys: the rest of this run would meet the same answer. */
-        BACK_OFF
+        BACK_OFF,
+        /**
+         * The provider says it does not know this payment. One is a payment that is gone; two different ones in a
+         * row are a configuration fault (keys or mode of another account), and the run stops (D-110).
+         */
+        UNKNOWN_PAYMENT
     }
 
     /** Refunds whose money may still go back, and so is not refundable again. */
     private static final java.util.Set<RefundStatus> IN_FLIGHT = java.util.EnumSet.of(
             RefundStatus.REQUESTED, RefundStatus.PROCESSING,
-            RefundStatus.FAILED, RefundStatus.NEEDS_REVIEW);
+            RefundStatus.FAILED, RefundStatus.NEEDS_REVIEW, RefundStatus.REJECTED);
 
     /**
      * Refund captured money to the outlet's wallet (D-104).
@@ -213,12 +222,13 @@ public class RefundService {
     }
 
     /** How much of one payment's wallet refunds can still go back to its card. */
-    public record Withdrawable(Long paymentId, BigDecimal available) {
+    public record Withdrawable(Long paymentId, BigDecimal available, boolean blocked) {
     }
 
     /**
      * The outlet's payments with wallet money a card can take back, oldest credit
-     * first. Only money that came from a card can go back to one: a top-up or a
+     * first, each marked if the provider will no longer take a refund against it (D-110).
+     * Only money that came from a card can go back to one: a top-up or a
      * wallet-paid order's refund has no card behind it.
      *
      * <p>Call with the outlet's wallet locked; the figures are only true while no
@@ -227,7 +237,8 @@ public class RefundService {
     @Transactional(readOnly = true)
     public java.util.List<Withdrawable> withdrawable(Long outletId) {
         return refunds.withdrawableByPayment(outletId).stream()
-                .map(row -> new Withdrawable(((Number) row[0]).longValue(), (BigDecimal) row[1]))
+                .map(row -> new Withdrawable(((Number) row[0]).longValue(), (BigDecimal) row[1],
+                        ((Number) row[3]).intValue() != 0))
                 .toList();
     }
 
@@ -255,7 +266,8 @@ public class RefundService {
         }
         var payment = paymentService.load(paymentId);
         var available = withdrawable(payment.getOutletId()).stream()
-                .filter(source -> source.paymentId().equals(paymentId))
+                // A blocked source has no refund left to give: its money is spendable only (D-110).
+                .filter(source -> source.paymentId().equals(paymentId) && !source.blocked())
                 .map(Withdrawable::available)
                 .findFirst().orElse(BigDecimal.ZERO);
         if (amount.signum() <= 0 || amount.compareTo(available) > 0) {
@@ -306,11 +318,20 @@ public class RefundService {
      * have left such a refund stuck for good.
      */
     public Outcome process(Long refundId) {
-        Refund claimed = txTemplate.execute(status -> {
+        record Claim(Refund refund, boolean earlierSend, Instant legacySince) {
+        }
+        Claim claim = txTemplate.execute(status -> {
             var refund = refunds.findById(refundId).orElse(null);
             if (refund == null || !claimable(refund)) {
                 return null;
             }
+            // Any earlier claim may have reached the provider, whether or not we heard back: the
+            // process may have died mid-call, or the answer been lost (D-110). Before such a
+            // refund is sent again the provider's own list is read for one of ours.
+            boolean earlierSend = refund.getSentAt() != null || refund.getAttempts() > 0;
+            // A refund sent before receipts existed carries none; found by amount and time instead.
+            Instant legacySince = refund.getSentAt() == null && refund.getAttempts() > 0
+                    ? refund.getCreatedAt() : null;
             log.info("Refund {} {} → PROCESSING for {} (attempt {})", refund.getId(), refund.getStatus(),
                     refund.getAmount().toPlainString(), refund.getAttempts() + 1);
             refund.setStatus(RefundStatus.PROCESSING);
@@ -318,13 +339,55 @@ public class RefundService {
             // PROCESSING: the version moves, so a second job run claiming the same
             // refund fails its save instead of also sending it.
             refund.setAttempts(refund.getAttempts() + 1);
-            return refunds.saveAndFlush(refund);
+            if (refund.getSentAt() == null) {
+                refund.setSentAt(Instant.now());
+            }
+            // Every claim, not only the first: how long ago the provider last had a chance to make this refund
+            // is what decides when a person may put it back (an approval or a note must not move it).
+            refund.setLastSentAt(Instant.now());
+            return new Claim(refunds.saveAndFlush(refund), earlierSend, legacySince);
         });
-        if (claimed == null) {
+        if (claim == null) {
             return Outcome.DONE;
         }
+        var claimed = claim.refund();
 
         var payment = paymentService.load(claimed.getPaymentId());
+
+        if (claim.earlierSend()) {
+            // Not resent on a hunch: the provider may already hold this refund (a lost answer, a
+            // crash after the call), and its idempotency key is only remembered for so long
+            // (unverified). Found: adopted, never sent twice. Not found: sent. Cannot be read:
+            // not sent, and tried again next run (D-110).
+            java.util.List<PaymentProvider.ProviderRefundEntry> listed = java.util.List.of();
+            PaymentProviderException unreadable = null;
+            try {
+                listed = provider.listRefunds(payment.getProviderPaymentId());
+            } catch (PaymentProviderException ex) {
+                // A 404 too: "the provider does not know this payment" is what an account whose keys are not
+                // the ones that made the earlier send would say, and the earlier send may well be at the real
+                // one. It proves nothing about that send, so it is not a reason to send again (D-110).
+                unreadable = ex;
+            }
+            if (unreadable != null) {
+                // Being unable to read the list says nothing about the refund, whatever the
+                // refusal: a rate limit or refused keys wait as they always do, anything else is
+                // as uncertain as a lost answer. Never a definite "no" (D-110).
+                var lookupFailure = unreadable.isRateLimited() || unreadable.isCredentialsRefused()
+                        ? unreadable
+                        : new PaymentProviderException("Could not read the provider's refunds: "
+                                + unreadable.getMessage(), true, unreadable.providerCode(),
+                                ProviderFailureKind.AMBIGUOUS, unreadable.description());
+                var outcome = recordFailure(refundId, lookupFailure, "checking for");
+                return outcome == Outcome.DONE && unreadable.isNotFound() ? Outcome.UNKNOWN_PAYMENT : outcome;
+            }
+            var ours = RefundMatching.ours(listed, claimed, claim.legacySince());
+            if (ours.isPresent()) {
+                adoptOurs(refundId, claimed.getReason() == RefundReason.WALLET_WITHDRAWAL ? payment.getOutletId() : null,
+                        ours.get());
+                return Outcome.DONE;
+            }
+        }
 
         PaymentProvider.ProviderRefund result = null;
         PaymentProviderException failure = null;
@@ -340,47 +403,34 @@ public class RefundService {
             failure = ex;
         }
 
+        if (failure != null) {
+            var outcome = recordFailure(refundId, failure, "sending");
+            return outcome == Outcome.DONE && failure.kind() == ProviderFailureKind.PAYMENT_UNKNOWN
+                    ? Outcome.UNKNOWN_PAYMENT : outcome;
+        }
         final var outcome = result;
-        final var error = failure;
-        final boolean[] backOff = {false};
         txTemplate.executeWithoutResult(status -> {
             var refund = refunds.findById(refundId).orElseThrow();
             if (refund.getStatus() != RefundStatus.PROCESSING) {
                 return;
             }
-            if (error != null) {
-                if (error.isRateLimited() || error.isCredentialsRefused()) {
-                    // Razorpay is limiting our calls, or is refusing our keys: nothing is wrong
-                    // with the refund and it has not been refused. Retried next run with the
-                    // same key, however many times it takes; sending it to a person would strand
-                    // money that is owed back over a busy minute at the provider or a key that
-                    // is being rotated (F2). Nothing moves while it waits, so waiting is safe.
-                    // And the send does not count toward MAX_ATTEMPTS: it says nothing about the
-                    // refund, and a count that grows through a rate limit would send the first
-                    // real 5xx after it to NEEDS_REVIEW, which has no exit but the database (N2).
-                    refund.setAttempts(Math.max(0, refund.getAttempts() - 1));
-                    backOff[0] = true;
-                    // Once per interval, not per refund per run: the same outage, 120 times an hour.
-                    if (error.isCredentialsRefused()
-                            && alerts.due("credentials-refund", Instant.now(), CREDENTIALS_ALERT_EVERY)) {
-                        log.error("Razorpay refused our credentials sending refund {}; it will be sent "
-                                + "again when the keys are fixed", refund.getId());
-                    }
-                    markFailed(refund, error.providerCode(), error.getMessage());
-                } else if (error.isRetryable() && refund.getAttempts() < MAX_ATTEMPTS) {
-                    // FAILED rather than abandoned, because doc 03 §7 allows a retry
-                    // from here — and the same refund row is retried with the same
-                    // key, so a retry cannot become a second refund.
-                    markFailed(refund, error.providerCode(), error.getMessage());
-                } else {
-                    needsReview(refund, error.providerCode(), error.getMessage());
-                }
-                return;
-            }
             if (outcome.status() == PaymentProvider.ProviderRefundStatus.FAILED) {
-                // The provider looked at it and said no. Sending it again says the
-                // same thing; a person has to decide (D-101).
-                needsReview(refund, outcome.failureCode(), outcome.failureReason());
+                if (outcome.providerRefundId() != null) {
+                    // Razorpay made the refund and then said it failed. Whether that is final is not
+                    // known (V-7), so it is asked again after an hour before it is believed (D-110).
+                    refund.setProviderRefundId(outcome.providerRefundId());
+                    refund.setFailureKind(ProviderFailureKind.PROVIDER_FAILED);
+                    refund.setFailureCode(outcome.failureCode());
+                    refund.setFailureReason(outcome.failureReason());
+                    refund.setFailedAt(Instant.now());
+                    refunds.save(refund);
+                    log.warn("Refund {} was made by the provider as {} and reported failed; asking again in {}",
+                            refund.getId(), outcome.providerRefundId(), FAILED_RECHECK_AFTER);
+                } else {
+                    // The provider looked at it and said no, without making a refund (D-101): a definite
+                    // refusal, checked before anything is decided about the money (D-110).
+                    reject(refund, ProviderFailureKind.PROVIDER_FAILED, outcome.failureCode(), outcome.failureReason());
+                }
                 return;
             }
             refund.setProviderRefundId(outcome.providerRefundId());
@@ -395,7 +445,134 @@ public class RefundService {
             }
             complete(refund);
         });
+        return Outcome.DONE;
+    }
+
+    /**
+     * What a failed call, or a failed look before a resend, means for the refund (D-110). Written
+     * in one short transaction on a fresh read.
+     *
+     * <ul>
+     *   <li>Throttled or credentials refused: nothing about the refund; retried every run and not counted.</li>
+     *   <li>Ambiguous (timeout, 5xx, unreadable): retried with the same key, and looked up before each
+     *       resend; after {@link #MAX_ATTEMPTS} it goes to a person. Never put back automatically.</li>
+     *   <li>A definite refusal: REJECTED, and the provider's refunds are read before anything more.</li>
+     * </ul>
+     */
+    private Outcome recordFailure(Long refundId, PaymentProviderException error, String while_) {
+        final boolean[] backOff = {false};
+        txTemplate.executeWithoutResult(status -> {
+            var refund = refunds.findById(refundId).orElseThrow();
+            if (refund.getStatus() != RefundStatus.PROCESSING) {
+                return;
+            }
+            var kind = error.kind();
+            refund.setFailureKind(kind);
+            if (kind == ProviderFailureKind.THROTTLED || kind == ProviderFailureKind.CONFIG) {
+                // Razorpay is limiting our calls, or is refusing our keys: nothing is wrong
+                // with the refund and it has not been refused. Retried next run with the
+                // same key, however many times it takes; sending it to a person would strand
+                // money that is owed back over a busy minute at the provider or a key that
+                // is being rotated (F2). Nothing moves while it waits, so waiting is safe.
+                // And the send does not count toward MAX_ATTEMPTS: it says nothing about the
+                // refund, and a count that grows through a rate limit would send the first
+                // real 5xx after it to NEEDS_REVIEW, which has no exit but the database (N2).
+                refund.setAttempts(Math.max(0, refund.getAttempts() - 1));
+                backOff[0] = true;
+                // Once per interval, not per refund per run: the same outage, 120 times an hour.
+                if (kind == ProviderFailureKind.CONFIG
+                        && alerts.due("credentials-refund", Instant.now(), CREDENTIALS_ALERT_EVERY)) {
+                    log.error("Razorpay refused our credentials {} refund {}; it will be sent "
+                            + "again when the keys are fixed", while_, refund.getId());
+                }
+                markFailed(refund, error.providerCode(), error.description() != null ? error.description() : error.getMessage());
+            } else if (kind == ProviderFailureKind.AMBIGUOUS) {
+                if (error.isRetryable() && refund.getAttempts() < MAX_ATTEMPTS) {
+                    // FAILED rather than abandoned, because doc 03 §7 allows a retry
+                    // from here — and the same refund row is retried with the same
+                    // key, so a retry cannot become a second refund.
+                    markFailed(refund, error.providerCode(), error.getMessage());
+                } else {
+                    needsReview(refund, error.providerCode(), error.getMessage());
+                }
+            } else {
+                reject(refund, kind, error.providerCode(),
+                        error.description() != null ? error.description() : error.getMessage());
+            }
+        });
         return backOff[0] ? Outcome.BACK_OFF : Outcome.DONE;
+    }
+
+    /**
+     * The provider holds a refund of ours that we did not know had been made (D-110): a lost
+     * answer, or a process that died after the call. It is what the money is, so it is adopted
+     * and never sent again. A refund it already finished is completed; one still pending is
+     * followed; one it reports failed goes through the same wait as any failed refund.
+     */
+    void adoptOurs(Long refundId, Long walletOutletId, PaymentProvider.ProviderRefundEntry ours) {
+        txTemplate.executeWithoutResult(status -> {
+            // Wallet first for a withdrawal part (walletOutletId, null for any other refund), as everything that
+            // decides about one does, before anything else is read: two adoptions of the same provider refund by
+            // two of our refunds then run one after the other and the second finds it taken (the unique index on
+            // provider_refund_id is the backstop).
+            if (walletOutletId != null) {
+                wallet.lock(walletOutletId);
+            }
+            var refund = refunds.lockById(refundId).orElseThrow();
+            if (refund.getStatus() == RefundStatus.COMPLETED || refund.getStatus() == RefundStatus.REVERSED) {
+                return;
+            }
+            applyAdoption(refund, ours);
+        });
+    }
+
+    /**
+     * {@link #adoptOurs}, inside the caller's transaction and on a refund it already holds.
+     *
+     * <p>One provider refund is the money of one refund of ours. When another of our refunds already holds
+     * this provider refund id, adopting it would complete two of ours with one payout (two legacy refunds of
+     * the same amount, sent before receipts existed, both "matching" one provider refund): the refund goes
+     * to a person instead, and nothing is completed.
+     *
+     * @return true if adopted; false if it was sent to review because the provider refund is already another's
+     */
+    boolean applyAdoption(Refund refund, PaymentProvider.ProviderRefundEntry ours) {
+        if (ours.providerRefundId() != null
+                && refunds.existsByProviderRefundIdAndIdNot(ours.providerRefundId(), refund.getId())) {
+            log.error("Refund {} matches provider refund {}, which already completes another refund of ours; "
+                    + "not adopted, left for a person", refund.getId(), ours.providerRefundId());
+            if (refund.getStatus() != RefundStatus.NEEDS_REVIEW) {
+                moveTo(refund, RefundStatus.NEEDS_REVIEW);
+            }
+            refund.setFailureCode("PROVIDER_REFUND_TAKEN");
+            refund.setFailureReason("Provider refund " + ours.providerRefundId()
+                    + " already completes another refund of ours");
+            refunds.save(refund);
+            return false;
+        }
+        log.warn("Refund {} was already made at the provider as {} ({}); adopted, not sent again",
+                refund.getId(), ours.providerRefundId(), ours.status());
+        refund.setProviderRefundId(ours.providerRefundId());
+        refund.setVerifiedAt(Instant.now());
+        refund.setVerifiedResult("OURS");
+        if (refund.getStatus() != RefundStatus.PROCESSING) {
+            moveTo(refund, RefundStatus.PROCESSING);
+        }
+        switch (ours.status()) {
+            case COMPLETED -> complete(refund);
+            case PENDING -> {
+                refund.setFailureKind(null);
+                refunds.save(refund);
+            }
+            case FAILED -> {
+                refund.setFailureKind(ProviderFailureKind.PROVIDER_FAILED);
+                if (refund.getFailedAt() == null) {
+                    refund.setFailedAt(Instant.now());
+                }
+                refunds.save(refund);
+            }
+        }
+        return true;
     }
 
     /**
@@ -440,11 +617,30 @@ public class RefundService {
             }
             switch (answer.status()) {
                 case COMPLETED -> complete(refund);
-                case FAILED -> needsReview(refund, answer.failureCode(),
-                        answer.failureReason() == null ? "The provider failed the refund" : answer.failureReason());
+                case FAILED -> {
+                    String reason = answer.failureReason() == null
+                            ? "The provider failed the refund" : answer.failureReason();
+                    if (refund.getFailedAt() == null) {
+                        // First time it is seen failed. Whether that is final is not known (V-7),
+                        // so it is left, and asked again after an hour (D-110).
+                        refund.setFailureKind(ProviderFailureKind.PROVIDER_FAILED);
+                        refund.setFailureCode(answer.failureCode());
+                        refund.setFailureReason(reason);
+                        refund.setFailedAt(Instant.now());
+                        refunds.save(refund);
+                        log.warn("Refund {} reported failed by the provider; asking again in {}",
+                                refund.getId(), FAILED_RECHECK_AFTER);
+                    } else if (refund.getFailedAt().isBefore(Instant.now().minus(FAILED_RECHECK_AFTER))) {
+                        // Still failed an hour later: believed. Not yet decided about the money: the
+                        // provider's refunds are read first, by the reversal (D-110).
+                        reject(refund, ProviderFailureKind.PROVIDER_FAILED, answer.failureCode(), reason);
+                    }
+                }
                 // Still pending: touch the row so the next check waits its turn.
                 case PENDING -> {
                     refund.setFailureReason(null);
+                    refund.setFailureKind(null);
+                    refund.setFailedAt(null);
                     refunds.save(refund);
                 }
             }
@@ -452,11 +648,15 @@ public class RefundService {
     }
 
     /** The money went back. Written inside the caller's transaction. */
-    private void complete(Refund refund) {
+    void complete(Refund refund) {
         log.info("Refund {} PROCESSING → COMPLETED (provider refund {})",
                 refund.getId(), refund.getProviderRefundId());
         refund.setStatus(RefundStatus.COMPLETED);
         refund.setCompletedAt(Instant.now());
+        // Whatever it failed at earlier no longer describes it, and a stale kind would keep the
+        // withdrawal circuit breaker shut (D-110).
+        refund.setFailureKind(null);
+        refund.setFailedAt(null);
         refunds.save(refund);
 
         // A withdrawal was counted as refunded when it reached the wallet; this
@@ -531,6 +731,33 @@ public class RefundService {
         auditService.record(refund.getRequestedBy(), null, "REFUND_COMPLETED", "PAYMENT",
                 payment.getId(), null, target.name(),
                 refund.getAmount().toPlainString(), "SYSTEM");
+    }
+
+    /**
+     * The provider refused, definitely (D-110). Not yet a decision about the money: the provider's
+     * refunds are read next ({@code WithdrawalReversalService}), because a refusal can follow an
+     * earlier send that did go through.
+     */
+    private void reject(Refund refund, ProviderFailureKind kind, String code, String reason) {
+        refund.setStatus(RefundStatus.REJECTED);
+        // A new refusal is read afresh: what an earlier read left undecided or sent to a person no longer stands.
+        refund.setSettleHeldAt(null);
+        refund.setReviewCause(null);
+        refund.setReviewRef(null);
+        refund.setFailureKind(kind);
+        refund.setFailureCode(code);
+        refund.setFailureReason(reason == null || reason.length() <= 500 ? reason : reason.substring(0, 500));
+        refunds.save(refund);
+        log.warn("Refund {} → REJECTED by the provider ({}): {} {}", refund.getId(), kind, code, reason);
+    }
+
+    /** A status change through the state machine, refusing what it does not allow. */
+    void moveTo(Refund refund, RefundStatus target) {
+        if (!refund.getStatus().canTransitionTo(target)) {
+            throw new IllegalStateException("Refund " + refund.getId() + " cannot go from "
+                    + refund.getStatus() + " to " + target);
+        }
+        refund.setStatus(target);
     }
 
     private void needsReview(Refund refund, String code, String reason) {

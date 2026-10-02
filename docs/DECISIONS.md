@@ -4249,3 +4249,402 @@ machine, adapter (method, fee, `amount_refunded`, returned-hold reading, expiry 
 UPI and card authorisation at `manual_expiry_period` (12 minutes is the minimum). V-2 the longest
 hold: 4320, 4321, 7200 and 7201, then ask support. V-3 the exact error text for a capture after
 expiry. V-4 whether the fee is kept on refund, and the instant-refund fee.
+
+## D-110 — A withdrawal part the provider will not send comes back to the wallet, on proof that it did not leave
+**Raised 2026-09-30 · Settled 2026-09-30** (owner recommendations E-7 to E-10 accepted as defaults)
+
+**The finding.** A live test-mode run (e2e O3) withdrew wallet money whose source payments Razorpay
+did not know (stale keys from an earlier test account). Each part is a partial refund on the original
+payment, sent by the refund job *after* the wallet had been debited. Razorpay refused them; the refunds went
+to `NEEDS_REVIEW`, and the money had left the wallet and gone nowhere, with no way back except the database.
+D-104 said "putting the money back into the wallet is a person's decision"; this amends that: it is
+automatic **only on a definite rejection plus reads of Razorpay's refund list and payment that show the payer was
+not refunded**, and a person's decision in every other case.
+
+**Principles.**
+1. The pre-check before the debit is advisory. Razorpay can change its answer between the check and the send,
+   so correctness rests on what happens after a refusal, not on the check.
+2. **The system puts money back only on proof that the payer was not refunded.** Proof is all of: a definite refusal
+   (a 4xx that Razorpay answered, not a timeout); `GET /v1/payments/{id}/refunds` showing no refund of ours (matched by
+   the `receipt` we send, `mandi-refund-{id}`, or `notes.mandi_refund_id`; a refund Razorpay reports `failed` is not
+   money that left), read at least two minutes after the first send because the list may lag; the same list showing
+   **no non-failed refund that is not ours** (no `mandi-refund-` receipt, and not one we recorded); and
+   `GET /v1/payments/{id}` showing `amount_refunded` no larger than our own listed refunds explain. Wording plays no part:
+   *(amended after review: the first version put back any definite refusal whose list held none of ours, so a payment
+   refunded in the dashboard with a refusal in words we did not recognise was credited to the wallet as well as the
+   card.)* What is guaranteed is exactly this: no automatic re-credit while Razorpay's records show the payer was, or may
+   have been, paid another way, or cannot be read. It is not a guarantee about a refund Razorpay has not made yet; the
+   late-success watch is for that.
+3. Ambiguity is never put back automatically. It is retried with the same key, looked up before every resend,
+   and escalated.
+4. One reversal per part, three ways: a conditional status change on the locked refund row (`REJECTED` or
+   `NEEDS_REVIEW` to `REVERSED`), the unique wallet reference `withdrawal-reversal-{refundId}`, and the wallet lock.
+   Lock order is wallet, then refund, then payment. The credit is the wallet's atomic update
+   (`WalletService.creditWithdrawalReversal`), like every other balance change.
+5. A source Razorpay will never accept is **blocked** (`payment.provider_refund_blocked_at`): withdrawals skip it and
+   its wallet money stays spendable (E-10; an ops-assisted bank payout is a separate decision, not built).
+
+**Before the debit** (`WalletWithdrawalService`, `WithdrawalSources`). Three phases, no provider call with a
+connection held: read the sources (no lock), ask Razorpay about them in order until enough is covered, ten sources
+or twenty seconds (`inspect`), then under the wallet lock recompute from the database and cap each checked source by
+what Razorpay says is left less our own refunds it may not have counted (`unconfirmedOn`, from five seconds before
+the read; never negative). A payment Razorpay does not know, that is not captured there, or is refunded in full is blocked;
+one that cannot be read, does not match, or is older than `refund-window-days` (180, V-6) is skipped and not blocked.
+More than can go back is refused whole, **422 `WITHDRAWAL_EXCEEDS_REFUNDABLE`** with `details` `requested`,
+`withdrawableNow`, `blocked`, `unavailable`, `reason`: the app offers a new request for `withdrawableNow` (E-7, accepted:
+refuse and offer, never silently withdraw less; the response amount always equals the request). This also
+replaces the earlier 400 for "more than can go back to a card" (a wallet with no card behind it, a top-up). A
+request above the wallet balance stays a 400. **Circuit breaker:** a refund refused for `INSUFFICIENT_BALANCE` or
+`CONFIG` in the last thirty minutes returns **503 `WITHDRAWALS_PAUSED`** before anything is read or debited; so does a
+double credit found by the late-success watch, for that outlet only. A pause is a refusal before anything was
+done: the client's idempotency key is released, not marked failed, so its retry with the same key works after the pause.
+
+**Classifying a refusal** (`RazorpayPaymentProvider.refundFailureKind`; the error body's description is read, cut to
+120 printable characters and never logged whole). `PaymentProviderException` carries a `ProviderFailureKind`. The text only
+decides a label and whether to block; **it never decides that money did not move**, so a reworded message can at
+worst be filed as `REJECTED_OTHER` (verified, put back, not blocked; a second one for the same payment blocks it as
+`OPS`). Kinds: `AMBIGUOUS` (timeout, 5xx, unreadable answer, idempotency conflict), `THROTTLED` (429), `CONFIG` (401,
+403), `PAYMENT_UNKNOWN` (404, or 400 "does not exist"), `ALREADY_REFUNDED`, `OVER_REFUND`, `NOT_CAPTURED`,
+`WINDOW_PASSED`, `INSUFFICIENT_BALANCE`, `REJECTED_OTHER`, `PROVIDER_FAILED` (made, then reported failed: asked again after an
+hour). See `docs/RAZORPAY.md` section 7 for what each does.
+
+**States.** `RefundStatus.REJECTED` (a definite refusal, verification pending) and `REVERSED` (terminal: the money never left
+and is back in the wallet, or was redirected to it by operations). `withdrawableByPayment` counts a withdrawal
+part as spent unless it is `REVERSED`, and marks blocked payments. New refund columns `failure_kind`, `sent_at`,
+`verified_at`/`verified_result`, `failed_at`, `reversed_at`/`reversed_by` and a pending second-approver request; new
+payment columns `provider_refund_blocked_at`/`_reason` (V44).
+
+**Verify before every resend.** A refund claimed before (`sent_at` set, or attempts above zero) is never sent on a hunch: the
+job lists the payment's refunds by receipt first, adopts one of ours (completing it, or following it while pending),
+sends only if none is there, and does not send if the list cannot be read (the attempt counts, except a 429 or refused
+keys). This closes the D-109 limitation that resending relied on Razorpay remembering `X-Refund-Idempotency`
+for an unknown time (V-5): a withdrawal part is a partial refund, so a forgotten key would have paid twice.
+
+**Watching what is put back.** After a reversal the list is read at ten minutes, one hour and six hours, then daily for
+fourteen days (from `reversed_at` and `verified_at`, checked every minute; *amended: it was daily from the day after,
+so the money could be spent before anyone was told*). A refund of ours turning up is
+`CRITICAL refund N was REVERSED but provider refund X exists: restaurant credited twice`, marks the payment for a
+person, publishes `WithdrawalDoubleCredit`, and **pauses the outlet's withdrawals** (`refund.late_success_at`) until ops
+resolves it (`resolve-late-success`); spending stays allowed. It does not claw back: the balance may be spent and cannot go negative.
+A refund in review after an ambiguous send is read hourly for a week and adopted if Razorpay made it.
+
+**Operations** (`REFUND_OPERATE` for `OPS_FINANCE` and `OPS_ADMIN`, V44; read needs `PAYMENT_INSPECT`; a note on
+every action; audited with the actor). Verify, retry (reads first), **re-credit** a withdrawal part (a verification under
+ten minutes old showing none of ours, an explicit confirmation, evidence when the outcome was never known, and **a
+second person above ₹10,000**, E-9, accepted), **send a cancellation refund to the wallet** (`cancel-wallet-{id}`, same
+gates), **mark completed** (Razorpay must list that refund under the payment, processed, for the amount, not used by another
+refund), block and unblock a source, and **`returned-outside`** for a cancelled order's payment that someone refunded by
+hand in the dashboard (Razorpay shows it refunded with `captured = true`; verified, then recorded as refunded, with the cancellation
+refund recorded under its usual key). The last replaces the hand-run SQL in `docs/RAZORPAY.md`, whose known
+limitations 3 to 5 are closed by this decision.
+
+**Deviations from the design, and why** (the lead's design is `design-upi-cancel-withdrawal.md`):
+- `to-wallet` needs the same fresh verification, confirmation and second approver as a re-credit; the design was silent, but
+  it is money going to the restaurant that the provider did not send, so the safest reading applies the same gates.
+- A cancellation refund's `REJECTED` state goes to `NEEDS_REVIEW` at once, as before; only a withdrawal part is put back.
+- The pre-check also counts a refund of ours that completed after the read (not only pending ones), and sets the mismatched-order
+  case aside instead of trusting it: both can only lower what is allowed.
+- The ops queue and detail read use `PAYMENT_INSPECT` (D-046's read counterpart), not `REFUND_OPERATE`.
+- The reversal audit and the ambiguous read use `verified_at` on the refund as their schedule, not memory, so a restart
+  neither skips nor repeats them. (The bulk statement that stamps `verified_at` sets `updated_at` to itself: the column has
+  `ON UPDATE CURRENT_TIMESTAMP`, and it is the clock of the last decision that the breaker and the review window read.)
+- **A latent race, found by the concurrent-withdrawal test and fixed here.** `WalletService.lock` began with a plain
+  SELECT, which under REPEATABLE READ fixed what every later plain SELECT in the transaction saw. A withdrawal that
+  waited for the wallet lock then decided what a payment could still give back from figures that left out the
+  withdrawal ahead of it. Before this branch only the balance guard (a locking `update`) stopped both, so two
+  withdrawals could each take the same card money when the balance covered both and the card did not. The lock is now
+  the first statement, and the debit's transaction is READ COMMITTED.
+- A system read that ends in review is not recorded as a verification: an operator who acts on the refund reads the
+  provider themselves (the fresh-verification rule needs a person's `verify`).
+
+**Amended after the second review (2026-09-30; findings in `review-api17.md`).**
+1. *The proof above* (foreign refund on the list, `amount_refunded`, both reads succeeding), and an over-refund wording
+   ("exceeds the refundable balance") is classified before the balance one so it is never read as our account's balance.
+   `ALREADY_REFUNDED` and `OVER_REFUND` are no longer special cases: they pass through the same proof, so an over-refund whose
+   payment holds only our own refunds (an over-estimated allowance) is put back instead of stranded in review.
+2. `refund.provider_refund_id` is uniquely indexed (V44); adoption, mark-completed and the legacy match refuse (to review) when
+   another refund holds the provider refund, inside the locked transaction.
+3. The late-success schedule and pause, above.
+4. The amount a refusal offers is computed with the formula the plan uses, so asking for it is accepted.
+5. `unconfirmedOn` counts every refund of ours still in flight (with or without a provider id) and any changed since the read
+   (`updated_at`, the last send, not `sent_at`, the first).
+6. `WITHDRAWALS_PAUSED` releases the idempotency key.
+7. Two different payments in a row that Razorpay does not know (pre-check, send, or refund list) are a configuration fault:
+   nothing is blocked, put back or sent, one throttled ERROR. A 404 on the refund list is not proof that no earlier send
+   exists: no resend, no reversal, review.
+8. A rate-limited refund no longer ends the run before rejected refunds are settled.
+9. Production refuses any explicit value of `withdraw-precheck` but `true`.
+10. A person cannot put back an `AMBIGUOUS` refund within `recredit-min-age` (30 minutes) of its last send.
+11. A first approver's pending request is void when the refund's status changes or it is verified again.
+13. `WalletService.creditDisputeRefund` locks the wallet before it decides, and decides on what has been committed
+    (since the third review, by locking reads on the transaction's own connection: see below).
+14. 408 and 409 on the refund POST are `AMBIGUOUS`. **Deployment prerequisite:** production MySQL must run with
+    `binlog_format=ROW`, because the wallet debit runs at READ COMMITTED (MySQL refuses those writes under statement-based
+    logging).
+
+**Amended after the third review (a second independent review; findings in `review-api17b.md`).**
+1. *The rejected queue is read in full, and no two dead payments can starve it.* Two payments Razorpay could not place at
+   its head used to end the run. Now the whole page is read; an answer about any other refund proves the keys work and the
+   held ones go to review once (`PAYMENT_GONE`); only when nothing was answered is it a configuration fault, and the held refunds
+   move behind the others (`settle_held_at`). The thirty-minute alert is its own pass over every rejected refund.
+2. *The age of an ambiguous refund is counted from its last send* (`refund.last_sent_at`, set at every claim), not from
+   `updated_at`, which recording or voiding an approval also moves: with the production `recredit-min-age` (30 minutes) a
+   second person could never complete a re-credit above the threshold.
+3. *A part sent to review because the payer was refunded another way records why* (`review_cause`, `review_ref`), and no
+   person can put it back. `verify` and `recredit` run the system's proof (`FOREIGN_REFUND` is a result, and a stored
+   `verified_result`); `to-wallet` too. Exits: `mark-completed`, or `retry`. (The first version only applied the proof to the system's path, so the
+   ops path re-credited exactly the parts the system held back.) *(Amended by the fourth review: those were the only exits, and
+   neither works when the foreign refund is not this part's; see below.)*
+4. *A refusal the provider's own reads contradict is not acted on.* `PAYMENT_UNKNOWN` with both reads succeeding is sent again
+   (`REJECTED` to `REQUESTED`, at most five attempts, then review), not reversed and not blocked. This is the safest reading:
+   the alternative, reversing without blocking, would still silently undo a withdrawal that was fine.
+5. *A withdrawal's pre-check reads every source before it declares a configuration fault* (two dead oldest sources no longer
+   lock an outlet out for good).
+6. *`ALREADY_REFUNDED` that the reads do not show is reviewed, not reversed.* **This amends "already refunded is never put
+   back"**, which was true of the first version and is not of the second: it is put back only when the payment's own
+   `amount_refunded` shows it refunded in full and refunds of ours explain all of it. The audit of reversed refunds also
+   looks for a refund that is not ours (*amended by the fourth review: on two looks at least five minutes apart, not two reads
+   milliseconds apart*): a hit is CRITICAL and pauses the outlet, as a late refund of ours does.
+7. *The reversal audit stops on a 429 or refused keys.*
+8. *`creditDisputeRefund` needs one connection.* Its reads after the wallet lock were made in a second transaction, so
+   as many concurrent dispute credits as the pool has connections could each hold one and wait for another. They are
+   locking reads (`FOR SHARE`) on the connection the transaction holds, which see what is committed now whatever the
+   transaction's own snapshot. *(The first version read by the new reference and deadlocked two outlets' refunds every
+   time they overlapped; see the fourth review.)*
+9. *V44 is edited in place* (it has never been applied outside the tests), with a pre-deploy check for a duplicate
+   `provider_refund_id` (RAZORPAY.md, "Deploying V44") and the instruction that an environment that ran an earlier V44 needs
+   `flyway repair` or a V45.
+10. *A payment read without `amount_refunded` (or `amount`) is unreadable*, not "nothing refunded".
+
+**Amended after the fourth review (a third independent review; findings in `review-api17c.md`).**
+1. *A part held back for a refund that is not its own has an exit.* The third review's fix (a person can never put back a part
+   the system held for a foreign refund) left no way out when that refund was unrelated (a goodwill refund on a payment
+   the payer was also to be paid this part from), for a different amount, or covered several parts: `recredit` and
+   `to-wallet` were refused for good, `mark-completed` needs the same amount and a unique `provider_refund_id`, and a retry came
+   back to review. Two exits, both checked at the provider and audited, and neither a change of the proof:
+   - **`POST /admin/refunds/{id}/foreign-refund-not-this-part`** records a *judgement*, moves no money. A note, evidence and the
+     provider refund ids (up to six). **Always two different people** (the first approval is bound to the ids by a hash in
+     `ops_action`, and is void when the refund is read, retried or changes status, or after 24 hours). It needs a `verify` from the last
+     ten minutes that found a refund that is not ours, the minimum age since the last send for an ambiguous part, and reads the
+     provider again when the second person acts: every id must be listed on the payment, not failed, not ours. It is stored
+     on the refund (`review_cause = FOREIGN_NOT_THIS_PART`, `review_ref` = the ids), and the proof then leaves out **exactly those
+     ids and their listed amounts, for this refund only**. Any other refund, another id of the same size, or any amount those do not
+     explain still makes the part `FOREIGN_REFUND`, and a second refund needs its own two people. *(The fifth check adds: each refund named must be worth less than the part and all recorded together less than it; see that record.)* The re-credit that follows needs
+     everything it always did (a fresh `verify`, a second person above the threshold, evidence and the minimum age for an
+     ambiguous part, its own read). The late-success watch reads the same record. A retry clears it.
+   - **`mark-completed` with `confirmPayerRefundedInFull: true`** (withdrawal parts only) closes a part against a refund that is for
+     more than the part: the provider must show the payment refunded in full (`amount_refunded` at `amount`), the refund must be processed and not
+     ours, and the parts closed against it never add up to more than it (`claimedAgainst`, checked again under the payment
+     lock). One dashboard refund of the whole payment closes a smaller part; one refund for two parts closes both. The part is
+     COMPLETED with `provider_refund_id` empty (that column stays a one-to-one claim); the claim is `review_cause =
+     COMPLETED_BY_OTHER_REFUND`, `review_ref` = the provider refund; the source is blocked `REFUNDED_ELSEWHERE`. Above the threshold a second person, bound
+     to that refund. The wallet is not credited: the payer has the money.
+2. *`creditDisputeRefund` no longer deadlocks two outlets' refunds.* The reads added in the third review locked the gap where the
+   new reference would be, so two refunds on two wallets with neighbouring references each waited for the other to insert.
+   Now one `FOR SHARE` read of the order's own entries (index forced, or the optimizer may scan the table and lock its end),
+   the decisions made in Java, the unique reference the backstop. Still one connection. And a dispute approval that loses a
+   deadlock anyway (`DeadlockRetry`, only where it owns the transaction) is run once more: it is one transaction, so nothing
+   moved.
+3. *The audit's second look is a second look.* Our own refunds that carry a provider refund id and are missing from the list count
+   as explained (that is the lag). A mismatch is first only noted (`verified_result = SUSPECT`, `verified_at` = when), read
+   again at least five minutes later whatever the schedule says, and only then CRITICAL. No schema change.
+4. *Two tests the reviewer's mutations survived* (a person putting back a contradicted "unknown payment" part does not block a
+   healthy source; unknown payments after an answered refund on the page are reviewed, not held).
+
+**Amended after the live UPI campaign, round 2 (findings B1, B3, F3, F4 of `upi-e2e-results-final.md`).**
+1. *A part on a payment the provider does not know can be closed by two people, on proof that the keys work (B1).* Razorpay's
+   refunds list for an unknown payment answers **200 with nothing in it**, while the payment read says unknown, so the
+   person's "unknown payment" path (which assumed the list itself answers not-found) never fired: `verify` rethrew, answered
+   503 and could never record, and `recredit` was impossible for ever (legacy refunds 24 and 25). Now, for a person (never
+   the system, and not the system's hourly read of a refund in review, which records nothing): when the list is empty or
+   not-found **and** the payment read is not-found, the provider's keys are first **proven to work**: a successful read of a
+   payment of ours **made after this one** (captured or refunded, this provider's own, not one found unknown), newest first, at
+   most five, answering for the same order as our books (`WithdrawalReversalService.proveKeysWork`). Later, so that the keys of
+   an older account cannot prove themselves with the very payments they should not know; consequence: the newest payment of
+   all is never decided this way. A read that fails any other way, answers as another order's, or finds no answer at all is
+   no proof: **503 `PROVIDER_UNAVAILABLE`** ("the provider's keys could not be proven to work"), nothing recorded, nothing
+   put back (wrong keys, mode or base URL make *every* payment unknown, which is exactly this). Proven, `verify` records
+   **`verified_result = UNKNOWN_PAYMENT`** (15 characters; the column is 16) and audits `REFUND_UNKNOWN_PAYMENT_PROOF` naming the proving payment.
+   This also replaces the old reading "a list that is not-found is 'none of ours'", which recorded `NONE_OF_OURS` with no proof
+   at all.
+2. *`recredit` and `to-wallet` of such a part are the strictest actions there are.* **Always two different people, whatever the
+   amount**, each with `evidence` (at least 15 characters: which Razorpay account or keys the payment belongs to) and
+   `confirmPaymentOnOtherAccount: true` (it is another, retired account and nothing was sent to the payer from it), on top
+   of the existing gates: a verification under ten minutes old, the minimum age since the last send (for **every** kind of
+   failure, not only `AMBIGUOUS`), `confirmNoProviderRefund`, and the provider read again inside the call, which repeats the proof.
+   If that read finds the payment known after all, the ordinary proof applies (a foreign refund still refuses it: 422); if it
+   finds it unknown while the verification said known, nothing is put back and the answer is 409 `REFUND_VERIFICATION_REQUIRED`
+   (verify again). The part is `REVERSED` with `verified_result = UNKNOWN_PAYMENT`, the source blocked `PAYMENT_UNKNOWN`. A
+   payment that **is** known and shows a foreign refund is unchanged: never put back. **What can still go wrong:** the
+   payment is unknown to *these* keys but lives in an account that is live and can still be refunded from (the operator's
+   evidence and the second person are the control); or a payment made after this one is itself on a different account than
+   the keys (the proof then says nothing); or Razorpay hides a payment it knows for a moment. A refund later found on the
+   payment is a CRITICAL double credit like any other, but only *within the 14.5-day late-success watch* (`REVERSED_AUDIT_FOR`)
+   and only *if the payment is known to the keys in use by then*: the watch cannot read a payment that stays unknown (it then
+   only marks the read and moves on), so nothing detects a refund made after the watch ends or on an account the keys do not reach.
+3. *The named refunds of `foreign-refund-not-this-part` are checked at the first approval too (B3)*: listed on the payment now,
+   not failed, not ours, else 422 and nothing recorded (before, a garbage id was recorded and waited a day to fail). The second
+   person's own read still repeats it.
+4. *The withdrawal pre-check tells the truth about how much it looked at (F3).* `details.checkedSources` and `uncheckedSources`
+   (and the same two on a successful withdrawal, where `null` only for a replay of one made before); when some were not asked
+   about (enough covered, ten sources or twenty seconds used) the message says more may be withdrawable in a further step.
+   Sources are asked **oldest credit first, as always** (*amended, see the last paragraph of this record: the first version of this
+   change asked the largest first, which changed which sources a withdrawal draws from and broke the "oldest first" allocation
+   rule above*); the largest are asked first only as a fallback, when the oldest ten cannot cover the request at all. The budget is
+   **not** raised: a longer pre-check holds a request for longer with no money rule to show for it.
+5. *The expected stale-update release line is quiet too (F4).* `HHH100503` (INFO) is dropped only as the release of the very
+   batch whose `HHH100501` stale-state error was just dropped on the same thread (within five seconds, once).
+
+**Amended after the check of the unknown-payment ops path (round 5; no schema change, V44 untouched).**
+1. *The operator's audit and the money move together, and the audit text always fits.* The `REFUND_OPS_RECREDIT` audit of a
+   put-back is now written by the reversal itself, inside its transaction (`WithdrawalReversalService.run(..., reversedAudit)`):
+   it cannot fail after the money has moved (before, a note and evidence of 400 characters each overflowed
+   `audit_log.reason` VARCHAR(500) *after* the commit: the second person was told 409, the part WAS reversed and the audit row
+   was lost). Every operator audit reason is also bounded (`OperatorAuditText`, at most 500 characters): the lead, the
+   confirmations, then the evidence (its length, the first sixteen hex digits of its SHA-256, its first 120 characters) and as
+   much of the note as still fits. The whole evidence text is not kept, only its digest: whoever holds the text can match it.
+2. *Each person's evidence and confirmations are recorded.* The first approver's `REFUND_OPS_APPROVAL_REQUESTED` row and the
+   completing `REFUND_OPS_RECREDIT` / `REFUND_OPS_TO_WALLET` row carry, for a part on an unknown payment, the confirmation
+   ("another, retired account, nothing sent from it") and the bounded evidence (before, the first approver's evidence was
+   validated and thrown away, and to-wallet never recorded any).
+3. *The "oldest first" allocation is restored (regression of round 2, finding F3).* The pre-check asks the sources in the
+   ledger's order, oldest credit first, so a withdrawal draws from the oldest credits exactly as before (sources of 10, 20 and
+   500, oldest first, and a withdrawal of 30 take the 10 and the 20, not the 500: small old credits must not age past the refund
+   window and become un-refundable). Only when the ledger says the oldest ten open sources hold less than the request, so that
+   asking them can never cover it, are the sources that can give back the most asked first (ties keep the ledger's order), so the
+   request has a chance it would not otherwise have; the plan is still worked out afterwards from the database, in the ledger's
+   order, from the sources that were checked. Which sources a request that was fully checked in the ordinary way uses never
+   changes. `checkedSources` and `uncheckedSources` stay.
+4. *A part put back on an unknown payment always blocks its source, `PAYMENT_UNKNOWN`,* whatever its own failure kind was
+   (before, only a part whose kind was `PAYMENT_UNKNOWN` did, although this document said the source was blocked).
+5. *A part that carries a `provider_refund_id` is not closed on the unknown-payment path.* The id proves the part was sent, and
+   refused or left unknown, through keys that knew the payment (the "other account"); a "nothing was sent from there" is then
+   about that refund, which the keys in use cannot look up. `recredit` and `to-wallet` answer 409 `INVALID_STATE_TRANSITION`
+   and say why (also under the reversal's lock). *(Amended after the fifth check, F3 below: `returned-outside` refuses on an unknown
+   payment, so the one exit is `mark-completed` with evidence and `confirmProcessedOnOtherAccount`; a part that was not processed
+   there needs engineering.)*
+6. *The late-success watch marks a read done when the list itself answers not-found* for a part put back on an unknown payment
+   (it asked every minute for the whole watch before).
+7. *A refund made by hand that covers the part can never be excluded (live round 3, B2: a real double payout).* A payment of
+   430.50 was refunded in full at Razorpay by hand after a withdrawal part of 50 on it was refused; two people recorded that
+   very refund as "not this part's" (the check only asked that it was listed, not failed, not ours), the verification then read
+   "none of ours" because the proof left the excluded refund out, and one person put the 50 back: the payer held the whole
+   payment and the wallet got 50 more. *(The gates below are as amended by the fifth check: the exclusion rule is "strictly less
+   than the part, each and together", and the room invariant no longer counts validly excluded refunds; see the next record.)*
+   (a) *the room invariant:* where anything the provider shows refunded is not ours and not validly excluded, a part is put
+   back (by `recredit`, by `to-wallet`, and by the system) only while everything refunded at the provider, counted whole
+   (the larger of the payment's `amount_refunded` and the sum of its non-failed listed refunds), less the valid exclusions, plus
+   this part does not exceed the payment (equality is allowed). Otherwise the answer is
+   422 "the payment has already been refunded to the payer for at least this amount", nothing moves, the part stays in review
+   (`verify` records `FOREIGN_REFUND`; the system sends it to `REFUNDED_ANOTHER_WAY`), and the exits are `mark-completed`
+   against the payer's refund (`confirmPayerRefundedInFull`) or `returned-outside`. A payment refunded only by refunds of ours
+   is unchanged (an over-refund of ours is refused by the provider and put back as before), and the late-success watch does not
+   apply it (it would raise new alarms on old reversals). (b) *`foreign-refund-not-this-part` refuses, at the first approval
+   and again at the second (and under the lock),* a refund worth the part or more, or refunds that together reach it (the fifth
+   check's rule; the first version compared the whole payment and let a refund of exactly the part through). (c) *the `recredit` that follows
+   an exclusion always needs two different people, whatever the part is worth, each with evidence* (at least 15 characters:
+   what shows the payer was not refunded this part's money). Before, below the threshold one person finished it alone.
+8. *The minimum age of a legacy row no longer re-arms itself (live round 3, B1).* A refund from before `last_sent_at` existed
+   (every pre-V43 row, refunds 24 and 25) was aged from `updated_at`, which recording or voiding an approval and every
+   verification move: the 30-minute minimum could not be met inside the ten-minute freshness of the verification, so the
+   two-person re-credit could never complete. Now `last_sent_at`, else `sent_at` (the first send), else `created_at`: timestamps
+   no action of a person moves. The consequence for a legacy row is that the age is counted from its first known send; such
+   rows are old, so the gate is met at once.
+9. *`verify` names the proving payment in its own audit row too* (live round 3, B3): `REFUND_OPS_VERIFY` reason "keys proven by
+   reading payment pay_X; ..." beside the note (bounded), as well as `REFUND_UNKNOWN_PAYMENT_PROOF`.
+10. *Residual risk, stated plainly.* The proof that the keys work is "a later payment of ours answers". If the keys were moved to
+   another account K2 and payments were made on K2 since, an old payment that lives on the old account K1 reads as unknown and
+   the proof passes. If an earlier send of this part to K1 was ambiguous and later succeeded there, putting the part back pays
+   the restaurant twice and nothing in the code can tell (the failure kind was overwritten by K2's refusal, and the watch cannot
+   see K1 while the keys are K2): **only the two operators' evidence guards against it.** A provider key id recorded per payment
+   and per send would close it; it is future work. One person holding two operator accounts passes the two-person rule; that is
+   organisational.
+
+**Amended after the fifth check (a fourth independent review, `review-api17e.md`; no schema change, V44 untouched).**
+1. *F1 (money): which foreign refunds can be excluded.* The fourth round let a refund made by hand for exactly the failed part
+   be excluded whenever the whole payment still had room (payment 1000, part 400 refused, 400 refunded by hand: two people
+   excluded it and put the part back: wallet 400 and payer 400). **Rule: every refund named, together with those already recorded on the
+   part, is worth strictly less than the part, and all of them together are strictly less than it** (`WithdrawalReversalService.exclusionsBelowPart`).
+   Refused 422 `REFUND_VERIFICATION_FAILED` ("worth at least this part", or "add up to ...") at the first approval, at the second and
+   under the row lock (two requests at once cannot together reach the part), and applied whenever the proof is read: a recorded
+   set that does not hold (a record from before the rule) is no record and its refunds are foreign again. Equality is refused
+   (400 against 400; 25 + 25 against 50); 399.99 against 400 and 20 + 20 against 50 are allowed. A refund worth the part or more looks like
+   compensation for exactly this part; its exit is the plain `mark-completed` (same amount) or `mark-completed` with
+   `confirmPayerRefundedInFull` (payment refunded in full) or `returned-outside`. The live B2 case (430.50 refunded in full, part 50)
+   is refused at the exclusion (430.50 >= 50) and, forced into the record, is foreign again at the put-back.
+2. *F2 (regression): the room invariant applies only to foreign refunds not validly recorded as not this part's.* A payment of 1000
+   fully withdrawn as one part and then a goodwill refund of 10 by hand left the part refused over-refund, in review, with every exit
+   closed (the exclusion refused by the room rule since 10 + 1000 > 1000, mark-completed needing a full refund, re-credit refused,
+   retry looping). The valid exclusions' amounts are now removed from the room total: each is worth less than the part and together they
+   are, so they cannot be compensation for it, and the provider's room is no measure of what the wallet is owed (Razorpay cannot take
+   the part any more; the wallet gets it back; the payer keeps the unrelated goodwill). Two people with evidence, a fresh verification,
+   the minimum age and the put-back's own read still apply. Kept: any non-excluded foreign refund (today in effect a refund that
+   parts of ours were closed against), an `amount_refunded` that ours and the recorded ones do not explain (`FOREIGN_REFUND`), a second
+   foreign refund after the exclusion (`FOREIGN_REFUND` again), the system path and `verify`.
+3. *F3: a part that carries a provider refund id on an unknown payment has an exit.* The 409 pointed at `mark-completed` and
+   `returned-outside`, which both refuse there. Now `mark-completed` with `providerRefundId` (the part's own), `evidence` (at least 15
+   characters: the other Razorpay account and what shows the refund was processed there) and `confirmProcessedOnOtherAccount: true`:
+   **always two different people**, a `verify` under ten minutes old that said `UNKNOWN_PAYMENT`, and inside the call the provider is read
+   again (payment still unknown, keys proven); the part ends `COMPLETED` with `review_cause = COMPLETED_OTHER_ACCOUNT`, `review_ref` = the
+   refund id (the payer has the money; the wallet is not credited; the source is blocked `PAYMENT_UNKNOWN`). Withdrawal parts only (a
+   cancellation refund carrying an id has no exit here: it needs engineering). `recredit` stays refused for such a part; if the refund
+   was NOT processed on the other account it needs engineering or a manual step. The 409 names this exit.
+4. *F4: tests for the mutations that survived the review* (R1/R2 the room total is the larger of the provider's figure and its list,
+   R3 a failed refund on the list does not count, R4 the to-wallet "already covered" branch is reachable, T2 the second person also gives
+   evidence after an exclusion).
+5. *Known gap, stated plainly (superseded by the sixth check below: `retry` is NOT the exit for a refund that covers the part; `confirmRefundCoversThisPart` is).* A refund made by hand worth the part or more, on a payment that is not refunded in full and is not the
+   part's exact amount (500 against a part of 400 on a payment of 1000; two refunds of 300 against a part of 400), can be neither excluded
+   (strictly-less rule) nor closed by `mark-completed` (same amount, or the payment refunded in full). `retry` works while Razorpay can still
+   take the part; otherwise it stays in review for engineering. The alternative (excluding them) is exactly the double payout of F1.
+No schema change (V44 is untouched).
+
+**Amended after the sixth check (a fifth independent review of the same commit, `review-api17f.md`: READY WITH FIXES; no schema change,
+V44 untouched).**
+1. *F2 (HIGH): `retry` pays a covered part twice, so the gap of item 5 gets a code exit and the runbook stops naming `retry` for it.* Payment
+   1000, part 400 refused, support refunded 500 by hand (the 400 and 100 goodwill): the exclusion is refused (500 >= 400), `mark-completed`
+   refused (500 != 400, payment not refunded in full) and `retry`, with 500 of room at Razorpay, sends 400 more: the payer holds 900 against 400 owed.
+   New: **`mark-completed` with `confirmRefundCoversThisPart: true`** closes a withdrawal part against a listed, processed, not-ours refund
+   whose **unclaimed remainder** (its amount less what other parts already claimed: `requireCoversPart`, `claimedAgainst`) covers the part, although the
+   amounts differ and the payment is not refunded in full. Needs `evidence` (>= 15 characters, every call), a fresh `verify` that found a
+   foreign refund, and **always two different people**; the part ends `COMPLETED` (the payer has the money), the wallet is not credited, the source is
+   blocked `REFUNDED_ELSEWHERE`, `provider_refund_id` stays empty (no unique-index claim), claims never exceed the refund's amount (checked at
+   the first approval and again under the lock). The system never does it by itself. The company cannot pay twice by it **provided the minimum age is kept**: for a part
+   whose send was never answered (`AMBIGUOUS`) the close, like the `confirmPayerRefundedInFull` one, is refused within 30 minutes of the last send (every call and
+   again under the lock), because our own lost send may still land and the payer would hold it and the covering refund; the close itself sends and credits nothing.
+   Its only risk after that is the restaurant's, if the judgement is wrong (`COMPLETED` is terminal), the same class as the other claim path. A plain `mark-completed`
+   (amount equal) of another part never adopts a provider refund that parts are already closed against (payment 1000, parts 300 and 400, hand refund 400: 300 closed
+   against it, the 400 part could take it as its own and 700 would be closed against 400): refused, checked again under the lock. **`retry` is only for
+   a refund unrelated to the part**, never for one that covers it; every refusal says so. Remaining for engineering: a refund worth the part or
+   more that is genuinely unrelated, with no room left at the provider. A refund that was claimed only in part (400 of 500) stays foreign for other
+   parts of that payment (conservative: they stay in review until closed against the remainder or by engineering).
+2. *F1 (MEDIUM): one refund counted twice.* A refund recorded as not X's and later closed against by another part is ours; the proof added it as ours
+   and again as excluded, so a second, hidden refund of the same amount went unseen (payment 1000, X 500, Y 300, H 300 excluded for X then Y closed
+   against H, another 300 in `amount_refunded` but not yet listed: NONE_OF_OURS, X put back). `booksOf` (and the exclusion's own sum) now drop recorded ids
+   that are ours before validating and summing them.
+3. *F3 (LOW): a recorded refund that later fails.* It counts as 0 in the exclusion sum (it moved no money) instead of voiding the whole record; a
+   new exclusion of a failed id is still refused; the 422 for a recorded or named id the provider no longer lists names that id instead of the false "add up to".
+4. *F4 (LOW): the other-account exit's second call that finds the part adopted* now answers `ADOPTED` (part `COMPLETED`, audited), not 409 "nothing
+   was closed"; a put-back refused after an exclusion because a new refund appeared names that refund.
+5. *F5 (tests) and a note.* The room rule with an exclusion and a claim (700 claimed, 200 excluded, part 400: refused; 500 claimed: put back), the clause
+   "each refund below the part" has its own unit test (a negative amount; for non-negative amounts it is implied by the sum). **A hand refund 0.01 below
+   the part passes the rule: it is a judgement the rule cannot catch** (the bound is S < the smallest part put back, once over all parts).
+6. *B1 (wording, live round 5).* A refund still `PENDING` at Razorpay is answered "exists but not processed yet"; an id the list does not show says a refund
+   made a moment ago may not be listed until processed (the list shows a refund only once processed).
+7. *H1 (HIGH, the plain path).* The plain `mark-completed` (the provider refund is for exactly the part's amount) had no minimum age: a hand refund of the
+   part's amount, closed within 30 minutes of the last send of an `AMBIGUOUS` part, adopted that refund while our own lost send could still land (the
+   payer paid twice). It now keeps the same minimum as the other closes: refused (409 `REFUND_VERIFICATION_REQUIRED`) within `recredit-min-age` (30 minutes)
+   of the last send of an `AMBIGUOUS` part, before the transaction and again on the locked refund under the locks, before the adoption. Parts that failed another way are unaffected.
+   Decided not to change two neighbours: `returned-outside` (a cancelled order's payment has no refund of ours to land: it is refused when the cancellation
+   refund exists, and no withdrawal draws on that payment) and the other-account exit (the part already carries the provider refund id of its own send, so
+   there is no lost send left to land; it also needs a verification of an unknown payment and an in-call read).
+New request field: `confirmRefundCoversThisPart` on `mark-completed`. No schema change.
+
+**Tests.** `PaymentFlowIT$WithdrawalFailures` (the pre-check, every kind of refusal, one reversal under concurrency, crash
+recovery, blocked sources, the late-success watch, the breaker, the ops actions and their authorisation, second approver
+and tenant safety), `RazorpayPaymentProviderTest` (classification, list, wording never logged), `WithdrawalSourcesTest`,
+`RefundMatchingTest`, `PaymentLifecycleTest`, `ReversalAuditScheduleTest`, `ProductionProviderGuardTest`. Each guarding test was proved by a
+mutation (see the PR); the tests added after the second and third reviews were each shown to fail on the code before their fix.
+
+**Open verifications (test mode, before sign-off).** V-5 the idempotency key's retention (no longer relied on). V-6 the
+refund window. V-7 the exact 400 text for each row of the table, and whether a `failed` refund can become `processed`. V-8
+whether `amount_refunded` includes a pending refund.
