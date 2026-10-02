@@ -224,7 +224,46 @@ public class PaymentService {
             return payment;
         }
 
-        payment.setProviderPaymentId(providerPayment.providerPaymentId());
+        // One order, several attempts (D-101). Razorpay lets a customer retry
+        // inside the same checkout, so a payment id we are handed may be an
+        // attempt other than the one that holds the money.
+        String current = payment.getProviderPaymentId();
+        String incoming = providerPayment.providerPaymentId();
+
+        if (providerPayment.status() == PaymentProvider.ProviderPaymentStatus.FAILED
+                && payment.getStatus() == PaymentStatus.CREATED) {
+            // A declined attempt is not the outcome while the order can still be
+            // paid: the customer may try again against the same order, and
+            // failing the payment here — FAILED is terminal — would abandon an
+            // order they then pay for. Record the decline and stay payable; an
+            // intent nobody completes is expired by the sweep instead.
+            record(payment, "AUTHORIZE", payment.getAuthorizedAmount(), "FAILED", incoming,
+                    providerPayment.failureCode(), providerPayment.failureReason());
+            payment.setFailureCode(providerPayment.failureCode());
+            payment.setFailureReason(providerPayment.failureReason());
+            payment.setReconciledAt(Instant.now());
+            payments.save(payment);
+            log.info("Payment {} attempt {} declined via {}; still payable: {}",
+                    payment.getId(), incoming, source, providerPayment.failureCode());
+            return payment;
+        }
+
+        boolean carriesMoney = providerPayment.status() == PaymentProvider.ProviderPaymentStatus.AUTHORIZED
+                || providerPayment.status() == PaymentProvider.ProviderPaymentStatus.CAPTURED;
+        if (current != null && incoming != null && !current.equals(incoming)
+                && !(payment.getStatus() == PaymentStatus.CREATED && carriesMoney)) {
+            // Another attempt, describing itself. Once a payment holds or has
+            // taken money it is that attempt's, and nothing about a different one
+            // — a late decline, a retried delivery — may move it. Before, a
+            // declined attempt arriving after authorisation failed the payment:
+            // the order went ahead, capture never ran, and the supplier delivered
+            // for nothing.
+            log.warn("Ignoring {} attempt {} for payment {}: it tracks attempt {} ({})",
+                    source, incoming, payment.getId(), current, payment.getStatus());
+            return payment;
+        }
+
+        payment.setProviderPaymentId(incoming);
         payment.setReconciledAt(Instant.now());
 
         PaymentStatus target = switch (providerPayment.status()) {
@@ -311,7 +350,10 @@ public class PaymentService {
      */
     @Transactional
     public void markForCapture(Long supplierOrderId, BigDecimal acceptedAmount) {
-        var payment = payments.findBySupplierOrderId(supplierOrderId).orElse(null);
+        // Locked: a webhook or the sweep writing the same payment between our read
+        // and our save made this throw on the version check — the 500 D-099 was
+        // meant to have removed, one step later (D-101).
+        var payment = payments.lockBySupplierOrderId(supplierOrderId).orElse(null);
         if (payment == null) {
             return;
         }
@@ -422,7 +464,7 @@ public class PaymentService {
      */
     @Transactional
     public void releaseOrRefund(Long supplierOrderId, RefundReason reason, String note) {
-        var payment = payments.findBySupplierOrderId(supplierOrderId).orElse(null);
+        var payment = payments.lockBySupplierOrderId(supplierOrderId).orElse(null);
         if (payment == null) {
             return;
         }
@@ -461,6 +503,32 @@ public class PaymentService {
                 PaymentStatus.AUTHORIZED.name(), PaymentStatus.RELEASED.name(),
                 reason.name() + (note == null ? "" : ": " + note), "SYSTEM");
         log.info("Payment {} AUTHORIZED → RELEASED ({})", payment.getId(), reason);
+    }
+
+    /**
+     * End an intent nobody completed (D-101).
+     *
+     * <p>A declined attempt no longer fails a payment, so something has to: an
+     * intent past the lookup window, asked once more and still without money,
+     * becomes FAILED and its order is abandoned — the "payment incomplete" state
+     * the app already shows. Without this, abandoned intents stayed CREATED for
+     * ever and, oldest first, filled every reconciliation batch.
+     *
+     * @return true if this call expired it
+     */
+    @Transactional
+    public boolean expireIntent(Long paymentId) {
+        var payment = payments.lockById(paymentId).orElseThrow();
+        if (payment.getStatus() != PaymentStatus.CREATED) {
+            return false;
+        }
+        String reason = payment.getFailureReason() != null
+                ? "No payment completed. Last attempt: " + payment.getFailureReason()
+                : "No payment completed.";
+        fail(payment, "INTENT_EXPIRED", reason);
+        auditService.record(null, null, "PAYMENT_EXPIRED", "PAYMENT", payment.getId(),
+                PaymentStatus.CREATED.name(), PaymentStatus.FAILED.name(), reason, "SYSTEM");
+        return true;
     }
 
     // ── Reads and helpers ────────────────────────────────────────────────

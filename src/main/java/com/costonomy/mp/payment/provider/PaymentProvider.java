@@ -86,6 +86,14 @@ public interface PaymentProvider {
     ProviderRefund refund(String providerPaymentId, BigDecimal amount, String idempotencyKey);
 
     /**
+     * Where a refund we sent now stands.
+     *
+     * <p>A provider can accept a refund and finish it later — Razorpay answers
+     * {@code pending} — so the first answer is not always the last (D-101).
+     */
+    ProviderRefund fetchRefund(String providerRefundId);
+
+    /**
      * Verify a webhook came from the provider. Doc 09 §5.
      *
      * <p>Takes the <b>raw body</b>, because the signature is over exact bytes and

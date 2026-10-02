@@ -3726,3 +3726,75 @@ then.
 a payment through confirm, a real scheduler run and a late webhook, then finds
 each step in the captured log output with its ids, and the same request and job
 ids on the audit rows.
+
+---
+
+## D-101 — An attempt is not a payment, and a refund no one can finish goes to a person
+**Raised 2026-09-27 · Settled 2026-09-27**
+
+Three independent reviews of D-098 to D-100 (security, backend correctness,
+mobile) found three critical and four high problems. This records the backend
+ones fixed here; the refund policy (who may refund, cancellation) is D-102 and
+D-103, and the pay screen is fixed in `costonomy-mp-mobile`.
+
+**One Razorpay order takes several attempts, and only one of them is the payment.**
+A declined attempt used to move the payment to FAILED, which is terminal; and
+D-098's ownership check matched only the order, so a *different* attempt's
+decline — late, retried, or deliberate — could fail a payment that was already
+authorised or queued for capture. The order went ahead, capture never ran, the
+hold lapsed, and the supplier delivered for nothing. Now:
+
+- a declined attempt on an unpaid payment is recorded — a FAILED `AUTHORIZE`
+  ledger row and the reason on the payment — and the payment stays payable;
+- once a payment tracks an attempt, no other attempt can change it, except one
+  that brings money to a payment that has none;
+- an intent past the one-day window, asked once more and still unpaid, is
+  expired (`INTENT_EXPIRED`) and its order abandoned.
+
+**The sweep cannot be starved.** Ordered by `updated_at`, the rows it skipped
+without writing stayed at the front, and 200 abandoned intents filled every batch
+for good. It now takes the least recently asked first, records every ask, and
+expires what is past the window.
+
+**A refund is complete when the provider says it is complete.** Razorpay's
+`pending` was read as done. It now stays PROCESSING with the provider's refund id
+and is asked about (`GET /v1/refunds/{id}`), never resent.
+
+**Refunds cannot be over-promised, and stop being retried when retrying cannot
+help.** What can be refunded now subtracts refunds still on their way, under the
+payment's lock. A provider's outright refusal goes to `NEEDS_REVIEW` at once, and
+a transient failure after five attempts (`refund.attempts`, `V37`); both log at
+error for an alert to match. Every claim changes the row, so two job runs cannot
+both send one refund. A refund key now belongs to its payment.
+
+**Also:** `markForCapture` and `releaseOrRefund` lock the payment (the D-099 500
+survived one step later); a capture records the amount we asked for, not
+Razorpay's full `amount`; the confirm id is validated (`[A-Za-z0-9_]{1,64}`) and
+Razorpay call paths are sanitised in logs, and TraceScope values capped at 64;
+blank Razorpay secrets stop startup; a `prod`/`production` profile refuses a mock
+payment or OTP provider (`ProductionProviderGuard`); `applicationTaskExecutor` is
+declared, since the scheduler bean suppressed Boot's.
+
+**Not changed:** the webhook event id header is not covered by the signature — a
+replay can cost a lookup but cannot move money, since state is re-fetched. The
+refund key moved from `refund-{id}` to `mandi-refund-{id}` in D-098; no live
+refunds exist, so no refund was sent under the old key.
+
+### Found in passing, not fixed here: the supplier directory's 100 cap
+
+`StorefrontService.searchSuppliers` takes the first 100 suppliers **by name**
+(`order by display_name limit 100`) and only then sorts them by distance. In a
+city with more than 100 suppliers, the nearest one is missing from a restaurant's
+directory if its name sorts late. `StorefrontIT` hit it as the suite's shared
+database grew — its tests now search for their own stores, and the one that
+cannot use a term names its stores to sort first. The product fix (distance in
+SQL, or paging) belongs to discovery, alongside ONBOARDING's open question on
+serviceability.
+
+### Direct orders and "payment only after the supplier accepts"
+
+Settled with the product owner on 2026-09-27: a restaurant pays only after the
+supplier has accepted. For a store with direct orders on (D-094), switching the
+setting on **is** the supplier's standing acceptance of any order within its
+listed stock and prices, so a direct order is paid at once. A supplier who cannot
+fill one cancels it, and the restaurant is refunded (D-103).

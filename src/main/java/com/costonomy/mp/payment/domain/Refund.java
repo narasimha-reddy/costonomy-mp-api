@@ -44,6 +44,10 @@ public class Refund extends BaseEntity {
     @Column(name = "provider_refund_id", length = 200)
     private String providerRefundId;
 
+    /** Sends to the provider so far. Stops automatic retries at a limit (D-101). */
+    @Column(name = "attempts", nullable = false)
+    private int attempts;
+
     /**
      * Uniquely indexed. Doc 22: refunds must be idempotent, and a duplicate is
      * money leaving twice — the constraint decides it rather than a check that
