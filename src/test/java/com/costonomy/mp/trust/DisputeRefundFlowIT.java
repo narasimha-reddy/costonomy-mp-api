@@ -552,8 +552,13 @@ class DisputeRefundFlowIT extends AbstractIntegrationTest {
         void walletPaidOrder() throws Exception {
             var d = disputed("WALLET", true);
             assertThat(wallet(d)).isEqualByComparingTo("1000.00");
+            // Paid, not "authorised": the wallet settled it when it was created.
+            assertThat(api.get(d.buyer().token(), "/api/v1/supplier-orders/" + d.orderId())
+                    .at("/data/paymentStatus").asText()).isEqualTo("PAID");
 
             ok(supplier(d, askOk(d, "700.00"), "approve", null));
+            assertThat(api.get(d.buyer().token(), "/api/v1/supplier-orders/" + d.orderId())
+                    .at("/data/paymentStatus").asText()).isEqualTo("PARTIALLY_REFUNDED");
 
             assertThat(wallet(d)).isEqualByComparingTo("1700.00");
             assertThat(jdbc.queryForObject("select kind from wallet_transaction where reference like 'dispute-refund-%' "

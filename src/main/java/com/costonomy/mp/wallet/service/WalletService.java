@@ -197,6 +197,24 @@ public class WalletService {
     }
 
     /**
+     * A wallet-paid order's money, as its payment status: PAID once the wallet paid
+     * for it, REFUNDED once a cancellation gave it back, PARTIALLY_REFUNDED after a
+     * dispute refund. Empty before the wallet has paid.
+     */
+    @Transactional(readOnly = true)
+    public java.util.Optional<String> paymentState(Long supplierOrderId) {
+        if (entries.findBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.ORDER_REFUND).isPresent()) {
+            return java.util.Optional.of("REFUNDED");
+        }
+        if (entries.findBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.ORDER_PAYMENT).isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(
+                entries.sumBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.DISPUTE_REFUND).signum() > 0
+                        ? "PARTIALLY_REFUNDED" : "PAID");
+    }
+
+    /**
      * What of a wallet-paid order can still come back: what it took, less a
      * cancellation's return and earlier dispute refunds (D-104).
      */

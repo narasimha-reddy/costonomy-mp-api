@@ -414,6 +414,12 @@ class CreditFlowIT extends AbstractIntegrationTest {
             assertThat(invoices).hasSize(1);
             assertThat(invoices.get(0).get("amount").asDouble()).isEqualTo(40000.0);
             assertThat(invoices.get(0).get("invoiceNumber").asText()).startsWith("INV-");
+
+            // On credit, not "authorised": no money passed through Mandi to hold.
+            assertThat(api.get(line.buyer().token(), "/api/v1/supplier-orders/" + orderId)
+                    .at("/data/paymentStatus").asText()).isEqualTo("ON_CREDIT");
+            assertThat(jdbc.queryForObject("select payment_status from supplier_order where id = ?",
+                    String.class, orderId)).isEqualTo("ON_CREDIT");
         }
 
         @Test

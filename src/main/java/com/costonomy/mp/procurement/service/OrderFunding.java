@@ -94,6 +94,18 @@ public class OrderFunding {
         return forOrder(supplierOrderId).refundToWallet(supplierOrderId, amount, key, actorId, note);
     }
 
+    /**
+     * The order's payment status as its funding method sees it now, or the stored
+     * value when the method has no answer (or is not one this build knows).
+     */
+    public String paymentState(SupplierOrder order) {
+        var port = byMethod.get(order.getPaymentMethod());
+        if (port == null) {
+            return order.getPaymentStatus();
+        }
+        return port.paymentState(order.getId()).orElse(order.getPaymentStatus());
+    }
+
     public void onOrderUnfulfilled(Long supplierOrderId, String reason) {
         forOrder(supplierOrderId).onOrderUnfulfilled(supplierOrderId, reason);
     }

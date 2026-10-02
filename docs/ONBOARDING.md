@@ -270,6 +270,7 @@ are used as they were.
 | `feat/razorpay-10-capture-at-dispatch` | **Money is held until the supplier marks the order ready, and taken there** (D-103). A cancellation before ready drops the hold — nothing charged. "Ready" is refused when a hold is about to lapse |
 | `feat/razorpay-11-dispute-refunds` | **Refunds go to the wallet; a withdrawal goes back to the card** (D-104, part one). The restaurant's own refund endpoint is gone. `POST /outlets/{id}/wallet/withdraw` sends refund money back to the payments it came from. Part two is the next PR |
 | `feat/razorpay-12-dispute-refund-requests` | **Refunds are asked for on a dispute** (D-104 part two). The supplier approves or declines; operations decides after a decline or 48 hours. An approval credits the wallet and is taken from the supplier's payout for the order — capped at it, refused once it is approved, and a payout cannot be approved while a refund on it is undecided. **Costonomy never funds a refund.** Dispute lists per outlet and per store |
+| `feat/razorpay-15-order-payment-status` | **An order's payment status is read live from how it was paid** (D-105). It was a copy written once as "AUTHORIZED" for every order: wallet orders, credit orders and card orders already charged, refunded or released all said "Authorized" |
 
 What you will notice:
 
@@ -303,7 +304,7 @@ What you will notice:
 - `costonomy-mp-mobile/tools/razorpay-e2e` pays real test-mode orders end to end,
   31 cases, mostly failures. It needs this API on Razorpay test keys.
 
-Tests after these PRs: 329 unit, 367 integration.
+Tests after these PRs: 329 unit, 368 integration.
 
 ### Earlier, on `feat/edit-open-request-quantities`
 

@@ -37,6 +37,7 @@ public class SupplierOrderMapper {
     private final SkuDirectory skuDirectory;
     private final CanonicalProductRepository products;
     private final ProcurementDirectory directory;
+    private final OrderFunding funding;
 
     public ProcurementDtos.SupplierOrderResponse toResponse(SupplierOrder order) {
         var items = supplierOrderItems.findBySupplierOrderId(order.getId());
@@ -74,7 +75,9 @@ public class SupplierOrderMapper {
                 order.getCreatedAt(),
                 order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
                 order.getAcceptedAmount(), acceptedSubtotal(items), acceptedGst(items),
-                order.getPaymentMethod(), order.getPaymentStatus(),
+                // Live, from the funding method: the stored copy is written once,
+                // at release, and goes stale the moment the money moves again.
+                order.getPaymentMethod(), funding.paymentState(order),
                 order.getDeliveryMode(), order.getDeliveryFee(),
                 order.getCancelledBy(), order.getCancellationReason(),
                 items.stream()

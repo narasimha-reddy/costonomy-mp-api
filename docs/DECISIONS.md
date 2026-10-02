@@ -4019,3 +4019,24 @@ hours and the supplier still pays; declined by both moves nothing; only the
 supplier decides, and support cannot; once per dispute; only after delivery;
 delivered but not received; a wallet-paid order's refund is spendable, not
 withdrawable.
+
+## D-105 — An order's payment status is read from its funding method, live
+**Raised 2026-09-28 · Settled 2026-09-28**
+
+`supplier_order.payment_status` was written once, at release, as `AUTHORIZED` —
+whatever paid for the order, and never again. A wallet order therefore read
+"Authorized" when its money was already paid; a credit order, when no money had
+passed through Mandi; and a card order still said so after its money was taken,
+refunded or released (a cancelled order looked as if money were still held).
+
+Order responses now ask the order's funding method (`OrderFundingPort.paymentState`,
+routed by `OrderFunding`, the same way as funding and refunds): a card payment's own
+status (`AUTHORIZED`, `CAPTURED`, `RELEASED`, `PARTIALLY_REFUNDED`…); `PAID`,
+`PARTIALLY_REFUNDED` or `REFUNDED` for a wallet; `ON_CREDIT`, `RELEASED`, `FAILED` or
+`EXPIRED` for credit. Release writes the same value into the column, so it is right
+when written; reports that read the column directly (the admin order search) can
+still lag behind a later capture or refund.
+
+Tests: `PaymentFlowIT$Capture.orderShowsItsPaymentLive` (held, taken, released),
+`DisputeRefundFlowIT` (wallet: paid, then partly refunded), `CreditFlowIT` (on
+credit, in the response and the column).

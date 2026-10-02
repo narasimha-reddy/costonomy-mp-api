@@ -85,7 +85,11 @@ public class OrderReleaseService {
 
         order.setStatus(target);
         order.setAcceptanceDeadline(null);
-        order.setPaymentStatus("AUTHORIZED");
+        // In the funding method's words — "AUTHORIZED" for a held card, "PAID" for a
+        // wallet, "ON_CREDIT" for credit. It used to write "AUTHORIZED" for all three.
+        // Responses read the live value (OrderFunding.paymentState); this copy is
+        // for the reports that read the column.
+        order.setPaymentStatus(funding.paymentState(order));
         orders.save(order);
 
         // The supplier's commitment is now an order. For credit this draws the
