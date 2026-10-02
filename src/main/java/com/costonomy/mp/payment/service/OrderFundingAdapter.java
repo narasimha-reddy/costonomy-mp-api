@@ -74,6 +74,18 @@ public class OrderFundingAdapter implements OrderFundingPort {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public java.util.Optional<FundingIntent> openIntent(Long supplierOrderId) {
+        return payments.findBySupplierOrderId(supplierOrderId)
+                .filter(payment -> payment.getStatus() == PaymentStatus.CREATED
+                        && payment.getProviderOrderId() != null)
+                .map(payment -> new FundingIntent(
+                        supplierOrderId, payment.getId(), payment.getProvider(),
+                        payment.getProviderOrderId(), payment.getAuthorizedAmount(),
+                        payment.getCurrency(), publicKeyFor(payment.getProvider())));
+    }
+
+    @Override
     @Transactional
     public void onOrderAccepted(Long supplierOrderId, BigDecimal acceptedAmount) {
         // Marks only. The provider call happens after this transaction commits —

@@ -73,6 +73,10 @@ public class OrderFunding {
         forOrder(supplierOrderId).onOrderAccepted(supplierOrderId, acceptedAmount);
     }
 
+    public java.util.Optional<OrderFundingPort.FundingIntent> openIntent(Long supplierOrderId) {
+        return forOrder(supplierOrderId).openIntent(supplierOrderId);
+    }
+
     public void onOrderUnfulfilled(Long supplierOrderId, String reason) {
         forOrder(supplierOrderId).onOrderUnfulfilled(supplierOrderId, reason);
     }

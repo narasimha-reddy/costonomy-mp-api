@@ -1040,6 +1040,55 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         }
     }
 
+    // ── Payment intent lookup (D-102) ────────────────────────────────────
+
+    @Nested
+    @DisplayName("payment intent lookup")
+    class IntentLookup {
+
+        private JsonNode intent(Submitted submitted, String token) throws Exception {
+            return api.get(token, "/api/v1/supplier-orders/" + submitted.orderId() + "/payment-intent")
+                    .at("/data");
+        }
+
+        @Test
+        @DisplayName("an unpaid order's checkout can be fetched again, the same one, not a new one")
+        void unpaidIsPayable() throws Exception {
+            var submitted = submit("400", 1);
+
+            var first = intent(submitted, submitted.buyer().token());
+            var second = intent(submitted, submitted.buyer().token());
+
+            assertThat(first.at("/payable").asBoolean()).isTrue();
+            assertThat(first.at("/fundsSecured").asBoolean()).isFalse();
+            // The order the payment was created with — asking never mints another.
+            assertThat(first.at("/providerOrderId").asText()).isEqualTo(submitted.providerOrderId());
+            assertThat(second.at("/providerOrderId").asText()).isEqualTo(submitted.providerOrderId());
+            assertThat(first.at("/publicKey").asText()).isNotBlank();
+        }
+
+        @Test
+        @DisplayName("a paid order says so and offers no checkout")
+        void paidIsNotPayable() throws Exception {
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+
+            var intent = intent(submitted, submitted.buyer().token());
+            assertThat(intent.at("/payable").asBoolean()).isFalse();
+            assertThat(intent.at("/fundsSecured").asBoolean()).isTrue();
+            assertThat(intent.at("/publicKey").isNull()).isTrue();
+        }
+
+        @Test
+        @DisplayName("another restaurant cannot see it")
+        void otherTenantGets404() throws Exception {
+            var submitted = submit("400", 1);
+            var stranger = newBuyer();
+            assertThat(api.getStatus(stranger.token(),
+                    "/api/v1/supplier-orders/" + submitted.orderId() + "/payment-intent")).isEqualTo(404);
+        }
+    }
+
     // ── Traceability (D-100) ─────────────────────────────────────────────
 
     @Nested
