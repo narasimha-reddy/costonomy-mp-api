@@ -87,6 +87,33 @@ public class WalletService {
     }
 
     /**
+     * Credit a Razorpay top-up that has been captured (D-107). Idempotent on the
+     * reference: the top-up id is the operation, so a second call is a no-op
+     * rather than a second credit, whatever the caller did to get here.
+     *
+     * <p>Called by {@code WalletTopUpService} inside the transaction that moves
+     * the top-up to CREDITED, with the wallet already locked and the limits
+     * already checked — this method only moves the money and writes the ledger.
+     */
+    @Transactional
+    public Wallet creditTopUp(Long outletId, Long topUpId, BigDecimal amount) {
+        String reference = "topup-" + topUpId;
+        var wallet = forOutlet(outletId);
+        if (entries.existsByReference(reference)) {
+            return wallet;
+        }
+        wallets.credit(wallet.getId(), amount);
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.CREDIT, WalletEntryKind.TOP_UP, amount,
+                "Wallet top-up", reference, null);
+        log.info("Wallet {} credited {} for top-up {}; balance {}",
+                wallet.getId(), amount.toPlainString(), topUpId, refreshed.getBalance().toPlainString());
+        return refreshed;
+    }
+
+    /**
      * Take the money for an order, or report that it is not there.
      *
      * <p>The guard lives in the {@code update}'s {@code where} clause, so two

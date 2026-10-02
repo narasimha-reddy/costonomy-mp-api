@@ -51,6 +51,8 @@ public class MockPaymentProvider implements PaymentProvider {
 
     private final Map<String, ProviderPayment> payments = new ConcurrentHashMap<>();
     private final Map<String, BigDecimal> intents = new ConcurrentHashMap<>();
+    /** Intents asked to capture on payment (a wallet top-up, D-107) rather than hold. */
+    private final java.util.Set<String> autoCaptured = ConcurrentHashMap.newKeySet();
     /** Intent → the payment that completed it, for {@link #findPaymentForOrder}. */
     private final Map<String, String> paymentByOrder = new ConcurrentHashMap<>();
     private final Map<String, ProviderRefund> refunds = new ConcurrentHashMap<>();
@@ -82,6 +84,9 @@ public class MockPaymentProvider implements PaymentProvider {
     public AuthorizationIntent createAuthorization(AuthorizationRequest request) {
         String orderId = "mock_order_" + UUID.randomUUID().toString().replace("-", "");
         intents.put(orderId, request.amount());
+        if (request.autoCapture()) {
+            autoCaptured.add(orderId);
+        }
         return new AuthorizationIntent(orderId, request.amount(), request.currency(), "mock_key");
     }
 
@@ -120,8 +125,12 @@ public class MockPaymentProvider implements PaymentProvider {
             return declined;
         }
 
-        var authorized = new ProviderPayment(paymentId, providerOrderId, ProviderPaymentStatus.AUTHORIZED,
-                amount, BigDecimal.ZERO, null, null, method, detail);
+        // An auto-capture intent goes straight to CAPTURED, as Razorpay does with
+        // capture = automatic: there is no held state for a top-up to sit in.
+        boolean captured = autoCaptured.contains(providerOrderId);
+        var authorized = new ProviderPayment(paymentId, providerOrderId,
+                captured ? ProviderPaymentStatus.CAPTURED : ProviderPaymentStatus.AUTHORIZED,
+                amount, captured ? amount : BigDecimal.ZERO, null, null, method, detail);
         payments.put(paymentId, authorized);
         paymentByOrder.put(providerOrderId, paymentId);
         return authorized;
@@ -345,6 +354,13 @@ public class MockPaymentProvider implements PaymentProvider {
         // exactly as it would against Razorpay, which is the point of a mock that
         // is equivalent rather than permissive.
         return TEST_SIGNATURE.equals(signatureHeader);
+    }
+
+    @Override
+    public boolean verifyCheckoutSignature(String providerOrderId, String providerPaymentId, String signature) {
+        // A real check for the same reason as verifySignature: a test that sends
+        // the wrong signature must be refused as it would be by Razorpay.
+        return TEST_SIGNATURE.equals(signature);
     }
 
     /** Whether the amount's paise match a scenario trigger. */

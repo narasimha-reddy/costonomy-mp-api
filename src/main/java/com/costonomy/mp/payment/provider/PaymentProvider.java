@@ -131,12 +131,29 @@ public interface PaymentProvider {
     boolean verifySignature(String rawBody, String signatureHeader);
 
     /**
+     * Verify the signature a client's checkout hands back after paying (D-107).
+     *
+     * <p>Not the webhook signature: that is over a request body with the webhook
+     * secret, this is over {@code orderId|paymentId} with the API secret, and the
+     * two must never be accepted for one another. It proves the payment id came
+     * out of a checkout opened against {@code providerOrderId}, which is one more
+     * reason to believe the id — the fetch that follows is still what decides
+     * whether money was taken.
+     */
+    boolean verifyCheckoutSignature(String providerOrderId, String providerPaymentId, String signature);
+
+    /**
      * What the provider was asked to hold.
      *
      * @param holdMinutes how long the provider is to hold the authorisation for capture
      *                    before it returns it, or null for the provider's own configured
      *                    default. Chosen by the caller, so that what is stored on the
-     *                    payment is what was sent (D-109)
+     *                    payment is what was sent (D-109). Ignored for an auto-capture
+     * @param autoCapture take the money the moment the customer pays, instead of
+     *                    holding it for a later {@link #capture} (D-107). False
+     *                    for an order, which is held until it is ready (D-103);
+     *                    true for a wallet top-up, where there is nothing to wait
+     *                    for and a hold would lapse into money we never got.
      */
     record AuthorizationRequest(
             String referenceId,
@@ -144,12 +161,25 @@ public interface PaymentProvider {
             String currency,
             String description,
             String idempotencyKey,
-            Integer holdMinutes) {
+            Integer holdMinutes,
+            boolean autoCapture) {
 
-        /** With the provider's default hold. */
+        /** A held authorisation with the provider's default hold, which is what every order uses. */
         public AuthorizationRequest(String referenceId, BigDecimal amount, String currency,
                                     String description, String idempotencyKey) {
-            this(referenceId, amount, currency, description, idempotencyKey, null);
+            this(referenceId, amount, currency, description, idempotencyKey, null, false);
+        }
+
+        /** An authorisation captured on payment (a top-up), or a held one with the default hold. */
+        public AuthorizationRequest(String referenceId, BigDecimal amount, String currency,
+                                    String description, String idempotencyKey, boolean autoCapture) {
+            this(referenceId, amount, currency, description, idempotencyKey, null, autoCapture);
+        }
+
+        /** A held authorisation with a chosen hold. */
+        public AuthorizationRequest(String referenceId, BigDecimal amount, String currency,
+                                    String description, String idempotencyKey, Integer holdMinutes) {
+            this(referenceId, amount, currency, description, idempotencyKey, holdMinutes, false);
         }
     }
 

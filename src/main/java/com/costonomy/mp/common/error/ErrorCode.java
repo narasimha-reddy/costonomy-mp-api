@@ -125,6 +125,21 @@ public enum ErrorCode {
             "This payment has already moved on."),
     REFUND_ALREADY_REQUESTED(HttpStatus.CONFLICT,
             "A refund has already been requested for this."),
+    /**
+     * A top-up's payment has not been captured yet (D-107). Not a failure: the
+     * money is safe and a background job credits it as soon as it clears, so the
+     * client should say "processing" and look at the top-up again, not retry
+     * the payment.
+     */
+    TOP_UP_PROCESSING(HttpStatus.CONFLICT,
+            "Your payment is still being processed. It will be added to your wallet as soon as it clears."),
+    /**
+     * Adding this money would take the wallet past what it may hold, or past the
+     * month's top-up limit (D-107). At order time it is a refusal; at credit time
+     * it means the payment was captured and is being returned.
+     */
+    WALLET_LIMIT_EXCEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That would take your wallet over its limit."),
     WEBHOOK_SIGNATURE_INVALID(HttpStatus.BAD_REQUEST,
             "Invalid webhook signature."),
     /**

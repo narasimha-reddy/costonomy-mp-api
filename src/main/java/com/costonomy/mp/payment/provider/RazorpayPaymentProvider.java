@@ -39,7 +39,8 @@ import java.util.stream.StreamSupport;
  * {@code payment.capture = manual}, the documented form — the older
  * {@code payment_capture: 0} flag is not in the current Orders API, and if it
  * were ignored the account's dashboard default would decide, which may well be
- * automatic.
+ * automatic. The one exception is a wallet top-up (D-107), which asks for
+ * {@code capture = automatic} because the money is credited when it is paid.
  *
  * <p><b>Razorpay has no idempotency key on orders or captures</b> — only on
  * refunds, as {@code X-Refund-Idempotency}. Orders are made safe by
@@ -109,29 +110,41 @@ public class RazorpayPaymentProvider implements PaymentProvider {
 
     @Override
     public AuthorizationIntent createAuthorization(AuthorizationRequest request) {
-        // The hold the caller chose, so what is stored on the payment is what was sent;
-        // this provider's own setting only where none was asked for.
-        int hold = request.holdMinutes() != null ? request.holdMinutes() : holdMinutes;
-        if (hold < MIN_HOLD_MINUTES || hold > MAX_HOLD_MINUTES) {
-            throw new PaymentProviderException("A hold of " + hold + " minutes is outside Razorpay's range of "
-                    + MIN_HOLD_MINUTES + " to " + MAX_HOLD_MINUTES, false, "INVALID_HOLD");
+        // Orders are held, top-ups are not. See the class comment: an order is
+        // captured when it is ready (doc 01 §14), a wallet top-up is captured when
+        // paid (D-107) — the wallet is credited on that capture, and a hold would
+        // leave a restaurant with a wallet that fills only after we act.
+        Integer hold = null;
+        Map<String, Object> payment;
+        if (request.autoCapture()) {
+            payment = Map.of("capture", "automatic",
+                    "capture_options", Map.of("refund_speed", "normal"));
+        } else {
+            // The hold the caller chose, so what is stored on the payment is what was sent;
+            // this provider's own setting only where none was asked for.
+            hold = request.holdMinutes() != null ? request.holdMinutes() : holdMinutes;
+            if (hold < MIN_HOLD_MINUTES || hold > MAX_HOLD_MINUTES) {
+                throw new PaymentProviderException("A hold of " + hold + " minutes is outside Razorpay's range of "
+                        + MIN_HOLD_MINUTES + " to " + MAX_HOLD_MINUTES, false, "INVALID_HOLD");
+            }
+            // Never auto-capture an order. Capture happens when the order is confirmed,
+            // for the agreed amount (doc 01 §14). The expiry, in minutes, is
+            // configuration (D-109): an uncaptured hold lapses back to the
+            // customer when it runs out, which is also how a card release
+            // works. Razorpay's own documents disagree on whether the longest
+            // is three days or five, so the default is the shorter and the
+            // same number bounds when we let goods leave.
+            payment = Map.of("capture", "manual",
+                    "capture_options", Map.of(
+                            "manual_expiry_period", hold,
+                            "refund_speed", "normal"));
         }
+
         JsonNode response = post("/v1/orders", Map.of(
                 "amount", toPaise(request.amount()),
                 "currency", request.currency(),
                 "receipt", request.referenceId(),
-                // Never auto-capture. Capture happens when the order is confirmed,
-                // for the agreed amount (doc 01 §14). The expiry, in minutes, is
-                // configuration (D-109): an uncaptured hold lapses back to the
-                // customer when it runs out, which is also how a card release
-                // works. Razorpay's own documents disagree on whether the longest
-                // is three days or five, so the default is the shorter and the
-                // same number bounds when we let goods leave.
-                "payment", Map.of(
-                        "capture", "manual",
-                        "capture_options", Map.of(
-                                "manual_expiry_period", hold,
-                                "refund_speed", "normal"))), Map.of());
+                "payment", payment), Map.of());
 
         return new AuthorizationIntent(
                 response.get("id").asText(), request.amount(), request.currency(), keyId, hold);
@@ -421,6 +434,26 @@ public class RazorpayPaymentProvider implements PaymentProvider {
                     signatureHeader.getBytes(StandardCharsets.UTF_8));
         } catch (Exception ex) {
             log.error("Could not verify webhook signature", ex);
+            return false;
+        }
+    }
+
+    @Override
+    public boolean verifyCheckoutSignature(String providerOrderId, String providerPaymentId, String signature) {
+        if (providerOrderId == null || providerPaymentId == null || signature == null) {
+            return false;
+        }
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            // The API secret, not the webhook secret: Razorpay signs the checkout
+            // result with the key secret, over "order_id|payment_id".
+            mac.init(new SecretKeySpec(keySecret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            String expected = HexFormat.of().formatHex(mac.doFinal(
+                    (providerOrderId + "|" + providerPaymentId).getBytes(StandardCharsets.UTF_8)));
+            return java.security.MessageDigest.isEqual(
+                    expected.getBytes(StandardCharsets.UTF_8), signature.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ex) {
+            log.error("Could not verify checkout signature", ex);
             return false;
         }
     }
