@@ -1519,6 +1519,20 @@ Each provider should require only a new adapter and configuration.
 
 Avoid modifying the domain model for every new provider.
 
+**Borzo — added 2026-10-01, see D-098.** `delivery.provider.borzo`: `BorzoApiClient`,
+`BorzoDeliveryProvider`, `BorzoStatusMapper`, `BorzoContractException`, gated by
+its own `costonomy.mp.borzo.enabled` flag (independent of Pidge's single-valued
+`costonomy.mp.providers.delivery` switch) plus a `delivery_provider` row (V41,
+seeded disabled). One port-level exception to "only a new adapter and
+configuration": `DeliveryProvider.QuoteRequest` gained `pickupAddress`/
+`dropAddress`, because Borzo's `calculate-order` requires address text per
+point and nothing upstream of it carried that. Added as a new constructor
+overload — Pidge and the mocks, which never read the field, are unaffected.
+Borzo's webhook (`BorzoWebhookService`, the `/borzo` route) is not implemented;
+the payload/signature contract is unverified and this phase explicitly
+required testing against the sandbox first, which status polling (`GET
+/orders`) satisfies in the meantime.
+
 ---
 
 ## Phase 5 — Notifications

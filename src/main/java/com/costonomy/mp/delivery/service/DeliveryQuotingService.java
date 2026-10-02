@@ -63,7 +63,8 @@ public class DeliveryQuotingService {
                 delivery.getPickupLatitude(), delivery.getPickupLongitude(),
                 delivery.getDropLatitude(), delivery.getDropLongitude(),
                 orderValue, weightGrams, requiredEtaMinutes,
-                weightKg, delivery.getVolumeCbm(), vehicleType);
+                weightKg, delivery.getVolumeCbm(), vehicleType,
+                delivery.getPickupAddress(), delivery.getDropAddress());
 
         List<DeliveryQuote> recorded = new ArrayList<>();
         List<DeliverySelection.Candidate> candidates = new ArrayList<>();

@@ -3520,3 +3520,84 @@ from the other side, with the same `traded` requirement.
 Both request and order detail screens, on both sides, now carry the action in
 their header. It opens the **pair's** thread, not a thread about that order —
 the order is shared *into* it, which is what the share picker is for.
+
+## D-098 — Borzo joins the auction alongside Pidge, verified live instead of assumed
+**Raised 2026-10-01 · Settled 2026-10-01**
+
+Pidge's contract was never checked against a real response — its own
+implementation plan required that and it was skipped, and `PidgeApiClient`
+silently defaults a missing or renamed field to a plausible fake value
+(`new BigDecimal(body.path("total_fare").asText("50.00"))`) instead of
+failing. Borzo sandbox credentials were materially easier to obtain, so it is
+added as a second `DeliveryProvider` — **alongside** Pidge, not replacing it —
+with every request/response field checked against the live sandbox
+(`robotapitest-in.borzodelivery.com`) before being relied on.
+
+### Two independent switches, not one shared one
+`PidgeDeliveryProvider` is `@ConditionalOnProperty(name =
+"costonomy.mp.providers.delivery", havingValue = "PIDGE")` — a single-valued
+switch that cannot also equal `"BORZO"`. Rather than widen that property into a
+list (touching Pidge's tested activation path for no reason), Borzo gets its
+own flag, `costonomy.mp.borzo.enabled`, so it can run next to Pidge, next to
+the mocks, or alone. Both still need the matching `delivery_provider.enabled`
+row (V41, seeded `0`) before `DeliveryProviderRegistry` actually offers the
+adapter a quote — the same dual-gate Pidge already uses.
+`BorzoPidgeCoexistenceTest` proves the two switches don't interfere.
+
+### Borzo has no idempotency-key mechanism of its own — ours is what protects a retry
+Pidge's `createOrder` sends `idempotency_key` in the payload, trusting Pidge to
+deduplicate server-side — unverified, but at least a documented field. Borzo's
+`create-order` has no equivalent. What it does have is `client_order_id`, an
+echoed-back per-point reference with no documented dedup semantics. Rather than
+lean on an unconfirmed provider behaviour, protection against a duplicate
+booking stays where it already lived for every provider: `uk_delivery_order`
+(one delivery per supplier order), `DeliveryService.request()`'s pre-check for
+an existing delivery, `DeliveryBookingService`'s per-attempt idempotency key,
+and no automatic HTTP retry client. `BorzoApiClient.createOrder` sends that
+same deterministic key as `client_order_id` on every point anyway — it costs
+nothing and gives a reconciliation handle if a human ever has to match a
+Borzo order back to an attempt — but it is not treated as the thing preventing
+a double-booking. The residual gap is identical to Pidge's, not new: a
+read-timeout on `create-order` after Borzo already created the order leaves
+our system unable to tell, and both adapters fail loud into "try the next
+provider" rather than silently retrying.
+
+### Quoting needed an address, which `QuoteRequest` never carried
+`calculate-order` rejects a point with no `address` string even when lat/lng
+are both present — confirmed live: a coordinates-only request comes back
+`is_successful: true` with an empty `points` array and
+`parameter_warnings.points[].address: ["required"]`. `DeliveryProvider.QuoteRequest`
+carried only coordinates, because Pidge and the mocks never needed more.
+Extended it with `pickupAddress`/`dropAddress` — sourced from `Delivery`'s own
+(already-`NOT NULL`) address columns in `DeliveryQuotingService`, and from
+`DeliveryDirectory.Place.address()` in `DeliveryFeeQuoteService` — via a new
+constructor overload, so Pidge and the mocks, which never read the field,
+are unaffected.
+
+### No duration ETA exists; a per-point deadline stands in for one
+`calculate-order` never returns an ETA field at all — confirmed by multiple
+live calls, not an undocumented gap assumed from reading the docs. What it
+does return is `points[].required_finish_datetime`, a deadline that moves with
+real route distance (a 19 km test route pushed it out further than a 6 km
+one, confirmed side by side). `BorzoApiClient` reports `etaMinutes` as the
+minutes between now and the **drop point's** `required_finish_datetime`. This
+is a real, provider-computed figure in a different shape — not the invented
+value doc 06 §8 forbids, and not Pidge's own `eta_minutes.asInt(25)` default
+either.
+
+### Only vehicle_type_id 8 is verified; everything else declines rather than guesses
+Borzo's `vehicle_type_id` presumably has values for larger vehicles, but none
+were confirmed against the sandbox. `BorzoApiClient` answers `Quote.unserviceable`
+for any `VehicleType` other than `TWO_WHEELER` rather than sending an
+unverified id — a decline doc 06 §4 already treats as a normal answer, not a
+new failure mode.
+
+### Still open, blocking a second PR
+The webhook/callback payload and signature scheme are not verified — Borzo's
+documentation is too thin to trust, the same mistake this whole effort exists
+to avoid repeating for Pidge. `BorzoWebhookService` and the `/borzo` webhook
+route are not implemented until that contract is confirmed live (a reachable
+callback URL against a real sandbox order, or direct confirmation from Borzo
+support). Until then, `BorzoDeliveryProvider` reports status only by polling
+`GET /orders`, same as doc 06 §9 says any provider should be able to fall back
+to.

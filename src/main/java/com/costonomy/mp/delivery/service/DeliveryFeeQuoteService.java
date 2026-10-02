@@ -102,7 +102,7 @@ public class DeliveryFeeQuoteService {
         quote.setExpiresAt(Instant.now().plus(Duration.ofSeconds(
                 config.getInt("delivery.quoteTtlSeconds", 900))));
 
-        priceIt(quote, orderValue, weight.grams());
+        priceIt(quote, orderValue, weight.grams(), pickup.address(), drop.address());
         var saved = quotes.save(quote);
 
         return new Fee(saved.getReference(), saved.getFee(), saved.getCurrency(),
@@ -117,11 +117,12 @@ public class DeliveryFeeQuoteService {
      * still has to be placeable, so the rate card prices it and the quote records
      * that nobody quoted it.
      */
-    private void priceIt(DeliveryFeeQuote quote, BigDecimal orderValue, BigDecimal weightGrams) {
+    private void priceIt(DeliveryFeeQuote quote, BigDecimal orderValue, BigDecimal weightGrams,
+                         String pickupAddress, String dropAddress) {
         var request = new DeliveryProvider.QuoteRequest(
                 null, quote.getPickupLatitude(), quote.getPickupLongitude(),
                 quote.getDropLatitude(), quote.getDropLongitude(),
-                orderValue, weightGrams, null);
+                orderValue, weightGrams, null, pickupAddress, dropAddress);
 
         DeliveryProvider.Quote best = null;
         for (var available : registry.enabled()) {

@@ -85,23 +85,42 @@ public interface DeliveryProvider {
             Integer requiredEtaMinutes,
             BigDecimal weightKg,
             BigDecimal volumeCbm,
-            VehicleType vehicleType) {
+            VehicleType vehicleType,
+            /**
+             * Human-readable pickup/drop text, where a provider's quoting API needs it.
+             *
+             * <p>Null for providers (Pidge, the mocks) that quote off coordinates alone.
+             * Borzo's {@code calculate-order} rejects a point with no {@code address},
+             * even when lat/lng are both present — confirmed against the live sandbox,
+             * not assumed.
+             */
+            String pickupAddress,
+            String dropAddress) {
 
         public QuoteRequest(Long supplierOrderId, BigDecimal pickupLatitude, BigDecimal pickupLongitude,
                             BigDecimal dropLatitude, BigDecimal dropLongitude, BigDecimal orderValue,
                             Integer requiredEtaMinutes) {
             this(supplierOrderId, pickupLatitude, pickupLongitude, dropLatitude, dropLongitude,
-                    orderValue, null, requiredEtaMinutes, null, null, VehicleType.TWO_WHEELER);
+                    orderValue, null, requiredEtaMinutes, null, null, VehicleType.TWO_WHEELER, null, null);
         }
 
         public QuoteRequest(Long supplierOrderId, BigDecimal pickupLatitude, BigDecimal pickupLongitude,
                             BigDecimal dropLatitude, BigDecimal dropLongitude, BigDecimal orderValue,
                             BigDecimal weightGrams, Integer requiredEtaMinutes) {
             this(supplierOrderId, pickupLatitude, pickupLongitude, dropLatitude, dropLongitude,
+                    orderValue, weightGrams, requiredEtaMinutes, null, null);
+        }
+
+        public QuoteRequest(Long supplierOrderId, BigDecimal pickupLatitude, BigDecimal pickupLongitude,
+                            BigDecimal dropLatitude, BigDecimal dropLongitude, BigDecimal orderValue,
+                            BigDecimal weightGrams, Integer requiredEtaMinutes,
+                            String pickupAddress, String dropAddress) {
+            this(supplierOrderId, pickupLatitude, pickupLongitude, dropLatitude, dropLongitude,
                     orderValue, weightGrams, requiredEtaMinutes,
                     weightGrams != null ? weightGrams.divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP) : null,
                     null,
-                    VehicleType.fromWeight(weightGrams != null ? weightGrams.divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP) : null));
+                    VehicleType.fromWeight(weightGrams != null ? weightGrams.divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP) : null),
+                    pickupAddress, dropAddress);
         }
 
         public QuoteRequest(Long supplierOrderId, BigDecimal pickupLatitude, BigDecimal pickupLongitude,
@@ -110,7 +129,15 @@ public interface DeliveryProvider {
             this(supplierOrderId, pickupLatitude, pickupLongitude, dropLatitude, dropLongitude,
                     orderValue,
                     weightKg != null ? weightKg.multiply(BigDecimal.valueOf(1000)) : null,
-                    requiredEtaMinutes, weightKg, volumeCbm, vehicleType);
+                    requiredEtaMinutes, weightKg, volumeCbm, vehicleType, null, null);
+        }
+
+        public QuoteRequest(Long supplierOrderId, BigDecimal pickupLatitude, BigDecimal pickupLongitude,
+                            BigDecimal dropLatitude, BigDecimal dropLongitude, BigDecimal orderValue,
+                            BigDecimal weightGrams, Integer requiredEtaMinutes, BigDecimal weightKg,
+                            BigDecimal volumeCbm, VehicleType vehicleType) {
+            this(supplierOrderId, pickupLatitude, pickupLongitude, dropLatitude, dropLongitude,
+                    orderValue, weightGrams, requiredEtaMinutes, weightKg, volumeCbm, vehicleType, null, null);
         }
     }
 
