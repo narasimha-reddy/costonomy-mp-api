@@ -99,6 +99,11 @@ public class ShadowfaxApiClient {
             return DeliveryProvider.Quote.unserviceable("No valid coordinates provided for Shadowfax quote");
         }
 
+        if (distanceKm > 30.0) {
+            return DeliveryProvider.Quote.unserviceable(
+                    "Exceeds 30 km intra-city radius limit (%.1f km)".formatted(distanceKm));
+        }
+
         Integer pickupPincode = extractPincode(request.pickupAddress());
         Integer dropPincode = extractPincode(request.dropAddress());
 

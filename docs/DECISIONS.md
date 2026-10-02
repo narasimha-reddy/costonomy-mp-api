@@ -3687,4 +3687,27 @@ Porter is gated by:
 Porter webhook ingestion is deferred pending live payload and HMAC verification confirmation,
 relying on polling via `DeliveryJobs.pollActiveDeliveries()` for status advancement.
 
+---
+
+## D-101 — Intra-city 30 km radius boundary and tiered assignment deadlines
+**2026-10-02 · Settled**
+
+Initial marketplace delivery operations focus strictly on intra-city fulfillment within municipal limits (maximum 30 km radius).
+
+### 30 km Intra-city Hard Radius Ceiling
+1. **Pre-order Quoting (`DeliveryFeeQuoteService`)**:
+   - Rejects checkout fee requests exceeding 30.0 km with `BusinessException(ErrorCode.VALIDATION_ERROR, "Delivery location exceeds the 30 km intra-city limit (distance: %.1f km). Choose pickup, or ask the supplier to deliver.")`.
+2. **Auction Gatherer (`DeliveryQuotingService`)**:
+   - Evaluates Haversine distance before querying carriers (`costonomy.mp.delivery.max-radius-km=30.0`).
+   - Deliveries exceeding 30 km save a single `UNSERVICEABLE` quote with failure reason `"Exceeds 30.0 km intra-city radius limit"` and immediately return empty without polling 3rd-party carrier APIs.
+3. **Carrier Adapters (Borzo, Porter, Shadowfax)**:
+   - Each client independently validates distance $\le 30.0$ km and returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")` if exceeded, preventing accidental out-of-city dispatch.
+
+### Tiered Driver-Assignment Deadlines
+Commercial vehicles take longer to match in Indian metropolitan traffic than two-wheeler bike couriers:
+- **Two-Wheelers (`TWO_WHEELER`)**: `PT3M` (3 minutes) waterfall timeout (`costonomy.mp.delivery.bike-assignment-timeout`). Bike couriers match within 1–3 minutes; lingering longer delays re-bidding.
+- **Three-Wheelers & Trucks (`THREE_WHEELER`, `FOUR_WHEELER_TRUCK`)**: `PT12M` (12 minutes) waterfall timeout (`costonomy.mp.delivery.truck-assignment-timeout`). Auto-rickshaw cargo and mini-trucks (Tata Ace, Mahindra Bolero Maxi Truck) have sparser fleet density and take 8–12 minutes to assign. A 3-minute timeout prematurely cascaded through all providers before drivers could accept.
+- `DeliveryBookingService` computes `assignmentDeadline = bookedAt.plus(isTruck ? truckAssignmentTimeout : bikeAssignmentTimeout)` and emits `DeliveryBookedEvent`, which `DeliveryWaterfallService` schedules via `TaskScheduler` for one-shot timeout evaluation.
+
+
 

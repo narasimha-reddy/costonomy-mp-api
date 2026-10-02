@@ -365,4 +365,22 @@ class BorzoApiClientContractTest {
         client.cancel("331900", "Customer cancelled");
         server.verify();
     }
+
+    @Test
+    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit")
+    void declinesWhenExceeds30KmRadius() {
+        // Indiranagar, Bengaluru to Hosur (~45 km)
+        var longRouteRequest = new DeliveryProvider.QuoteRequest(
+                101L,
+                new BigDecimal("12.9716"), new BigDecimal("77.5946"),
+                new BigDecimal("12.7409"), new BigDecimal("77.8253"),
+                new BigDecimal("500.00"), new BigDecimal("2500"), 45,
+                "Indiranagar, Bengaluru",
+                "Hosur");
+
+        var quote = client.calculateOrder(longRouteRequest);
+
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.declineReason()).contains("Exceeds 30 km intra-city radius limit");
+    }
 }

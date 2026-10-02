@@ -84,6 +84,12 @@ public class DeliveryFeeQuoteService {
                             + "or ask the supplier to deliver.");
         }
 
+        if (distanceKm > 30.0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Delivery location exceeds the 30 km intra-city limit (distance: %.1f km). Choose pickup, or ask the supplier to deliver."
+                            .formatted(distanceKm));
+        }
+
         var weight = ConsignmentWeight.of(
                 directory.intentLines(intentId), DeliveryDirectory.DEFAULT_PIECE_GRAMS);
 

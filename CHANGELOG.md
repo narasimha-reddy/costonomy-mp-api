@@ -23,9 +23,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `PorterStatusMapper` mapping Porter status strings (`created`, `allocating`, `assigned`, `driver_arrived`, `started`, `picked_up`, `in_transit`, `arrived_at_destination`, `delivered`, `cancelled`) to domain `DeliveryStatus`.
 - Test suites:
   - `PorterStatusMappingTest` (2 tests).
-  - `PorterApiClientContractTest` WireMock tests (7 tests).
+  - `PorterApiClientContractTest` WireMock tests (8 tests including 30 km boundary rejection).
   - `PorterDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
 - Architecture decisions recorded in `docs/DECISIONS.md` (D-100) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-007).
+- Intra-City 30 km Radius Limit & Dynamic Tiered Deadlines (D-101):
+  - Hard 30 km maximum radius ceiling enforced across `DeliveryFeeQuoteService` (pre-order quoting), `DeliveryQuotingService` (multi-carrier auction gathering), and provider HTTP clients (`PorterApiClient`, `BorzoApiClient`, `ShadowfaxApiClient`).
+  - Dynamic assignment deadlines in `DeliveryBookingService`: 3 minutes for two-wheelers (`costonomy.mp.delivery.bike-assignment-timeout=PT3M`), 12 minutes for three-wheelers and mini-trucks (`costonomy.mp.delivery.truck-assignment-timeout=PT12M`).
+  - Unit test coverage in `DeliveryBookingServiceTest` (4 tests), `DeliveryQuotingServiceTest` (2 tests), and `DeliveryFeeQuoteServiceTest` (2 tests).
 
 ---
 

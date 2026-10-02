@@ -44,6 +44,12 @@ public class DeliveryBookingService {
     private final DeliveryLedgerRepository ledger;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
+    @org.springframework.beans.factory.annotation.Value("${costonomy.mp.delivery.bike-assignment-timeout:PT3M}")
+    private java.time.Duration bikeAssignmentTimeout = java.time.Duration.ofMinutes(3);
+
+    @org.springframework.beans.factory.annotation.Value("${costonomy.mp.delivery.truck-assignment-timeout:PT12M}")
+    private java.time.Duration truckAssignmentTimeout = java.time.Duration.ofMinutes(12);
+
     /**
      * Book the cheapest courier that will take it.
      *
@@ -84,7 +90,11 @@ public class DeliveryBookingService {
                 }
                 delivery.setStatus(DeliveryStatus.PROVIDER_SELECTED);
                 delivery.setBookedAt(Instant.now());
-                delivery.setAssignmentDeadline(Instant.now().plus(java.time.Duration.ofMinutes(3)));
+                java.time.Duration deadlineTimeout = (delivery.getVehicleType() == VehicleType.THREE_WHEELER
+                        || delivery.getVehicleType() == VehicleType.FOUR_WHEELER_TRUCK)
+                        ? truckAssignmentTimeout
+                        : bikeAssignmentTimeout;
+                delivery.setAssignmentDeadline(Instant.now().plus(deadlineTimeout));
                 // Cleared, because this attempt is not the failed one. A stale
                 // failure left on the row would show a restaurant an error about a
                 // courier who is no longer involved.

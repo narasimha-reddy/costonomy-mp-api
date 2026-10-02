@@ -109,6 +109,11 @@ public class PorterApiClient {
             return DeliveryProvider.Quote.unserviceable("No valid coordinates provided for Porter quote");
         }
 
+        if (distanceKm > 30.0) {
+            return DeliveryProvider.Quote.unserviceable(
+                    "Exceeds 30 km intra-city radius limit (%.1f km)".formatted(distanceKm));
+        }
+
         var vehicleType = request.vehicleType() != null ? request.vehicleType() : VehicleType.TWO_WHEELER;
         String porterVehicle = mapVehicleType(vehicleType);
 

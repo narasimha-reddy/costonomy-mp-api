@@ -1,5 +1,6 @@
 package com.costonomy.mp.delivery.provider.borzo;
 
+import com.costonomy.mp.common.domain.Serviceability;
 import com.costonomy.mp.delivery.domain.VehicleType;
 import com.costonomy.mp.delivery.provider.DeliveryProvider;
 import com.costonomy.mp.delivery.provider.DeliveryProviderException;
@@ -113,6 +114,14 @@ public class BorzoApiClient {
         if (vehicleType != VehicleType.TWO_WHEELER) {
             return DeliveryProvider.Quote.unserviceable(
                     "Borzo vehicle_type_id not verified for " + vehicleType);
+        }
+
+        Double haversineKm = Serviceability.distanceKm(
+                request.pickupLatitude(), request.pickupLongitude(),
+                request.dropLatitude(), request.dropLongitude());
+        if (haversineKm != null && haversineKm > 30.0) {
+            return DeliveryProvider.Quote.unserviceable(
+                    "Exceeds 30 km intra-city radius limit (%.1f km)".formatted(haversineKm));
         }
 
         if (isBlank(request.pickupAddress()) || isBlank(request.dropAddress())) {

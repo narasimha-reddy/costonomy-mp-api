@@ -206,4 +206,22 @@ class ShadowfaxApiClientContractTest {
         client.cancel("SF222344412TST", "Cancelled by customer");
         server.verify();
     }
+
+    @Test
+    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit")
+    void declinesWhenExceeds30KmRadius() {
+        // Indiranagar, Bengaluru to Hosur (~45 km)
+        var longRouteRequest = new DeliveryProvider.QuoteRequest(
+                101L,
+                new BigDecimal("12.9716"), new BigDecimal("77.5946"),
+                new BigDecimal("12.7409"), new BigDecimal("77.8253"),
+                new BigDecimal("500.00"), new BigDecimal("2500"), 45,
+                "Indiranagar, Bengaluru, 560038",
+                "Hosur, 635109");
+
+        var quote = client.calculateQuote(longRouteRequest);
+
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.declineReason()).contains("Exceeds 30 km intra-city radius limit");
+    }
 }

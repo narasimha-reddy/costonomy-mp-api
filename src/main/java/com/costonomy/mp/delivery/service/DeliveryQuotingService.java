@@ -1,11 +1,13 @@
 package com.costonomy.mp.delivery.service;
 
+import com.costonomy.mp.common.domain.Serviceability;
 import com.costonomy.mp.delivery.domain.*;
 import com.costonomy.mp.delivery.provider.DeliveryProvider;
 import com.costonomy.mp.delivery.provider.DeliveryProviderException;
 import com.costonomy.mp.delivery.repository.DeliveryQuoteRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +37,9 @@ public class DeliveryQuotingService {
     private final DeliveryProviderRegistry registry;
     private final DeliveryQuoteRepository quotes;
 
+    @Value("${costonomy.mp.delivery.max-radius-km:30.0}")
+    private double maxRadiusKm = 30.0;
+
     /** What quoting produced: the winner, and whether anybody answered at all. */
     public record Outcome(
             DeliveryQuote selected,
@@ -57,6 +62,23 @@ public class DeliveryQuotingService {
                 : (weightGrams != null ? weightGrams.divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP) : null);
         var vehicleType = delivery.getVehicleType() != null ? delivery.getVehicleType()
                 : VehicleType.fromWeight(weightKg);
+
+        Double distanceKm = Serviceability.distanceKm(
+                delivery.getPickupLatitude(), delivery.getPickupLongitude(),
+                delivery.getDropLatitude(), delivery.getDropLongitude());
+
+        if (distanceKm != null && distanceKm > maxRadiusKm) {
+            log.info("Delivery {} exceeds intra-city radius limit ({} km > {} km)",
+                    delivery.getId(), distanceKm, maxRadiusKm);
+            var unserviceableQuote = new DeliveryQuote();
+            unserviceableQuote.setDeliveryId(delivery.getId());
+            unserviceableQuote.setStatus("UNSERVICEABLE");
+            unserviceableQuote.setDistanceKm(BigDecimal.valueOf(distanceKm).setScale(4, RoundingMode.HALF_UP));
+            unserviceableQuote.setFailureReason("Exceeds %s km intra-city radius limit".formatted(maxRadiusKm));
+            unserviceableQuote.setVehicleType(vehicleType);
+            quotes.save(unserviceableQuote);
+            return new Outcome(null, List.of(unserviceableQuote), false);
+        }
 
         var request = new DeliveryProvider.QuoteRequest(
                 delivery.getSupplierOrderId(),
