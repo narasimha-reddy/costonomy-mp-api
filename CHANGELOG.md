@@ -4,6 +4,30 @@ All notable changes to the Costonomy MP (Mandi) Delivery & Logistics Platform ac
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [feat/shiprocket-provider] - Shiprocket Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Shiprocket** alongside Pidge, Borzo, Shadowfax, and Porter.
+- Database migration `V44__delivery_provider_shiprocket.sql` seeding `SHIPROCKET` row into `delivery_provider` table (seeded disabled, `enabled = 0`).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.shiprocket.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `ShiprocketDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `ShiprocketApiClient` HTTP client for Shiprocket Logistics API:
+  - Token authentication via `Authorization: Bearer <token>` (direct API token or cached from `POST /v1/external/auth/login`).
+  - Rate limiting with 20 RPS local token-bucket protection.
+  - Hard 30 km intra-city radius ceiling enforcement (D-101).
+  - Quoting / Serviceability via `GET /v1/external/courier/serviceability/` selecting the cheapest available courier rate from `data.available_courier_companies`.
+  - Adhoc order creation via `POST /v1/external/orders/create/adhoc` with validated customer, address, contact, and item payloads, returning `shipment_id` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /v1/external/courier/track/shipment/{shipment_id}` parsing `current_status` and activities.
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first so `DeliveryOrderBridge` transitions `supplier_order` through `OUT_FOR_DELIVERY` to `DELIVERED`.
+  - Cancellation via `POST /v1/external/orders/cancel` with `ids: [shipment_id]`.
+- `ShiprocketStatusMapper` mapping Shiprocket status strings to domain `DeliveryStatus`.
+- Test suites:
+  - `ShiprocketStatusMappingTest` (2 tests).
+  - `ShiprocketApiClientContractTest` WireMock tests (9 tests).
+  - `ShiprocketDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-103) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-009).
+
 ## [feat/porter-provider] - Fail-closed carrier fares (D-102)
 ### Fixed
 - Shadowfax and Porter no longer invent a fare or ETA from a configured rate card. Quotes decline with a reason; booking refuses before any HTTP call and the auction fails over to the next carrier.

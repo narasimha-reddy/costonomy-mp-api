@@ -3752,5 +3752,41 @@ A fare and ETA field verified against a live sandbox response, read through a re
 - Tracking URLs for Shadowfax and Porter are built from unverified patterns.
 - Two weight calculations disagree (`DeliveryDirectory.calculateWeightKg` counts 1 kg per unit of unknown type; `consignmentWeightGrams` uses 500 g per piece). Decide which is authoritative before any carrier is re-enabled; declaring an estimated weight can cause re-weigh charges.
 - Pidge still defaults missing fields (D-098). Borzo sums distance with a default of 0.
-- `DeliveryService.quoteAndBook` passes the delivery fee as `orderValue` to the auction; no provider reads it today.
 - `ShadowfaxDeliveryFlowIT` leaves the SHADOWFAX row enabled for later tests that share the database.
+
+---
+
+## D-103 — Shiprocket delivery provider integration alongside Pidge, Borzo, Shadowfax and Porter
+**2026-10-02 · Settled**
+
+Shiprocket is integrated as a fifth carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, Shadowfax, and Porter. The implementation adheres to the provider SPI pattern
+established in doc 06 §3 and decisions D-098, D-100, D-101, and D-102.
+
+### Dual-gate activation
+Shiprocket is gated by:
+1. **Application configuration gate**: `costonomy.mp.shiprocket.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `ShiprocketDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`code = 'SHIPROCKET'`),
+   seeded disabled (`enabled = 0`) via migration `V44__delivery_provider_shiprocket.sql`.
+   Both gates must be active for Shiprocket to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Token authentication via `Authorization: Bearer {token}` using direct API token
+  or retrieved dynamically via `POST /v1/external/auth/login` and cached for 230 hours.
+- **Serviceability & Fare Estimation**: `GET /v1/external/courier/serviceability/` passing
+  `pickup_postcode`, `delivery_postcode`, `weight`, and `cod=0`.
+  Parses `data.available_courier_companies`, selecting the lowest available carrier rate,
+  distance, and ETA.
+- **30 km Intra-City Boundary (D-101)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  without making an HTTP call.
+- **Booking**: `POST /v1/external/orders/create/adhoc` with structured pickup/drop addresses,
+  pincodes, contact details, and item details. Returns Shiprocket `shipment_id` as `providerDeliveryId`.
+- **Status tracking & Polling**: `GET /v1/external/courier/track/shipment/{shipment_id}` inspecting
+  `current_status` and activities. The status mapper transforms Shiprocket statuses
+  into domain `DeliveryStatus`. Historic events or synthetic transitions guarantee that `PICKED_UP`
+  precedes `DELIVERED` newest-first, allowing `DeliveryOrderBridge` to advance the supplier order
+  to `DELIVERED` while `uk_delivery_event_provider` suppresses duplicate event rows.
+- **Cancellation**: `POST /v1/external/orders/cancel` sending `ids: [shipment_id]`.
+
