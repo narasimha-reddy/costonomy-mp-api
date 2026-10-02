@@ -107,6 +107,8 @@ public class RefundService {
         auditService.record(actorId, null, "REFUND_REQUESTED", "REFUND", refund.getId(),
                 null, RefundStatus.REQUESTED.name(),
                 reason.name() + " " + amount.toPlainString(), "API");
+        log.info("Refund {} REQUESTED for {} ({}) against payment {}",
+                refund.getId(), amount.toPlainString(), reason, paymentId);
 
         return refund;
     }
@@ -132,6 +134,8 @@ public class RefundService {
             if (refund == null || !claimable(refund)) {
                 return null;
             }
+            log.info("Refund {} {} → PROCESSING for {}", refund.getId(), refund.getStatus(),
+                    refund.getAmount().toPlainString());
             refund.setStatus(RefundStatus.PROCESSING);
             return refunds.saveAndFlush(refund);
         });
@@ -173,6 +177,8 @@ public class RefundService {
                 return;
             }
 
+            log.info("Refund {} PROCESSING → COMPLETED (provider refund {})",
+                    refund.getId(), outcome.providerRefundId());
             refund.setProviderRefundId(outcome.providerRefundId());
             refund.setStatus(RefundStatus.COMPLETED);
             refund.setCompletedAt(Instant.now());
@@ -220,6 +226,6 @@ public class RefundService {
         refund.setFailureCode(code);
         refund.setFailureReason(reason);
         refunds.save(refund);
-        log.warn("Refund {} failed: {} {}", refund.getId(), code, reason);
+        log.warn("Refund {} → FAILED: {} {}", refund.getId(), code, reason);
     }
 }
