@@ -5,6 +5,7 @@ import com.costonomy.mp.delivery.domain.DeliveryProviderRecord;
 import com.costonomy.mp.delivery.domain.DeliveryQuote;
 import com.costonomy.mp.delivery.domain.VehicleType;
 import com.costonomy.mp.delivery.provider.DeliveryProvider;
+import com.costonomy.mp.delivery.provider.DeliveryProviderException;
 import com.costonomy.mp.delivery.repository.DeliveryQuoteRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -113,5 +114,56 @@ class DeliveryQuotingServiceTest {
         assertThat(outcome.selected().getAmount()).isEqualByComparingTo("65.00");
 
         verify(quotes, atLeastOnce()).save(any(DeliveryQuote.class));
+    }
+
+    @Test
+    @DisplayName("When every carrier declines or fails, each is recorded and none is selected (D-102)")
+    void gather_whenEveryCarrierDeclinesOrFails_recordsEachAndSelectsNone() {
+        // Indiranagar to Koramangala (~5 km), inside the radius, so carriers really are asked
+        var delivery = buildDelivery(12.9716, 77.5946, 12.9352, 77.6245);
+
+        var declining = mock(DeliveryProvider.class);
+        var failing = mock(DeliveryProvider.class);
+        when(declining.quote(any())).thenReturn(DeliveryProvider.Quote.unserviceable(
+                "Porter fare contract not verified against a live response; a rate card is not a quote (D-102)"));
+        when(failing.quote(any())).thenThrow(
+                new DeliveryProviderException("SHADOWFAX", "Shadowfax serviceability timeout", true));
+
+        when(registry.enabled()).thenReturn(List.of(
+                new DeliveryProviderRegistry.Available(provider(1L, "PORTER", 25), declining),
+                new DeliveryProviderRegistry.Available(provider(2L, "SHADOWFAX", 20), failing)));
+
+        var outcome = service.gather(delivery, BigDecimal.valueOf(1000), BigDecimal.valueOf(5000), 45, List.of());
+
+        assertThat(outcome.anyServiceable()).isFalse();
+        assertThat(outcome.selected()).isNull();
+        assertThat(outcome.all()).hasSize(2);
+
+        var porter = outcome.all().stream().filter(q -> "PORTER".equals(q.getProviderCode())).findFirst().orElseThrow();
+        var shadowfax = outcome.all().stream().filter(q -> "SHADOWFAX".equals(q.getProviderCode())).findFirst().orElseThrow();
+        assertThat(porter.getStatus()).isEqualTo("UNSERVICEABLE");
+        assertThat(porter.getFailureReason()).contains("fare");
+        assertThat(shadowfax.getStatus()).isEqualTo("FAILED");
+        assertThat(shadowfax.getFailureReason()).contains("timeout");
+        assertThat(outcome.all()).allSatisfy(q -> {
+            assertThat(q.getAmount()).isNull();
+            assertThat(q.getSelected()).isFalse();
+        });
+
+        // Both were persisted, so a fallback to the rate card is explicable afterwards (doc 06 §12).
+        ArgumentCaptor<DeliveryQuote> saved = ArgumentCaptor.forClass(DeliveryQuote.class);
+        verify(quotes, times(2)).save(saved.capture());
+        assertThat(saved.getAllValues()).extracting(DeliveryQuote::getProviderCode)
+                .containsExactlyInAnyOrder("PORTER", "SHADOWFAX");
+    }
+
+    private static DeliveryProviderRecord provider(Long id, String code, int priority) {
+        var record = new DeliveryProviderRecord();
+        record.setId(id);
+        record.setCode(code);
+        record.setName(code);
+        record.setEnabled(true);
+        record.setPriority(priority);
+        return record;
     }
 }
