@@ -560,6 +560,6 @@ public class IntentOrderCreator {
 
         return new IntentDtos.CreateOrderResponse(
                 intentId, order.getId(), order.getOrderNumber(), order.getTotalAmount(),
-                order.getPaymentMethod(), order.getPaymentStatus(), payment);
+                order.getPaymentMethod(), funding.paymentState(order), payment);
     }
 }

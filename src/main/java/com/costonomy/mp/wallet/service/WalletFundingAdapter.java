@@ -90,6 +90,11 @@ public class WalletFundingAdapter implements OrderFundingPort {
     }
 
     @Override
+    public java.util.Optional<String> paymentState(Long supplierOrderId) {
+        return wallets.paymentState(supplierOrderId);
+    }
+
+    @Override
     public BigDecimal refundableToWallet(Long supplierOrderId) {
         return wallets.refundableForOrder(supplierOrderId);
     }
