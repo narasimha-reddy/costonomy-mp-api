@@ -3655,8 +3655,24 @@ two to thirty minutes — about sixty lookups per abandoned checkout instead of
 1,440, recorded with a one-column update so it cannot overwrite a concurrent
 confirm. Capture and reconcile runs are batched (100 and 200).
 
+**Also fixed:**
+
+- **The wallet top-up let anyone who can order credit their own wallet** with no
+  money behind it. The endpoint is refused unless payments run on the mock — the
+  same gate as checkout simulation. `WalletService.topUp` is unchanged, for a
+  real funding rail to call.
+- **A double tap on Create Order was a second order.** The app minted a fresh
+  idempotency key per call, so the duplicate was refused on the spent delivery
+  quote while the order had in fact been placed. The key now lives as long as the
+  choices it was made for, and a second tap in flight is ignored. The quote's
+  "already used" case has its own message instead of "belongs to a different
+  request". `tools/razorpay-e2e` D1 fails on the old app and passes on the new.
+  A truly simultaneous duplicate still gets a 500 from the server — within
+  `IntentFlowIT$Concurrency`'s "whatever each call reported", but worth a clean
+  conflict one day.
+
 `StorefrontIT$Suppliers.radiusCountsWhatItExcluded` listed every supplier near
 Hyderabad and failed once more of them existed; it now searches for its own
 uniquely named stores.
 
-Full suite on this change alone: 317 unit, 326 integration, no failures.
+Full suite: 319 unit, 326 integration, no failures.

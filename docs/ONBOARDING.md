@@ -3,7 +3,8 @@
 For a developer joining Mandi and working through Claude Code. Read this once,
 then let `CLAUDE.md` do the rest.
 
-Last updated **20 September 2026**, from the branch
+Last updated **27 September 2026**, from the Razorpay branches
+(`feat/razorpay-1-adapter` → `-2-hardening` → `-3-small-fixes`), which build on
 `feat/edit-open-request-quantities`.
 
 ---
@@ -86,7 +87,12 @@ Flyway applies **V1–V36** on startup and the data survives restarts.
 
 - API: <http://localhost:7070/costonomy-mp-api>
 - Swagger: `/swagger-ui.html` · OpenAPI: `/api-docs`
-- Every OTP is `123456` locally, and every provider is a mock
+- Every OTP is `123456` locally — **but only if your gitignored
+  `application-local.properties` says so**: `costonomy.mp.otp.mock-code=123456`.
+  The committed config sets it for tests alone, so a fresh local file sends real
+  random codes and every sign-in fails with `OTP_INVALID`.
+- Every provider is a mock, unless you point payments at Razorpay's test mode —
+  `docs/RAZORPAY.md`
 
 ### Seed it
 
@@ -154,7 +160,20 @@ MySQL container and the Spring context:
 mvn -o verify -Dit.test=StorefrontIT
 ```
 
-Run the whole suite before you open a PR, not between edits. Testcontainers
+Run the whole suite before you open a PR, not between edits.
+
+**No Docker Desktop? Colima works** (open source, no admin rights), but
+Testcontainers has to be told where it is:
+
+```bash
+colima start
+export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
+export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
+```
+
+Its VM clock runs a fraction of a second ahead of the Mac's, so a test that stamps
+a row with MySQL's `now()` and then compares it with `Instant.now()` is a coin
+toss. `SettlementFlowIT` had one; write new ones against a single clock. Testcontainers
 reuse is deliberately not enabled — `CLAUDE.md` explains why, and the short
 version is that it would make `MigrationIT` pass while checking nothing.
 
@@ -227,11 +246,36 @@ evidence in the answer.
 
 ---
 
-## 5. State of play — 20 September 2026
+## 5. State of play — 27 September 2026
 
 Phases 1 and 3–17 of `docs/specs/00-README.md` §8 are complete, and the mobile
-app is built across both roles. Recent work, all on
-`feat/edit-open-request-quantities`:
+app is built across both roles.
+
+### Latest: Razorpay payments (D-098, D-099)
+
+Three stacked PRs. **No migrations** — the payment tables from `V11` are used as
+they were.
+
+| PR | What it changed |
+|---|---|
+| `feat/razorpay-1-adapter` | The Razorpay adapter now matches Razorpay's documented API: manual capture, the webhook event-id header, the refund idempotency header, lookup by order. **Confirm checks the payment belongs to this order** — before, any payment funded any order. `docs/RAZORPAY.md` covers running against test mode (D-098) |
+| `feat/razorpay-2-hardening` | No provider call holds a database connection; every payment state change locks the payment row first, and order release locks the order; 8 scheduler threads instead of 1; the sweep backs off; a failed capture stays queued instead of being stranded (D-099) |
+| `feat/razorpay-3-small-fixes` | The seed script runs on a fresh database again; the wallet top-up is refused unless payments run on the mock; a spent delivery quote says "already used" |
+
+What you will notice:
+
+- `POST /outlets/{id}/wallet/top-up` returns **403** unless payments run on the
+  mock (`costonomy.mp.providers.payment`, set by `PAYMENT_PROVIDER`). It credited
+  money that didn't exist.
+- New setting `SCHEDULER_THREADS` (default 8).
+- Refund keys sent to the provider are `mandi-refund-{id}` (Razorpay needs ten
+  characters).
+- `costonomy-mp-mobile/tools/razorpay-e2e` pays real test-mode orders end to end,
+  28 cases, mostly failures. It needs this API on Razorpay test keys.
+
+Tests after these PRs: 319 unit, 326 integration.
+
+### Earlier, on `feat/edit-open-request-quantities`
 
 | Migration | What it added |
 |---|---|
@@ -261,11 +305,32 @@ These are live questions, not omissions. Do not close one silently.
 5. **OPEN-005 in `DECISIONS.md`** — the delivery fee is never charged to the
    restaurant, because it is only known after the payment is authorised. Read it
    before touching the payment flow.
+6. **Order creation still calls Razorpay inside its transaction.**
+   `IntentOrderCreator.create` keeps the order and its payment atomic, so the
+   provider call holds a connection there — the one place D-099 left alone.
+   Changing it changes the order flow.
+7. **A truly simultaneous duplicate order gets a 500.** Exactly one order is
+   created, as `IntentFlowIT$Concurrency` requires, but the losing call surfaces
+   the lock error rather than a clean conflict. The app no longer sends one
+   (mobile, D-099).
+8. **Not yet tested:** UPI (not offered on the test account's checkout), native
+   checkout on a phone (needs a dev build), and a webhook actually delivered by
+   Razorpay — the suite sends correctly signed ones instead.
+9. **Paying suppliers is still manual.** An operator marks a settlement paid with a
+   reference typed in; nothing moves money to a supplier. A design with three
+   options (Route, Payouts, a wallet with virtual accounts) is with the team; it
+   has a legal question to answer first.
 
-### One trap that has already bitten
+### Traps that have already bitten
 
 `CreateSupplierRequest` and `CreateStoreRequest` now require a contact name and
 number (D-097). Anything that creates a supplier through the API must send them —
 that includes `tools/seed-local.py` and every integration-test fixture. When you
 add a required field, grep the test sources and the seed script in the same
 change, or you will break 209 tests and a new developer's first afternoon.
+
+**Never call a provider inside a transaction, and never change a payment's state
+except through `PaymentService.applyProviderState`.** It takes the row lock
+before deciding anything. Writing the status anywhere else brings back the
+deadlock D-099 fixed: a confirm and a webhook for the same payment, a 500 for a
+customer who had paid.
