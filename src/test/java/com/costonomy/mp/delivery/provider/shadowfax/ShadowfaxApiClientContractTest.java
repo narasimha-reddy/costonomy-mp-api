@@ -2,6 +2,7 @@ package com.costonomy.mp.delivery.provider.shadowfax;
 
 import com.costonomy.mp.delivery.domain.VehicleType;
 import com.costonomy.mp.delivery.provider.DeliveryProvider;
+import com.costonomy.mp.delivery.provider.DeliveryProviderException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -17,7 +18,9 @@ import java.time.Duration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withServerError;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withUnauthorizedRequest;
 
 class ShadowfaxApiClientContractTest {
 
@@ -34,8 +37,6 @@ class ShadowfaxApiClientContractTest {
         properties.setAuthToken("test-sfx-token");
         properties.setTimeout(Duration.ofSeconds(5));
         properties.setRateLimitRps(1000);
-        properties.setBaseFee(new BigDecimal("60.00"));
-        properties.setPerKmFee(new BigDecimal("12.00"));
 
         var customizer = new MockServerRestTemplateCustomizer();
         var builder = new RestTemplateBuilder().additionalCustomizers(customizer);
@@ -65,25 +66,145 @@ class ShadowfaxApiClientContractTest {
                 "mp-sfx-10-1");
     }
 
-    @Test
-    @DisplayName("calculates quote with coordinates and rate card")
-    void calculatesQuoteWithCoordinates() {
-        String serviceabilityResponse = """
-                [
-                  {"code": 560038, "services": ["Regular"]},
-                  {"code": 560034, "services": ["Regular"]}
-                ]
-                """;
 
-        server.expect(requestTo(BASE_URL + "/v1/clients/serviceability/?service=Regular&pincodes=560038,560034"))
-                .andRespond(withSuccess(serviceabilityResponse, MediaType.APPLICATION_JSON));
+    private static final String SERVICEABILITY_URL =
+            BASE_URL + "/v1/clients/serviceability/?service=Regular&pincodes=560038,560034";
+
+    private DeliveryProvider.BookingRequest hydBooking(Long supplierOrderId, BigDecimal weightKg, BigDecimal goodsValue,
+                                                       DeliveryProvider.Locality drop, String dropPhone) {
+        return new DeliveryProvider.BookingRequest(
+                supplierOrderId, "sfx_q_dummy",
+                "Annapurna Stores, Secunderabad, Telangana, 500003",
+                new BigDecimal("17.4399"), new BigDecimal("78.4983"),
+                "Store Desk", "+919876500000",
+                "Gachibowli, Hyderabad, Telangana, 500081",
+                new BigDecimal("17.4401"), new BigDecimal("78.3489"),
+                "Customer Asha", dropPhone,
+                "mp-delivery-10-1", weightKg, BigDecimal.valueOf(0.02), VehicleType.TWO_WHEELER,
+                new DeliveryProvider.Locality("Secunderabad", "Telangana", "500003"),
+                drop, goodsValue);
+    }
+
+    private DeliveryProvider.BookingRequest validHydBooking() {
+        return hydBooking(101L, new BigDecimal("12.5"), new BigDecimal("1834.50"),
+                new DeliveryProvider.Locality("Hyderabad", "Telangana", "500081"), "+919876511111");
+    }
+
+    @Test
+    @DisplayName("declines a serviceable route because Shadowfax gives no fare (D-102)")
+    void declinesServiceableRouteBecauseNoCarrierFare() {
+        server.expect(requestTo(SERVICEABILITY_URL))
+                .andRespond(withSuccess("""
+                        [
+                          {"code": 560038, "services": ["Regular"]},
+                          {"code": 560034, "services": ["Regular"]}
+                        ]
+                        """, MediaType.APPLICATION_JSON));
 
         var quote = client.calculateQuote(quoteRequest());
 
-        assertThat(quote.serviceable()).isTrue();
-        assertThat(quote.amount()).isGreaterThan(BigDecimal.ZERO);
-        assertThat(quote.currency()).isEqualTo("INR");
-        assertThat(quote.etaMinutes()).isNotNull().isGreaterThan(0);
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.amount()).isNull();
+        assertThat(quote.etaMinutes()).isNull();
+        assertThat(quote.providerQuoteId()).isNull();
+        assertThat(quote.declineReason()).contains("no fare");
+        server.verify(); // the serviceability check really ran; the decline is not a shortcut
+    }
+
+    @Test
+    @DisplayName("declines when a pincode is not listed by Shadowfax")
+    void declinesWhenPincodeNotListed() {
+        server.expect(requestTo(SERVICEABILITY_URL))
+                .andRespond(withSuccess("[{\"code\": 560038, \"services\": [\"Regular\"]}]", MediaType.APPLICATION_JSON));
+
+        var quote = client.calculateQuote(quoteRequest());
+
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.declineReason()).contains("does not serve pincodes 560038 to 560034");
+    }
+
+    @Test
+    @DisplayName("declines when the Regular service is not offered")
+    void declinesWhenServicesLackRegular() {
+        server.expect(requestTo(SERVICEABILITY_URL))
+                .andRespond(withSuccess("""
+                        [{"code": 560038, "services": ["Regular"]}, {"code": 560034, "services": ["Express"]}]
+                        """, MediaType.APPLICATION_JSON));
+
+        var quote = client.calculateQuote(quoteRequest());
+
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.declineReason()).contains("does not serve pincodes");
+    }
+
+    @Test
+    @DisplayName("fails closed, non-retryably, when the serviceability body is not an array")
+    void failsClosedOnUnparseableServiceability() {
+        server.expect(requestTo(SERVICEABILITY_URL))
+                .andRespond(withSuccess("{\"message\": \"ok\"}", MediaType.APPLICATION_JSON));
+
+        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
+                .isInstanceOf(ShadowfaxContractException.class)
+                .satisfies(e -> assertThat(((DeliveryProviderException) e).retryable()).isFalse());
+    }
+
+    @Test
+    @DisplayName("fails closed when a listed pincode has no services array")
+    void failsClosedOnEntryWithoutServices() {
+        server.expect(requestTo(SERVICEABILITY_URL))
+                .andRespond(withSuccess("[{\"code\": 560038}, {\"code\": 560034, \"services\": [\"Regular\"]}]",
+                        MediaType.APPLICATION_JSON));
+
+        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
+                .isInstanceOf(ShadowfaxContractException.class);
+    }
+
+    @Test
+    @DisplayName("a serviceability 5xx is a retryable failure, never a serviceable quote")
+    void failsRetryablyOnServiceability5xx() {
+        server.expect(requestTo(SERVICEABILITY_URL)).andRespond(withServerError());
+
+        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
+                .isInstanceOf(DeliveryProviderException.class)
+                .satisfies(e -> assertThat(((DeliveryProviderException) e).retryable()).isTrue());
+    }
+
+    @Test
+    @DisplayName("a serviceability 401 is a non-retryable failure, never a serviceable quote")
+    void failsNonRetryablyOnServiceability4xx() {
+        server.expect(requestTo(SERVICEABILITY_URL)).andRespond(withUnauthorizedRequest());
+
+        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
+                .isInstanceOf(DeliveryProviderException.class)
+                .satisfies(e -> assertThat(((DeliveryProviderException) e).retryable()).isFalse());
+    }
+
+    @Test
+    @DisplayName("a serviceability timeout is a retryable failure, never a serviceable quote")
+    void failsRetryablyOnServiceabilityTimeout() {
+        server.expect(requestTo(SERVICEABILITY_URL))
+                .andRespond(request -> { throw new java.net.SocketTimeoutException("read timed out"); });
+
+        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
+                .isInstanceOf(DeliveryProviderException.class)
+                .satisfies(e -> assertThat(((DeliveryProviderException) e).retryable()).isTrue());
+    }
+
+    @Test
+    @DisplayName("declines without calling Shadowfax when an address has no pincode")
+    void declinesWithoutHttpWhenAddressHasNoPincode() {
+        var request = new DeliveryProvider.QuoteRequest(
+                101L,
+                new BigDecimal("12.9716"), new BigDecimal("77.5946"),
+                new BigDecimal("12.9352"), new BigDecimal("77.6245"),
+                new BigDecimal("500.00"), new BigDecimal("2500"), 45,
+                "Indiranagar, Bengaluru", "Koramangala, Bengaluru");
+
+        var quote = client.calculateQuote(request);
+
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.declineReason()).contains("pincode");
+        server.verify(); // no expectations were registered, so any HTTP call would have failed the test
     }
 
     @Test
@@ -97,50 +218,60 @@ class ShadowfaxApiClientContractTest {
     }
 
     @Test
-    @DisplayName("creates order and parses awb_number from Shadowfax response")
-    void createsOrderSuccessfully() {
-        String responseBody = """
-                {
-                  "message": "Success",
-                  "errors": null,
-                  "data": {
-                    "id": 2035397,
-                    "client_name": "Test Client",
-                    "client_order_id": "mp-sfx-10-1",
-                    "awb_number": "SF36089989TMA",
-                    "product_value": 500.0,
-                    "promised_delivery_date": "2026-10-02T18:30:00Z",
-                    "status": "new"
-                  }
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v3/clients/orders/"))
-                .andRespond(withSuccess(responseBody, MediaType.APPLICATION_JSON));
-
-        var booking = client.createOrder(bookingRequest());
-
-        assertThat(booking.providerDeliveryId()).isEqualTo("SF36089989TMA");
-        assertThat(booking.trackingUrl()).contains("SF36089989TMA");
-        assertThat(booking.amount()).isNotNull();
+    @DisplayName("refuses to book without a carrier fare and sends nothing (D-102)")
+    void refusesToBookWithoutFareAndSendsNothing() {
+        assertThatThrownBy(() -> client.createOrder(validHydBooking()))
+                .isInstanceOf(ShadowfaxContractException.class)
+                .hasMessageContaining("fare")
+                .satisfies(e -> assertThat(((DeliveryProviderException) e).retryable()).isFalse());
+        server.verify(); // no expectation registered: a POST would have failed the test instead
     }
 
     @Test
-    @DisplayName("fails loud when awb_number is missing in create-order response")
-    void failsLoudOnMissingAwb() {
-        String responseBody = """
-                {
-                  "message": "Success",
-                  "data": { "client_order_id": "mp-sfx-10-1" }
-                }
-                """;
+    @DisplayName("order payload uses our real locality, weight and value, and none of the old hardcodes")
+    @SuppressWarnings("unchecked")
+    void orderPayloadUsesRealLocalityWeightAndValue() {
+        var payload = client.orderPayload(validHydBooking());
 
-        server.expect(requestTo(BASE_URL + "/v3/clients/orders/"))
-                .andRespond(withSuccess(responseBody, MediaType.APPLICATION_JSON));
+        var customer = (java.util.Map<String, Object>) payload.get("customer_details");
+        var pickup = (java.util.Map<String, Object>) payload.get("pickup_details");
+        var order = (java.util.Map<String, Object>) payload.get("order_details");
 
-        assertThatThrownBy(() -> client.createOrder(bookingRequest()))
-                .isInstanceOf(ShadowfaxContractException.class)
-                .hasMessageContaining("awb_number");
+        assertThat(customer.get("city")).isEqualTo("Hyderabad");
+        assertThat(customer.get("state")).isEqualTo("Telangana");
+        assertThat(customer.get("pincode")).isEqualTo(500081);
+        assertThat(pickup.get("pincode")).isEqualTo(500003);
+        assertThat(order.get("actual_weight")).isEqualTo(12500);
+        assertThat(order).doesNotContainKey("volumetric_weight");
+        assertThat((BigDecimal) order.get("product_value")).isEqualByComparingTo("1834.50");
+        assertThat((BigDecimal) order.get("total_amount")).isEqualByComparingTo("1834.50");
+        assertThat(customer.get("contact")).isEqualTo("9876511111");
+
+        String all = payload.toString();
+        assertThat(all).doesNotContain("Bengaluru", "Karnataka", "9876543210", "560038", "560034", "MANDI-101");
+    }
+
+    @Test
+    @DisplayName("order payload rejects missing or invalid booking data by naming the field")
+    void orderPayloadRejectsMissingData() {
+        var hydDrop = new DeliveryProvider.Locality("Hyderabad", "Telangana", "500081");
+        var cases = java.util.Map.<String, DeliveryProvider.BookingRequest>of(
+                "drop locality", hydBooking(101L, new BigDecimal("12.5"), new BigDecimal("100"), null, "+919876511111"),
+                "drop city", hydBooking(101L, new BigDecimal("12.5"), new BigDecimal("100"),
+                        new DeliveryProvider.Locality(" ", "Telangana", "500081"), "+919876511111"),
+                "drop pincode", hydBooking(101L, new BigDecimal("12.5"), new BigDecimal("100"),
+                        new DeliveryProvider.Locality("Hyderabad", "Telangana", "5000"), "+919876511111"),
+                "weightKg", hydBooking(101L, null, new BigDecimal("100"), hydDrop, "+919876511111"),
+                "goodsValue", hydBooking(101L, new BigDecimal("12.5"), BigDecimal.ZERO, hydDrop, "+919876511111"),
+                "drop contact phone", hydBooking(101L, new BigDecimal("12.5"), new BigDecimal("100"), hydDrop, null),
+                "drop contact phone ", hydBooking(101L, new BigDecimal("12.5"), new BigDecimal("100"), hydDrop, "12345"),
+                "supplierOrderId", hydBooking(null, new BigDecimal("12.5"), new BigDecimal("100"), hydDrop, "+919876511111"));
+
+        cases.forEach((field, request) -> assertThatThrownBy(() -> client.orderPayload(request))
+                .as(field)
+                .isInstanceOf(DeliveryProviderException.class)
+                .hasMessageContaining(field.trim())
+                .satisfies(e -> assertThat(((DeliveryProviderException) e).retryable()).isFalse()));
     }
 
     @Test

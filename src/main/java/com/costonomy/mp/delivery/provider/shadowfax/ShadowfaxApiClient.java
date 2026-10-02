@@ -83,6 +83,11 @@ public class ShadowfaxApiClient {
 
     // ── quote ──────────────────────────────────────────────────────────────
 
+    /**
+     * Shadowfax publishes no fare through its API, so this can never return a priced quote:
+     * a rate card is not a quote (D-102). It still checks serviceability so a decline says
+     * why, which is useful evidence when a rate contract is negotiated.
+     */
     public DeliveryProvider.Quote calculateQuote(DeliveryProvider.QuoteRequest request) {
         checkRateLimit();
 
@@ -104,49 +109,75 @@ public class ShadowfaxApiClient {
                     "Exceeds 30 km intra-city radius limit (%.1f km)".formatted(distanceKm));
         }
 
-        Integer pickupPincode = extractPincode(request.pickupAddress());
-        Integer dropPincode = extractPincode(request.dropAddress());
+        String pickupPincode = extractPincode(request.pickupAddress());
+        String dropPincode = extractPincode(request.dropAddress());
 
-        if (pickupPincode != null && dropPincode != null) {
-            boolean serviceable = checkPincodeServiceability(pickupPincode, dropPincode);
-            if (!serviceable) {
-                return DeliveryProvider.Quote.unserviceable(
-                        "Shadowfax route not serviceable between pincodes " + pickupPincode + " and " + dropPincode);
-            }
+        if (pickupPincode == null || dropPincode == null) {
+            return DeliveryProvider.Quote.unserviceable(
+                    "Shadowfax needs a pickup and drop pincode; none found in the address");
         }
 
-        BigDecimal amount = properties.getBaseFee()
-                .add(properties.getPerKmFee().multiply(BigDecimal.valueOf(distanceKm)))
-                .setScale(2, RoundingMode.HALF_UP);
+        if (!checkPincodeServiceability(pickupPincode, dropPincode)) {
+            return DeliveryProvider.Quote.unserviceable(
+                    "Shadowfax does not serve pincodes %s to %s for Regular".formatted(pickupPincode, dropPincode));
+        }
 
-        int etaMinutes = Math.max(15, (int) Math.ceil(distanceKm * 4.0));
-
-        return new DeliveryProvider.Quote(
-                "sfx_q_" + UUID.randomUUID().toString().replace("-", ""),
-                true, amount, "INR", etaMinutes, distanceKm,
-                Instant.now().plusSeconds(900), null, request.vehicleType());
+        return DeliveryProvider.Quote.unserviceable(
+                "Shadowfax publishes no fare through its API; a rate card is not a quote (D-102)");
     }
 
-    private boolean checkPincodeServiceability(int pickupPincode, int dropPincode) {
+    /**
+     * Fails closed: true only when Shadowfax itself lists both pincodes with the Regular
+     * service. An unreachable or malformed answer throws, so it is recorded as a failure
+     * and never counted as serviceable.
+     */
+    private boolean checkPincodeServiceability(String pickupPincode, String dropPincode) {
+        JsonNode body;
         try {
             String url = properties.getBaseUrl() + "/v1/clients/serviceability/?service=Regular&pincodes="
                     + pickupPincode + "," + dropPincode;
-            var entity = new HttpEntity<>(headers());
-            var response = restTemplate.exchange(url, HttpMethod.GET, entity, JsonNode.class);
-            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                var body = response.getBody();
-                if (body.isArray() && body.size() >= 2) {
-                    return true;
-                }
-            }
-        } catch (Exception ex) {
-            log.debug("Shadowfax pincode check skipped or failed: {}", ex.getMessage());
+            var response = restTemplate.exchange(url, HttpMethod.GET, new HttpEntity<>(headers()), JsonNode.class);
+            body = response.getBody();
+        } catch (HttpStatusCodeException ex) {
+            throw new DeliveryProviderException("SHADOWFAX",
+                    "Shadowfax serviceability returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
+        } catch (ResourceAccessException ex) {
+            throw new DeliveryProviderException("SHADOWFAX", "Shadowfax serviceability timeout", true);
         }
-        return true;
+        if (body == null || !body.isArray()) {
+            throw new ShadowfaxContractException("Shadowfax serviceability response is not an array");
+        }
+        return servesRegular(body, pickupPincode) && servesRegular(body, dropPincode);
+    }
+
+    private static boolean servesRegular(JsonNode entries, String pincode) {
+        for (var entry : entries) {
+            if (pincode.equals(entry.path("code").asText())) {
+                var services = entry.path("services");
+                if (!services.isArray()) {
+                    throw new ShadowfaxContractException(
+                            "Shadowfax serviceability entry for " + pincode + " has no services array");
+                }
+                for (var service : services) {
+                    if ("Regular".equals(service.asText())) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+        return false; // not listed means not served
     }
 
     // ── book ───────────────────────────────────────────────────────────────
 
+    /**
+     * Refuses to book. Shadowfax's create-order response carries no fare (only the product
+     * value we declared), and {@code Booking.amount} must be a real figure because it becomes
+     * delivery.fee and the ledger. This throws before any network call: failing after the
+     * carrier has accepted an order would leave a live consignment nobody owns (D-102).
+     * Our own data is validated first so a bad request is reported precisely.
+     */
     public DeliveryProvider.Booking createOrder(DeliveryProvider.BookingRequest request) {
         checkRateLimit();
 
@@ -154,10 +185,27 @@ public class ShadowfaxApiClient {
             throw new DeliveryProviderException("SHADOWFAX", "Shadowfax API token not configured for booking", false);
         }
 
-        int pickupPincode = Optional.ofNullable(extractPincode(request.pickupAddress())).orElse(560038);
-        int dropPincode = Optional.ofNullable(extractPincode(request.dropAddress())).orElse(560034);
+        orderPayload(request);
 
-        int weightGrams = 1000;
+        throw new ShadowfaxContractException(
+                "Shadowfax create-order returns no fare (only product_value, our own declared value); "
+                        + "refusing to book without a carrier fare - a rate card is not a quote (D-102)");
+    }
+
+    /**
+     * The create-order body, built only from our own records. Anything missing is rejected
+     * by name; nothing is defaulted (D-102).
+     */
+    Map<String, Object> orderPayload(DeliveryProvider.BookingRequest request) {
+        var pickup = requireLocality("pickup", request.pickupLocality());
+        var drop = requireLocality("drop", request.dropLocality());
+        if (request.supplierOrderId() == null) {
+            throw invalid("supplierOrderId");
+        }
+        BigDecimal weightKg = positive("weightKg", request.weightKg());
+        BigDecimal value = positive("goodsValue", request.goodsValue()).setScale(2, RoundingMode.HALF_UP);
+        int weightGrams = weightKg.multiply(BigDecimal.valueOf(1000))
+                .setScale(0, RoundingMode.CEILING).intValueExact();
 
         var payload = new LinkedHashMap<String, Object>();
         payload.put("order_type", properties.getOrderType());
@@ -165,84 +213,57 @@ public class ShadowfaxApiClient {
         var orderDetails = new LinkedHashMap<String, Object>();
         orderDetails.put("client_order_id", request.idempotencyKey());
         orderDetails.put("actual_weight", weightGrams);
-        orderDetails.put("volumetric_weight", weightGrams);
-        orderDetails.put("product_value", 500.0);
+        orderDetails.put("product_value", value);
         orderDetails.put("payment_mode", "Prepaid");
-        orderDetails.put("total_amount", 500.0);
+        orderDetails.put("total_amount", value);
         orderDetails.put("order_service", "regular");
         payload.put("order_details", orderDetails);
 
-        var customerDetails = new LinkedHashMap<String, Object>();
-        customerDetails.put("name", request.dropContactName() != null ? request.dropContactName() : "Customer");
-        customerDetails.put("contact", sanitizePhone(request.dropContactPhone()));
-        customerDetails.put("address_line_1", request.dropAddress());
-        customerDetails.put("city", "Bengaluru");
-        customerDetails.put("state", "Karnataka");
-        customerDetails.put("pincode", dropPincode);
-        if (request.dropLatitude() != null) customerDetails.put("latitude", request.dropLatitude().toPlainString());
-        if (request.dropLongitude() != null) customerDetails.put("longitude", request.dropLongitude().toPlainString());
-        payload.put("customer_details", customerDetails);
+        payload.put("customer_details", party("drop", request.dropContactName(), request.dropContactPhone(),
+                request.dropAddress(), drop, request.dropLatitude(), request.dropLongitude()));
+        payload.put("pickup_details", party("pickup", request.pickupContactName(), request.pickupContactPhone(),
+                request.pickupAddress(), pickup, request.pickupLatitude(), request.pickupLongitude()));
 
-        var pickupDetails = new LinkedHashMap<String, Object>();
-        pickupDetails.put("name", request.pickupContactName() != null ? request.pickupContactName() : "Seller");
-        pickupDetails.put("contact", sanitizePhone(request.pickupContactPhone()));
-        pickupDetails.put("address_line_1", request.pickupAddress());
-        pickupDetails.put("city", "Bengaluru");
-        pickupDetails.put("state", "Karnataka");
-        pickupDetails.put("pincode", pickupPincode);
-        if (request.pickupLatitude() != null) pickupDetails.put("latitude", request.pickupLatitude().toPlainString());
-        if (request.pickupLongitude() != null) pickupDetails.put("longitude", request.pickupLongitude().toPlainString());
-        payload.put("pickup_details", pickupDetails);
-
-        var product = Map.of(
-                "sku_id", "MANDI-" + (request.supplierOrderId() != null ? request.supplierOrderId() : "101"),
-                "sku_name", "Consignment SO-" + request.supplierOrderId(),
-                "price", 500.0,
-                "category", "groceries");
+        var product = new LinkedHashMap<String, Object>();
+        product.put("sku_id", "SO-" + request.supplierOrderId());
+        product.put("sku_name", "Consignment SO-" + request.supplierOrderId());
+        product.put("price", value);
+        product.put("category", "groceries");
         payload.put("product_details", List.of(product));
+        return payload;
+    }
 
-        try {
-            var entity = new HttpEntity<>(payload, headers());
-            var response = restTemplate.postForEntity(properties.getBaseUrl() + "/v3/clients/orders/", entity, JsonNode.class);
+    private Map<String, Object> party(String which, String name, String phone, String address,
+                                      DeliveryProvider.Locality locality, BigDecimal lat, BigDecimal lng) {
+        if (name == null || name.isBlank()) throw invalid(which + " contact name");
+        if (address == null || address.isBlank()) throw invalid(which + " address");
+        var party = new LinkedHashMap<String, Object>();
+        party.put("name", name);
+        party.put("contact", requirePhone(which + " contact phone", phone));
+        party.put("address_line_1", address);
+        party.put("city", locality.city());
+        party.put("state", locality.state());
+        party.put("pincode", Integer.parseInt(locality.pincode()));
+        if (lat != null) party.put("latitude", lat.toPlainString());
+        if (lng != null) party.put("longitude", lng.toPlainString());
+        return party;
+    }
 
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                throw new DeliveryProviderException("SHADOWFAX", "Shadowfax create-order returned no body", true);
-            }
+    private static DeliveryProvider.Locality requireLocality(String which, DeliveryProvider.Locality l) {
+        if (l == null) throw invalid(which + " locality");
+        if (l.city() == null || l.city().isBlank()) throw invalid(which + " city");
+        if (l.state() == null || l.state().isBlank()) throw invalid(which + " state");
+        if (l.pincode() == null || !l.pincode().matches("[1-9][0-9]{5}")) throw invalid(which + " pincode");
+        return l;
+    }
 
-            var body = response.getBody();
-            var data = body.path("data");
-            String awbNumber = data.path("awb_number").asText(null);
+    private static BigDecimal positive(String field, BigDecimal value) {
+        if (value == null || value.signum() <= 0) throw invalid(field);
+        return value;
+    }
 
-            if (awbNumber == null || awbNumber.isBlank()) {
-                String errorMsg = body.path("message").asText("Unknown error");
-                if (body.hasNonNull("errors")) {
-                    errorMsg += ": " + body.path("errors").toString();
-                }
-                throw new ShadowfaxContractException("Shadowfax order creation missing awb_number: " + errorMsg);
-            }
-
-            Double distanceKm = Serviceability.distanceKm(
-                    request.pickupLatitude(), request.pickupLongitude(),
-                    request.dropLatitude(), request.dropLongitude());
-            int etaMinutes = distanceKm != null ? Math.max(15, (int) Math.ceil(distanceKm * 4.0)) : 30;
-
-            String promisedDelivery = data.path("promised_delivery_date").asText(null);
-            Instant estimatedArrivalAt = parseInstantSafe(promisedDelivery, Instant.now().plusSeconds(etaMinutes * 60L));
-            String trackingUrl = "https://track.shadowfax.in/track?awb=" + awbNumber;
-
-            BigDecimal fee = properties.getBaseFee()
-                    .add(distanceKm != null ? properties.getPerKmFee().multiply(BigDecimal.valueOf(distanceKm)) : BigDecimal.ZERO)
-                    .setScale(2, RoundingMode.HALF_UP);
-
-            return new DeliveryProvider.Booking(awbNumber, fee, "INR", etaMinutes, estimatedArrivalAt, trackingUrl);
-
-        } catch (HttpStatusCodeException ex) {
-            log.error("Shadowfax create-order HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("SHADOWFAX", "Shadowfax create-order returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.error("Shadowfax create-order network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("SHADOWFAX", "Shadowfax create-order timeout", true);
-        }
+    private static DeliveryProviderException invalid(String field) {
+        return new DeliveryProviderException("SHADOWFAX", field + " missing or invalid for Shadowfax booking", false);
     }
 
     // ── status ─────────────────────────────────────────────────────────────
@@ -346,25 +367,25 @@ public class ShadowfaxApiClient {
 
     // ── helpers ────────────────────────────────────────────────────────────
 
-    private static Integer extractPincode(String address) {
+    /** The last 6-digit pincode in an address: our addresses are built city, state, pincode. */
+    private static String extractPincode(String address) {
         if (address == null) return null;
         var matcher = PINCODE_PATTERN.matcher(address);
-        if (matcher.find()) {
-            try {
-                return Integer.parseInt(matcher.group(1));
-            } catch (NumberFormatException ignored) {
-            }
+        String last = null;
+        while (matcher.find()) {
+            last = matcher.group(1);
         }
-        return null;
+        return last;
     }
 
-    private static String sanitizePhone(String phone) {
-        if (phone == null) return "9876543210";
+    private static String requirePhone(String field, String phone) {
+        if (phone == null) throw invalid(field);
         String digits = phone.replaceAll("[^0-9]", "");
         if (digits.length() > 10 && digits.startsWith("91")) {
             digits = digits.substring(2);
         }
-        return digits.length() == 10 ? digits : "9876543210";
+        if (digits.length() != 10) throw invalid(field);
+        return digits;
     }
 
     private static Instant parseInstantSafe(String raw, Instant fallback) {

@@ -185,7 +185,24 @@ public interface DeliveryProvider {
             String idempotencyKey,
             BigDecimal weightKg,
             BigDecimal volumeCbm,
-            VehicleType vehicleType) {
+            VehicleType vehicleType,
+            /** Where the pickup point is, as our records hold it. Null means unknown, never guessed. */
+            Locality pickupLocality,
+            Locality dropLocality,
+            /** Accepted goods value incl. GST, excluding delivery: what a carrier asks for as declared value. */
+            BigDecimal goodsValue) {
+
+        public BookingRequest(Long supplierOrderId, String providerQuoteId, String pickupAddress,
+                              BigDecimal pickupLatitude, BigDecimal pickupLongitude, String pickupContactName,
+                              String pickupContactPhone, String dropAddress, BigDecimal dropLatitude,
+                              BigDecimal dropLongitude, String dropContactName, String dropContactPhone,
+                              String idempotencyKey, BigDecimal weightKg, BigDecimal volumeCbm,
+                              VehicleType vehicleType) {
+            this(supplierOrderId, providerQuoteId, pickupAddress, pickupLatitude, pickupLongitude,
+                    pickupContactName, pickupContactPhone, dropAddress, dropLatitude, dropLongitude,
+                    dropContactName, dropContactPhone, idempotencyKey, weightKg, volumeCbm, vehicleType,
+                    null, null, null);
+        }
 
         public BookingRequest(Long supplierOrderId, String providerQuoteId, String pickupAddress,
                               BigDecimal pickupLatitude, BigDecimal pickupLongitude, String pickupContactName,
@@ -197,6 +214,9 @@ public interface DeliveryProvider {
                     dropContactName, dropContactPhone, idempotencyKey, null, null, VehicleType.TWO_WHEELER);
         }
     }
+
+    /** City, state and pincode of a point. Any field may be null when our records do not hold it. */
+    record Locality(String city, String state, String pincode) {}
 
     record Booking(
             String providerDeliveryId,

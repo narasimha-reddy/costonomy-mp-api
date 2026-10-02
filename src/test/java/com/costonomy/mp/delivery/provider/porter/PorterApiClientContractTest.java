@@ -2,6 +2,7 @@ package com.costonomy.mp.delivery.provider.porter;
 
 import com.costonomy.mp.delivery.domain.VehicleType;
 import com.costonomy.mp.delivery.provider.DeliveryProvider;
+import com.costonomy.mp.delivery.provider.DeliveryProviderException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -34,8 +35,6 @@ class PorterApiClientContractTest {
         properties.setApiKey("test-porter-key");
         properties.setTimeout(Duration.ofSeconds(5));
         properties.setRateLimitRps(1000);
-        properties.setBaseFee(new BigDecimal("50.00"));
-        properties.setPerKmFee(new BigDecimal("14.00"));
 
         var customizer = new MockServerRestTemplateCustomizer();
         var builder = new RestTemplateBuilder().additionalCustomizers(customizer);
@@ -66,31 +65,33 @@ class PorterApiClientContractTest {
                 BigDecimal.valueOf(2.5), BigDecimal.valueOf(0.01), VehicleType.TWO_WHEELER);
     }
 
+
+    private DeliveryProvider.BookingRequest hydBooking(String dropPhone, DeliveryProvider.Locality drop) {
+        return new DeliveryProvider.BookingRequest(
+                101L, "prtr_q_dummy",
+                "Annapurna Stores, Secunderabad, Telangana, 500003",
+                new BigDecimal("17.4399"), new BigDecimal("78.4983"),
+                "Store Desk", "+919876500000",
+                "Gachibowli, Hyderabad, Telangana, 500081",
+                new BigDecimal("17.4401"), new BigDecimal("78.3489"),
+                "Customer Asha", dropPhone,
+                "mp-delivery-10-1",
+                BigDecimal.valueOf(2.5), BigDecimal.valueOf(0.01), VehicleType.TWO_WHEELER,
+                new DeliveryProvider.Locality("Secunderabad", "Telangana", "500003"),
+                drop, new BigDecimal("1834.50"));
+    }
+
     @Test
-    @DisplayName("calculates quote with coordinates and rate card from Porter cost API")
-    void calculatesQuoteWithCoordinates() {
-        String costResponse = """
-                {
-                  "cost": {
-                    "amount": 95.00,
-                    "currency": "INR"
-                  },
-                  "eta": 20,
-                  "distance": 5.4,
-                  "quote_id": "prtr_q_12345"
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/orders/cost"))
-                .andRespond(withSuccess(costResponse, MediaType.APPLICATION_JSON));
-
+    @DisplayName("declines because Porter's fare contract is unverified and makes no HTTP call (D-102)")
+    void declinesBecauseFareContractUnverified() {
         var quote = client.calculateQuote(quoteRequest());
 
-        assertThat(quote.serviceable()).isTrue();
-        assertThat(quote.amount()).isEqualByComparingTo("95.00");
-        assertThat(quote.currency()).isEqualTo("INR");
-        assertThat(quote.etaMinutes()).isEqualTo(20);
-        assertThat(quote.distanceKm()).isEqualTo(5.4);
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.amount()).isNull();
+        assertThat(quote.etaMinutes()).isNull();
+        assertThat(quote.providerQuoteId()).isNull();
+        assertThat(quote.declineReason()).contains("fare");
+        server.verify(); // no expectations registered: any HTTP call would have failed the test
     }
 
     @Test
@@ -104,25 +105,53 @@ class PorterApiClientContractTest {
     }
 
     @Test
-    @DisplayName("creates order and parses order_id from Porter response")
-    void createsOrderAndParsesOrderId() {
-        String createResponse = """
-                {
-                  "order_id": "CR10029384",
-                  "status": "allocating",
-                  "tracking_url": "https://track.porter.in/CR10029384"
-                }
-                """;
+    @DisplayName("refuses to book without a verified carrier fare and sends nothing (D-102)")
+    void refusesToBookWithoutFareAndSendsNothing() {
+        var hydDrop = new DeliveryProvider.Locality("Hyderabad", "Telangana", "500081");
 
-        server.expect(requestTo(BASE_URL + "/v1/orders/create"))
-                .andRespond(withSuccess(createResponse, MediaType.APPLICATION_JSON));
+        assertThatThrownBy(() -> client.createOrder(hydBooking("+919876511111", hydDrop)))
+                .isInstanceOf(PorterContractException.class)
+                .hasMessageContaining("fare")
+                .satisfies(e -> assertThat(((DeliveryProviderException) e).retryable()).isFalse());
+        server.verify(); // no expectation registered: a POST would have failed the test instead
+    }
 
-        var booking = client.createOrder(bookingRequest());
+    @Test
+    @DisplayName("order payload takes city and phones from our records, with no hardcoded values")
+    @SuppressWarnings("unchecked")
+    void orderPayloadUsesLocalityCityAndRealPhones() {
+        var payload = client.orderPayload(hydBooking("9876511111",
+                new DeliveryProvider.Locality("Hyderabad", "Telangana", "500081")));
 
-        assertThat(booking.providerDeliveryId()).isEqualTo("CR10029384");
-        assertThat(booking.currency()).isEqualTo("INR");
-        assertThat(booking.amount()).isGreaterThan(BigDecimal.ZERO);
-        assertThat(booking.trackingUrl()).isEqualTo("https://track.porter.in/CR10029384");
+        var drop = (java.util.Map<String, Object>) ((java.util.Map<String, Object>) payload.get("drop_details")).get("address");
+        var pickup = (java.util.Map<String, Object>) ((java.util.Map<String, Object>) payload.get("pickup_details")).get("address");
+        var dropContact = (java.util.Map<String, Object>) drop.get("contact_details");
+
+        assertThat(drop.get("city")).isEqualTo("Hyderabad");
+        assertThat(pickup.get("city")).isEqualTo("Secunderabad");
+        assertThat(dropContact.get("phone_number")).isEqualTo("+919876511111");
+        assertThat(((java.util.Map<String, Object>) payload.get("customer")).get("name")).isEqualTo("Costonomy");
+        assertThat(payload.toString()).doesNotContain("Bengaluru", "9876543210", "Mandi");
+    }
+
+    @Test
+    @DisplayName("order payload rejects a missing or invalid phone or city by naming the field")
+    void orderPayloadRejectsMissingPhoneOrCity() {
+        var hydDrop = new DeliveryProvider.Locality("Hyderabad", "Telangana", "500081");
+
+        assertThatThrownBy(() -> client.orderPayload(hydBooking(null, hydDrop)))
+                .isInstanceOf(DeliveryProviderException.class)
+                .hasMessageContaining("drop contact phone");
+        assertThatThrownBy(() -> client.orderPayload(hydBooking("12345", hydDrop)))
+                .isInstanceOf(DeliveryProviderException.class)
+                .hasMessageContaining("drop contact phone");
+        assertThatThrownBy(() -> client.orderPayload(hydBooking("+919876511111",
+                new DeliveryProvider.Locality(" ", "Telangana", "500081"))))
+                .isInstanceOf(DeliveryProviderException.class)
+                .hasMessageContaining("drop city");
+        assertThatThrownBy(() -> client.orderPayload(hydBooking("+919876511111", null)))
+                .isInstanceOf(DeliveryProviderException.class)
+                .hasMessageContaining("drop city");
     }
 
     @Test
@@ -204,23 +233,6 @@ class PorterApiClientContractTest {
 
         client.cancel("CR10029384", "Client requested cancel");
         server.verify();
-    }
-
-    @Test
-    @DisplayName("throws PorterContractException when order creation response misses order_id")
-    void throwsContractExceptionOnMissingOrderId() {
-        String invalidResponse = """
-                {
-                  "message": "Invalid request"
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/orders/create"))
-                .andRespond(withSuccess(invalidResponse, MediaType.APPLICATION_JSON));
-
-        assertThatThrownBy(() -> client.createOrder(bookingRequest()))
-                .isInstanceOf(PorterContractException.class)
-                .hasMessageContaining("missing order_id");
     }
 
     @Test

@@ -3649,6 +3649,8 @@ Like Borzo, Shadowfax is protected by two distinct gates:
 Shadowfax webhook ingestion is deferred pending live payload and HMAC verification confirmation,
 relying on polling via `DeliveryJobs.pollActiveDeliveries()` for status advancement.
 
+*Corrected by D-102: Shadowfax fares and ETAs are no longer computed from baseline rates; quote and booking fail closed until a carrier fare is verified.*
+
 ---
 
 ## D-100 — Porter delivery provider integration alongside Pidge, Borzo and Shadowfax
@@ -3687,6 +3689,8 @@ Porter is gated by:
 Porter webhook ingestion is deferred pending live payload and HMAC verification confirmation,
 relying on polling via `DeliveryJobs.pollActiveDeliveries()` for status advancement.
 
+*Corrected by D-102: Porter's quote and booking no longer fall back to a configured rate card; both fail closed until a carrier fare is verified.*
+
 ---
 
 ## D-101 — Intra-city 30 km radius boundary and tiered assignment deadlines
@@ -3709,5 +3713,44 @@ Commercial vehicles take longer to match in Indian metropolitan traffic than two
 - **Three-Wheelers & Trucks (`THREE_WHEELER`, `FOUR_WHEELER_TRUCK`)**: `PT12M` (12 minutes) waterfall timeout (`costonomy.mp.delivery.truck-assignment-timeout`). Auto-rickshaw cargo and mini-trucks (Tata Ace, Mahindra Bolero Maxi Truck) have sparser fleet density and take 8–12 minutes to assign. A 3-minute timeout prematurely cascaded through all providers before drivers could accept.
 - `DeliveryBookingService` computes `assignmentDeadline = bookedAt.plus(isTruck ? truckAssignmentTimeout : bikeAssignmentTimeout)` and emits `DeliveryBookedEvent`, which `DeliveryWaterfallService` schedules via `TaskScheduler` for one-shot timeout evaluation.
 
+---
 
+## D-102 — Shadowfax and Porter quote and book only on a carrier fare; until then they decline
+**2026-10-02 · Settled** — corrects D-099 and D-100
 
+### What was wrong
+D-099 describes Shadowfax fees and ETAs as "computed from configured baseline rates". Porter's quote (D-100) fell back to the same kind of rate card when a response field was missing, and both clients filled `Booking.amount` from `base-fee` / `per-km-fee` properties. That put a price we invented into `delivery.fee` and the delivery ledger, and contradicts doc 06 §8 ("never fabricate") and the rule in CLAUDE.md. Both carriers are seeded disabled, so nothing was charged this way, but enabling a row would have started doing so.
+
+### No carrier fare has been verified
+- Shadowfax: the serviceability response lists pincodes and services only. The create-order response carries `awb_number`, `promised_delivery_date` and `product_value` (our own declared value echoed back), and no fare.
+- Porter: the quote fixture was written by the same author as the client, with no live check (unlike Borzo, D-098). The client guessed three field names for the fare (`cost.amount`, `fare`, `estimated_fare`). The create-order fixture has no fare.
+
+### Decision
+1. **Quotes decline.** Shadowfax returns `Quote.unserviceable` with a reason saying it publishes no fare. Porter returns `Quote.unserviceable` without any HTTP call. A decline is recorded in `delivery_quote` as UNSERVICEABLE; a failed serviceability check is recorded as FAILED. Neither can win the auction.
+2. **Booking refuses before any network call.** `createOrder` validates our own data, then throws a non-retryable `ShadowfaxContractException` / `PorterContractException`. It must fail before the POST: a booking that throws after the carrier accepted it would leave a live consignment nobody owns or cancels. `DeliveryBookingService` records a FAILED attempt and fails over to the next carrier.
+3. **Shadowfax serviceability is fail-closed.** True only when Shadowfax lists both pincodes with the `Regular` service. A pincode not listed, or without `Regular`, is a decline. An unreachable carrier (timeout, 5xx) is a retryable failure, a 4xx is a non-retryable failure, and a body that is not an array, or an entry without a `services` array, is a contract failure. The check is never skipped by catching an exception. A missing pincode in an address is a decline with no HTTP call. The pincode is the last 6-digit group in the address, because our addresses are built city, state, pincode.
+4. **Booking data comes from our own records or the booking is refused.** `BookingRequest` gains `pickupLocality`, `dropLocality` and `goodsValue`, read by `DeliveryDirectory` at booking time:
+
+| Value | Source |
+|---|---|
+| City, state | `outlet` / `supplier_store` (NOT NULL) |
+| Pincode | same tables (nullable, so a missing one is rejected) |
+| Weight | `delivery.weight_kg` |
+| Goods value | `supplier_order.accepted_amount - delivery_fee`, as in commission |
+| SKU id | `SO-<supplier order id>` |
+| Contacts | the delivery row; missing or invalid is rejected |
+
+   Removed: the fallback pincodes 560038/560034, the city "Bengaluru" and state "Karnataka", 1000 g, the Rs 500 value, the placeholder phone numbers 9876543210, the placeholder names ("Customer", "Seller", "Supplier", "Outlet"), the SKU default 101, the copied `volumetric_weight`, and Porter's `customer.name` "Costonomy Mandi" (now "Costonomy", per the naming rule).
+5. **`base-fee` / `per-km-fee` are removed** from `ShadowfaxProperties`, `PorterProperties` and `application.properties`. The platform rate card (`delivery.baseFee` etc. in `DeliveryFeeQuoteService`) is separate and unchanged: it is our own price and is labelled `ESTIMATED`.
+6. When no carrier can answer, checkout falls back to the rate card and dispatch ends as QUOTE_FAILED / `NO_SERVICEABLE_PROVIDER`, as before.
+
+### What would re-enable each carrier
+A fare and ETA field verified against a live sandbox response, read through a required-field helper as Borzo does (D-098), plus a booking path that carries that fare into `Booking.amount`. For Shadowfax also confirm the `actual_weight` unit (assumed grams), whether `volumetric_weight` is required, what `total_amount` means for Prepaid, and the `category` values. For Porter also confirm auth (the client sends both `x-api-key` and a Bearer token, which is a guess), the endpoints and the address fields.
+
+### Still open (not changed here)
+- Porter `getStatus` invents a PICKED_UP event timestamped five minutes in the past when DELIVERED is the first status seen. Both Porter and Shadowfax give an event the current time when the carrier's timestamp cannot be read. Both break doc 06 §8.
+- Tracking URLs for Shadowfax and Porter are built from unverified patterns.
+- Two weight calculations disagree (`DeliveryDirectory.calculateWeightKg` counts 1 kg per unit of unknown type; `consignmentWeightGrams` uses 500 g per piece). Decide which is authoritative before any carrier is re-enabled; declaring an estimated weight can cause re-weigh charges.
+- Pidge still defaults missing fields (D-098). Borzo sums distance with a default of 0.
+- `DeliveryService.quoteAndBook` passes the delivery fee as `orderValue` to the auction; no provider reads it today.
+- `ShadowfaxDeliveryFlowIT` leaves the SHADOWFAX row enabled for later tests that share the database.

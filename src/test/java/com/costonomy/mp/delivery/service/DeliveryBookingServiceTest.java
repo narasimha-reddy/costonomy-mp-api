@@ -3,6 +3,7 @@ package com.costonomy.mp.delivery.service;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.delivery.domain.*;
 import com.costonomy.mp.delivery.provider.DeliveryProvider;
+import com.costonomy.mp.delivery.provider.shadowfax.ShadowfaxContractException;
 import com.costonomy.mp.delivery.repository.DeliveryLedgerRepository;
 import com.costonomy.mp.delivery.repository.DeliveryProviderAttemptRepository;
 import com.costonomy.mp.delivery.repository.DeliveryRepository;
@@ -53,6 +54,9 @@ class DeliveryBookingServiceTest {
     private ApplicationEventPublisher eventPublisher;
 
     @Mock
+    private DeliveryDirectory directory;
+
+    @Mock
     private DeliveryProvider providerAdapter;
 
     private DeliveryBookingService service;
@@ -67,7 +71,8 @@ class DeliveryBookingServiceTest {
                 timeline,
                 auditService,
                 ledger,
-                eventPublisher
+                eventPublisher,
+                directory
         );
         lenient().when(attempts.save(any(DeliveryProviderAttempt.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -221,5 +226,88 @@ class DeliveryBookingServiceTest {
         assertThat(delivery.getAssignmentDeadline())
                 .isAfterOrEqualTo(beforeBooking.plus(Duration.ofMinutes(20)))
                 .isBeforeOrEqualTo(afterBooking.plus(Duration.ofMinutes(20)).plusSeconds(1));
+    }
+
+    @Test
+    @DisplayName("Booking passes locality and goods value from our records to the carrier")
+    void book_passesLocalitiesAndGoodsValueToProvider() {
+        Delivery delivery = createDelivery(7L, VehicleType.TWO_WHEELER);
+        delivery.setSupplierStoreId(31L);
+        delivery.setOutletId(41L);
+        DeliveryQuote quote = createQuote(7L, "MOCK_EXPRESS", VehicleType.TWO_WHEELER);
+        var pickup = new DeliveryProvider.Locality("Secunderabad", "Telangana", "500003");
+        var drop = new DeliveryProvider.Locality("Hyderabad", "Telangana", "500081");
+
+        when(directory.pickupLocality(31L)).thenReturn(pickup);
+        when(directory.dropLocality(41L)).thenReturn(drop);
+        when(directory.goodsValue(200L)).thenReturn(new BigDecimal("1834.50"));
+        when(quoting.usableQuotes(7L, List.of())).thenReturn(List.of(quote));
+        when(registry.adapter("MOCK_EXPRESS")).thenReturn(providerAdapter);
+        when(providerAdapter.book(any())).thenReturn(new DeliveryProvider.Booking(
+                "m-1", new BigDecimal("80.00"), "INR", 25, Instant.now().plusSeconds(1500), null));
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isTrue();
+
+        ArgumentCaptor<DeliveryProvider.BookingRequest> captor =
+                ArgumentCaptor.forClass(DeliveryProvider.BookingRequest.class);
+        verify(providerAdapter).book(captor.capture());
+        assertThat(captor.getValue().pickupLocality()).isEqualTo(pickup);
+        assertThat(captor.getValue().dropLocality()).isEqualTo(drop);
+        assertThat(captor.getValue().goodsValue()).isEqualByComparingTo("1834.50");
+    }
+
+    @Test
+    @DisplayName("A carrier that refuses for want of a fare fails over, and only the winner is charged")
+    void book_whenFirstCarrierRefusesWithoutFare_failsOverAndChargesOnlyTheWinner() {
+        Delivery delivery = createDelivery(8L, VehicleType.TWO_WHEELER);
+        DeliveryQuote refusing = createQuote(8L, "SHADOWFAX", VehicleType.TWO_WHEELER);
+        refusing.setAmount(new BigDecimal("50.00"));
+        DeliveryQuote winner = createQuote(8L, "MOCK_EXPRESS", VehicleType.TWO_WHEELER);
+        winner.setAmount(new BigDecimal("80.00"));
+        DeliveryProvider shadowfax = mock(DeliveryProvider.class);
+
+        when(quoting.usableQuotes(8L, List.of())).thenReturn(List.of(refusing, winner));
+        when(registry.adapter("SHADOWFAX")).thenReturn(shadowfax);
+        when(registry.adapter("MOCK_EXPRESS")).thenReturn(providerAdapter);
+        when(shadowfax.book(any())).thenThrow(new ShadowfaxContractException(
+                "Shadowfax create-order returns no fare; refusing to book"));
+        when(providerAdapter.book(any())).thenReturn(new DeliveryProvider.Booking(
+                "m-2", new BigDecimal("80.00"), "INR", 25, Instant.now().plusSeconds(1500), null));
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isTrue();
+
+        assertThat(delivery.getProviderCode()).isEqualTo("MOCK_EXPRESS");
+        assertThat(delivery.getFee()).isEqualByComparingTo("80.00");
+
+        ArgumentCaptor<DeliveryProviderAttempt> attemptCaptor = ArgumentCaptor.forClass(DeliveryProviderAttempt.class);
+        verify(attempts, atLeastOnce()).save(attemptCaptor.capture());
+        var failed = attemptCaptor.getAllValues().stream()
+                .filter(a -> "SHADOWFAX".equals(a.getProviderCode())).reduce((first, last) -> last).orElseThrow();
+        assertThat(failed.getOutcome()).isEqualTo("FAILED");
+        assertThat(failed.getFailureReason()).contains("fare");
+
+        ArgumentCaptor<DeliveryLedgerEntry> ledgerCaptor = ArgumentCaptor.forClass(DeliveryLedgerEntry.class);
+        verify(ledger, times(1)).save(ledgerCaptor.capture());
+        assertThat(ledgerCaptor.getValue().getProviderCode()).isEqualTo("MOCK_EXPRESS");
+        assertThat(ledgerCaptor.getValue().getAmount()).isEqualByComparingTo("80.00");
+    }
+
+    @Test
+    @DisplayName("When every carrier refuses, the delivery is marked unavailable and nothing is booked or charged")
+    void book_whenEveryCarrierRefuses_marksUnavailableAndBooksNothing() {
+        Delivery delivery = createDelivery(9L, VehicleType.TWO_WHEELER);
+        DeliveryQuote refusing = createQuote(9L, "SHADOWFAX", VehicleType.TWO_WHEELER);
+        DeliveryProvider shadowfax = mock(DeliveryProvider.class);
+
+        when(quoting.usableQuotes(9L, List.of())).thenReturn(List.of(refusing));
+        when(registry.adapter("SHADOWFAX")).thenReturn(shadowfax);
+        when(shadowfax.book(any())).thenThrow(new ShadowfaxContractException("no fare"));
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isFalse();
+
+        assertThat(delivery.getStatus()).isEqualTo(DeliveryStatus.PROVIDER_UNAVAILABLE);
+        assertThat(delivery.getFailureCode()).isEqualTo("ALL_PROVIDERS_FAILED");
+        assertThat(delivery.getProviderCode()).isNull();
+        verifyNoInteractions(ledger, eventPublisher);
     }
 }

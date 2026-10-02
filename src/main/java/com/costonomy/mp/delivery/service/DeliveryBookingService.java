@@ -43,6 +43,7 @@ public class DeliveryBookingService {
     private final AuditService auditService;
     private final DeliveryLedgerRepository ledger;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+    private final DeliveryDirectory directory;
 
     @org.springframework.beans.factory.annotation.Value("${costonomy.mp.delivery.bike-assignment-timeout:PT3M}")
     private java.time.Duration bikeAssignmentTimeout = java.time.Duration.ofMinutes(3);
@@ -187,7 +188,12 @@ public class DeliveryBookingService {
                 delivery.getDropContactPhone(),
                 // Ours, so a retried booking cannot produce two couriers at one door.
                 "mp-delivery-%d-%d".formatted(delivery.getId(), delivery.getAttemptCount() + 1),
-                delivery.getWeightKg(), delivery.getVolumeCbm(), vehicleType);
+                delivery.getWeightKg(), delivery.getVolumeCbm(), vehicleType,
+                // Read from our own records at booking time; a carrier that needs a city,
+                // pincode or declared value is told the truth or refuses, never a default.
+                directory.pickupLocality(delivery.getSupplierStoreId()),
+                directory.dropLocality(delivery.getOutletId()),
+                directory.goodsValue(delivery.getSupplierOrderId()));
     }
 
     private boolean fail(Delivery delivery, DeliveryStatus status, String code, String reason) {

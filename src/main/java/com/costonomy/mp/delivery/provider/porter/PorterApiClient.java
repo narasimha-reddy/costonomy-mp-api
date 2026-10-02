@@ -114,86 +114,22 @@ public class PorterApiClient {
                     "Exceeds 30 km intra-city radius limit (%.1f km)".formatted(distanceKm));
         }
 
-        var vehicleType = request.vehicleType() != null ? request.vehicleType() : VehicleType.TWO_WHEELER;
-        String porterVehicle = mapVehicleType(vehicleType);
-
-        try {
-            var payload = new LinkedHashMap<String, Object>();
-            var pickup = new LinkedHashMap<String, Object>();
-            pickup.put("lat", request.pickupLatitude());
-            pickup.put("lng", request.pickupLongitude());
-            pickup.put("address", request.pickupAddress() != null ? request.pickupAddress() : "Pickup Location");
-            payload.put("pickup_details", pickup);
-
-            var drop = new LinkedHashMap<String, Object>();
-            drop.put("lat", request.dropLatitude());
-            drop.put("lng", request.dropLongitude());
-            drop.put("address", request.dropAddress() != null ? request.dropAddress() : "Drop Location");
-            payload.put("drop_details", drop);
-
-            payload.put("vehicle_type", porterVehicle);
-
-            var entity = new HttpEntity<>(payload, headers());
-            String url = properties.getBaseUrl() + "/v1/orders/cost";
-            var response = restTemplate.postForEntity(url, entity, JsonNode.class);
-
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                return DeliveryProvider.Quote.unserviceable("Porter cost estimation returned non-200");
-            }
-
-            var body = response.getBody();
-            BigDecimal amount = null;
-            if (body.has("cost") && body.path("cost").has("amount")) {
-                amount = new BigDecimal(body.path("cost").path("amount").asText());
-            } else if (body.has("fare")) {
-                amount = new BigDecimal(body.path("fare").asText());
-            } else if (body.has("estimated_fare")) {
-                amount = new BigDecimal(body.path("estimated_fare").asText());
-            }
-
-            if (amount == null) {
-                BigDecimal multiplier = vehicleType == VehicleType.FOUR_WHEELER_TRUCK ? BigDecimal.valueOf(2.5)
-                        : (vehicleType == VehicleType.THREE_WHEELER ? BigDecimal.valueOf(1.6) : BigDecimal.ONE);
-                amount = properties.getBaseFee()
-                        .add(properties.getPerKmFee().multiply(BigDecimal.valueOf(distanceKm)))
-                        .multiply(multiplier)
-                        .setScale(2, RoundingMode.HALF_UP);
-            }
-
-            int etaMinutes = body.has("eta") ? body.path("eta").asInt()
-                    : Math.max(15, (int) Math.ceil(distanceKm * 4.0));
-
-            Double routeDistance = body.has("distance") ? body.path("distance").asDouble() : distanceKm;
-            String quoteId = body.has("quote_id") ? body.path("quote_id").asText()
-                    : "prtr_quote_" + UUID.randomUUID().toString().substring(0, 12);
-
-            Instant expiresAt = Instant.now().plusSeconds(900);
-
-            return new DeliveryProvider.Quote(
-                    quoteId,
-                    true,
-                    amount,
-                    "INR",
-                    etaMinutes,
-                    routeDistance,
-                    expiresAt,
-                    null,
-                    vehicleType);
-
-        } catch (HttpStatusCodeException ex) {
-            log.warn("Porter calculateQuote HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            if (ex.getStatusCode().is4xxClientError()) {
-                return DeliveryProvider.Quote.unserviceable("Porter rejected route or vehicle: " + ex.getStatusCode());
-            }
-            throw new DeliveryProviderException("PORTER", "Porter cost calculation failed with " + ex.getStatusCode(), true);
-        } catch (ResourceAccessException ex) {
-            log.warn("Porter calculateQuote timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("PORTER", "Porter cost calculation timeout", true);
-        }
+        // No HTTP call: the fare field of Porter's cost endpoint has never been verified against
+        // a live response, and the old code guessed three field names and then fell back to a
+        // rate card. A decline is honest; a guessed price is not (D-102).
+        return DeliveryProvider.Quote.unserviceable(
+                "Porter fare contract not verified against a live response; a rate card is not a quote (D-102)");
     }
 
     // ── book ───────────────────────────────────────────────────────────────
 
+    /**
+     * Refuses to book. Porter's create-order response has no verified fare, and
+     * {@code Booking.amount} must be a real figure because it becomes delivery.fee and the
+     * ledger. This throws before any network call: failing after the carrier has accepted an
+     * order would leave a live consignment nobody owns (D-102). Our own data is validated
+     * first so a bad request is reported precisely.
+     */
     public DeliveryProvider.Booking createOrder(DeliveryProvider.BookingRequest request) {
         checkRateLimit();
 
@@ -201,88 +137,55 @@ public class PorterApiClient {
             throw new DeliveryProviderException("PORTER", "Porter API key not configured for booking", false);
         }
 
-        try {
-            var vehicleType = request.vehicleType() != null ? request.vehicleType() : VehicleType.TWO_WHEELER;
-            var payload = new LinkedHashMap<String, Object>();
-            payload.put("request_id", request.idempotencyKey());
+        orderPayload(request);
 
-            var pickupAddressObj = new LinkedHashMap<String, Object>();
-            pickupAddressObj.put("apartment_address", request.pickupAddress() != null ? request.pickupAddress() : "Pickup");
-            pickupAddressObj.put("street_address", request.pickupAddress() != null ? request.pickupAddress() : "Pickup");
-            pickupAddressObj.put("city", "Bengaluru");
-            pickupAddressObj.put("lat", request.pickupLatitude());
-            pickupAddressObj.put("lng", request.pickupLongitude());
-            var pickupContact = new LinkedHashMap<String, Object>();
-            pickupContact.put("name", request.pickupContactName() != null ? request.pickupContactName() : "Supplier");
-            pickupContact.put("phone_number", sanitizePhone(request.pickupContactPhone()));
-            pickupAddressObj.put("contact_details", pickupContact);
+        throw new PorterContractException(
+                "Porter create-order fare is not verified; refusing to book without a carrier fare "
+                        + "- a rate card is not a quote (D-102)");
+    }
 
-            var pickupDetails = new LinkedHashMap<String, Object>();
-            pickupDetails.put("address", pickupAddressObj);
-            payload.put("pickup_details", pickupDetails);
+    /**
+     * The create-order body, built only from our own records. Anything missing is rejected by
+     * name; nothing is defaulted (D-102).
+     */
+    Map<String, Object> orderPayload(DeliveryProvider.BookingRequest request) {
+        var vehicleType = request.vehicleType() != null ? request.vehicleType() : VehicleType.TWO_WHEELER;
+        var payload = new LinkedHashMap<String, Object>();
+        payload.put("request_id", request.idempotencyKey());
+        payload.put("pickup_details", Map.of("address", point("pickup", request.pickupAddress(),
+                request.pickupLocality(), request.pickupLatitude(), request.pickupLongitude(),
+                request.pickupContactName(), request.pickupContactPhone())));
+        payload.put("drop_details", Map.of("address", point("drop", request.dropAddress(),
+                request.dropLocality(), request.dropLatitude(), request.dropLongitude(),
+                request.dropContactName(), request.dropContactPhone())));
+        payload.put("vehicle_type", mapVehicleType(vehicleType));
+        payload.put("customer", Map.of("name", "Costonomy"));
+        return payload;
+    }
 
-            var dropAddressObj = new LinkedHashMap<String, Object>();
-            dropAddressObj.put("apartment_address", request.dropAddress() != null ? request.dropAddress() : "Drop");
-            dropAddressObj.put("street_address", request.dropAddress() != null ? request.dropAddress() : "Drop");
-            dropAddressObj.put("city", "Bengaluru");
-            dropAddressObj.put("lat", request.dropLatitude());
-            dropAddressObj.put("lng", request.dropLongitude());
-            var dropContact = new LinkedHashMap<String, Object>();
-            dropContact.put("name", request.dropContactName() != null ? request.dropContactName() : "Outlet");
-            dropContact.put("phone_number", sanitizePhone(request.dropContactPhone()));
-            dropAddressObj.put("contact_details", dropContact);
-
-            var dropDetails = new LinkedHashMap<String, Object>();
-            dropDetails.put("address", dropAddressObj);
-            payload.put("drop_details", dropDetails);
-
-            payload.put("vehicle_type", mapVehicleType(vehicleType));
-
-            var customer = new LinkedHashMap<String, Object>();
-            customer.put("name", "Costonomy Mandi");
-            payload.put("customer", customer);
-
-            var entity = new HttpEntity<>(payload, headers());
-            var response = restTemplate.postForEntity(properties.getBaseUrl() + "/v1/orders/create", entity, JsonNode.class);
-
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                throw new DeliveryProviderException("PORTER", "Porter create-order returned no body", true);
-            }
-
-            var body = response.getBody();
-            String orderId = body.has("order_id") ? body.path("order_id").asText(null)
-                    : (body.has("data") ? body.path("data").path("order_id").asText(null) : null);
-
-            if (orderId == null || orderId.isBlank()) {
-                String errorMsg = body.path("message").asText("Unknown error");
-                throw new PorterContractException("Porter order creation missing order_id: " + errorMsg);
-            }
-
-            Double distanceKm = Serviceability.distanceKm(
-                    request.pickupLatitude(), request.pickupLongitude(),
-                    request.dropLatitude(), request.dropLongitude());
-            int etaMinutes = distanceKm != null ? Math.max(15, (int) Math.ceil(distanceKm * 4.0)) : 30;
-
-            Instant estimatedArrivalAt = Instant.now().plusSeconds(etaMinutes * 60L);
-            String trackingUrl = body.has("tracking_url") ? body.path("tracking_url").asText(null)
-                    : "https://track.porter.in/" + orderId;
-
-            BigDecimal multiplier = vehicleType == VehicleType.FOUR_WHEELER_TRUCK ? BigDecimal.valueOf(2.5)
-                    : (vehicleType == VehicleType.THREE_WHEELER ? BigDecimal.valueOf(1.6) : BigDecimal.ONE);
-            BigDecimal fee = properties.getBaseFee()
-                    .add(distanceKm != null ? properties.getPerKmFee().multiply(BigDecimal.valueOf(distanceKm)) : BigDecimal.ZERO)
-                    .multiply(multiplier)
-                    .setScale(2, RoundingMode.HALF_UP);
-
-            return new DeliveryProvider.Booking(orderId, fee, "INR", etaMinutes, estimatedArrivalAt, trackingUrl);
-
-        } catch (HttpStatusCodeException ex) {
-            log.error("Porter create-order HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("PORTER", "Porter create-order returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.error("Porter create-order network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("PORTER", "Porter create-order timeout", true);
+    private Map<String, Object> point(String which, String address, DeliveryProvider.Locality locality,
+                                      BigDecimal lat, BigDecimal lng, String contactName, String contactPhone) {
+        if (address == null || address.isBlank()) throw invalid(which + " address");
+        if (locality == null || locality.city() == null || locality.city().isBlank()) {
+            throw invalid(which + " city");
         }
+        if (contactName == null || contactName.isBlank()) throw invalid(which + " contact name");
+        var contact = new LinkedHashMap<String, Object>();
+        contact.put("name", contactName);
+        contact.put("phone_number", requirePhone(which + " contact phone", contactPhone));
+
+        var out = new LinkedHashMap<String, Object>();
+        out.put("apartment_address", address);
+        out.put("street_address", address);
+        out.put("city", locality.city());
+        out.put("lat", lat);
+        out.put("lng", lng);
+        out.put("contact_details", contact);
+        return out;
+    }
+
+    private static DeliveryProviderException invalid(String field) {
+        return new DeliveryProviderException("PORTER", field + " missing or invalid for Porter booking", false);
     }
 
     // ── status ─────────────────────────────────────────────────────────────
@@ -399,8 +302,8 @@ public class PorterApiClient {
 
     // ── helpers ────────────────────────────────────────────────────────────
 
-    private static String sanitizePhone(String phone) {
-        if (phone == null) return "+919876543210";
+    private static String requirePhone(String field, String phone) {
+        if (phone == null) throw invalid(field);
         String digits = phone.replaceAll("[^0-9]", "");
         if (digits.length() == 10) {
             return "+91" + digits;
@@ -408,7 +311,7 @@ public class PorterApiClient {
         if (digits.length() == 12 && digits.startsWith("91")) {
             return "+" + digits;
         }
-        return "+919876543210";
+        throw invalid(field);
     }
 
     private static Instant parseInstantSafe(String raw, Instant fallback) {
