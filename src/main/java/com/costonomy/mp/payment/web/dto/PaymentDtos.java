@@ -22,6 +22,10 @@ public final class PaymentDtos {
              * here (doc 01 §14, guardrail 3).
              */
             @NotBlank(message = "providerPaymentId is required")
+            // A provider id is letters, digits and underscores (pay_…, mock_pay_…).
+            // Anything else never reaches the provider's URL or our logs (D-101).
+            @Size(max = 64, message = "That isn't a payment id")
+            @Pattern(regexp = "[A-Za-z0-9_]+", message = "That isn't a payment id")
             String providerPaymentId) {
     }
 

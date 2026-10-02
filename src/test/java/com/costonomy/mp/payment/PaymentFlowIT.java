@@ -257,21 +257,30 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("a declined card leaves the supplier with nothing")
-        void declinedCardAbandonsTheOrder() throws Exception {
+        @DisplayName("a declined card leaves the supplier with nothing, and the order still payable")
+        void declinedCardLeavesTheOrderPayable() throws Exception {
             // .13 makes the mock decline — see MockPaymentProvider. A test asks for
             // a failure by ordering one, so the failing path is the same code path.
             var submitted = submit("400.13", 1);
 
             var providerPayment = mockProvider.completeCheckout(submitted.providerOrderId());
-            api.post(submitted.buyer().token(),
+            var confirmed = api.post(submitted.buyer().token(),
                     "/api/v1/payments/" + submitted.paymentId() + "/confirm",
-                    Map.of("providerPaymentId", providerPayment.providerPaymentId()));
+                    Map.of("providerPaymentId", providerPayment.providerPaymentId())).at("/data");
 
-            assertThat(orderStatus(submitted.orderId())).isEqualTo("CANCELLED");
+            // The supplier sees nothing, as before.
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("DRAFT");
             assertThat(api.get(submitted.seller().token(),
                     "/api/v1/supplier-stores/" + submitted.seller().storeId() + "/orders/pending")
                     .at("/data")).isEmpty();
+            // But one decline no longer ends it (D-101): Razorpay lets the customer
+            // try again on the same order, so the payment waits, with the reason.
+            assertThat(confirmed.at("/status").asText()).isEqualTo("CREATED");
+            assertThat(confirmed.at("/fundsSecured").asBoolean()).isFalse();
+            assertThat(confirmed.at("/failureReason").asText()).isNotBlank();
+            assertThat(jdbc.queryForObject("select count(*) from payment_transaction where payment_id = ? "
+                    + "and transaction_type = 'AUTHORIZE' and status = 'FAILED'",
+                    Integer.class, submitted.paymentId())).isEqualTo(1);
         }
 
         @Test
@@ -728,8 +737,8 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("a refund the provider declines is retried with the same key, never a new one")
-        void failedRefundRetriesWithSameKey() throws Exception {
+        @DisplayName("a refund the provider declines goes to a person after one try, never resent")
+        void declinedRefundNeedsReview() throws Exception {
             // .19 makes the mock decline the refund.
             var submitted = submit("400.19", 1);
             payAndConfirm(submitted);
@@ -740,9 +749,11 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             paymentJobs.processRefunds();
             paymentJobs.processRefunds();
 
+            // It was retried every thirty seconds for ever before (D-101); the
+            // provider's "no" is an answer for a person, not a transient error.
             assertThat(jdbc.queryForObject("select status from refund where id = ?",
-                    String.class, refundId)).isEqualTo("FAILED");
-            verify(mockProvider, times(2)).refund(anyString(), any(), eq("mandi-refund-" + refundId));
+                    String.class, refundId)).isEqualTo("NEEDS_REVIEW");
+            verify(mockProvider, times(1)).refund(anyString(), any(), eq("mandi-refund-" + refundId));
             assertThat(jdbc.queryForObject("select count(*) from refund where payment_id = ?",
                     Integer.class, submitted.paymentId())).isEqualTo(1);
             assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("0");
@@ -843,6 +854,189 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             paymentJobs.reconcileStale();
 
             assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+        }
+    }
+
+    // ── Review fixes (D-101) ─────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("review fixes")
+    class ReviewFixes {
+
+        @org.junit.jupiter.api.AfterEach
+        void restore() {
+            reset(mockProvider);
+            org.springframework.test.util.ReflectionTestUtils.setField(
+                    (Object) org.springframework.test.util.AopTestUtils.getTargetObject(paymentJobs),
+                    "reconcileBatch", 200);
+        }
+
+        private String status(long paymentId) {
+            return jdbc.queryForObject("select status from payment where id = ?", String.class, paymentId);
+        }
+
+        private String providerPaymentIdOf(long paymentId) {
+            return jdbc.queryForObject("select provider_payment_id from payment where id = ?",
+                    String.class, paymentId);
+        }
+
+        @Test
+        @DisplayName("a declined attempt, then a paid one on the same order: the order is funded")
+        void declineThenPay() throws Exception {
+            var submitted = submit("400", 1);
+            var declined = mockProvider.declineAttempt(submitted.providerOrderId());
+            api.post(submitted.buyer().token(), "/api/v1/payments/" + submitted.paymentId() + "/confirm",
+                    Map.of("providerPaymentId", declined.providerPaymentId()));
+            assertThat(status(submitted.paymentId())).isEqualTo("CREATED");
+
+            var paid = mockProvider.completeCheckout(submitted.providerOrderId());
+            api.post(submitted.buyer().token(), "/api/v1/payments/" + submitted.paymentId() + "/confirm",
+                    Map.of("providerPaymentId", paid.providerPaymentId()));
+
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+            assertThat(providerPaymentIdOf(submitted.paymentId())).isEqualTo(paid.providerPaymentId());
+        }
+
+        @Test
+        @DisplayName("a declined attempt arriving after authorisation cannot fail the payment")
+        void lateDeclineCannotFail() throws Exception {
+            var submitted = submit("400", 1);
+            var paid = mockProvider.completeCheckout(submitted.providerOrderId());
+            api.post(submitted.buyer().token(), "/api/v1/payments/" + submitted.paymentId() + "/confirm",
+                    Map.of("providerPaymentId", paid.providerPaymentId()));
+            assertThat(status(submitted.paymentId())).isEqualTo("CAPTURE_PENDING");
+
+            // Another attempt on the same order, declined, reported afterwards.
+            var declined = mockProvider.declineAttempt(submitted.providerOrderId());
+            postWebhook(webhookBody("evt_" + UUID.randomUUID(), "payment.failed",
+                    declined.providerPaymentId(), submitted.providerOrderId()));
+
+            // Before (D-101) this failed the payment: the order went ahead, capture
+            // never ran, and the supplier delivered for nothing.
+            assertThat(status(submitted.paymentId())).isEqualTo("CAPTURE_PENDING");
+            assertThat(providerPaymentIdOf(submitted.paymentId())).isEqualTo(paid.providerPaymentId());
+            paymentJobs.capturePending();
+            assertThat(status(submitted.paymentId())).isEqualTo("CAPTURED");
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+        }
+
+        @Test
+        @DisplayName("abandoned checkouts past a full batch cannot stop the sweep finding a lost payment")
+        void sweepSurvivesAFullBatch() throws Exception {
+            org.springframework.test.util.ReflectionTestUtils.setField(
+                    (Object) org.springframework.test.util.AopTestUtils.getTargetObject(paymentJobs),
+                    "reconcileBatch", 2);
+            // Three checkouts nobody completed, two days old — more than a batch.
+            var abandoned = List.of(submit("400", 1), submit("400", 1), submit("400", 1));
+            for (var a : abandoned) {
+                jdbc.update("update payment set created_at = date_sub(utc_timestamp(6), interval 2 day), "
+                        + "updated_at = date_sub(utc_timestamp(6), interval 2 day) where id = ?", a.paymentId());
+            }
+            // And one the customer paid for, whose confirm and webhook were lost.
+            var lost = submit("400", 1);
+            mockProvider.completeCheckout(lost.providerOrderId());
+            jdbc.update("update payment set created_at = date_sub(utc_timestamp(6), interval 23 hour), "
+                    + "updated_at = date_sub(utc_timestamp(6), interval 23 hour) where id = ?", lost.paymentId());
+
+            paymentJobs.reconcileStale();
+            paymentJobs.reconcileStale();
+
+            // The abandoned ones are ended rather than left at the front for ever...
+            for (var a : abandoned) {
+                assertThat(status(a.paymentId())).isEqualTo("FAILED");
+                assertThat(orderStatus(a.orderId())).isEqualTo("CANCELLED");
+            }
+            // ...so the paid one is found.
+            assertThat(orderStatus(lost.orderId())).isEqualTo("CONFIRMED");
+        }
+
+        @Test
+        @DisplayName("a refund the provider accepts as pending is completed only when it finishes")
+        void pendingRefundWaits() throws Exception {
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+            paymentJobs.capturePending();
+            // .23 makes the mock accept the refund as pending.
+            long refundId = requestRefund(submitted, "10.23", "CANCELLATION",
+                    UUID.randomUUID().toString()).at("/data/id").asLong();
+
+            paymentJobs.processRefunds();
+            assertThat(jdbc.queryForObject("select status from refund where id = ?",
+                    String.class, refundId)).isEqualTo("PROCESSING");
+            assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("0");
+
+            jdbc.update("update refund set updated_at = date_sub(utc_timestamp(6), interval 5 minute) "
+                    + "where id = ?", refundId);
+            paymentJobs.processRefunds();
+
+            assertThat(jdbc.queryForObject("select status from refund where id = ?",
+                    String.class, refundId)).isEqualTo("COMPLETED");
+            assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("10.23");
+            // Asked about, never sent twice.
+            verify(mockProvider, times(1)).refund(anyString(), any(), eq("mandi-refund-" + refundId));
+        }
+
+        @Test
+        @DisplayName("refunds still on their way count against what can be refunded")
+        void inFlightRefundsCount() throws Exception {
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+            paymentJobs.capturePending();
+
+            requestRefund(submitted, "300.00", "CANCELLATION", UUID.randomUUID().toString());
+            // Not sent yet — and still, only 100.00 is left to promise.
+            assertThat(requestRefundStatus(submitted, "200.00", "CANCELLATION",
+                    UUID.randomUUID().toString())).isEqualTo(400);
+            assertThat(jdbc.queryForObject("select count(*) from refund where payment_id = ?",
+                    Integer.class, submitted.paymentId())).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a refund key belongs to its payment")
+        void refundKeyIsScoped() throws Exception {
+            var first = submit("400", 1);
+            payAndConfirm(first);
+            var second = submit("400", 1);
+            payAndConfirm(second);
+            paymentJobs.capturePending();
+
+            String key = UUID.randomUUID().toString();
+            requestRefund(first, "10.00", "CANCELLATION", key);
+            assertThat(requestRefundStatus(second, "10.00", "CANCELLATION", key)).isEqualTo(409);
+        }
+
+        @Test
+        @DisplayName("a transient refund failure is retried with the same key, then handed to a person")
+        void transientRefundFailureIsCapped() throws Exception {
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+            paymentJobs.capturePending();
+            long refundId = requestRefund(submitted, "10.00", "CANCELLATION",
+                    UUID.randomUUID().toString()).at("/data/id").asLong();
+            doThrow(PaymentProviderException.unreachable("down", new RuntimeException()))
+                    .when(mockProvider).refund(anyString(), any(), anyString());
+
+            for (int run = 0; run < 7; run++) {
+                paymentJobs.processRefunds();
+            }
+
+            assertThat(jdbc.queryForObject("select status from refund where id = ?",
+                    String.class, refundId)).isEqualTo("NEEDS_REVIEW");
+            verify(mockProvider, times(5)).refund(anyString(), any(), eq("mandi-refund-" + refundId));
+        }
+
+        @Test
+        @DisplayName("confirm refuses something that isn't a payment id")
+        void confirmValidatesTheId() throws Exception {
+            var submitted = submit("400", 1);
+            int status = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/payments/" + submitted.paymentId() + "/confirm")
+                            .header("Authorization", "Bearer " + submitted.buyer().token())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"providerPaymentId\":\"pay_1\\r\\nINFO forged\"}"))
+                    .andReturn().getResponse().getStatus();
+            assertThat(status).isEqualTo(400);
+            assertThat(status(submitted.paymentId())).isEqualTo("CREATED");
         }
     }
 

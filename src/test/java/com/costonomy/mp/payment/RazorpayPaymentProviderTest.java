@@ -149,6 +149,41 @@ class RazorpayPaymentProviderTest {
     }
 
     @Test
+    @DisplayName("a capture records what we asked to capture, not the payment's full amount")
+    void partialCaptureRecordsTheCapture() {
+        routes.put("/v1/payments/pay_A/capture", new Canned(200, """
+                {"id":"pay_A","order_id":"order_A","status":"captured","amount":50000}"""));
+
+        var captured = razorpay.capture("pay_A", new BigDecimal("300.00"), "capture-payment-1");
+
+        // The payment's amount is the whole authorisation; reading it as captured
+        // left no remainder to release (D-101).
+        assertThat(captured.capturedAmount()).isEqualByComparingTo("300.00");
+        assertThat(captured.authorizedAmount()).isEqualByComparingTo("500.00");
+    }
+
+    @Test
+    @DisplayName("a refund Razorpay reports pending is pending, and processed when it says so")
+    void refundStatuses() {
+        routes.put("/v1/refunds/rfnd_P", new Canned(200, """
+                {"id":"rfnd_P","amount":1000,"status":"pending"}"""));
+        routes.put("/v1/refunds/rfnd_D", new Canned(200, """
+                {"id":"rfnd_D","amount":1000,"status":"processed"}"""));
+
+        assertThat(razorpay.fetchRefund("rfnd_P").status()).isEqualTo(ProviderRefundStatus.PENDING);
+        assertThat(razorpay.fetchRefund("rfnd_D").status()).isEqualTo(ProviderRefundStatus.COMPLETED);
+    }
+
+    @Test
+    @DisplayName("a blank secret stops the adapter being built at all")
+    void blankSecretRefused() {
+        assertThatThrownBy(() -> new RazorpayPaymentProvider("http://localhost:1", "rzp_test_key",
+                "rzp_test_secret", " "))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("webhook-secret");
+    }
+
+    @Test
     @DisplayName("a capture Razorpay refuses as already done is read as the success it is")
     void secondCaptureIsSuccess() {
         // The first capture worked and its response was lost; the retry is refused.

@@ -53,6 +53,14 @@ public class RefundService {
      */
     static final Duration STUCK_AFTER = Duration.ofMinutes(5);
 
+    /** Sends before a refund that keeps failing goes to a person instead (D-101). */
+    static final int MAX_ATTEMPTS = 5;
+
+    /** Refunds whose money may still go back, and so is not refundable again. */
+    private static final java.util.Set<RefundStatus> IN_FLIGHT = java.util.EnumSet.of(
+            RefundStatus.REQUESTED, RefundStatus.PROCESSING,
+            RefundStatus.FAILED, RefundStatus.NEEDS_REVIEW);
+
     /**
      * Request a refund.
      *
@@ -67,12 +75,21 @@ public class RefundService {
 
         var existing = refunds.findByIdempotencyKey(idempotencyKey);
         if (existing.isPresent()) {
+            if (!existing.get().getPaymentId().equals(paymentId)) {
+                // The key is unique across refunds, so without this a key used on
+                // one payment returned that payment's refund to a request about
+                // another (D-101).
+                throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_REUSE);
+            }
             // Doc 22: a repeated request returns the original rather than creating
             // another. The client's question is "did my refund happen", and it did.
             return existing.get();
         }
 
-        var payment = paymentService.load(paymentId);
+        // Locked, so two requests for the same payment are decided one after the
+        // other against the same figure, not both against a stale one (D-101).
+        var payment = payments.lockById(paymentId)
+                .orElseThrow(() -> new com.costonomy.mp.common.error.NotFoundException("Payment", paymentId));
 
         if (payment.getStatus() != PaymentStatus.CAPTURED
                 && payment.getStatus() != PaymentStatus.PARTIALLY_REFUNDED) {
@@ -80,7 +97,11 @@ public class RefundService {
                     "Only a captured payment can be refunded.");
         }
 
-        BigDecimal refundable = payment.refundableAmount();
+        // What is still promised back counts too. Only completed refunds reached
+        // refunded_amount, so two requests with different keys could each ask for
+        // the whole capture, and the second then failed at the provider for ever.
+        BigDecimal inFlight = refunds.sumByPaymentIdAndStatusIn(paymentId, IN_FLIGHT);
+        BigDecimal refundable = payment.refundableAmount().subtract(inFlight);
         if (amount.signum() <= 0 || amount.compareTo(refundable) > 0) {
             // Refunding more than was captured would return money we never took.
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
@@ -134,9 +155,13 @@ public class RefundService {
             if (refund == null || !claimable(refund)) {
                 return null;
             }
-            log.info("Refund {} {} → PROCESSING for {}", refund.getId(), refund.getStatus(),
-                    refund.getAmount().toPlainString());
+            log.info("Refund {} {} → PROCESSING for {} (attempt {})", refund.getId(), refund.getStatus(),
+                    refund.getAmount().toPlainString(), refund.getAttempts() + 1);
             refund.setStatus(RefundStatus.PROCESSING);
+            // Every claim changes the row, even a re-claim of one already
+            // PROCESSING: the version moves, so a second job run claiming the same
+            // refund fails its save instead of also sending it.
+            refund.setAttempts(refund.getAttempts() + 1);
             return refunds.saveAndFlush(refund);
         });
         if (claimed == null) {
@@ -166,39 +191,98 @@ public class RefundService {
                 return;
             }
             if (error != null) {
-                // FAILED rather than abandoned, because doc 03 §7 allows a retry from
-                // here — and the same refund row is retried, so a retry cannot become a
-                // second refund.
-                markFailed(refund, error.providerCode(), error.getMessage());
+                if (error.isRetryable() && refund.getAttempts() < MAX_ATTEMPTS) {
+                    // FAILED rather than abandoned, because doc 03 §7 allows a retry
+                    // from here — and the same refund row is retried with the same
+                    // key, so a retry cannot become a second refund.
+                    markFailed(refund, error.providerCode(), error.getMessage());
+                } else {
+                    needsReview(refund, error.providerCode(), error.getMessage());
+                }
                 return;
             }
             if (outcome.status() == PaymentProvider.ProviderRefundStatus.FAILED) {
-                markFailed(refund, outcome.failureCode(), outcome.failureReason());
+                // The provider looked at it and said no. Sending it again says the
+                // same thing; a person has to decide (D-101).
+                needsReview(refund, outcome.failureCode(), outcome.failureReason());
                 return;
             }
-
-            log.info("Refund {} PROCESSING → COMPLETED (provider refund {})",
-                    refund.getId(), outcome.providerRefundId());
             refund.setProviderRefundId(outcome.providerRefundId());
-            refund.setStatus(RefundStatus.COMPLETED);
-            refund.setCompletedAt(Instant.now());
-            refunds.save(refund);
-
-            applyToPayment(payments.findById(refund.getPaymentId()).orElseThrow(), refund);
-
-            outbox.publish("RefundCompleted", "REFUND", refund.getId(),
-                    Map.of("paymentId", refund.getPaymentId(),
-                            "supplierOrderId", refund.getSupplierOrderId(),
-                            "amount", refund.getAmount().toPlainString()),
-                    refund.getRequestedBy());
+            if (outcome.status() == PaymentProvider.ProviderRefundStatus.PENDING) {
+                // Accepted, not finished. It used to be marked COMPLETED here, so a
+                // refund the provider later failed was never retried while our
+                // books said the money had gone back (D-101).
+                refunds.save(refund);
+                log.info("Refund {} accepted by the provider as {}; waiting for it to finish",
+                        refund.getId(), outcome.providerRefundId());
+                return;
+            }
+            complete(refund);
         });
+    }
+
+    /**
+     * Ask the provider about a refund it accepted but had not finished. Called by
+     * the refund job for PROCESSING refunds that already have a provider id.
+     */
+    public void settlePending(Long refundId) {
+        var pending = refunds.findById(refundId).orElse(null);
+        if (pending == null || pending.getStatus() != RefundStatus.PROCESSING
+                || pending.getProviderRefundId() == null) {
+            return;
+        }
+        PaymentProvider.ProviderRefund answer;
+        try {
+            answer = provider.fetchRefund(pending.getProviderRefundId());
+        } catch (PaymentProviderException ex) {
+            log.debug("Could not ask about refund {}: {}", refundId, ex.getMessage());
+            return;
+        }
+        txTemplate.executeWithoutResult(status -> {
+            var refund = refunds.findById(refundId).orElseThrow();
+            if (refund.getStatus() != RefundStatus.PROCESSING) {
+                return;
+            }
+            switch (answer.status()) {
+                case COMPLETED -> complete(refund);
+                case FAILED -> needsReview(refund, answer.failureCode(),
+                        answer.failureReason() == null ? "The provider failed the refund" : answer.failureReason());
+                // Still pending: touch the row so the next check waits its turn.
+                case PENDING -> {
+                    refund.setFailureReason(null);
+                    refunds.save(refund);
+                }
+            }
+        });
+    }
+
+    /** The money went back. Written inside the caller's transaction. */
+    private void complete(Refund refund) {
+        log.info("Refund {} PROCESSING → COMPLETED (provider refund {})",
+                refund.getId(), refund.getProviderRefundId());
+        refund.setStatus(RefundStatus.COMPLETED);
+        refund.setCompletedAt(Instant.now());
+        refunds.save(refund);
+
+        // Locked: a webhook writing the payment meanwhile would otherwise roll this
+        // back on the version check, after the money had already moved.
+        applyToPayment(payments.lockById(refund.getPaymentId()).orElseThrow(), refund);
+
+        outbox.publish("RefundCompleted", "REFUND", refund.getId(),
+                Map.of("paymentId", refund.getPaymentId(),
+                        "supplierOrderId", refund.getSupplierOrderId(),
+                        "amount", refund.getAmount().toPlainString()),
+                refund.getRequestedBy());
     }
 
     /** Waiting to be sent, failed and worth retrying, or claimed by a process that died. */
     private static boolean claimable(Refund refund) {
         return switch (refund.getStatus()) {
             case REQUESTED, FAILED -> true;
-            case PROCESSING -> refund.getUpdatedAt() != null
+            // Stuck only if the provider never answered. One that did (a pending
+            // refund) is asked about by settlePending, never sent again.
+            case PROCESSING -> refund.getProviderRefundId() == null
+                    && refund.getUpdatedAt() != null
                     && refund.getUpdatedAt().isBefore(Instant.now().minus(STUCK_AFTER));
             default -> false;
         };
@@ -219,6 +303,17 @@ public class RefundService {
         auditService.record(refund.getRequestedBy(), null, "REFUND_COMPLETED", "PAYMENT",
                 payment.getId(), null, target.name(),
                 refund.getAmount().toPlainString(), "SYSTEM");
+    }
+
+    private void needsReview(Refund refund, String code, String reason) {
+        refund.setStatus(RefundStatus.NEEDS_REVIEW);
+        refund.setFailureCode(code);
+        refund.setFailureReason(reason);
+        refunds.save(refund);
+        // Error, not warn: money promised back is not going back, and a person has
+        // to act. This line is what an alert should match.
+        log.error("Refund {} → NEEDS_REVIEW after {} attempt(s): {} {}",
+                refund.getId(), refund.getAttempts(), code, reason);
     }
 
     private void markFailed(Refund refund, String code, String reason) {
