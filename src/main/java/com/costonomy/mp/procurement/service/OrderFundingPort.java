@@ -75,6 +75,26 @@ public interface OrderFundingPort {
     void onOrderUnfulfilled(Long supplierOrderId, String reason);
 
     /**
+     * The goods are about to leave: take the money now (D-103).
+     *
+     * <p>Prepaid money is held from confirmation and taken only when the supplier
+     * marks the order ready — the point after which it can no longer be
+     * cancelled — so a cancellation before it drops a hold rather than refunding
+     * a charge. Default no-op: credit draws at confirmation (onOrderAccepted).
+     */
+    default void onOrderDispatched(Long supplierOrderId, BigDecimal amount) {
+    }
+
+    /**
+     * Whether the money behind this order can still be taken (D-103). False once
+     * a held payment is too close to its provider's hold expiry: an order must
+     * not be handed over against money that will lapse back to the customer.
+     */
+    default boolean canTakeFunds(Long supplierOrderId) {
+        return true;
+    }
+
+    /**
      * The intent a client can still pay this order against, if any (D-102).
      *
      * <p>A read: it never creates a provider order. Empty for a funding method with
