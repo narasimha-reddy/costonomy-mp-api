@@ -3858,3 +3858,34 @@ Blowhorn is gated by:
 - **Cancellation**: `POST /v1/orders/{orderId}/cancel` sending `cancellation_reason`.
 - **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
 
+---
+
+## D-106 — Delhivery delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare and Blowhorn
+**2026-10-02 · Settled**
+
+Delhivery is integrated as an eighth carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, and Blowhorn. The implementation adheres to the provider SPI pattern
+established in doc 06 §3 and decisions D-098, D-100, D-101, and D-102.
+
+### Dual-gate activation
+Delhivery is gated by:
+1. **Application configuration gate**: `costonomy.mp.delhivery.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `DelhiveryDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`code = 'DELHIVERY'`),
+   seeded disabled (`enabled = 0`, `priority = 24`) via migration `V47__delivery_provider_delhivery.sql`.
+   Both gates must be active for Delhivery to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Secured via `Authorization: Token {apiToken}` header.
+- **Serviceability & Fare Estimation**: `GET /api/kinko/v1/invoice/charges.json` querying charges with origin and destination pincodes and weight in grams.
+  Extracts real carrier fare (`total_amount` or `gross_amount`). Fails closed (D-102) if no carrier fare is returned.
+- **30 km Intra-City Boundary (D-101)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  without making an HTTP call.
+- **Booking**: `POST /api/cmu/create.json` pushing shipment and pickup location data with normalized phone numbers (`+91XXXXXXXXXX`) and pincodes. Returns Delhivery `waybill` as `providerDeliveryId`.
+- **Status Tracking & Polling**: `GET /api/v1/packages/json/?waybill={waybill}` retrieving `ShipmentData.Shipment.Status` and `Scans`.
+  `DelhiveryStatusMapper` transforms status codes (`manifested`, `pickup_scheduled`, `reached_pickup`, `picked_up`, `in_transit`, `out_for_delivery`, `delivered`, `cancelled`, etc.)
+  into `ProviderDeliveryStatus`. Deduplicated on `uk_delivery_event_provider`. Synthetic event sequencing ensures `PICKED_UP` precedes `DELIVERED`.
+- **Cancellation**: `POST /api/p/edit` sending `cancellation: true`.
+- **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
+

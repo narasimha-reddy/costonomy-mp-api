@@ -4,6 +4,30 @@ All notable changes to the Costonomy MP (Mandi) Delivery & Logistics Platform ac
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [feat/delhivery-provider] - Delhivery Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Delhivery** (`DELHIVERY`) alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, and Blowhorn.
+- Database migration `V47__delivery_provider_delhivery.sql` seeding `DELHIVERY` row into `delivery_provider` table (seeded disabled, `enabled = 0`, priority 24).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.delhivery.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `DelhiveryDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `DelhiveryApiClient` HTTP client for Delhivery Express API:
+  - Header authentication via `Authorization: Token <apiToken>`.
+  - Rate limiting with 20 RPS local token-bucket throttle protection.
+  - Hard 30 km intra-city radius ceiling enforcement (D-101).
+  - Quoting / Pricing via `GET /api/kinko/v1/invoice/charges.json` extracting verified carrier fare (`total_amount`, `gross_amount`) based on pincodes and weight (fails closed per D-102 if missing fare).
+  - Order creation via `POST /api/cmu/create.json` with structured pickup and drop shipment payloads, normalized phone numbers (`+91XXXXXXXXXX`), and pincodes, returning `waybill` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /api/v1/packages/json/?waybill={waybill}` parsing `ShipmentData.Shipment.Status` and `Scans`.
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first with duplicate event suppression via `uk_delivery_event_provider`.
+  - Cancellation via `POST /api/p/edit` with `cancellation: true`.
+- `DelhiveryStatusMapper` mapping Delhivery status strings to domain `ProviderDeliveryStatus`.
+- Test suites:
+  - `DelhiveryStatusMappingTest` (2 tests).
+  - `DelhiveryApiClientContractTest` WireMock tests (10 tests).
+  - `DelhiveryDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-106) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-018).
+
 ## [feat/blowhorn-provider] - Blowhorn Delivery Provider Integration
 ### Added
 - Multi-carrier delivery provider integration for **Blowhorn** (`BLOWHORN`) alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, and LoadShare Networks.
