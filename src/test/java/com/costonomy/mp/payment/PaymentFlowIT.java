@@ -98,6 +98,8 @@ class PaymentFlowIT extends AbstractIntegrationTest {
     @Autowired private com.costonomy.mp.wallet.service.WalletWithdrawalService withdrawalService;
     @Autowired private com.costonomy.mp.payment.repository.RefundRepository refundRepository;
     @Autowired private org.springframework.transaction.PlatformTransactionManager txManager;
+    @Autowired private com.costonomy.mp.wallet.service.WalletTopUpService walletTopUps;
+    @Autowired private com.costonomy.mp.quickscan.service.QuickScanService quickScans;
     @Autowired private com.costonomy.mp.procurement.repository.SupplierOrderRepository supplierOrders;
 
     private ApiClient api;
@@ -10250,5 +10252,431 @@ class PaymentFlowIT extends AbstractIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(body)))
                 .andReturn().getResponse().getContentAsString());
+    }
+
+    // ── The wallet's other money meets the money-safety stack ────────────
+
+    /**
+     * QuickScan (D-106), Razorpay top-ups (D-107) and the history and statements (D-108) were built beside the
+     * withdrawal rules of D-104 and D-110, and share one wallet with them. What must hold when they meet: only
+     * card refund money can go back to a card, whatever else is in the balance; every balance change is an
+     * atomic wallet update with its ledger row, so the ledger always adds up to the balance; nobody waits for
+     * a lock another holds while holding one the other needs; and what a person reads, on the screen or on a
+     * statement, says what happened, reversals included.
+     */
+    @Nested
+    @DisplayName("QuickScan, top-ups and withdrawals share one wallet")
+    class WalletInterplay {
+
+        @BeforeEach
+        void prepare() {
+            // As in WithdrawalFailures: the refund job sends every refund it finds, and the database is shared.
+            jdbc.update("update refund set status = 'NEEDS_REVIEW', failure_kind = null "
+                    + "where status in ('REQUESTED', 'FAILED', 'REJECTED') "
+                    + "or (status = 'PROCESSING' and provider_refund_id is null)");
+            jdbc.update("update refund set verified_at = utc_timestamp(6) where status in ('REVERSED', 'NEEDS_REVIEW')");
+            jdbc.update("update payment set review_required_at = utc_timestamp(6), "
+                    + "review_reason = 'left by an earlier test' "
+                    + "where status = 'CANCEL_PENDING' and review_required_at is null");
+            alertThrottle.clear();
+            quickScanEnabled(true);
+        }
+
+        @org.junit.jupiter.api.AfterEach
+        void restore() {
+            quickScanEnabled(false);
+            reset(mockProvider);
+        }
+
+        private void quickScanEnabled(boolean on) {
+            Object target = org.springframework.test.util.AopTestUtils.getUltimateTargetObject(quickScans);
+            org.springframework.test.util.ReflectionTestUtils.setField(target, "enabled", on);
+        }
+
+        // ── helpers ──────────────────────────────────────────────────────
+
+        private Submitted captured(Buyer buyer, String unitPrice, int quantity) throws Exception {
+            var submitted = submit(buyer, unitPrice, quantity);
+            payAndConfirm(submitted);
+            acceptAndCapture(submitted);
+            return submitted;
+        }
+
+        private String pid(Submitted submitted) {
+            return jdbc.queryForObject("select provider_payment_id from payment where id = ?",
+                    String.class, submitted.paymentId());
+        }
+
+        private long userId(Buyer buyer) throws Exception {
+            return api.get(buyer.token(), "/api/v1/auth/me").at("/data/user/id").asLong();
+        }
+
+        /** Money in through Razorpay's checkout, captured on payment, credited by the confirm (D-107). */
+        private void topUp(Buyer buyer, long userId, String amount) {
+            var intent = walletTopUps.create(userId, buyer.outletId(), new BigDecimal(amount),
+                    UUID.randomUUID().toString());
+            var payment = mockProvider.completeCheckout(intent.razorpayOrderId());
+            walletTopUps.confirm(buyer.outletId(), intent.topUpId(), payment.providerPaymentId(),
+                    MockPaymentProvider.TEST_SIGNATURE);
+        }
+
+        private com.costonomy.mp.quickscan.web.dto.QuickScanDtos.PaymentResponse quickScan(
+                Buyer buyer, long userId, String amount) {
+            return quickScans.payFromWallet(userId, buyer.outletId(),
+                    new com.costonomy.mp.quickscan.service.QuickScanService.PayRequest(
+                            "shop@okhdfcbank", "Shop", new BigDecimal(amount), "test"),
+                    UUID.randomUUID().toString());
+        }
+
+        private String errorCode(org.springframework.mock.web.MockHttpServletResponse response) throws Exception {
+            return json.readTree(response.getContentAsString(java.nio.charset.StandardCharsets.UTF_8))
+                    .at("/error/code").asText();
+        }
+
+        private long count(String sql, Object... args) {
+            return jdbc.queryForObject(sql, Long.class, args);
+        }
+
+        private long ledgerRowsOf(Buyer buyer, String kind) {
+            return count("select count(*) from wallet_transaction wt join wallet w on w.id = wt.wallet_id "
+                    + "where w.outlet_id = ? and wt.kind = ?", buyer.outletId(), kind);
+        }
+
+        /** After every scenario: the ledger adds up to the balance, each row's balance follows the row before. */
+        private void assertBooks(Buyer buyer) {
+            BigDecimal net = jdbc.queryForObject("""
+                    select coalesce(sum(case wt.direction when 'CREDIT' then wt.amount else -wt.amount end), 0)
+                      from wallet_transaction wt join wallet w on w.id = wt.wallet_id where w.outlet_id = ?
+                    """, BigDecimal.class, buyer.outletId());
+            assertThat(net).describedAs("sum of the ledger").isEqualByComparingTo(balance(buyer));
+            assertThat(balance(buyer)).isGreaterThanOrEqualTo(BigDecimal.ZERO);
+            var rows = jdbc.queryForList("""
+                    select wt.direction, wt.amount, wt.balance_after from wallet_transaction wt
+                      join wallet w on w.id = wt.wallet_id where w.outlet_id = ? order by wt.id
+                    """, buyer.outletId());
+            BigDecimal running = BigDecimal.ZERO;
+            for (var row : rows) {
+                var amount = (BigDecimal) row.get("amount");
+                running = "CREDIT".equals(row.get("direction")) ? running.add(amount) : running.subtract(amount);
+                assertThat((BigDecimal) row.get("balance_after")).describedAs("balance after a row")
+                        .isEqualByComparingTo(running);
+            }
+            assertThat(count("""
+                    select count(*) from wallet_transaction wt join wallet w on w.id = wt.wallet_id
+                     where w.outlet_id = ? and wt.kind = 'WITHDRAWAL_REVERSAL'
+                    """, buyer.outletId())).describedAs("reversal rows")
+                    .isEqualTo(count("""
+                            select count(*) from refund r join payment p on p.id = r.payment_id
+                             where p.outlet_id = ? and r.reason = 'WALLET_WITHDRAWAL' and r.status = 'REVERSED'
+                            """, buyer.outletId()));
+        }
+
+        // ── what may leave ───────────────────────────────────────────────
+
+        @Test
+        @DisplayName("a top-up is not refund money: only what a card refunded can go back to a card, whatever the balance")
+        void topUpMoneyCannotBeWithdrawn() throws Exception {
+            var buyer = newBuyer();
+            long user = userId(buyer);
+            var source = captured(buyer, "400", 1);
+            creditWallet(source, "100.00");
+            topUp(buyer, user, "500.00");
+            assertThat(balance(buyer)).isEqualByComparingTo("600.00");
+
+            var refused = withdrawCall(buyer, "100.01", UUID.randomUUID().toString());
+
+            assertThat(refused.getStatus()).isEqualTo(422);
+            assertThat(errorCode(refused)).isEqualTo("WITHDRAWAL_EXCEEDS_REFUNDABLE");
+            assertThat(json.readTree(refused.getContentAsString()).at("/error/details/withdrawableNow").decimalValue())
+                    .isEqualByComparingTo("100.00");
+            assertThat(balance(buyer)).isEqualByComparingTo("600.00");
+            assertThat(withdrawalsOf(source)).isZero();
+
+            withdraw(buyer, "100.00", UUID.randomUUID().toString());
+            paymentJobs.processRefunds();
+            assertThat(mockProvider.refundedOf(pid(source))).isEqualByComparingTo("100.00");
+            assertThat(balance(buyer)).isEqualByComparingTo("500.00");
+            // The top-up's own row is untouched: it is the wallet's money, not the card's refund.
+            assertThat(ledgerRowsOf(buyer, "TOP_UP")).isEqualTo(1);
+            assertBooks(buyer);
+        }
+
+        @Test
+        @DisplayName("a QuickScan return is not a card refund: a declined or reversed payout comes back spendable, not withdrawable")
+        void quickScanReturnCannotBeWithdrawn() throws Exception {
+            var buyer = newBuyer();
+            long user = userId(buyer);
+            topUp(buyer, user, "500.00");
+
+            var declined = quickScan(buyer, user, "75.13");
+            assertThat(declined.status().name()).isEqualTo("FAILED");
+            var pending = quickScan(buyer, user, "20.31");
+            assertThat(pending.status().name()).isEqualTo("PAYOUT_PENDING");
+            quickScans.settlePending(pending.id());   // the provider pulled it back: REVERSED
+
+            assertThat(balance(buyer)).isEqualByComparingTo("500.00");
+            assertThat(ledgerRowsOf(buyer, "QUICKSCAN_PAYMENT")).isEqualTo(2);
+            assertThat(ledgerRowsOf(buyer, "QUICKSCAN_RETURN")).isEqualTo(2);
+
+            // 500 in the wallet, none of it a card's refund.
+            var refused = withdrawCall(buyer, "1.00", UUID.randomUUID().toString());
+            assertThat(refused.getStatus()).isEqualTo(422);
+            assertThat(errorCode(refused)).isEqualTo("WITHDRAWAL_EXCEEDS_REFUNDABLE");
+            assertThat(count("select count(*) from refund r join payment p on p.id = r.payment_id "
+                    + "where p.outlet_id = ? and r.reason = 'WALLET_WITHDRAWAL'", buyer.outletId())).isZero();
+
+            // Refund money arrives; exactly that much can go, the returns and the top-up still cannot.
+            var source = captured(buyer, "400", 1);
+            creditWallet(source, "50.00");
+            assertThat(withdrawStatus(buyer, "50.01", UUID.randomUUID().toString())).isEqualTo(422);
+            assertThat(withdraw(buyer, "50.00", UUID.randomUUID().toString()).at("/data/balance").decimalValue())
+                    .isEqualByComparingTo("500.00");
+            assertBooks(buyer);
+        }
+
+        @Test
+        @DisplayName("refund money a QuickScan took and gave back is still the card's: it can go back, once, and no more than was refunded")
+        void quickScanReturnOfRefundMoneyStaysBoundedByTheCardRefund() throws Exception {
+            var buyer = newBuyer();
+            long user = userId(buyer);
+            var source = captured(buyer, "400", 1);
+            creditWallet(source, "100.13");
+            quickScan(buyer, user, "100.13");           // declined, returned
+            assertThat(balance(buyer)).isEqualByComparingTo("100.13");
+
+            withdraw(buyer, "100.13", UUID.randomUUID().toString());
+            assertThat(withdrawStatus(buyer, "0.01", UUID.randomUUID().toString())).isEqualTo(400);
+            paymentJobs.processRefunds();
+            assertThat(mockProvider.refundedOf(pid(source))).isEqualByComparingTo("100.13");
+            assertThat(balance(buyer)).isEqualByComparingTo("0");
+            assertBooks(buyer);
+        }
+
+        @Test
+        @DisplayName("QuickScan spends refund money like any other balance, and what is left goes back, no more")
+        void quickScanSpendingReducesWhatCanGoBack() throws Exception {
+            var buyer = newBuyer();
+            long user = userId(buyer);
+            var source = captured(buyer, "400", 1);
+            creditWallet(source, "100.00");
+            topUp(buyer, user, "200.00");
+            quickScan(buyer, user, "250.00");           // paid: balance 50
+            assertThat(balance(buyer)).isEqualByComparingTo("50.00");
+
+            assertThat(withdrawStatus(buyer, "50.01", UUID.randomUUID().toString())).isEqualTo(400);
+            withdraw(buyer, "50.00", UUID.randomUUID().toString());
+            assertThat(balance(buyer)).isEqualByComparingTo("0");
+            assertBooks(buyer);
+        }
+
+        // ── what a person reads ──────────────────────────────────────────
+
+        @Test
+        @DisplayName("a withdrawal put back reads as RETURNED with its own WITHDRAWAL_REVERSAL credit, in the history and on a statement that still adds up")
+        void reversalIsShownAndStatementReconciles() throws Exception {
+            var buyer = newBuyer();
+            long user = userId(buyer);
+            var source = captured(buyer, "400", 1);
+            topUp(buyer, user, "300.00");
+            creditWallet(source, "400.00");
+            long refundId = withdraw(buyer, "400.00", UUID.randomUUID().toString())
+                    .at("/data/parts/0/refundId").asLong();
+            quickScan(buyer, user, "50.00");
+            doThrow(new PaymentProviderException("refused", false, "400",
+                    ProviderFailureKind.NOT_CAPTURED, "The payment status should be captured"))
+                    .when(mockProvider).refund(eq(pid(source)), any(), anyString(), any());
+
+            // The refund is refused and none of ours is at the provider: the money goes back (D-110).
+            paymentJobs.processRefunds();
+
+            assertThat(jdbc.queryForObject("select status from refund where id = ?", String.class, refundId))
+                    .isEqualTo("REVERSED");
+            assertThat(balance(buyer)).isEqualByComparingTo("650.00");
+
+            String base = "/api/v1/outlets/" + buyer.outletId() + "/wallet/transactions";
+            var all = api.get(buyer.token(), base).at("/data/items");
+            JsonNode withdrawalRow = null;
+            JsonNode reversalRow = null;
+            for (var item : all) {
+                if ("WITHDRAWAL".equals(item.get("kind").asText())) {
+                    withdrawalRow = item;
+                } else if ("WITHDRAWAL_REVERSAL".equals(item.get("kind").asText())) {
+                    reversalRow = item;
+                }
+            }
+            assertThat(withdrawalRow).isNotNull();
+            assertThat(withdrawalRow.get("status").asText()).isEqualTo("RETURNED");
+            assertThat(withdrawalRow.get("refundStatus").asText()).isEqualTo("REVERSED");
+            assertThat(withdrawalRow.get("direction").asText()).isEqualTo("DEBIT");
+            assertThat(reversalRow).isNotNull();
+            assertThat(reversalRow.get("direction").asText()).isEqualTo("CREDIT");
+            assertThat(reversalRow.get("status").asText()).isEqualTo("COMPLETED");
+            assertThat(reversalRow.get("amount").decimalValue()).isEqualByComparingTo("400.00");
+            assertThat(reversalRow.get("refundStatus").isNull()).isTrue();
+
+            // Filters: RETURNED is the withdrawal that came back; COMPLETED is everything but it; IN_PROGRESS is nothing.
+            var returned = api.get(buyer.token(), base + "?statuses=RETURNED").at("/data/items");
+            assertThat(returned).hasSize(1);
+            assertThat(returned.get(0).get("kind").asText()).isEqualTo("WITHDRAWAL");
+            var completed = api.get(buyer.token(), base + "?statuses=COMPLETED").at("/data/items");
+            assertThat(completed).extracting(item -> item.get("kind").asText())
+                    .doesNotContain("WITHDRAWAL").contains("WITHDRAWAL_REVERSAL", "TOP_UP", "QUICKSCAN_PAYMENT");
+            assertThat(api.get(buyer.token(), base + "?statuses=IN_PROGRESS").at("/data/items")).isEmpty();
+            var byKind = api.get(buyer.token(), base + "?kinds=WITHDRAWAL_REVERSAL").at("/data/items");
+            assertThat(byKind).hasSize(1);
+
+            // A refund the provider refused and that is being checked is on its way, not returned yet.
+            jdbc.update("update refund set status = 'REJECTED' where id = ?", refundId);
+            assertThat(api.get(buyer.token(), base + "?statuses=IN_PROGRESS").at("/data/items")).hasSize(1);
+            assertThat(api.get(buyer.token(), base + "?statuses=RETURNED").at("/data/items")).isEmpty();
+            jdbc.update("update refund set status = 'REVERSED' where id = ?", refundId);
+
+            // The statement is built from the ledger and refuses to exist unless it reconciles.
+            var csv = mvc.perform(MockMvcRequestBuilders
+                            .get("/api/v1/outlets/" + buyer.outletId() + "/wallet/statement?range=LAST_30&format=CSV")
+                            .header("Authorization", "Bearer " + buyer.token()))
+                    .andReturn().getResponse();
+            assertThat(csv.getStatus()).describedAs(csv.getContentAsString()).isEqualTo(200);
+            String text = csv.getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+            assertThat(text).contains("Withdrawal returned to your wallet").contains("Sent back to your card or bank")
+                    .contains("Paid a shop (QuickScan)").contains("Money added");
+            var pdf = mvc.perform(MockMvcRequestBuilders
+                            .get("/api/v1/outlets/" + buyer.outletId() + "/wallet/statement?range=LAST_30&format=PDF")
+                            .header("Authorization", "Bearer " + buyer.token()))
+                    .andReturn().getResponse();
+            assertThat(pdf.getStatus()).isEqualTo(200);
+            assertBooks(buyer);
+        }
+
+        // ── concurrency over one wallet ──────────────────────────────────
+
+        @Test
+        @DisplayName("what a withdrawal took cannot be spent by QuickScan, and what QuickScan spent cannot be withdrawn: refused, nothing moves")
+        void eachSeesWhatTheOtherTook() throws Exception {
+            var buyer = newBuyer();
+            long user = userId(buyer);
+            var source = captured(buyer, "400", 1);
+            creditWallet(source, "400.00");
+            topUp(buyer, user, "500.00");                // 900
+
+            withdraw(buyer, "400.00", UUID.randomUUID().toString());     // 500 left
+            assertThatThrownBy(() -> quickScan(buyer, user, "600.00"))
+                    .isInstanceOf(BusinessException.class);
+            assertThat(balance(buyer)).isEqualByComparingTo("500.00");
+            assertThat(count("select count(*) from quickscan_payment where outlet_id = ?", buyer.outletId())).isZero();
+            assertBooks(buyer);
+
+            quickScan(buyer, user, "450.00");                              // 50 left
+            var refused = withdrawCall(buyer, "60.00", UUID.randomUUID().toString());
+            assertThat(refused.getStatus()).isEqualTo(400);
+            assertThat(balance(buyer)).isEqualByComparingTo("50.00");
+            assertBooks(buyer);
+        }
+
+        @Test
+        @DisplayName("a QuickScan payment and a withdrawal of the same wallet at once: no deadlock, both or exactly one succeed, the ledger adds up")
+        void quickScanAndWithdrawalAtOnce() throws Exception {
+            for (int race = 0; race < 5; race++) {
+                var buyer = newBuyer();
+                long user = userId(buyer);
+                var source = captured(buyer, "400", 1);
+                creditWallet(source, "400.00");
+                topUp(buyer, user, "500.00");             // 900 in all, 400 of it the card's
+                // 400 + 500 fits in 900 (both succeed); 400 + 600 does not (exactly one does).
+                boolean fits = race % 2 == 0;
+                String scan = fits ? "500.00" : "600.00";
+
+                var start = new CountDownLatch(1);
+                var pool = Executors.newFixedThreadPool(2);
+                var withdrawing = pool.submit(() -> {
+                    start.await();
+                    return withdrawStatus(buyer, "400.00", UUID.randomUUID().toString());
+                });
+                var scanning = pool.submit(() -> {
+                    start.await();
+                    try {
+                        return quickScan(buyer, user, scan).status().name();
+                    } catch (BusinessException refused) {
+                        return "REFUSED";
+                    }
+                });
+                start.countDown();
+                int withdrawal = withdrawing.get(60, TimeUnit.SECONDS);
+                String payment = scanning.get(60, TimeUnit.SECONDS);
+                pool.shutdown();
+
+                if (fits) {
+                    assertThat(withdrawal).isEqualTo(200);
+                    assertThat(payment).isEqualTo("PAID");
+                    assertThat(balance(buyer)).isEqualByComparingTo("0");
+                } else {
+                    // Exactly one of them had the money; never both, never neither.
+                    assertThat((withdrawal == 200 ? 1 : 0) + ("PAID".equals(payment) ? 1 : 0)).isEqualTo(1);
+                    assertThat(balance(buyer)).isEqualByComparingTo(withdrawal == 200 ? "500.00" : "300.00");
+                }
+                assertBooks(buyer);
+            }
+        }
+
+        @Test
+        @DisplayName("top-ups, QuickScan payments, withdrawals and a reversal on one wallet at once: nobody deadlocks, the ledger adds up, each thing happens once")
+        void everythingAtOnceOnOneWallet() throws Exception {
+            for (int round = 0; round < 3; round++) {
+                var buyer = newBuyer();
+                long user = userId(buyer);
+                var refused = captured(buyer, "400", 1);     // its refund will be refused: a reversal
+                var good = captured(buyer, "400", 1);
+                topUp(buyer, user, "1000.00");
+                creditWallet(refused, "300.00");
+                long refusedRefund = withdraw(buyer, "300.00", UUID.randomUUID().toString())
+                        .at("/data/parts/0/refundId").asLong();
+                creditWallet(good, "200.00");
+                // 1000 + 300 - 300 + 200
+                assertThat(balance(buyer)).isEqualByComparingTo("1200.00");
+                doThrow(new PaymentProviderException("refused", false, "400",
+                        ProviderFailureKind.NOT_CAPTURED, "The payment status should be captured"))
+                        .when(mockProvider).refund(eq(pid(refused)), any(), anyString(), any());
+
+                var pool = Executors.newFixedThreadPool(6);
+                var start = new CountDownLatch(1);
+                var jobs = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+                // The reversal, +300.
+                jobs.add(pool.submit(() -> { start.await(); paymentJobs.processRefunds(); return null; }));
+                // Three QuickScan payments, -300 (one declined and returned: net 0 for it).
+                for (String amount : List.of("100.00", "100.00", "100.00", "40.13")) {
+                    jobs.add(pool.submit(() -> { start.await(); return quickScan(buyer, user, amount); }));
+                }
+                // A top-up confirmed, +200.
+                jobs.add(pool.submit(() -> { start.await(); topUp(buyer, user, "200.00"); return null; }));
+                // A withdrawal of what the card refunded, -200.
+                jobs.add(pool.submit(() -> {
+                    start.await();
+                    return withdrawStatus(buyer, "200.00", UUID.randomUUID().toString());
+                }));
+                start.countDown();
+                for (var job : jobs) {
+                    job.get(90, TimeUnit.SECONDS);
+                }
+                pool.shutdown();
+                // Whatever the job did not reach while the withdrawal was being made is reached now.
+                paymentJobs.processRefunds();
+                paymentJobs.processRefunds();
+
+                assertThat(jdbc.queryForObject("select status from refund where id = ?", String.class, refusedRefund))
+                        .isEqualTo("REVERSED");
+                assertThat(count("select count(*) from wallet_transaction where refund_id = ? "
+                        + "and kind = 'WITHDRAWAL_REVERSAL'", refusedRefund)).isEqualTo(1);
+                // 1200 + 300 (reversal) - 300 (three paid) - 40.13 + 40.13 (declined, returned) + 200 - 200
+                assertThat(balance(buyer)).isEqualByComparingTo("1200.00");
+                assertBooks(buyer);
+                var statement = mvc.perform(MockMvcRequestBuilders
+                                .get("/api/v1/outlets/" + buyer.outletId() + "/wallet/statement?range=LAST_30&format=CSV")
+                                .header("Authorization", "Bearer " + buyer.token()))
+                        .andReturn().getResponse();
+                assertThat(statement.getStatus()).describedAs("a statement of a wallet everything happened to")
+                        .isEqualTo(200);
+                reset(mockProvider);
+            }
+        }
     }
 }

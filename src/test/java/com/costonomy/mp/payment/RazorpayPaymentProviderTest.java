@@ -113,6 +113,37 @@ class RazorpayPaymentProviderTest {
     }
 
     @Test
+    @DisplayName("how a payment was made is kept as a method and a safe detail only (D-108)")
+    void paymentMethodAndDetail() {
+        routes.put("/v1/payments/pay_card", new Canned(200, """
+                {"id":"pay_card","order_id":"o","status":"captured","amount":100,"method":"card",
+                 "card":{"last4":"1007","network":"Visa","name":"A Person","number":"4111111111111111"}}"""));
+        routes.put("/v1/payments/pay_upi", new Canned(200, """
+                {"id":"pay_upi","order_id":"o","status":"captured","amount":100,"method":"upi","vpa":"someone@bank"}"""));
+        routes.put("/v1/payments/pay_nb", new Canned(200, """
+                {"id":"pay_nb","order_id":"o","status":"captured","amount":100,"method":"netbanking","bank":"HDFC"}"""));
+        routes.put("/v1/payments/pay_wallet", new Canned(200, """
+                {"id":"pay_wallet","order_id":"o","status":"captured","amount":100,"method":"wallet","wallet":"freecharge"}"""));
+        routes.put("/v1/payments/pay_odd", new Canned(200, """
+                {"id":"pay_odd","order_id":"o","status":"captured","amount":100,"method":"card","card":{"last4":"41111111"}}"""));
+        routes.put("/v1/payments/pay_none", new Canned(200, """
+                {"id":"pay_none","order_id":"o","status":"captured","amount":100}"""));
+
+        var card = razorpay.fetchPayment("pay_card");
+        assertThat(card.method()).isEqualTo("card");
+        assertThat(card.methodDetail()).isEqualTo("1007");
+        var upi = razorpay.fetchPayment("pay_upi");
+        assertThat(upi.method()).isEqualTo("upi");
+        // Neither the address nor the bank is kept: not needed to say where money came from.
+        assertThat(upi.methodDetail()).isNull();
+        assertThat(razorpay.fetchPayment("pay_nb").methodDetail()).isNull();
+        assertThat(razorpay.fetchPayment("pay_wallet").methodDetail()).isEqualTo("freecharge");
+        // Anything but exactly four digits is dropped, so a full number can never be stored.
+        assertThat(razorpay.fetchPayment("pay_odd").methodDetail()).isNull();
+        assertThat(razorpay.fetchPayment("pay_none").method()).isNull();
+    }
+
+    @Test
     @DisplayName("a payment carries the order it completes")
     void paymentCarriesItsOrder() {
         routes.put("/v1/payments/pay_A", new Canned(200, """
@@ -766,6 +797,58 @@ class RazorpayPaymentProviderTest {
         routes.put("/v1/payments/pay_none/refunds", new Canned(400, refusal("The id provided does not exist")));
         assertThatThrownBy(() -> razorpay.listRefunds("pay_none"))
                 .isInstanceOfSatisfying(PaymentProviderException.class, ex -> assertThat(ex.isNotFound()).isTrue());
+    }
+
+    @DisplayName("a top-up asks for automatic capture, never manual, and sends paise exactly")
+    void topUpOrderIsAutomaticCapture() throws IOException {
+        routes.put("/v1/orders", new Canned(200, """
+                {"id":"order_T","amount":1010,"currency":"INR","status":"created"}"""));
+
+        var intent = razorpay.createAuthorization(new AuthorizationRequest(
+                "topup-7", new BigDecimal("10.10"), "INR", "Mandi wallet top-up", "topup-7", true));
+
+        assertThat(intent.providerOrderId()).isEqualTo("order_T");
+        JsonNode sent = only("/v1/orders").json();
+        assertThat(sent.get("amount").asLong()).isEqualTo(1010);
+        assertThat(sent.at("/payment/capture").asText()).isEqualTo("automatic");
+        assertThat(sent.at("/payment/capture_options/manual_expiry_period").isMissingNode()).isTrue();
+        assertThat(sent.get("receipt").asText()).isEqualTo("topup-7");
+    }
+
+    @Test
+    @DisplayName("amounts a top-up can hold convert to paise without a float in sight")
+    void paiseAreExact() throws IOException {
+        routes.put("/v1/orders", new Canned(200, "{\"id\":\"order_P\"}"));
+
+        for (String rupees : List.of("0.29", "10.10", "1234.57", "99999.99", "100000.00")) {
+            seen.clear();
+            razorpay.createAuthorization(new AuthorizationRequest(
+                    "topup-1", new BigDecimal(rupees), "INR", "t", "k", true));
+            assertThat(only("/v1/orders").json().get("amount").asLong())
+                    .describedAs(rupees).isEqualTo(new BigDecimal(rupees).movePointRight(2).longValueExact());
+        }
+    }
+
+    @Test
+    @DisplayName("the checkout signature is HMAC-SHA256 of order|payment under the API secret, and only that")
+    void checkoutSignature() throws Exception {
+        String valid = hmac("rzp_test_secret", "order_A|pay_A");
+
+        assertThat(razorpay.verifyCheckoutSignature("order_A", "pay_A", valid)).isTrue();
+        assertThat(razorpay.verifyCheckoutSignature("order_A", "pay_B", valid)).isFalse();
+        assertThat(razorpay.verifyCheckoutSignature("order_B", "pay_A", valid)).isFalse();
+        assertThat(razorpay.verifyCheckoutSignature("order_A", "pay_A", valid + "0")).isFalse();
+        assertThat(razorpay.verifyCheckoutSignature("order_A", "pay_A", null)).isFalse();
+        assertThat(razorpay.verifyCheckoutSignature(null, "pay_A", valid)).isFalse();
+        // The webhook secret signs webhooks, not checkouts: a signature made with it must not pass.
+        assertThat(razorpay.verifyCheckoutSignature("order_A", "pay_A",
+                hmac(WEBHOOK_SECRET, "order_A|pay_A"))).isFalse();
+    }
+
+    private static String hmac(String secret, String message) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        return HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8)));
     }
 
     private Seen only(String path) {

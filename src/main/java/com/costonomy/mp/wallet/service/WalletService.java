@@ -48,6 +48,15 @@ public class WalletService {
         });
     }
 
+    /**
+     * This outlet's wallet if it has one, without opening it. For the read models (history and
+     * statements): the wallet repository is held by this service alone, so that only it can move a balance.
+     */
+    @Transactional(readOnly = true)
+    public java.util.Optional<Wallet> find(Long outletId) {
+        return wallets.findByOutletId(outletId);
+    }
+
     @Transactional(readOnly = true)
     public BigDecimal balanceOf(Long outletId) {
         return wallets.findByOutletId(outletId).map(Wallet::getBalance).orElse(BigDecimal.ZERO);
@@ -83,6 +92,33 @@ public class WalletService {
 
         var refreshed = wallets.findById(wallet.getId()).orElseThrow();
         record(refreshed, null, WalletDirection.CREDIT, WalletEntryKind.TOP_UP, amount, reason, null, null);
+        return refreshed;
+    }
+
+    /**
+     * Credit a Razorpay top-up that has been captured (D-107). Idempotent on the
+     * reference: the top-up id is the operation, so a second call is a no-op
+     * rather than a second credit, whatever the caller did to get here.
+     *
+     * <p>Called by {@code WalletTopUpService} inside the transaction that moves
+     * the top-up to CREDITED, with the wallet already locked and the limits
+     * already checked — this method only moves the money and writes the ledger.
+     */
+    @Transactional
+    public Wallet creditTopUp(Long outletId, Long topUpId, BigDecimal amount) {
+        String reference = "topup-" + topUpId;
+        var wallet = forOutlet(outletId);
+        if (entries.existsByReference(reference)) {
+            return wallet;
+        }
+        wallets.credit(wallet.getId(), amount);
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.CREDIT, WalletEntryKind.TOP_UP, amount,
+                "Wallet top-up", reference, null);
+        log.info("Wallet {} credited {} for top-up {}; balance {}",
+                wallet.getId(), amount.toPlainString(), topUpId, refreshed.getBalance().toPlainString());
         return refreshed;
     }
 
@@ -309,6 +345,48 @@ public class WalletService {
         record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.WITHDRAWAL, amount,
                 "Withdrawal to the original payment method", "withdrawal-" + refundId, refundId);
         return refreshed;
+    }
+
+    /**
+     * Take a QuickScan payment's money (D-106). Called with the wallet already
+     * locked by the caller — {@code QuickScanService.payFromWallet} locks before
+     * inserting the payment row, so the conditional debit below never races a
+     * second click.
+     *
+     * @throws BusinessException VALIDATION_ERROR if the balance is short
+     */
+    @Transactional
+    public void debitQuickScan(Long outletId, Long paymentId, BigDecimal total) {
+        var wallet = forOutlet(outletId);
+        if (wallets.debit(wallet.getId(), total) == 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Your wallet doesn't have ₹%s.".formatted(Rupees.of(total)));
+        }
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.QUICKSCAN_PAYMENT, total,
+                "QuickScan payment", "quickscan-" + paymentId, null);
+    }
+
+    /**
+     * Give a QuickScan payment's money back — the payout was refused or reversed
+     * (D-106). Idempotent on the reference, so a payment failing once and a
+     * REVERSED arriving for it later cannot return the money twice.
+     */
+    @Transactional
+    public void returnQuickScan(Long outletId, Long paymentId, BigDecimal total, String reason) {
+        String reference = "quickscan-return-" + paymentId;
+        if (entries.existsByReference(reference)) {
+            return;
+        }
+        var wallet = forOutlet(outletId);
+        wallets.credit(wallet.getId(), total);
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.CREDIT, WalletEntryKind.QUICKSCAN_RETURN, total,
+                reason, reference, null);
     }
 
     /**

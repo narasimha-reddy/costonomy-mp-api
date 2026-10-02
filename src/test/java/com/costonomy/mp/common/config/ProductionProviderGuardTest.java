@@ -29,6 +29,7 @@ class ProductionProviderGuardTest {
         prod.setActiveProfiles("production");
         prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
         prod.setProperty("costonomy.mp.providers.otp", "MSG91");
+        prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
         assertThatCode(() -> ProductionProviderGuard.check(prod)).doesNotThrowAnyException();
 
         var local = new MockEnvironment();
@@ -43,6 +44,7 @@ class ProductionProviderGuardTest {
         prod.setActiveProfiles("prod");
         prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
         prod.setProperty("costonomy.mp.providers.otp", "MSG91");
+        prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
         prod.setProperty("costonomy.mp.wallet.withdraw-precheck", "false");
         assertThatThrownBy(() -> ProductionProviderGuard.check(prod))
                 .isInstanceOf(IllegalStateException.class)
@@ -67,6 +69,7 @@ class ProductionProviderGuardTest {
             prod.setActiveProfiles("prod");
             prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
             prod.setProperty("costonomy.mp.providers.otp", "MSG91");
+            prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
             prod.setProperty("costonomy.mp.wallet.withdraw-precheck", value);
             assertThatThrownBy(() -> ProductionProviderGuard.check(prod))
                     .describedAs("value '%s'", value)
@@ -78,6 +81,7 @@ class ProductionProviderGuardTest {
             prod.setActiveProfiles("production");
             prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
             prod.setProperty("costonomy.mp.providers.otp", "MSG91");
+            prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
             prod.setProperty("costonomy.mp.wallet.withdraw-precheck", value);
             assertThatCode(() -> ProductionProviderGuard.check(prod)).describedAs("value '%s'", value).doesNotThrowAnyException();
         }
@@ -85,6 +89,38 @@ class ProductionProviderGuardTest {
         unset.setActiveProfiles("prod");
         unset.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
         unset.setProperty("costonomy.mp.providers.otp", "MSG91");
+        unset.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
         assertThatCode(() -> ProductionProviderGuard.check(unset)).doesNotThrowAnyException();
+    }
+
+    @DisplayName("production with the payout provider left at its MOCK default refuses to start")
+    void productionOnMockPayoutIsRefused() {
+        var env = new MockEnvironment();
+        env.setActiveProfiles("prod");
+        env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+        env.setProperty("costonomy.mp.providers.otp", "MSG91");
+        // payout not set: the MOCK default is exactly the forgotten-setting case.
+        assertThatThrownBy(() -> ProductionProviderGuard.check(env))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("costonomy.mp.providers.payout");
+    }
+
+    @Test
+    @DisplayName("D-106: production refuses to start with QuickScan enabled, needs legal sign-off first")
+    void productionWithQuickScanEnabledIsRefused() {
+        var env = new MockEnvironment();
+        env.setActiveProfiles("production");
+        env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+        env.setProperty("costonomy.mp.providers.otp", "MSG91");
+        env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        env.setProperty("costonomy.mp.quickscan.enabled", "true");
+
+        assertThatThrownBy(() -> ProductionProviderGuard.check(env))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("costonomy.mp.quickscan.enabled");
+
+        // Disabled (the default), production starts as before.
+        env.setProperty("costonomy.mp.quickscan.enabled", "false");
+        assertThatCode(() -> ProductionProviderGuard.check(env)).doesNotThrowAnyException();
     }
 }

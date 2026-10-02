@@ -32,11 +32,16 @@ import static org.mockito.Mockito.*;
 class WalletTopUpGateTest {
 
     private final WalletService wallets = mock(WalletService.class);
+    private final com.costonomy.mp.wallet.service.WalletTopUpService topUps =
+            mock(com.costonomy.mp.wallet.service.WalletTopUpService.class);
     private final WalletController controller =
             new WalletController(wallets, mock(com.costonomy.mp.wallet.service.WalletWithdrawalService.class),
+                    topUps,
                     mock(com.costonomy.mp.payment.service.RefundService.class),
                     mock(com.costonomy.mp.common.idempotency.IdempotencyService.class),
-                    mock(AccessControlService.class));
+                    mock(AccessControlService.class),
+                    mock(com.costonomy.mp.wallet.service.WalletHistoryService.class),
+                    mock(com.costonomy.mp.wallet.statement.WalletStatementService.class));
 
     @BeforeEach
     void signIn() {
@@ -69,6 +74,8 @@ class WalletTopUpGateTest {
         wallet.setBalance(new BigDecimal("5000.00"));
         wallet.setCurrency("INR");
         when(wallets.topUp(any(), any(), any())).thenReturn(wallet);
+        when(topUps.limitsFor(any())).thenReturn(new com.costonomy.mp.wallet.service.WalletTopUpService.LimitsView(
+                BigDecimal.TEN, BigDecimal.TEN, BigDecimal.ZERO, BigDecimal.TEN, BigDecimal.ONE, BigDecimal.TEN));
 
         var response = controller.topUp(1L, new WalletDtos.TopUpRequest(new BigDecimal("5000.00"), null));
 
