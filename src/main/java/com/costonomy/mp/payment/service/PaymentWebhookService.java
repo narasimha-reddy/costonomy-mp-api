@@ -64,9 +64,13 @@ public class PaymentWebhookService {
      * state by the same calls with no enclosing transaction either.
      *
      * @param rawBody exactly as received — the signature is over these bytes
+     * @param eventIdHeader the provider's event id from the request headers.
+     *                      Razorpay sends it only there ({@code X-Razorpay-Event-Id});
+     *                      a body {@code id} is accepted as a fallback for providers
+     *                      that put it in the payload, as the mock does
      * @return true if this call processed it; false if it was a duplicate
      */
-    public boolean handle(String rawBody, String signatureHeader) {
+    public boolean handle(String rawBody, String signatureHeader, String eventIdHeader) {
         if (!provider.verifySignature(rawBody, signatureHeader)) {
             // Logged without the body: an unverified payload is attacker-controlled
             // and should not be written into our logs verbatim.
@@ -81,7 +85,8 @@ public class PaymentWebhookService {
             throw new BusinessException(ErrorCode.MALFORMED_REQUEST);
         }
 
-        String eventId = text(payload, "id", "event_id");
+        String eventId = eventIdHeader != null && !eventIdHeader.isBlank()
+                ? eventIdHeader : text(payload, "id", "event_id");
         String eventType = text(payload, "event", "type", "event_type");
         if (eventId == null || eventType == null) {
             throw new BusinessException(ErrorCode.MALFORMED_REQUEST);
@@ -108,7 +113,12 @@ public class PaymentWebhookService {
 
         try {
             process(event, payload);
-            event.setStatus("PROCESSED");
+            // process() marks an event about nothing we hold IGNORED; overwriting
+            // that with PROCESSED made those events indistinguishable from real
+            // work, which is the one thing keeping them was for.
+            if (!"IGNORED".equals(event.getStatus())) {
+                event.setStatus("PROCESSED");
+            }
             event.setProcessedAt(Instant.now());
         } catch (RuntimeException ex) {
             // The event stays stored with its error. Replaying it later is possible

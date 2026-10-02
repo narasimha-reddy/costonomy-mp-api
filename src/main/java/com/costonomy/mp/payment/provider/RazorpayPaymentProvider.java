@@ -17,7 +17,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.Comparator;
 import java.util.Map;
+import java.util.Optional;
+import java.util.stream.StreamSupport;
 
 /**
  * Razorpay. Doc 21, doc 09 §5.
@@ -30,9 +33,17 @@ import java.util.Map;
  * and nowhere else.
  *
  * <p><b>Authorisation and capture are separate on purpose.</b> Razorpay can
- * auto-capture, and doc 01 §14 forbids it here: the amount to capture is not known
- * until the supplier says what they will accept. Orders are created with
- * {@code payment_capture: 0}.
+ * auto-capture, and doc 01 §14 forbids it here: money is taken only once the
+ * order is confirmed, and only for what was agreed. Orders are created with
+ * {@code payment.capture = manual}, the documented form — the older
+ * {@code payment_capture: 0} flag is not in the current Orders API, and if it
+ * were ignored the account's dashboard default would decide, which may well be
+ * automatic.
+ *
+ * <p><b>Razorpay has no idempotency key on orders or captures</b> — only on
+ * refunds, as {@code X-Refund-Idempotency}. Orders are made safe by
+ * {@code uk_payment_order} on our side; captures by treating "already captured"
+ * as the success it is ({@link #capture}).
  */
 @Component
 @ConditionalOnProperty(name = "costonomy.mp.providers.payment", havingValue = "RAZORPAY")
@@ -84,9 +95,15 @@ public class RazorpayPaymentProvider implements PaymentProvider {
                 "amount", toPaise(request.amount()),
                 "currency", request.currency(),
                 "receipt", request.referenceId(),
-                // Never auto-capture. The capture amount depends on what the
-                // supplier accepts, which has not happened yet (doc 01 §14).
-                "payment_capture", 0), request.idempotencyKey());
+                // Never auto-capture. Capture happens when the order is confirmed,
+                // for the agreed amount (doc 01 §14). The expiry is Razorpay's
+                // maximum, in minutes: an uncaptured hold lapses back to the
+                // customer after five days, which is also how release works.
+                "payment", Map.of(
+                        "capture", "manual",
+                        "capture_options", Map.of(
+                                "manual_expiry_period", 7200,
+                                "refund_speed", "normal"))), Map.of());
 
         return new AuthorizationIntent(
                 response.get("id").asText(), request.amount(), request.currency(), keyId);
@@ -98,10 +115,46 @@ public class RazorpayPaymentProvider implements PaymentProvider {
     }
 
     @Override
+    public Optional<ProviderPayment> findPaymentForOrder(String providerOrderId) {
+        JsonNode items = get("/v1/orders/" + providerOrderId + "/payments").path("items");
+
+        // Money taken beats money held beats money returned; a failed or
+        // abandoned attempt is not an outcome (see the port). Several attempts
+        // per order are normal — Razorpay lets the customer retry in checkout.
+        return StreamSupport.stream(items.spliterator(), false)
+                .map(this::toProviderPayment)
+                .filter(payment -> switch (payment.status()) {
+                    case CAPTURED, AUTHORIZED, REFUNDED -> true;
+                    default -> false;
+                })
+                .min(Comparator.comparingInt(payment -> switch (payment.status()) {
+                    case CAPTURED -> 0;
+                    case AUTHORIZED -> 1;
+                    default -> 2;
+                }));
+    }
+
+    @Override
     public ProviderPayment capture(String providerPaymentId, BigDecimal amount, String idempotencyKey) {
-        JsonNode response = post("/v1/payments/" + providerPaymentId + "/capture",
-                Map.of("amount", toPaise(amount), "currency", "INR"), idempotencyKey);
-        return toProviderPayment(response);
+        try {
+            JsonNode response = post("/v1/payments/" + providerPaymentId + "/capture",
+                    Map.of("amount", toPaise(amount), "currency", "INR"), Map.of());
+            return toProviderPayment(response);
+        } catch (PaymentProviderException ex) {
+            if (ex.isRetryable()) {
+                throw ex;
+            }
+            // Razorpay refuses a second capture with a 400. After a capture whose
+            // response we lost, that refusal means it worked — and reading it as
+            // a failure would mark a payment FAILED while the money sits captured.
+            // So ask what the payment actually is before believing the 400.
+            var current = fetchPayment(providerPaymentId);
+            if (current.status() == ProviderPaymentStatus.CAPTURED) {
+                log.info("Razorpay payment {} was already captured", providerPaymentId);
+                return current;
+            }
+            throw ex;
+        }
     }
 
     @Override
@@ -113,14 +166,18 @@ public class RazorpayPaymentProvider implements PaymentProvider {
         // the customer's statement if it were not.
         log.info("Releasing Razorpay authorization {} by letting it lapse", providerPaymentId);
         var current = fetchPayment(providerPaymentId);
-        return new ProviderPayment(providerPaymentId, ProviderPaymentStatus.RELEASED,
+        return new ProviderPayment(providerPaymentId, current.providerOrderId(),
+                ProviderPaymentStatus.RELEASED,
                 current.authorizedAmount(), BigDecimal.ZERO, null, null);
     }
 
     @Override
     public ProviderRefund refund(String providerPaymentId, BigDecimal amount, String idempotencyKey) {
         JsonNode response = post("/v1/payments/" + providerPaymentId + "/refund",
-                Map.of("amount", toPaise(amount)), idempotencyKey);
+                Map.of("amount", toPaise(amount)),
+                // The only idempotency header Razorpay documents. It is what stops
+                // a retried refund becoming a second refund (doc 10 §2).
+                Map.of("X-Refund-Idempotency", idempotencyKey));
 
         return new ProviderRefund(
                 response.get("id").asText(),
@@ -160,6 +217,7 @@ public class RazorpayPaymentProvider implements PaymentProvider {
         String status = response.path("status").asText("");
         return new ProviderPayment(
                 response.path("id").asText(null),
+                response.path("order_id").asText(null),
                 switch (status) {
                     case "authorized" -> ProviderPaymentStatus.AUTHORIZED;
                     case "captured" -> ProviderPaymentStatus.CAPTURED;
@@ -174,14 +232,12 @@ public class RazorpayPaymentProvider implements PaymentProvider {
                 response.path("error_description").asText(null));
     }
 
-    private JsonNode post(String path, Map<String, Object> body, String idempotencyKey) {
+    private JsonNode post(String path, Map<String, Object> body, Map<String, String> headers) {
         try {
             return client.post()
                     .uri(path)
                     .header("Content-Type", "application/json")
-                    // Razorpay honours this, which is what makes a retry after a
-                    // network failure safe. Ours alone would not be enough.
-                    .header("X-Razorpay-Idempotency-Key", idempotencyKey)
+                    .headers(h -> headers.forEach(h::set))
                     .body(body)
                     .retrieve()
                     .onStatus(HttpStatusCode::is4xxClientError, (request, response) -> {
@@ -207,7 +263,18 @@ public class RazorpayPaymentProvider implements PaymentProvider {
 
     private JsonNode get(String path) {
         try {
-            return client.get().uri(path).retrieve().body(JsonNode.class);
+            return client.get().uri(path).retrieve()
+                    .onStatus(HttpStatusCode::is4xxClientError, (request, response) -> {
+                        // An id Razorpay does not know. Asking again will not help,
+                        // and reporting it as an outage would leave a bogus id
+                        // looking like something worth retrying.
+                        throw new PaymentProviderException(
+                                "Razorpay refused the lookup: " + response.getStatusCode(),
+                                false, String.valueOf(response.getStatusCode().value()));
+                    })
+                    .body(JsonNode.class);
+        } catch (PaymentProviderException ex) {
+            throw ex;
         } catch (Exception ex) {
             throw PaymentProviderException.unreachable("Could not reach Razorpay", ex);
         }

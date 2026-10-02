@@ -490,6 +490,77 @@ class PaymentFlowIT extends AbstractIntegrationTest {
                     "select count(*) from payment_webhook_event where provider_event_id = ?",
                     Integer.class, "evt_forged")).isZero();
         }
+
+        @Test
+        @DisplayName("another order's payment cannot confirm this one")
+        void foreignPaymentCannotConfirm() throws Exception {
+            var cheap = submit("10", 1);
+            var dear = submit("400", 10);
+            // Paid, genuinely — but for the other order.
+            var cheapPayment = mockProvider.completeCheckout(cheap.providerOrderId());
+
+            int status = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/payments/" + dear.paymentId() + "/confirm")
+                            .header("Authorization", "Bearer " + dear.buyer().token())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(
+                                    Map.of("providerPaymentId", cheapPayment.providerPaymentId()))))
+                    .andReturn().getResponse().getStatus();
+
+            assertThat(status).isEqualTo(400);
+            // The side effect, not just the refusal: the dear order must still be
+            // unfunded, and invisible to its supplier.
+            assertThat(orderStatus(dear.orderId())).isEqualTo("DRAFT");
+            assertThat(jdbc.queryForObject("select status from payment where id = ?",
+                    String.class, dear.paymentId())).isEqualTo("CREATED");
+        }
+
+        @Test
+        @DisplayName("a Razorpay-shaped webhook is deduplicated on its header event id")
+        void webhookDedupedOnHeader() throws Exception {
+            var submitted = submit("400", 10);
+            var providerPayment = mockProvider.completeCheckout(submitted.providerOrderId());
+
+            // Razorpay's shape: the event id is a header, and the body has none.
+            String eventId = "evt_" + UUID.randomUUID();
+            String body = """
+                    {"entity":"event","event":"payment.authorized","payload":{"payment":{"entity":
+                      {"id":"%s","order_id":"%s"}}}}
+                    """.formatted(providerPayment.providerPaymentId(), submitted.providerOrderId());
+
+            for (int delivery = 0; delivery < 2; delivery++) {
+                int status = mvc.perform(MockMvcRequestBuilders.post("/api/v1/webhooks/razorpay")
+                                .header("X-Razorpay-Signature", MockPaymentProvider.TEST_SIGNATURE)
+                                .header("X-Razorpay-Event-Id", eventId)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(body))
+                        .andReturn().getResponse().getStatus();
+                assertThat(status).isEqualTo(200);
+            }
+
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from payment_webhook_event where provider_event_id = ?",
+                    Integer.class, eventId)).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("reconciliation finds a payment it only knows the intent of")
+        void reconcileByIntent() throws Exception {
+            var submitted = submit("400", 10);
+            // Paid, and then nothing: no confirm, no webhook, so we never learned
+            // the payment id. All we hold is the intent.
+            mockProvider.completeCheckout(submitted.providerOrderId());
+            jdbc.update("update payment set updated_at = "
+                    + "date_sub(utc_timestamp(6), interval 10 minute) where id = ?",
+                    submitted.paymentId());
+
+            paymentJobs.reconcileStale();
+
+            assertThat(orderStatus(submitted.orderId()))
+                    .describedAs("the order the customer paid for must reach its supplier")
+                    .isEqualTo("CONFIRMED");
+        }
     }
 
     // ── Refunds ──────────────────────────────────────────────────────────

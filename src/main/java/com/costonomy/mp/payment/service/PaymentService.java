@@ -127,11 +127,51 @@ public class PaymentService {
                 throw new BusinessException(ErrorCode.PROVIDER_UNAVAILABLE,
                         "We couldn't confirm your payment just yet. We'll keep checking.");
             }
-            fail(payment, ex.providerCode(), ex.getMessage());
-            throw new BusinessException(ErrorCode.PAYMENT_FAILED);
+            // The provider refused to look it up: it does not know that id. That
+            // says the client's claim is wrong, not that this payment failed —
+            // and FAILED is terminal, so failing it here would let one stale or
+            // garbled id make an order unpayable for good. Refuse the claim and
+            // leave the payment waiting for its own money, as a mismatch does.
+            log.warn("Confirm for payment {} named a payment the provider refused: {}",
+                    paymentId, ex.getMessage());
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "We couldn't find that payment. Nothing has changed on this order.");
+        }
+
+        if (!completes(payment, providerPayment)) {
+            // A real payment id, but not this payment's. Without this check any
+            // authorised payment — a cheaper one, someone else's — would fund
+            // this order. Nothing changes; the payment is still waiting for its
+            // own money.
+            auditService.record(null, null, "PAYMENT_CONFIRM_MISMATCH", "PAYMENT",
+                    payment.getId(), payment.getStatus().name(), payment.getStatus().name(),
+                    "Provider payment " + providerPaymentId + " belongs to order "
+                            + providerPayment.providerOrderId(), "CLIENT");
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "That payment doesn't belong to this order.");
         }
 
         return applyProviderState(payment, providerPayment, "CONFIRM");
+    }
+
+    /**
+     * Whether a provider payment is the one completing this payment's intent.
+     *
+     * <p>The provider says a payment exists and what state it is in; only this
+     * says it is <em>ours</em>. It must complete the intent we created — the
+     * provider order id we minted — and, the first time money appears against
+     * it, for the amount we asked for.
+     */
+    boolean completes(Payment payment, PaymentProvider.ProviderPayment providerPayment) {
+        if (payment.getProviderOrderId() == null
+                || !payment.getProviderOrderId().equals(providerPayment.providerOrderId())) {
+            return false;
+        }
+        boolean moneyArrives = payment.getStatus() == PaymentStatus.CREATED
+                && (providerPayment.status() == PaymentProvider.ProviderPaymentStatus.AUTHORIZED
+                        || providerPayment.status() == PaymentProvider.ProviderPaymentStatus.CAPTURED);
+        return !moneyArrives
+                || providerPayment.authorizedAmount().compareTo(payment.getAuthorizedAmount()) == 0;
     }
 
     /**
@@ -145,6 +185,17 @@ public class PaymentService {
     public Payment applyProviderState(Payment payment,
                                       PaymentProvider.ProviderPayment providerPayment,
                                       String source) {
+
+        if (!completes(payment, providerPayment)) {
+            // Never applied, whoever brought it: a webhook, the sweep or a
+            // capture. Logged at error because it should not happen — the
+            // provider describing a payment against someone else's intent means
+            // a bug on one side, and a human should look.
+            log.error("Ignoring {} provider payment {} for payment {}: it completes order {}, not {}",
+                    source, providerPayment.providerPaymentId(), payment.getId(),
+                    providerPayment.providerOrderId(), payment.getProviderOrderId());
+            return payment;
+        }
 
         payment.setProviderPaymentId(providerPayment.providerPaymentId());
         payment.setReconciledAt(Instant.now());
