@@ -4,6 +4,31 @@ All notable changes to the Costonomy MP (Mandi) Delivery & Logistics Platform ac
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [feat/porter-provider] - Porter Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Porter** alongside Pidge, Borzo, and Shadowfax.
+- Database migration `V43__delivery_provider_porter.sql` seeding `PORTER` row into `delivery_provider` table (seeded disabled, `enabled = 0`).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.porter.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `PorterDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `PorterApiClient` HTTP client for Porter Logistics API:
+  - Authentication headers: `x-api-key: {apiKey}` and `Authorization: Bearer {apiKey}`.
+  - Rate limiting with 20 RPS local token-bucket protection.
+  - Quoting / Fare estimation via `POST /v1/orders/cost` with vehicle category mapping (`TWO_WHEELER` -> `2_wheeler`, `THREE_WHEELER` -> `three_wheeler`, `FOUR_WHEELER_TRUCK` -> `tata_ace`).
+  - Order creation via `POST /v1/orders/create` with structured pickup/drop addresses, contacts, coordinates, and idempotency request ID, returning Porter `order_id` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /v1/orders/{order_id}` with partner/driver details parsing (`name`, `mobile`, `vehicle_number`).
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first so `DeliveryOrderBridge` transitions `supplier_order` through `OUT_FOR_DELIVERY` to `DELIVERED`.
+  - Cancellation via `POST /v1/orders/{order_id}/cancel`.
+- `PorterStatusMapper` mapping Porter status strings (`created`, `allocating`, `assigned`, `driver_arrived`, `started`, `picked_up`, `in_transit`, `arrived_at_destination`, `delivered`, `cancelled`) to domain `DeliveryStatus`.
+- Test suites:
+  - `PorterStatusMappingTest` (2 tests).
+  - `PorterApiClientContractTest` WireMock tests (7 tests).
+  - `PorterDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decisions recorded in `docs/DECISIONS.md` (D-100) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-007).
+
+---
+
 ## [feat/shadowfax-provider] - Shadowfax Delivery Provider Integration
 ### Added
 - Multi-carrier delivery provider integration for **Shadowfax** alongside Pidge and Borzo.

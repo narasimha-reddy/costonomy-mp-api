@@ -3649,3 +3649,42 @@ Like Borzo, Shadowfax is protected by two distinct gates:
 Shadowfax webhook ingestion is deferred pending live payload and HMAC verification confirmation,
 relying on polling via `DeliveryJobs.pollActiveDeliveries()` for status advancement.
 
+---
+
+## D-100 — Porter delivery provider integration alongside Pidge, Borzo and Shadowfax
+**2026-10-02 · Settled**
+
+Porter is integrated as a fourth carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, and Shadowfax. The implementation adheres to the provider SPI pattern
+established in doc 06 §4 and decisions D-098 and D-099.
+
+### Dual-gate activation
+Porter is gated by:
+1. **Application configuration gate**: `costonomy.mp.porter.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `PorterDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`provider_code = 'PORTER'`),
+   seeded disabled (`enabled = 0`) via migration `V43__delivery_provider_porter.sql`.
+   Both gates must be active for Porter to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Header `x-api-key: {apiKey}` and `Authorization: Bearer {apiKey}`.
+- **Serviceability & Fare Estimation**: `POST /v1/orders/cost` with `pickup_details`,
+  `drop_details`, and mapped `vehicle_type` (`2_wheeler`, `three_wheeler`, `tata_ace`).
+  Parses fare amount, distance, and ETA.
+- **Booking**: `POST /v1/orders/create` with pickup/drop addresses, contact information,
+  coordinates, and `request_id` (idempotency key). Returns Porter `order_id` as `providerDeliveryId`.
+- **Status tracking & Polling**: `GET /v1/orders/{order_id}` inspecting `status` and `partner_details`.
+  The status mapper transforms Porter states (`created`, `allocating`, `assigned`, `driver_arrived`,
+  `started`, `picked_up`, `in_transit`, `arrived_at_destination`, `delivered`, `cancelled`) into platform
+  `DeliveryStatus`.
+  Historic events or synthetic transitions guarantee that `PICKED_UP` precedes `DELIVERED`
+  newest-first, allowing `DeliveryOrderBridge` to advance the supplier order through `OUT_FOR_DELIVERY`
+  to `DELIVERED` while `uk_delivery_event_provider` suppresses duplicate event rows.
+- **Cancellation**: `POST /v1/orders/{order_id}/cancel` sending `cancellation_reason`.
+
+### Webhook ingestion deferred
+Porter webhook ingestion is deferred pending live payload and HMAC verification confirmation,
+relying on polling via `DeliveryJobs.pollActiveDeliveries()` for status advancement.
+
+
