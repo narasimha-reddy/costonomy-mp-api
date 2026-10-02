@@ -12,6 +12,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -212,6 +215,24 @@ class RazorpayPaymentProviderTest {
         assertThat(razorpay.verifySignature(body, valid)).isTrue();
         assertThat(razorpay.verifySignature(body + " ", valid)).isFalse();
         assertThat(razorpay.verifySignature(body, null)).isFalse();
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("every call to Razorpay logs one line — method, path, status, time — and never the body")
+    void callsAreLogged(CapturedOutput output) {
+        routes.put("/v1/orders", new Canned(200, """
+                {"id":"order_A","amount":123450,"currency":"INR","status":"created"}"""));
+        routes.put("/v1/payments/pay_forged", new Canned(400, "{}"));
+
+        razorpay.createAuthorization(new AuthorizationRequest(
+                "order-42", new BigDecimal("1234.50"), "INR", "Mandi order 42", "auth-order-42"));
+        assertThatThrownBy(() -> razorpay.fetchPayment("pay_forged"));
+
+        assertThat(output.getOut()).containsPattern("Razorpay POST /v1/orders → 200 in \\d+ ms");
+        assertThat(output.getOut()).containsPattern("WARN.*Razorpay GET /v1/payments/pay_forged → 400 in \\d+ ms");
+        // The request body carries the receipt and amount; neither belongs in a log.
+        assertThat(output.getOut()).doesNotContain("order-42").doesNotContain("123450");
     }
 
     private Seen only(String path) {

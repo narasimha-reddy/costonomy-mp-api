@@ -253,7 +253,7 @@ app is built across both roles.
 
 ### Latest: Razorpay payments (D-098, D-099)
 
-Three stacked PRs. **No migrations** — the payment tables from `V11` are used as
+Four stacked PRs. **No migrations** — the payment tables from `V11` are used as
 they were.
 
 | PR | What it changed |
@@ -261,6 +261,7 @@ they were.
 | `feat/razorpay-1-adapter` | The Razorpay adapter now matches Razorpay's documented API: manual capture, the webhook event-id header, the refund idempotency header, lookup by order. **Confirm checks the payment belongs to this order** — before, any payment funded any order. `docs/RAZORPAY.md` covers running against test mode (D-098) |
 | `feat/razorpay-2-hardening` | No provider call holds a database connection; every payment state change locks the payment row first, and order release locks the order; 8 scheduler threads instead of 1; the sweep backs off; a failed capture stays queued instead of being stranded (D-099) |
 | `feat/razorpay-3-small-fixes` | The seed script runs on a fresh database again; the wallet top-up is refused unless payments run on the mock; a spent delivery quote says "already used" |
+| `feat/razorpay-7-payment-tracing` | A payment's story reads from the logs by its id: every job run has a correlation id (in logs and audit), payment and Razorpay ids ride on every line in scope, each state change and each Razorpay call is one INFO line (D-100) |
 
 What you will notice:
 
@@ -270,10 +271,13 @@ What you will notice:
 - New setting `SCHEDULER_THREADS` (default 8).
 - Refund keys sent to the provider are `mandi-refund-{id}` (Razorpay needs ten
   characters).
+- **Searching the logs:** `payment=160` finds one payment's whole sequence; a job
+  run's lines share `job-<method>-<id>`, and so do the audit rows it wrote. The
+  log pattern appends the ids, so custom log configs need `%X{trace}` too.
 - `costonomy-mp-mobile/tools/razorpay-e2e` pays real test-mode orders end to end,
   28 cases, mostly failures. It needs this API on Razorpay test keys.
 
-Tests after these PRs: 319 unit, 326 integration.
+Tests after these PRs: 324 unit, 327 integration.
 
 ### Earlier, on `feat/edit-open-request-quantities`
 

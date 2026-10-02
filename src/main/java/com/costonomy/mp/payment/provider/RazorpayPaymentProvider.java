@@ -233,8 +233,9 @@ public class RazorpayPaymentProvider implements PaymentProvider {
     }
 
     private JsonNode post(String path, Map<String, Object> body, Map<String, String> headers) {
+        long started = System.nanoTime();
         try {
-            return client.post()
+            var reply = client.post()
                     .uri(path)
                     .header("Content-Type", "application/json")
                     .headers(h -> headers.forEach(h::set))
@@ -253,17 +254,22 @@ public class RazorpayPaymentProvider implements PaymentProvider {
                                 "Razorpay is unavailable: " + response.getStatusCode(),
                                 true, String.valueOf(response.getStatusCode().value()));
                     })
-                    .body(JsonNode.class);
+                    .toEntity(JsonNode.class);
+            logCall("POST", path, String.valueOf(reply.getStatusCode().value()), started);
+            return reply.getBody();
         } catch (PaymentProviderException ex) {
+            logCall("POST", path, ex.providerCode(), started);
             throw ex;
         } catch (Exception ex) {
+            logCall("POST", path, "unreachable", started);
             throw PaymentProviderException.unreachable("Could not reach Razorpay", ex);
         }
     }
 
     private JsonNode get(String path) {
+        long started = System.nanoTime();
         try {
-            return client.get().uri(path).retrieve()
+            var reply = client.get().uri(path).retrieve()
                     .onStatus(HttpStatusCode::is4xxClientError, (request, response) -> {
                         // An id Razorpay does not know. Asking again will not help,
                         // and reporting it as an outage would leave a bogus id
@@ -272,11 +278,31 @@ public class RazorpayPaymentProvider implements PaymentProvider {
                                 "Razorpay refused the lookup: " + response.getStatusCode(),
                                 false, String.valueOf(response.getStatusCode().value()));
                     })
-                    .body(JsonNode.class);
+                    .toEntity(JsonNode.class);
+            logCall("GET", path, String.valueOf(reply.getStatusCode().value()), started);
+            return reply.getBody();
         } catch (PaymentProviderException ex) {
+            logCall("GET", path, ex.providerCode(), started);
             throw ex;
         } catch (Exception ex) {
+            logCall("GET", path, "unreachable", started);
             throw PaymentProviderException.unreachable("Could not reach Razorpay", ex);
+        }
+    }
+
+    /**
+     * One line per call to Razorpay: what we asked, what came back, how long it
+     * took (D-100). The path names only Razorpay's own ids; the body is never
+     * logged, because it can carry a customer's contact details. This is the line
+     * to quote to Razorpay support, and the one that shows a slow gateway before
+     * the pool does.
+     */
+    private static void logCall(String method, String path, String status, long startedNanos) {
+        long millis = (System.nanoTime() - startedNanos) / 1_000_000;
+        if (status != null && status.startsWith("2")) {
+            log.info("Razorpay {} {} → {} in {} ms", method, path, status, millis);
+        } else {
+            log.warn("Razorpay {} {} → {} in {} ms", method, path, status, millis);
         }
     }
 

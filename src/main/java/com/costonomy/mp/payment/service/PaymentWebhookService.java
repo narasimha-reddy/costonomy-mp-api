@@ -2,6 +2,7 @@ package com.costonomy.mp.payment.service;
 
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
+import com.costonomy.mp.common.logging.TraceScope;
 import com.costonomy.mp.payment.domain.PaymentWebhookEvent;
 import com.costonomy.mp.payment.provider.PaymentProvider;
 import com.costonomy.mp.payment.repository.PaymentRepository;
@@ -92,6 +93,15 @@ public class PaymentWebhookService {
             throw new BusinessException(ErrorCode.MALFORMED_REQUEST);
         }
 
+        // Razorpay's event id on every line from here, so a delivery can be found
+        // by the id their dashboard shows (D-100).
+        try (var trace = TraceScope.of("rzp_event", eventId, "event_type", eventType)) {
+            log.info("Webhook {} {} received", eventId, eventType);
+            return record(eventId, eventType, rawBody, payload);
+        }
+    }
+
+    private boolean record(String eventId, String eventType, String rawBody, JsonNode payload) {
         var event = new PaymentWebhookEvent();
         event.setProvider(provider.name());
         event.setProviderEventId(eventId);
@@ -107,7 +117,7 @@ public class PaymentWebhookService {
             // uk_webhook_provider_event: a retry of an event we already have.
             // Reporting success is correct — the provider's question is "did you
             // receive this", and we did. A non-200 makes them retry it forever.
-            log.debug("Duplicate webhook {} ignored", eventId);
+            log.info("Webhook {} is a duplicate delivery; already handled", eventId);
             return false;
         }
 
@@ -129,6 +139,7 @@ public class PaymentWebhookService {
         }
 
         store.finish(event);
+        log.info("Webhook {} {}", eventId, event.getStatus());
         return true;
     }
 
@@ -159,7 +170,12 @@ public class PaymentWebhookService {
         }
 
         event.setPaymentId(payment.getId());
+        try (var trace = PaymentTrace.of(payment)) {
+            apply(payment, providerPaymentId);
+        }
+    }
 
+    private void apply(com.costonomy.mp.payment.domain.Payment payment, String providerPaymentId) {
         // Asking the provider rather than trusting the payload's amounts. The
         // signature proves the message came from them, not that it is still
         // current — and an out-of-order event describes a past state.
