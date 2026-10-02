@@ -304,6 +304,37 @@ class BorzoApiClientContractTest {
 
         assertThat(delivery.status()).isEqualTo(DeliveryProvider.ProviderDeliveryStatus.DRIVER_ASSIGNED);
         assertThat(delivery.driverName()).isNull();
+        assertThat(delivery.events()).hasSize(1);
+        var event = delivery.events().get(0);
+        assertThat(event.providerEventId()).isEqualTo("borzo_331900_driver_assigned");
+        assertThat(event.status()).isEqualTo(DeliveryProvider.ProviderDeliveryStatus.DRIVER_ASSIGNED);
+    }
+
+    @Test
+    @DisplayName("synthesizes newest-first DELIVERED and PICKED_UP events for completed status")
+    void synthesizesEventsForCompletedStatus() {
+        String responseBody = """
+                {
+                  "is_successful": true,
+                  "order": {
+                    "status": "completed",
+                    "points": [
+                      {"address": "A"},
+                      {"address": "B", "delivery": {"status": "finished"}}
+                    ]
+                  }
+                }
+                """;
+
+        server.expect(requestTo(BASE_URL + "/orders?order_id=331900"))
+                .andRespond(withSuccess(responseBody, MediaType.APPLICATION_JSON));
+
+        var delivery = client.getStatus("331900");
+
+        assertThat(delivery.status()).isEqualTo(DeliveryProvider.ProviderDeliveryStatus.DELIVERED);
+        assertThat(delivery.events()).hasSize(2);
+        assertThat(delivery.events().get(0).providerEventId()).isEqualTo("borzo_331900_delivered");
+        assertThat(delivery.events().get(1).providerEventId()).isEqualTo("borzo_331900_picked_up");
     }
 
     @Test

@@ -3592,6 +3592,13 @@ for any `VehicleType` other than `TWO_WHEELER` rather than sending an
 unverified id — a decline doc 06 §4 already treats as a normal answer, not a
 new failure mode.
 
+### Status polling synthesizes events so DeliveryJobs advances delivery and order
+Borzo's `GET /orders` reports a single current status rather than an append-only event log.
+`BorzoApiClient` synthesizes a deterministic `ProviderEvent` (e.g. `borzo_evt_{id}_driver_assigned`,
+`borzo_evt_{id}_delivered`, with `PICKED_UP` preceding `DELIVERED` newest-first) so `DeliveryJobs.pollActiveDeliveries()`
+can apply events through `DeliveryEventService`, advancing the delivery state machine and moving the supplier
+order through `OUT_FOR_DELIVERY` to `DELIVERED` while relying on `uk_delivery_event_provider` for duplicate suppression.
+
 ### Still open, blocking a second PR
 The webhook/callback payload and signature scheme are not verified — Borzo's
 documentation is too thin to trust, the same mistake this whole effort exists

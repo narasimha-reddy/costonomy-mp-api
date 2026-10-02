@@ -273,9 +273,36 @@ public class BorzoApiClient {
                     ? etaMinutesFromRequiredFinish(points.get(points.size() - 1))
                     : null;
 
+            List<DeliveryProvider.ProviderEvent> events;
+            if (status == null || status == DeliveryProvider.ProviderDeliveryStatus.PENDING) {
+                events = List.of();
+            } else if (status == DeliveryProvider.ProviderDeliveryStatus.DELIVERED) {
+                // Borzo reports completed without an explicit pickup event. Include PICKED_UP
+                // (newest-first: DELIVERED, then PICKED_UP) so DeliveryJobs applies PICKED_UP first,
+                // moving the delivery through PICKED_UP and supplier_order through OUT_FOR_DELIVERY.
+                events = List.of(
+                        new DeliveryProvider.ProviderEvent(
+                                "borzo_" + providerDeliveryId + "_delivered",
+                                DeliveryProvider.ProviderDeliveryStatus.DELIVERED,
+                                "Borzo order status: " + orderStatus,
+                                Instant.now()),
+                        new DeliveryProvider.ProviderEvent(
+                                "borzo_" + providerDeliveryId + "_picked_up",
+                                DeliveryProvider.ProviderDeliveryStatus.PICKED_UP,
+                                "Borzo order status: " + orderStatus,
+                                Instant.now())
+                );
+            } else {
+                events = List.of(new DeliveryProvider.ProviderEvent(
+                        "borzo_" + providerDeliveryId + "_" + status.name().toLowerCase(Locale.ROOT),
+                        status,
+                        "Borzo order status: " + orderStatus,
+                        Instant.now()));
+            }
+
             return new DeliveryProvider.ProviderDelivery(
                     providerDeliveryId, status, driverName, driverPhone, driverVehicle,
-                    etaMinutes, null, null, null, List.of());
+                    etaMinutes, null, null, null, events);
 
         } catch (HttpStatusCodeException ex) {
             log.warn("Borzo getStatus HTTP error {} for {}: {}", ex.getStatusCode(), providerDeliveryId, ex.getResponseBodyAsString());
