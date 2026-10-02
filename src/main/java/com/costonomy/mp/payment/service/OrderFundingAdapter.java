@@ -3,9 +3,13 @@ package com.costonomy.mp.payment.service;
 import com.costonomy.mp.common.logging.TraceScope;
 import com.costonomy.mp.payment.domain.Payment;
 import com.costonomy.mp.payment.domain.PaymentStatus;
+import com.costonomy.mp.payment.domain.RefundDestination;
 import com.costonomy.mp.payment.domain.RefundReason;
+import com.costonomy.mp.payment.domain.RefundStatus;
+import com.costonomy.mp.payment.domain.ReleaseReason;
 import com.costonomy.mp.payment.provider.PaymentProvider;
 import com.costonomy.mp.payment.repository.PaymentRepository;
+import com.costonomy.mp.payment.repository.RefundRepository;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
 import com.costonomy.mp.procurement.service.OrderFundingPort;
 import lombok.RequiredArgsConstructor;
@@ -36,6 +40,8 @@ public class OrderFundingAdapter implements OrderFundingPort {
     private final PaymentRepository payments;
     private final PaymentProvider provider;
     private final RefundService refundService;
+    private final RefundRepository refunds;
+    private final PaymentHoldPolicy holdPolicy;
 
     @Override
     public String paymentMethod() {
@@ -70,7 +76,10 @@ public class OrderFundingAdapter implements OrderFundingPort {
     @Transactional(readOnly = true)
     public boolean isFundingSecured(Long supplierOrderId) {
         return payments.findBySupplierOrderId(supplierOrderId)
-                .map(payment -> payment.getStatus().fundsSecured())
+                // Not the status alone: money captured only to be sent back (D-109) is
+                // CAPTURED and funds nothing. Asked here, it is asked of every release
+                // trigger at once, whichever of them fires (F1).
+                .map(Payment::fundsSecuredForOrder)
                 .orElse(false);
     }
 
@@ -78,20 +87,18 @@ public class OrderFundingAdapter implements OrderFundingPort {
     @Transactional(readOnly = true)
     public java.util.Optional<FundingIntent> openIntent(Long supplierOrderId) {
         return payments.findBySupplierOrderId(supplierOrderId)
+                // Not for an order that was cancelled: a checkout handed out for it (the
+                // replay of a create request, say) would take the payer's money only for it
+                // to be captured and refunded at our cost. The payment-intent read makes the
+                // same refusal (D-109).
                 .filter(payment -> payment.getStatus() == PaymentStatus.CREATED
-                        && payment.getProviderOrderId() != null)
+                        && payment.getProviderOrderId() != null
+                        && payment.getCancelRequestedAt() == null)
                 .map(payment -> new FundingIntent(
                         supplierOrderId, payment.getId(), payment.getProvider(),
                         payment.getProviderOrderId(), payment.getAuthorizedAmount(),
                         payment.getCurrency(), publicKeyFor(payment.getProvider())));
     }
-
-    /**
-     * How long a provider holds an authorisation before it lapses back to the
-     * customer — Razorpay's manual-capture maximum, five days — less a margin, so
-     * nothing is handed over against a hold about to expire (D-103).
-     */
-    static final java.time.Duration HOLD_USABLE_FOR = java.time.Duration.ofDays(5).minusHours(6);
 
     @Override
     public void onOrderAccepted(Long supplierOrderId, BigDecimal acceptedAmount) {
@@ -113,11 +120,26 @@ public class OrderFundingAdapter implements OrderFundingPort {
     @Transactional(readOnly = true)
     public boolean canTakeFunds(Long supplierOrderId) {
         return payments.findBySupplierOrderId(supplierOrderId)
-                .map(payment -> switch (payment.getStatus()) {
-                    case AUTHORIZED -> payment.getAuthorizedAt() != null
-                            && payment.getAuthorizedAt().isAfter(java.time.Instant.now().minus(HOLD_USABLE_FOR));
-                    case CAPTURE_PENDING, CAPTURED, PARTIALLY_REFUNDED -> true;
-                    default -> false;
+                .map(payment -> {
+                    if (payment.getCancelRequestedAt() != null) {
+                        // The order was cancelled: whatever state the money is in, it is on
+                        // its way back to the payer, and nothing may be handed over against
+                        // it. CAPTURED here is our own capture made to refund it (F1).
+                        return false;
+                    }
+                    return switch (payment.getStatus()) {
+                        // Our own clock, against the expiry this payment was created with
+                        // (PaymentHoldPolicy), which is what the provider fixed when the order
+                        // was made, so the two cannot disagree (D-109). The setting as it reads
+                        // today is used only for a payment with none stored (F3). It is the
+                        // second line: a hold the provider has already returned is caught by the
+                        // sweep, and becomes RELEASED, which is false here.
+                        case AUTHORIZED -> payment.getAuthorizedAt() != null
+                                && payment.getAuthorizedAt().isAfter(
+                                        java.time.Instant.now().minus(holdPolicy.usableFor(payment)));
+                        case CAPTURE_PENDING, CAPTURED, PARTIALLY_REFUNDED -> true;
+                        default -> false;
+                    };
                 })
                 .orElse(false);
     }
@@ -129,7 +151,15 @@ public class OrderFundingAdapter implements OrderFundingPort {
         if (payment == null) {
             return;
         }
+        // The payment's ids on every line written under a cancellation (D-100): the
+        // request that cancels the order knows nothing of payments, and its lines
+        // would otherwise not be found by the payment's id.
+        try (var trace = PaymentTrace.of(payment)) {
+            cancelPayment(payment, supplierOrderId, reason);
+        }
+    }
 
+    private void cancelPayment(Payment payment, Long supplierOrderId, String reason) {
         if (payment.getStatus() == PaymentStatus.CAPTURED
                 || payment.getStatus() == PaymentStatus.PARTIALLY_REFUNDED) {
             // Money was taken — since D-103 only once an order was ready, after
@@ -139,19 +169,86 @@ public class OrderFundingAdapter implements OrderFundingPort {
             // ever refunded it. Now the full remaining amount is refunded, once
             // (the key is the order's), with no one having to ask — to the
             // outlet's wallet, from which it can go back to the card (D-104).
+            //
+            // Read unlocked and refunded first, on purpose: the refund takes the
+            // wallet and then the payment, and taking the payment first here would
+            // reverse that order against a withdrawal or a dispute refund.
             refundService.refundCancelled(payment, reason);
-            return;
         }
 
-        paymentService.releaseOrRefund(supplierOrderId,
-                RefundReason.SUPPLIER_REJECTION, reason);
+        // Everything else, and the note that this order was cancelled: what a
+        // held payment becomes is decided in one place (D-109), with no call to the
+        // provider inside this transaction (D-099).
+        paymentService.onOrderCancelled(supplierOrderId, reason);
     }
 
-    /** The payment's own status: AUTHORIZED, CAPTURED, RELEASED, PARTIALLY_REFUNDED… */
+    /**
+     * The payment's own status, except where the order was cancelled and money is on
+     * its way back (D-109), which reads:
+     *
+     * <ul>
+     *   <li>{@code RETURNING} — debited money of a cancelled order is being sent back
+     *       (CANCEL_PENDING, or captured with its cancellation refund still open);</li>
+     *   <li>{@code RETURNED} — the payment provider returned it itself;</li>
+     *   <li>{@code RETURN_DELAYED} — the return is stuck and a person has been told.</li>
+     * </ul>
+     *
+     * Otherwise AUTHORIZED, CAPTURED, RELEASED, PARTIALLY_REFUNDED, FULLY_REFUNDED…
+     */
     @Override
     @Transactional(readOnly = true)
     public java.util.Optional<String> paymentState(Long supplierOrderId) {
-        return payments.findBySupplierOrderId(supplierOrderId).map(payment -> payment.getStatus().name());
+        return payments.findBySupplierOrderId(supplierOrderId).map(this::displayState);
+    }
+
+    private String displayState(Payment payment) {
+        return switch (payment.getStatus()) {
+            case CANCEL_PENDING -> payment.getReviewRequiredAt() != null ? "RETURN_DELAYED" : "RETURNING";
+            case RELEASED -> payment.getReleaseReason() == ReleaseReason.PROVIDER_AUTO_REFUND
+                    ? "RETURNED" : payment.getStatus().name();
+            case CAPTURED, PARTIALLY_REFUNDED -> openCancellationRefund(payment);
+            default -> payment.getStatus().name();
+        };
+    }
+
+    /** RETURNING or RETURN_DELAYED while the order's cancellation refund is still open; else the status. */
+    private String openCancellationRefund(Payment payment) {
+        if (payment.getCancelRequestedAt() == null) {
+            return payment.getStatus().name();
+        }
+        return refunds.findByIdempotencyKey(CancellationLedger.cancelRefundKey(payment.getSupplierOrderId()))
+                .filter(refund -> refund.getDestination() == RefundDestination.ORIGINAL)
+                .map(refund -> switch (refund.getStatus()) {
+                    case REQUESTED, PROCESSING, FAILED -> "RETURNING";
+                    case NEEDS_REVIEW -> "RETURN_DELAYED";
+                    case COMPLETED -> payment.getStatus().name();
+                })
+                .orElse(payment.getStatus().name());
+    }
+
+    /**
+     * The refund that sends a cancelled order's debited money back to where it came
+     * from, for the order's own JSON. Only that refund: a legacy refund of an order
+     * cancelled after capture goes to the wallet, and is not "money coming back to
+     * your account".
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Optional<CancelRefund> cancelRefund(Long supplierOrderId) {
+        return payments.findBySupplierOrderId(supplierOrderId)
+                .filter(payment -> payment.getCancelRequestedAt() != null)
+                .flatMap(payment -> refunds.findByIdempotencyKey(CancellationLedger.cancelRefundKey(supplierOrderId)))
+                .filter(refund -> refund.getDestination() == RefundDestination.ORIGINAL)
+                .map(refund -> new CancelRefund(refund.getAmount(),
+                        refund.getStatus() == RefundStatus.COMPLETED ? refund.getCompletedAt() : null));
+    }
+
+    /** How the payer paid, once read from the provider: card, upi, netbanking… */
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Optional<String> paymentInstrument(Long supplierOrderId) {
+        return payments.findBySupplierOrderId(supplierOrderId)
+                .map(Payment::getProviderMethod);
     }
 
     @Override

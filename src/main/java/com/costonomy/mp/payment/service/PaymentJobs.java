@@ -5,6 +5,7 @@ import com.costonomy.mp.payment.domain.RefundStatus;
 import com.costonomy.mp.payment.provider.PaymentProvider;
 import com.costonomy.mp.payment.provider.PaymentProviderException;
 import com.costonomy.mp.payment.repository.PaymentRepository;
+import com.costonomy.mp.payment.repository.PaymentTransactionRepository;
 import com.costonomy.mp.payment.repository.RefundRepository;
 import com.costonomy.mp.procurement.service.OrderReleaseService;
 import lombok.RequiredArgsConstructor;
@@ -20,7 +21,7 @@ import java.time.Instant;
 /**
  * Background payment work. Doc 38, doc 21, doc 46.
  *
- * <p>Three jobs, each closing a gap that a synchronous flow cannot:
+ * <p>Four jobs, each closing a gap that a synchronous flow cannot:
  *
  * <ul>
  *   <li><b>Capture</b> — completes captures marked during an acceptance, which
@@ -29,6 +30,7 @@ import java.time.Instant;
  *       This is doc 46's lost-callback recovery: the customer paid, the client
  *       vanished, no webhook arrived, and only asking reveals it.</li>
  *   <li><b>Refunds</b> — sends requested refunds and retries failed ones.</li>
+ *   <li><b>Cancellations</b> — sends a cancelled order's debited money back (D-109).</li>
  * </ul>
  *
  * <p>All three are idempotent and locked, so a second instance cannot double-take
@@ -40,11 +42,14 @@ import java.time.Instant;
 public class PaymentJobs {
 
     private final PaymentRepository payments;
+    private final PaymentTransactionRepository transactions;
     private final RefundRepository refunds;
     private final PaymentService paymentService;
     private final RefundService refundService;
     private final OrderReleaseService orderRelease;
     private final PaymentProvider provider;
+    private final CancellationService cancellations;
+    private final PaymentHoldPolicy holdPolicy;
 
     /**
      * How long an unpaid intent is still worth asking about. A day comfortably
@@ -58,15 +63,58 @@ public class PaymentJobs {
      */
     static final int CAPTURE_BATCH = 100;
     static final int RECONCILE_BATCH = 200;
+    static final int CANCEL_BATCH = 50;
+
+    /** A cancelled order's money still not on its way back after this long is an error for someone to see (D-109). */
+    static final Duration CANCEL_ALERT_AFTER = Duration.ofMinutes(15);
+
+    /**
+     * How long one run of the cancellation job may take before it stops and leaves the rest
+     * to the next run (F8). Below the job's lock ({@code lockAtMostFor}, five minutes) with room
+     * for the payment in hand, which costs at most three provider calls of fifteen seconds: a
+     * run that outlives its lock lets a second instance start the same batch. Safe to repeat
+     * (a capture is found already taken, the refund has a unique key), but it doubles the calls
+     * to a provider that may already be struggling.
+     */
+    static final Duration CANCEL_BUDGET = Duration.ofMinutes(3);
+
+    /** The most a run looks at among payments waiting for a person. */
+    static final int REVIEW_BATCH = 200;
+
+    /** How often a payment stopped for a person is asked about again (F2): it can still end on its own. */
+    static final Duration REVIEW_RECHECK_EVERY = Duration.ofHours(3);
+
+    /** How often a payment stopped for a person is written to the error log while it stays there (F2). */
+    static final Duration REVIEW_ALERT_EVERY = Duration.ofHours(24);
+
+    /** How often one cancellation that has not started back is repeated in the error log (F7). */
+    static final Duration CANCEL_ALERT_EVERY = Duration.ofHours(1);
+
+    /** How often "the provider is not accepting our calls" is repeated in the log while it lasts (N4, N5). */
+    static final Duration BACK_OFF_ALERT_EVERY = Duration.ofMinutes(15);
+
+    /** How long a refund may stay FAILED before it is an error for someone to see (N4). */
+    static final Duration REFUND_FAILED_ALERT_AFTER = Duration.ofHours(1);
+
+    /** How often one refund stuck FAILED is repeated in the error log (N4). */
+    static final Duration REFUND_FAILED_ALERT_EVERY = Duration.ofHours(1);
 
     /** How often a payment held for dispatch is checked with the provider (D-103). */
     static final Duration HELD_CHECK_EVERY = Duration.ofHours(6);
 
-    /** A hold this old, with the order not yet dispatched, is logged for someone to act on. */
-    static final Duration HOLD_WARN_AFTER = Duration.ofDays(4);
-
     /** Per run; a field so a test can shrink it and see what happens past a full batch. */
     int reconcileBatch = RECONCILE_BATCH;
+
+    /** A field so a test can spend it at once and see the run stop. */
+    Duration cancelBudget = CANCEL_BUDGET;
+
+    /** When each alert last went to the error log; shared with the services that alert (N5). */
+    private final AlertThrottle alerts;
+
+    /** True, and remembered, if this alert has not been written within {@code every}. */
+    private boolean alertDue(String key, Instant now, Duration every) {
+        return alerts.due(key, now, every);
+    }
 
     /**
      * Whether an unpaid intent is due to be asked about again.
@@ -86,12 +134,36 @@ public class PaymentJobs {
     @SchedulerLock(name = "payment-capture", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
     public void capturePending() {
         var pending = payments.findPendingCaptures(PageRequest.of(0, CAPTURE_BATCH));
+        var stillPending = new java.util.HashSet<Long>();
         for (var payment : pending) {
             // The scope wraps the catch too: an error line without the payment's
             // ids is the one you most need to find (D-100).
             try (var trace = PaymentTrace.of(payment)) {
                 try {
-                    paymentService.performCapture(payment.getId());
+                    var outcome = paymentService.performCapture(payment.getId());
+                    if (outcome != PaymentService.CaptureOutcome.DONE) {
+                        // Rate limited, or our keys refused: every other capture would meet the
+                        // same answer and add to the load. The payment stays CAPTURE_PENDING and
+                        // the next run, ten seconds on, tries again. Once per interval, as for
+                        // the other jobs.
+                        alertCaptureNearLimit(payment);
+                        if (outcome == PaymentService.CaptureOutcome.CREDENTIALS_REFUSED) {
+                            if (alertDue("credentials-capture", Instant.now(), BACK_OFF_ALERT_EVERY)) {
+                                log.error("Razorpay refused our credentials capturing payment {}; captures "
+                                        + "resume when the keys are fixed, and an authorisation that "
+                                        + "lapses first is money the supplier never receives",
+                                        payment.getId());
+                            }
+                        } else if (alertDue("capture-backoff", Instant.now(), BACK_OFF_ALERT_EVERY)) {
+                            log.warn("Capture run stopped after payment {}: Razorpay is limiting our "
+                                    + "calls; the next run tries again", payment.getId());
+                        }
+                        return;
+                    }
+                    if (paymentStillPending(payment.getId())) {
+                        stillPending.add(payment.getId());
+                        alertCaptureNearLimit(payment);
+                    }
                 } catch (RuntimeException ex) {
                     // One stuck payment must not block the rest — otherwise a single
                     // poison row would leave every later capture unprocessed, and an
@@ -100,6 +172,55 @@ public class PaymentJobs {
                     log.error("Could not capture payment {}", payment.getId(), ex);
                 }
             }
+        }
+        // One that was captured (or ended) starts afresh if it ever returns.
+        alerts.forgetIf(key -> (key.startsWith("capture-limit-") || key.startsWith("capture-failing-"))
+                && !stillPending.contains(Long.parseLong(key.substring(key.lastIndexOf('-') + 1))));
+    }
+
+    private boolean paymentStillPending(Long paymentId) {
+        return payments.findById(paymentId)
+                .map(payment -> payment.getStatus() == PaymentStatus.CAPTURE_PENDING).orElse(false);
+    }
+
+    /** How long a capture may keep failing before it is an error for someone to see: it is expected within seconds of "ready". */
+    static final Duration CAPTURE_FAILING_ALERT_AFTER = Duration.ofHours(1);
+
+    /**
+     * Error, for an alert to match: a capture that keeps failing. Two conditions, each once an
+     * hour per payment, so an alert never waits for the last hours of the hold:
+     * <ul>
+     *   <li>it has been failing for more than an hour, timed from its first failed attempt (the
+     *       capture is expected within seconds of "ready", the refund side has the same rule for
+     *       REQUESTED); a 429 or a 5xx that lasts would otherwise be a WARN until the hold is
+     *       nearly gone;</li>
+     *   <li>the hold is nearly used up. The authorisation lapses at the provider's limit, the goods
+     *       are already with the buyer, and the supplier is then never paid: a person has to act
+     *       before that. Past the point where a supplier would be refused at "ready"
+     *       ({@link PaymentHoldPolicy#usableFor}).</li>
+     * </ul>
+     * Called only for a payment that is still CAPTURE_PENDING after its attempt, so a capture that
+     * goes through the first time never writes either.
+     */
+    private void alertCaptureNearLimit(com.costonomy.mp.payment.domain.Payment payment) {
+        Instant now = Instant.now();
+        var firstFailure = transactions.findFirstByPaymentIdAndTransactionTypeAndStatusOrderByCreatedAtAsc(
+                payment.getId(), "CAPTURE", "FAILED");
+        if (firstFailure.isPresent() && firstFailure.get().getCreatedAt() != null
+                && firstFailure.get().getCreatedAt().isBefore(now.minus(CAPTURE_FAILING_ALERT_AFTER))
+                && alertDue("capture-failing-" + payment.getId(), now, CANCEL_ALERT_EVERY)) {
+            log.error("Payment {} has been CAPTURE_PENDING and failing to capture since {}: the supplier is "
+                    + "not paid until it goes through; a person must look",
+                    payment.getId(), firstFailure.get().getCreatedAt());
+        }
+        if (payment.getAuthorizedAt() == null) {
+            return;
+        }
+        if (payment.getAuthorizedAt().isBefore(now.minus(holdPolicy.usableFor(payment)))
+                && alertDue("capture-limit-" + payment.getId(), now, CANCEL_ALERT_EVERY)) {
+            log.error("Payment {} is still CAPTURE_PENDING and its hold, authorised at {}, lapses after "
+                    + "{} hours: the capture keeps failing and the supplier will not be paid",
+                    payment.getId(), payment.getAuthorizedAt(), holdPolicy.holdLimit(payment).toHours());
         }
     }
 
@@ -172,21 +293,18 @@ public class PaymentJobs {
                             payment, providerPayment, "RECONCILE");
 
                     if (updated.getStatus() == PaymentStatus.AUTHORIZED && updated.getAuthorizedAt() != null
-                            && updated.getAuthorizedAt().isBefore(Instant.now().minus(HOLD_WARN_AFTER))) {
-                        // Error, for an alert to match: the hold lapses at five days
-                        // and the order is still not ready. Past OrderFundingAdapter's
-                        // margin the supplier will be refused at "ready"; somebody has
-                        // to act before that, with the restaurant and the supplier.
+                            && updated.getAuthorizedAt().isBefore(Instant.now().minus(holdPolicy.warnAfter(updated)))) {
+                        // Error, for an alert to match: the hold lapses at the provider's
+                        // limit (costonomy.mp.razorpay.manual-expiry-minutes) and the order
+                        // is still not ready. Past PaymentHoldPolicy's margin the supplier
+                        // will be refused at "ready"; somebody has to act before that, with
+                        // the restaurant and the supplier.
                         log.error("Payment {} has been held since {} and its order is not dispatched; "
-                                + "the hold lapses at five days", updated.getId(), updated.getAuthorizedAt());
+                                + "the hold lapses after {} hours", updated.getId(), updated.getAuthorizedAt(),
+                                holdPolicy.holdLimit(updated).toHours());
                     }
-                    if (updated.getStatus().fundsSecured()) {
-                        // The order the customer paid for, finally released.
-                        orderRelease.releaseIfFunded(updated.getSupplierOrderId());
-                    } else if (updated.getStatus() == PaymentStatus.FAILED) {
-                        orderRelease.abandonUnfunded(updated.getSupplierOrderId(),
-                                "Payment failed: " + String.valueOf(updated.getFailureCode()));
-                    }
+                    // The same rule as the confirm call and the webhook (PaymentFollowUp).
+                    PaymentFollowUp.apply(orderRelease, updated);
 
                 } catch (PaymentProviderException ex) {
                     // Unreachable providers are normal. The next sweep asks again.
@@ -198,20 +316,230 @@ public class PaymentJobs {
         }
     }
 
+    /**
+     * Sends a cancelled order's debited money back (D-109): captures it, and raises
+     * the refund the refund job then sends. Frequent, because a restaurant whose
+     * order was cancelled is out of pocket until this runs; each payment is
+     * independent, so one the provider keeps refusing cannot hold up the rest.
+     *
+     * <p>A run has a time budget ({@link #CANCEL_BUDGET}) and stops early when the provider
+     * says it is limiting us or refusing our keys: the next run, fifteen seconds later,
+     * carries on.
+     */
+    @Scheduled(fixedDelayString = "${costonomy.mp.payments.cancel-interval:PT15S}")
+    @SchedulerLock(name = "payment-cancel", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
+    public void settleCancellations() {
+        Instant started = Instant.now();
+        var pending = payments.findPendingCancellations(PageRequest.of(0, CANCEL_BATCH));
+        int handled = 0;
+        // Whether the provider can still be asked this run. A stop (budget, rate limit, refused
+        // keys) turns it off, but never the reminders about payments waiting for a person: an
+        // outage is exactly when nobody must be left believing nothing is waiting (N5).
+        boolean mayAsk = true;
+        var run = cancellations.newRun();
+        for (var payment : pending) {
+            if (handled > 0 && budgetSpent(started)) {
+                // At least one payment every run, so a budget can never mean no progress.
+                log.warn("Cancellation run stopped at its time budget after {} of {} payments; "
+                        + "the next run carries on", handled, pending.size());
+                mayAsk = false;
+                break;
+            }
+            handled++;
+            try (var trace = PaymentTrace.of(payment)) {
+                try {
+                    var outcome = run.settle(payment.getId());
+                    alertIfStuck(payment.getId());
+                    if (outcome == CancellationService.Outcome.CONFIGURATION_FAULT) {
+                        // Already an ERROR (once per interval) that names the keys, mode and base
+                        // URL; nothing was sent to review, and the next run asks again.
+                        mayAsk = false;
+                        break;
+                    }
+                    if (outcome == CancellationService.Outcome.BACK_OFF) {
+                        // The provider is limiting or refusing us: more calls now would meet the
+                        // same answer, and would add to the load that caused it. Once per interval:
+                        // the next run, fifteen seconds on, will most likely stop here too.
+                        if (alertDue("cancel-backoff", Instant.now(), BACK_OFF_ALERT_EVERY)) {
+                            log.warn("Cancellation run stopped after payment {}: the provider is not "
+                                    + "accepting calls; the next run tries again", payment.getId());
+                        }
+                        mayAsk = false;
+                        break;
+                    }
+                } catch (RuntimeException ex) {
+                    // One stuck payment must not hold up the rest: this is money owed
+                    // back to someone, and the next run tries again.
+                    log.error("Could not settle the cancellation of payment {}", payment.getId(), ex);
+                }
+            }
+        }
+        // A single payment the provider did not know, held back until the next answer was in.
+        try {
+            run.finish();
+        } catch (RuntimeException ex) {
+            log.error("Could not stop an unknown payment for a person", ex);
+        }
+        reviewCancellations(started, mayAsk && !budgetSpent(started));
+    }
+
+    private boolean budgetSpent(Instant started) {
+        return Duration.between(started, Instant.now()).compareTo(cancelBudget) >= 0;
+    }
+
+    /**
+     * Payments stopped for a person are not forgotten (F2). Each is written to the error log
+     * once a day for as long as it stays there, and asked about again every few hours,
+     * because the provider may return the money on its own (an authorisation that expires)
+     * and the row must be able to end without anybody touching the database. A person can
+     * also clear the flag (the admin endpoint), which puts it back in the normal run.
+     *
+     * <p>{@code mayAsk} is false on a run that stopped early: the reminders still go out, the
+     * calls to the provider do not.
+     */
+    private void reviewCancellations(Instant started, boolean mayAsk) {
+        var reviewed = payments.findReviewedCancellations(PageRequest.of(0, REVIEW_BATCH));
+        Instant now = Instant.now();
+        var stillThere = new java.util.HashSet<Long>();
+        for (var payment : reviewed) {
+            stillThere.add(payment.getId());
+            try (var trace = PaymentTrace.of(payment)) {
+                try {
+                    // The stop itself was an error line; the first reminder is when a re-check
+                    // has had its chance and the payment is still here, then once a day.
+                    if (payment.getReviewRequiredAt().isBefore(now.minus(REVIEW_RECHECK_EVERY))
+                            && alertDue("review-" + payment.getId(), now, REVIEW_ALERT_EVERY)) {
+                        log.error("Payment {} has been waiting for a person since {}: {}. Its order was "
+                                + "cancelled and the money has not been returned",
+                                payment.getId(), payment.getReviewRequiredAt(), payment.getReviewReason());
+                    }
+                    Instant lastLooked = payment.getReconciledAt() != null
+                            && payment.getReconciledAt().isAfter(payment.getReviewRequiredAt())
+                            ? payment.getReconciledAt() : payment.getReviewRequiredAt();
+                    if (mayAsk && lastLooked.isBefore(now.minus(REVIEW_RECHECK_EVERY)) && !budgetSpent(started)) {
+                        if (cancellations.recheckReviewed(payment.getId())
+                                == CancellationService.Outcome.BACK_OFF) {
+                            break;
+                        }
+                    }
+                } catch (RuntimeException ex) {
+                    log.error("Could not re-check the cancellation of payment {}", payment.getId(), ex);
+                }
+            }
+        }
+        // A payment that left review (cleared, or ended) starts afresh if it ever returns.
+        alerts.forgetIf(key -> key.startsWith("review-")
+                && !stillThere.contains(Long.parseLong(key.substring("review-".length()))));
+    }
+
+    /**
+     * Error, for an alert to match: the money of a cancelled order has not started
+     * back after {@link #CANCEL_ALERT_AFTER}, or is still here after the provider
+     * should have returned it on its own — which means this job is broken. Each at most
+     * once per {@link #CANCEL_ALERT_EVERY} per payment (F7): a run every fifteen seconds
+     * would otherwise write it 240 times an hour for as long as the payment waits.
+     */
+    private void alertIfStuck(Long paymentId) {
+        var payment = payments.findById(paymentId).orElse(null);
+        if (payment == null || payment.getStatus() != PaymentStatus.CANCEL_PENDING
+                || payment.getReviewRequiredAt() != null) {
+            alerts.forget("stuck-" + paymentId);
+            alerts.forget("limit-" + paymentId);
+            alerts.forget("cancel-lookup-" + paymentId);
+            return;
+        }
+        // When it began waiting: the later of the cancel and the money's arrival. A draft
+        // cancelled last week that a payer paid this morning has waited minutes, not days.
+        Instant since = payment.getCancelRequestedAt() != null ? payment.getCancelRequestedAt() : payment.getCreatedAt();
+        if (payment.getAuthorizedAt() != null && payment.getAuthorizedAt().isAfter(since)) {
+            since = payment.getAuthorizedAt();
+        }
+        Instant now = Instant.now();
+        if (overdue(since, now) && alertDue("stuck-" + paymentId, now, CANCEL_ALERT_EVERY)) {
+            log.error("Payment {} still CANCEL_PENDING after {} min ({} attempts)", paymentId,
+                    Duration.between(since, now).toMinutes(), payment.getCancelAttempts());
+        }
+        if (payment.getAuthorizedAt() != null
+                && payment.getAuthorizedAt().isBefore(now.minus(holdPolicy.holdLimit(payment)))
+                && alertDue("limit-" + paymentId, now, CANCEL_ALERT_EVERY)) {
+            log.error("Payment {} is still CANCEL_PENDING past the provider's hold limit of {} hours; "
+                    + "the provider should have returned it", paymentId, holdPolicy.holdLimit(payment).toHours());
+        }
+    }
+
+    /** Whether a cancellation begun at {@code since} has been waiting long enough to be an error. */
+    static boolean overdue(Instant since, Instant now) {
+        return since.isBefore(now.minus(CANCEL_ALERT_AFTER));
+    }
+
+    /**
+     * Error, for an alert to match: a refund that has been FAILED (or still REQUESTED) for more than an hour, once
+     * per refund per hour. FAILED is retried every run, so this is the only line that says a
+     * refund owed to someone is not getting through (N4). Measured from when the refund was
+     * requested, which is stable across resends (each send moves {@code updated_at}); a refund
+     * is sent within a minute of being requested, so an old FAILED one has been failing since.
+     */
+    private void alertFailedRefunds(java.util.List<com.costonomy.mp.payment.domain.Refund> pending) {
+        Instant now = Instant.now();
+        var failed = new java.util.HashSet<String>();
+        for (var refund : pending) {
+            // REQUESTED as well as FAILED: a refund is sent within a minute of being requested, so
+            // one still REQUESTED after an hour has not been sent because the run keeps stopping
+            // before it (another refund is refused, or the provider is limiting us) and it has no
+            // error of its own to say so.
+            // PROCESSING too, but only one in the list: claimed and never finished, no provider id.
+            if (refund.getStatus() != RefundStatus.FAILED && refund.getStatus() != RefundStatus.REQUESTED
+                    && refund.getStatus() != RefundStatus.PROCESSING) {
+                continue;
+            }
+            String key = "refund-failed-" + refund.getId();
+            failed.add(key);
+            if (refund.getCreatedAt() != null
+                    && refund.getCreatedAt().isBefore(now.minus(REFUND_FAILED_ALERT_AFTER))
+                    && alertDue(key, now, REFUND_FAILED_ALERT_EVERY)) {
+                log.error("Refund {} of payment {} has been {} since it was requested at {} ({} attempts, "
+                        + "last error {}); money owed to the payer is not getting back", refund.getId(),
+                        refund.getPaymentId(), refund.getStatus(), refund.getCreatedAt(), refund.getAttempts(),
+                        refund.getFailureCode());
+            }
+        }
+        // One that ended (or moved on) starts afresh if it ever fails again.
+        alerts.forgetIf(key -> key.startsWith("refund-failed-") && !failed.contains(key));
+    }
+
     @Scheduled(fixedDelayString = "${costonomy.mp.payments.refund-interval:PT30S}")
     @SchedulerLock(name = "payment-refund", lockAtMostFor = "PT10M", lockAtLeastFor = "PT0S")
     public void processRefunds() {
-        var pending = new java.util.ArrayList<>(refunds.findByStatusIn(
+        var pending = new java.util.ArrayList<>(refunds.findByStatusInOrderByUpdatedAtAscIdAsc(
                 java.util.List.of(RefundStatus.REQUESTED, RefundStatus.FAILED)));
         // Claimed and never finished: the process died between claiming and
         // writing the outcome. Safe to resend — the provider key is per refund.
         pending.addAll(refunds.findByStatusAndProviderRefundIdIsNullAndUpdatedAtBefore(
                 RefundStatus.PROCESSING, Instant.now().minus(RefundService.STUCK_AFTER)));
+        // One list, oldest attempt first: a stuck refund appended after the others would never be
+        // reached while one refused refund stops the run ahead of it, and would never rotate.
+        pending.sort(java.util.Comparator
+                .comparing(com.costonomy.mp.payment.domain.Refund::getUpdatedAt,
+                        java.util.Comparator.nullsFirst(java.util.Comparator.naturalOrder()))
+                .thenComparing(com.costonomy.mp.payment.domain.Refund::getId));
+
+        // Before any send, so a provider that is limiting us or refusing our keys cannot
+        // silence it: a refund that has been failing for an hour is money owed back that a
+        // person must know about, and each send below that fails only writes a WARN (N4).
+        alertFailedRefunds(pending);
 
         for (var refund : pending) {
             try (var trace = PaymentTrace.of(refund)) {
                 try {
-                    refundService.process(refund.getId());
+                    if (refundService.process(refund.getId()) == RefundService.Outcome.BACK_OFF) {
+                        // Rate limited or keys refused: every other refund would meet the same answer
+                        // and add to the load. Stop, as the cancellation job does; the next run resends.
+                        if (alertDue("refund-backoff", Instant.now(), BACK_OFF_ALERT_EVERY)) {
+                            log.warn("Refund run stopped after refund {}: the provider is not accepting "
+                                    + "calls; the next run tries again", refund.getId());
+                        }
+                        return;
+                    }
                 } catch (RuntimeException ex) {
                     log.error("Could not process refund {}", refund.getId(), ex);
                 }

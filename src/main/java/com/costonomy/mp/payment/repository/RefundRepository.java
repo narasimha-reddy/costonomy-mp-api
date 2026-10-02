@@ -16,7 +16,14 @@ public interface RefundRepository extends JpaRepository<Refund, Long> {
 
     List<Refund> findByPaymentIdOrderByCreatedAtDesc(Long paymentId);
 
-    List<Refund> findByStatusIn(Collection<RefundStatus> statuses);
+    /**
+     * Oldest attempt first (then oldest row), which is what makes the refund run fair. Every send
+     * moves {@code updated_at}, so a refund that was just tried, and backed off, goes to the back
+     * and the next run starts with another one. Without the order MySQL returns FAILED rows ahead
+     * of REQUESTED ones, in the same order every time, and a refund the provider keeps refusing
+     * (which stops the run) would be first for ever and starve every other.
+     */
+    List<Refund> findByStatusInOrderByUpdatedAtAscIdAsc(Collection<RefundStatus> statuses);
 
     /** Refunds claimed for sending and never finished — the process died mid-call. */
     List<Refund> findByStatusAndProviderRefundIdIsNullAndUpdatedAtBefore(RefundStatus status, Instant before);

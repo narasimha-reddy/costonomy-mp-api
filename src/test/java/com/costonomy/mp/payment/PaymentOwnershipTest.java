@@ -70,7 +70,9 @@ class PaymentOwnershipTest {
         }).when(tx).executeWithoutResult(any());
 
         service = new PaymentService(payments, mock(PaymentTransactionRepository.class),
-                provider, audit, mock(OutboxService.class), tx);
+                provider, audit, mock(OutboxService.class), tx,
+                mock(com.costonomy.mp.payment.service.CancellationLedger.class),
+                new com.costonomy.mp.payment.service.PaymentHoldPolicy(4320));
 
         payment = new Payment();
         ReflectionTestUtils.setField(payment, "id", 7L);

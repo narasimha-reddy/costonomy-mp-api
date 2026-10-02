@@ -10,6 +10,7 @@ import com.costonomy.mp.payment.provider.PaymentProvider;
 import com.costonomy.mp.payment.provider.PaymentProviderException;
 import com.costonomy.mp.payment.repository.PaymentRepository;
 import com.costonomy.mp.payment.repository.RefundRepository;
+import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -51,6 +52,8 @@ public class RefundService {
     private final OutboxService outbox;
     private final TransactionTemplate txTemplate;
     private final RefundWalletPort wallet;
+    private final SupplierOrderRepository orders;
+    private final CancelRefundSpeed cancelRefundSpeed;
 
     /**
      * How long a refund may sit in PROCESSING before we assume the process that
@@ -61,6 +64,20 @@ public class RefundService {
 
     /** Sends before a refund that keeps failing goes to a person instead (D-101). */
     static final int MAX_ATTEMPTS = 5;
+
+    /** How often "Razorpay refused our credentials" is repeated while it lasts (N5). */
+    private static final Duration CREDENTIALS_ALERT_EVERY = Duration.ofMinutes(15);
+
+    /** Shared with the jobs, so one outage is one line. Not injected state: it is only a memory of what was logged. */
+    private final AlertThrottle alerts;
+
+    /** What the refund job should do next after one refund. */
+    public enum Outcome {
+        /** Carry on with the next refund. */
+        DONE,
+        /** Razorpay is limiting our calls or refuses our keys: the rest of this run would meet the same answer. */
+        BACK_OFF
+    }
 
     /** Refunds whose money may still go back, and so is not refundable again. */
     private static final java.util.Set<RefundStatus> IN_FLIGHT = java.util.EnumSet.of(
@@ -173,11 +190,7 @@ public class RefundService {
                 null, RefundStatus.COMPLETED.name(),
                 reason.name() + " " + value.toPlainString(), actorId == null ? "SYSTEM" : "API");
         outbox.publish("RefundCompleted", "REFUND", refund.getId(),
-                Map.of("paymentId", paymentId,
-                        "supplierOrderId", payment.getSupplierOrderId(),
-                        "amount", value.toPlainString(),
-                        "destination", RefundDestination.WALLET.name()),
-                actorId);
+                completedPayload(payment, refund), actorId);
         log.info("Refund {} of {} ({}) against payment {} credited to the wallet of outlet {}",
                 refund.getId(), value.toPlainString(), reason, paymentId, payment.getOutletId());
         return refund;
@@ -292,7 +305,7 @@ public class RefundService {
      * the call shared one transaction, and moving the call out without this would
      * have left such a refund stuck for good.
      */
-    public void process(Long refundId) {
+    public Outcome process(Long refundId) {
         Refund claimed = txTemplate.execute(status -> {
             var refund = refunds.findById(refundId).orElse(null);
             if (refund == null || !claimable(refund)) {
@@ -308,7 +321,7 @@ public class RefundService {
             return refunds.saveAndFlush(refund);
         });
         if (claimed == null) {
-            return;
+            return Outcome.DONE;
         }
 
         var payment = paymentService.load(claimed.getPaymentId());
@@ -321,20 +334,40 @@ public class RefundService {
                     // the provider rather than issuing a second one. Prefixed to
                     // clear Razorpay's ten-character minimum: "refund-7" is
                     // rejected, and a rejected key is no key at all.
-                    "mandi-refund-" + claimed.getId());
+                    "mandi-refund-" + claimed.getId(),
+                    optionsFor(claimed));
         } catch (PaymentProviderException ex) {
             failure = ex;
         }
 
         final var outcome = result;
         final var error = failure;
+        final boolean[] backOff = {false};
         txTemplate.executeWithoutResult(status -> {
             var refund = refunds.findById(refundId).orElseThrow();
             if (refund.getStatus() != RefundStatus.PROCESSING) {
                 return;
             }
             if (error != null) {
-                if (error.isRetryable() && refund.getAttempts() < MAX_ATTEMPTS) {
+                if (error.isRateLimited() || error.isCredentialsRefused()) {
+                    // Razorpay is limiting our calls, or is refusing our keys: nothing is wrong
+                    // with the refund and it has not been refused. Retried next run with the
+                    // same key, however many times it takes; sending it to a person would strand
+                    // money that is owed back over a busy minute at the provider or a key that
+                    // is being rotated (F2). Nothing moves while it waits, so waiting is safe.
+                    // And the send does not count toward MAX_ATTEMPTS: it says nothing about the
+                    // refund, and a count that grows through a rate limit would send the first
+                    // real 5xx after it to NEEDS_REVIEW, which has no exit but the database (N2).
+                    refund.setAttempts(Math.max(0, refund.getAttempts() - 1));
+                    backOff[0] = true;
+                    // Once per interval, not per refund per run: the same outage, 120 times an hour.
+                    if (error.isCredentialsRefused()
+                            && alerts.due("credentials-refund", Instant.now(), CREDENTIALS_ALERT_EVERY)) {
+                        log.error("Razorpay refused our credentials sending refund {}; it will be sent "
+                                + "again when the keys are fixed", refund.getId());
+                    }
+                    markFailed(refund, error.providerCode(), error.getMessage());
+                } else if (error.isRetryable() && refund.getAttempts() < MAX_ATTEMPTS) {
                     // FAILED rather than abandoned, because doc 03 §7 allows a retry
                     // from here — and the same refund row is retried with the same
                     // key, so a retry cannot become a second refund.
@@ -362,6 +395,25 @@ public class RefundService {
             }
             complete(refund);
         });
+        return backOff[0] ? Outcome.BACK_OFF : Outcome.DONE;
+    }
+
+    /**
+     * What a refund carries beyond its amount (D-109): a receipt and notes, so it
+     * can be found at the provider by our own reference and read on their dashboard
+     * without our database, and the speed. The receipt is the idempotency key's
+     * twin: {@code mandi-refund-{id}}, well inside Razorpay's forty characters.
+     */
+    private PaymentProvider.RefundOptions optionsFor(Refund refund) {
+        boolean cancellation = refund.getReason() == RefundReason.CANCELLATION
+                && refund.getDestination() == RefundDestination.ORIGINAL;
+        return new PaymentProvider.RefundOptions(
+                "mandi-refund-" + refund.getId(),
+                java.util.Map.of(
+                        "mandi_refund_id", String.valueOf(refund.getId()),
+                        "mandi_payment_id", String.valueOf(refund.getPaymentId()),
+                        "purpose", refund.getReason().name().toLowerCase(java.util.Locale.ROOT)),
+                cancellation ? cancelRefundSpeed.speed() : "normal");
     }
 
     /**
@@ -416,10 +468,39 @@ public class RefundService {
         }
 
         outbox.publish("RefundCompleted", "REFUND", refund.getId(),
-                Map.of("paymentId", refund.getPaymentId(),
-                        "supplierOrderId", refund.getSupplierOrderId(),
-                        "amount", refund.getAmount().toPlainString()),
+                completedPayload(payments.findById(refund.getPaymentId()).orElseThrow(), refund),
                 refund.getRequestedBy());
+    }
+
+    /**
+     * What the outbox says about a completed refund, and enough for the restaurant
+     * to be told: which outlet, which order, where the money went, and which wording
+     * fits. Without the outlet the notification had nobody to go to (D-109).
+     */
+    private java.util.Map<String, Object> completedPayload(Payment payment, Refund refund) {
+        var payload = new java.util.HashMap<String, Object>();
+        payload.put("paymentId", refund.getPaymentId());
+        payload.put("supplierOrderId", refund.getSupplierOrderId());
+        payload.put("outletId", payment.getOutletId());
+        payload.put("amount", refund.getAmount().toPlainString());
+        payload.put("destination", refund.getDestination().name());
+        payload.put("reason", refund.getReason().name());
+        orders.findById(refund.getSupplierOrderId())
+                .ifPresent(order -> payload.put("orderNumber", order.getOrderNumber()));
+        // Which notification text fits (F5). A dispute refund to the wallet is already told
+        // to the restaurant by the dispute's own "refund approved", and each part of a
+        // wallet withdrawal would push a "refunded" linked to whichever old order it was
+        // drawn from, so neither sends one of its own: their variants have no rule.
+        if (refund.getReason() == RefundReason.WALLET_WITHDRAWAL) {
+            payload.put("notificationVariant", "WITHDRAWAL");
+        } else if (refund.getReason() == RefundReason.DISPUTE_RESOLVED) {
+            payload.put("notificationVariant", "DISPUTE");
+        } else if (refund.getDestination() == RefundDestination.WALLET) {
+            payload.put("notificationVariant", "WALLET");
+        } else if (refund.getReason() == RefundReason.CANCELLATION) {
+            payload.put("notificationVariant", "CANCELLATION_TO_SOURCE");
+        }
+        return payload;
     }
 
     /** Waiting to be sent, failed and worth retrying, or claimed by a process that died. */

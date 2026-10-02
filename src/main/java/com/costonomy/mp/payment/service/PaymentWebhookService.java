@@ -184,13 +184,9 @@ public class PaymentWebhookService {
 
         // Authorisation is what lets the order reach its supplier. Doing it here
         // means a customer who closes the app mid-checkout still gets their order
-        // placed, because the webhook arrives regardless (doc 46).
-        if (updated.getStatus().fundsSecured()) {
-            orderRelease.releaseIfFunded(updated.getSupplierOrderId());
-        } else if (updated.getStatus() == com.costonomy.mp.payment.domain.PaymentStatus.FAILED) {
-            orderRelease.abandonUnfunded(updated.getSupplierOrderId(),
-                    "Payment failed: " + String.valueOf(updated.getFailureCode()));
-        }
+        // placed, because the webhook arrives regardless (doc 46). What follows is
+        // the same rule the confirm call and the sweep apply (PaymentFollowUp).
+        PaymentFollowUp.apply(orderRelease, updated);
     }
 
     // ── payload helpers ──────────────────────────────────────────────────

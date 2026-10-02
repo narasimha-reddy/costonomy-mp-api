@@ -63,13 +63,17 @@ public class PaymentController {
         accessControl.requireScoped(ActorContext.requireUserId(), Permissions.PAYMENT_CREATE,
                 ScopeType.OUTLET, payment.getOutletId(), "Payment");
 
+        // Not once the order was cancelled: money that reached a cancelled order is captured only
+        // to be sent back, at Costonomy's cost (the gateway keeps its fee), so a pay screen, an
+        // older app or a deep link must not be offered a checkout for it, nor the key to open one (N3).
         boolean payable = payment.getStatus() == com.costonomy.mp.payment.domain.PaymentStatus.CREATED
-                && payment.getProviderOrderId() != null;
+                && payment.getProviderOrderId() != null
+                && payment.getCancelRequestedAt() == null;
         return ApiResponse.ok(new PaymentDtos.PaymentIntentResponse(
                 payment.getId(), payment.getSupplierOrderId(), payment.getProvider(),
                 payment.getProviderOrderId(), payment.getAuthorizedAmount(), payment.getCurrency(),
                 payable ? publicKey(payment.getProvider()) : null,
-                payment.getStatus(), payment.getStatus().fundsSecured(), payable,
+                payment.getStatus(), payment.fundsSecuredForOrder(), payable,
                 payment.getFailureReason()));
     }
 
@@ -105,12 +109,11 @@ public class PaymentController {
 
             var confirmed = paymentService.confirm(id, request.providerPaymentId());
 
-            if (confirmed.getStatus().fundsSecured()) {
-                orderRelease.releaseIfFunded(confirmed.getSupplierOrderId());
-            } else if (confirmed.getStatus() == com.costonomy.mp.payment.domain.PaymentStatus.FAILED) {
-                orderRelease.abandonUnfunded(confirmed.getSupplierOrderId(),
-                        "Payment failed: " + String.valueOf(confirmed.getFailureCode()));
-            }
+            // The same rule as the webhook and the sweep: release, end, or (money that
+            // reached a cancelled order) end the draft too. This call had no answer for
+            // that last case, and a draft it left open could be released against money
+            // being sent back (F1).
+            com.costonomy.mp.payment.service.PaymentFollowUp.apply(orderRelease, confirmed);
 
             return ApiResponse.ok(toResponse(paymentService.load(id)));
         }
@@ -141,7 +144,7 @@ public class PaymentController {
                 payment.getAuthorizedAmount(), payment.getCapturedAmount(),
                 payment.getRefundedAmount(), payment.getReleasedAmount(),
                 payment.getCurrency(), payment.getFailureCode(), payment.getFailureReason(),
-                payment.getStatus().fundsSecured(),
+                payment.fundsSecuredForOrder(),
                 payment.getAuthorizedAt(), payment.getCapturedAt(),
                 transactions.findByPaymentIdOrderByCreatedAtAsc(payment.getId()).stream()
                         .map(transaction -> new PaymentDtos.TransactionResponse(
