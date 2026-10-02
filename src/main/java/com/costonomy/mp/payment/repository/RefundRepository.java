@@ -4,6 +4,7 @@ import com.costonomy.mp.payment.domain.Refund;
 import com.costonomy.mp.payment.domain.RefundStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -15,4 +16,7 @@ public interface RefundRepository extends JpaRepository<Refund, Long> {
     List<Refund> findByPaymentIdOrderByCreatedAtDesc(Long paymentId);
 
     List<Refund> findByStatusIn(Collection<RefundStatus> statuses);
+
+    /** Refunds claimed for sending and never finished — the process died mid-call. */
+    List<Refund> findByStatusAndUpdatedAtBefore(RefundStatus status, Instant before);
 }

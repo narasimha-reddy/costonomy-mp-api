@@ -22,6 +22,15 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
+import com.costonomy.mp.payment.provider.PaymentProviderException;
+import com.costonomy.mp.payment.service.PaymentJobsAccess;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.function.Consumer;
 
 import java.math.BigDecimal;
 import java.util.Optional;
@@ -47,10 +56,21 @@ class PaymentOwnershipTest {
     private PaymentService service;
     private Payment payment;
 
+    @SuppressWarnings("unchecked")
     @BeforeEach
     void setUp() {
+        // Runs the callback inline: these tests are about what is written, and the
+        // integration tests prove no transaction is open around the provider call.
+        var tx = mock(TransactionTemplate.class);
+        when(tx.execute(any())).thenAnswer(call ->
+                ((TransactionCallback<Object>) call.getArgument(0)).doInTransaction(null));
+        doAnswer(call -> {
+            ((Consumer<TransactionStatus>) call.getArgument(0)).accept(null);
+            return null;
+        }).when(tx).executeWithoutResult(any());
+
         service = new PaymentService(payments, mock(PaymentTransactionRepository.class),
-                provider, audit, mock(OutboxService.class));
+                provider, audit, mock(OutboxService.class), tx);
 
         payment = new Payment();
         ReflectionTestUtils.setField(payment, "id", 7L);
@@ -61,6 +81,8 @@ class PaymentOwnershipTest {
         payment.setAuthorizedAmount(new BigDecimal("1500.00"));
         payment.setStatus(PaymentStatus.CREATED);
         when(payments.findById(7L)).thenReturn(Optional.of(payment));
+        // Every state change locks the row first (D-099).
+        when(payments.lockById(7L)).thenReturn(Optional.of(payment));
     }
 
     @Test
@@ -158,6 +180,35 @@ class PaymentOwnershipTest {
         verify(store).finish(finished.capture());
         assertThat(finished.getValue().getStatus()).isEqualTo("IGNORED");
         verify(provider, never()).fetchPayment(any());
+    }
+
+    @Test
+    @DisplayName("a provider that cannot be reached leaves the payment exactly as it was")
+    void unreachableProviderChangesNothing() {
+        when(provider.fetchPayment("pay_mine")).thenThrow(
+                PaymentProviderException.unreachable("timeout", new RuntimeException()));
+
+        assertThatThrownBy(() -> service.confirm(7L, "pay_mine"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.code()).isEqualTo(ErrorCode.PROVIDER_UNAVAILABLE));
+        assertThat(payment.getStatus()).isEqualTo(PaymentStatus.CREATED);
+        assertThat(payment.getProviderPaymentId()).isNull();
+    }
+
+    @Test
+    @DisplayName("an unpaid intent is asked about less often as it ages")
+    void intentLookupBacksOff() {
+        Instant now = Instant.parse("2026-09-27T12:00:00Z");
+        // Ten minutes old: every two minutes.
+        Instant young = now.minus(Duration.ofMinutes(10));
+        assertThat(PaymentJobsAccess.due(young, now.minusSeconds(130), now)).isTrue();
+        assertThat(PaymentJobsAccess.due(young, now.minusSeconds(60), now)).isFalse();
+        // Five hours old: every thirty minutes, the ceiling.
+        Instant old = now.minus(Duration.ofHours(5));
+        assertThat(PaymentJobsAccess.due(old, now.minus(Duration.ofMinutes(20)), now)).isFalse();
+        assertThat(PaymentJobsAccess.due(old, now.minus(Duration.ofMinutes(31)), now)).isTrue();
+        // Never asked: always due.
+        assertThat(PaymentJobsAccess.due(old, null, now)).isTrue();
     }
 
     private static ProviderPayment authorized(String id, String orderId, String amount) {

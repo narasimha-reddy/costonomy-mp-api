@@ -14,6 +14,21 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import com.costonomy.mp.payment.provider.PaymentProviderException;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -41,7 +56,9 @@ class PaymentFlowIT extends AbstractIntegrationTest {
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
-    @Autowired private MockPaymentProvider mockProvider;
+    // A spy, so the hardening cases can see what surrounds each provider call.
+    // Every other case uses it exactly as the real mock.
+    @SpyBean private MockPaymentProvider mockProvider;
     @Autowired private PaymentRepository payments;
     @Autowired private PaymentJobs paymentJobs;
 
@@ -381,19 +398,23 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("a retryable capture failure returns the payment to AUTHORIZED")
+        @DisplayName("a retryable capture failure stays queued, and the next run really tries again")
         void captureFailureIsRetried() throws Exception {
             // .17 makes the mock fail the capture.
             var submitted = submit("400.17", 1);
             payAndConfirm(submitted);
 
-
+            paymentJobs.capturePending();
             paymentJobs.capturePending();
 
-            // The money is still held, so the payment is exactly where it was and
-            // the next sweep tries again — rather than being stranded.
+            // The side effect, not the status (D-099): this test used to assert
+            // AUTHORIZED and call it retried, while nothing ever queued the
+            // capture again. Two runs must mean two attempts.
             assertThat(jdbc.queryForObject("select status from payment where id = ?",
-                    String.class, submitted.paymentId())).isEqualTo("AUTHORIZED");
+                    String.class, submitted.paymentId())).isEqualTo("CAPTURE_PENDING");
+            assertThat(jdbc.queryForObject("select count(*) from payment_transaction "
+                    + "where payment_id = ? and transaction_type = 'CAPTURE' and status = 'FAILED'",
+                    Integer.class, submitted.paymentId())).isEqualTo(2);
             // And the acceptance stands: a gateway problem is not the supplier's.
             assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
         }
@@ -632,6 +653,190 @@ class PaymentFlowIT extends AbstractIntegrationTest {
             assertThat(requestRefundStatus(submitted, "100.00", "CANCELLATION",
                     UUID.randomUUID().toString()))
                     .isEqualTo(409);
+        }
+    }
+
+    // ── Hardening (D-099) ────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("hardening")
+    class Hardening {
+
+        /** Records, for each provider call, whether a database transaction was open. */
+        private final List<String> openDuring = new CopyOnWriteArrayList<>();
+
+        @org.junit.jupiter.api.AfterEach
+        void unspy() {
+            reset(mockProvider);
+        }
+
+        private void recordTransactionState(String call) {
+            if (TransactionSynchronizationManager.isActualTransactionActive()) {
+                openDuring.add(call);
+            }
+        }
+
+        @Test
+        @DisplayName("confirm, capture and refund call the provider with no transaction open")
+        void providerCallsHoldNoConnection() throws Exception {
+            doAnswer(call -> { recordTransactionState("fetchPayment"); return call.callRealMethod(); })
+                    .when(mockProvider).fetchPayment(anyString());
+            doAnswer(call -> { recordTransactionState("capture"); return call.callRealMethod(); })
+                    .when(mockProvider).capture(anyString(), any(), anyString());
+            doAnswer(call -> { recordTransactionState("refund"); return call.callRealMethod(); })
+                    .when(mockProvider).refund(anyString(), any(), anyString());
+
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+            paymentJobs.capturePending();
+            requestRefund(submitted, "100.00", "CANCELLATION", UUID.randomUUID().toString());
+            paymentJobs.processRefunds();
+
+            // The pool is ten connections; a provider call holding one is how ten
+            // slow checkouts stall every endpoint. It must be none of them.
+            assertThat(openDuring).isEmpty();
+            // And the work still happened.
+            assertThat(jdbc.queryForObject("select status from payment where id = ?",
+                    String.class, submitted.paymentId())).isEqualTo("PARTIALLY_REFUNDED");
+        }
+
+        @Test
+        @DisplayName("a refund left PROCESSING by a crash is resent once, with its own key")
+        void stuckRefundIsResent() throws Exception {
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+            paymentJobs.capturePending();
+            long refundId = requestRefund(submitted, "50.00", "CANCELLATION",
+                    UUID.randomUUID().toString()).at("/data/id").asLong();
+
+            // What a process that died mid-call leaves behind.
+            jdbc.update("update refund set status = 'PROCESSING', updated_at = "
+                    + "date_sub(utc_timestamp(6), interval 10 minute) where id = ?", refundId);
+
+            paymentJobs.processRefunds();
+            paymentJobs.processRefunds();
+
+            assertThat(jdbc.queryForObject("select status from refund where id = ?",
+                    String.class, refundId)).isEqualTo("COMPLETED");
+            verify(mockProvider, times(1)).refund(anyString(), any(), eq("mandi-refund-" + refundId));
+        }
+
+        @Test
+        @DisplayName("a refund the provider declines is retried with the same key, never a new one")
+        void failedRefundRetriesWithSameKey() throws Exception {
+            // .19 makes the mock decline the refund.
+            var submitted = submit("400.19", 1);
+            payAndConfirm(submitted);
+            paymentJobs.capturePending();
+            long refundId = requestRefund(submitted, "10.00", "CANCELLATION",
+                    UUID.randomUUID().toString()).at("/data/id").asLong();
+
+            paymentJobs.processRefunds();
+            paymentJobs.processRefunds();
+
+            assertThat(jdbc.queryForObject("select status from refund where id = ?",
+                    String.class, refundId)).isEqualTo("FAILED");
+            verify(mockProvider, times(2)).refund(anyString(), any(), eq("mandi-refund-" + refundId));
+            assertThat(jdbc.queryForObject("select count(*) from refund where payment_id = ?",
+                    Integer.class, submitted.paymentId())).isEqualTo(1);
+            assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("two partial refunds that add up to the capture leave it fully refunded")
+        void partialThenPartial() throws Exception {
+            var submitted = submit("400", 1);
+            payAndConfirm(submitted);
+            paymentJobs.capturePending();
+
+            requestRefund(submitted, "150.00", "CANCELLATION", UUID.randomUUID().toString());
+            paymentJobs.processRefunds();
+            assertThat(jdbc.queryForObject("select status from payment where id = ?",
+                    String.class, submitted.paymentId())).isEqualTo("PARTIALLY_REFUNDED");
+
+            requestRefund(submitted, "250.00", "CANCELLATION", UUID.randomUUID().toString());
+            paymentJobs.processRefunds();
+
+            assertThat(jdbc.queryForObject("select status from payment where id = ?",
+                    String.class, submitted.paymentId())).isEqualTo("FULLY_REFUNDED");
+            assertThat(decimal(submitted.paymentId(), "refunded_amount")).isEqualByComparingTo("400.00");
+            // And nothing more can go back than came in.
+            assertThat(requestRefundStatus(submitted, "0.01", "CANCELLATION",
+                    UUID.randomUUID().toString())).isGreaterThanOrEqualTo(400);
+        }
+
+        @Test
+        @DisplayName("confirm and a webhook arriving together authorise once, five races in a row")
+        void confirmAndWebhookRace() throws Exception {
+            // One race proves little: which thread wins changes run to run. Five
+            // give both orders of arrival a fair chance to show up.
+            for (int race = 0; race < 5; race++) {
+                raceOnce();
+            }
+        }
+
+        private void raceOnce() throws Exception {
+            var submitted = submit("400", 1);
+            var paid = mockProvider.completeCheckout(submitted.providerOrderId());
+            String body = webhookBody("evt_" + UUID.randomUUID(), "payment.authorized",
+                    paid.providerPaymentId(), submitted.providerOrderId());
+
+            var start = new CountDownLatch(1);
+            var pool = Executors.newFixedThreadPool(2);
+            var confirm = pool.submit(() -> {
+                start.await();
+                return mvc.perform(MockMvcRequestBuilders
+                                .post("/api/v1/payments/" + submitted.paymentId() + "/confirm")
+                                .header("Authorization", "Bearer " + submitted.buyer().token())
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(json.writeValueAsString(
+                                        Map.of("providerPaymentId", paid.providerPaymentId()))))
+                        .andReturn().getResponse().getStatus();
+            });
+            var webhook = pool.submit(() -> { start.await(); return postWebhook(body); });
+            start.countDown();
+            int confirmStatus = confirm.get(30, TimeUnit.SECONDS);
+            int webhookStatus = webhook.get(30, TimeUnit.SECONDS);
+            pool.shutdown();
+
+            // One of them won; neither may double-count, and neither may fail the
+            // customer who really paid.
+            assertThat(confirmStatus).isEqualTo(200);
+            assertThat(webhookStatus).isEqualTo(200);
+            assertThat(jdbc.queryForObject("select count(*) from payment_transaction "
+                    + "where payment_id = ? and transaction_type = 'AUTHORIZE'",
+                    Integer.class, submitted.paymentId())).isEqualTo(1);
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+        }
+
+        @Test
+        @DisplayName("a provider that is down changes nothing, and the sweep recovers later")
+        void providerDownThenRecovers() throws Exception {
+            var submitted = submit("400", 1);
+            var paid = mockProvider.completeCheckout(submitted.providerOrderId());
+            doThrow(PaymentProviderException.unreachable("down", new RuntimeException()))
+                    .when(mockProvider).fetchPayment(anyString());
+
+            int status = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/payments/" + submitted.paymentId() + "/confirm")
+                            .header("Authorization", "Bearer " + submitted.buyer().token())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(
+                                    Map.of("providerPaymentId", paid.providerPaymentId()))))
+                    .andReturn().getResponse().getStatus();
+
+            assertThat(status).isEqualTo(503);
+            assertThat(jdbc.queryForObject("select status from payment where id = ?",
+                    String.class, submitted.paymentId())).isEqualTo("CREATED");
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("DRAFT");
+
+            // The provider comes back; the sweep finds the payment by its intent.
+            reset(mockProvider);
+            jdbc.update("update payment set updated_at = "
+                    + "date_sub(utc_timestamp(6), interval 10 minute) where id = ?", submitted.paymentId());
+            paymentJobs.reconcileStale();
+
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
         }
     }
 

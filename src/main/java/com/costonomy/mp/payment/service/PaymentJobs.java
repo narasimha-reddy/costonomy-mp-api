@@ -10,6 +10,7 @@ import com.costonomy.mp.procurement.service.OrderReleaseService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -51,10 +52,31 @@ public class PaymentJobs {
      */
     private static final Duration INTENT_LOOKUP_WINDOW = Duration.ofDays(1);
 
+    /**
+     * Per run. A run takes the oldest first and the next run takes the rest, so a
+     * backlog drains in order without one run holding the scheduler for minutes.
+     */
+    static final int CAPTURE_BATCH = 100;
+    static final int RECONCILE_BATCH = 200;
+
+    /**
+     * Whether an unpaid intent is due to be asked about again.
+     *
+     * <p>The gap grows with the intent's age — a fifth of it, between two minutes
+     * and thirty. A lost callback shows up in the first few checks; an abandoned
+     * checkout then costs about sixty lookups over its day instead of 1,440, which
+     * at any volume is the difference between a safety net and a rate limit (D-099).
+     */
+    static boolean dueForIntentLookup(Instant createdAt, Instant lastAsked, Instant now) {
+        long ageSeconds = Duration.between(createdAt, now).getSeconds();
+        long gap = Math.max(120, Math.min(1800, ageSeconds / 5));
+        return lastAsked == null || lastAsked.isBefore(now.minusSeconds(gap));
+    }
+
     @Scheduled(fixedDelayString = "${costonomy.mp.payments.capture-interval:PT10S}")
     @SchedulerLock(name = "payment-capture", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
     public void capturePending() {
-        var pending = payments.findPendingCaptures();
+        var pending = payments.findPendingCaptures(PageRequest.of(0, CAPTURE_BATCH));
         for (var payment : pending) {
             try {
                 paymentService.performCapture(payment.getId());
@@ -80,7 +102,7 @@ public class PaymentJobs {
     @SchedulerLock(name = "payment-reconcile", lockAtMostFor = "PT10M", lockAtLeastFor = "PT0S")
     public void reconcileStale() {
         var staleBefore = Instant.now().minus(Duration.ofMinutes(2));
-        var stale = payments.findStale(staleBefore);
+        var stale = payments.findStale(staleBefore, PageRequest.of(0, RECONCILE_BATCH));
 
         for (var payment : stale) {
             if (payment.getProviderPaymentId() == null && payment.getProviderOrderId() == null) {
@@ -95,11 +117,14 @@ public class PaymentJobs {
                     // and neither the client's confirm nor the webhook reached us
                     // — so ask by the intent. Bounded in age, or every abandoned
                     // checkout would cost a provider call a minute for ever.
-                    if (payment.getCreatedAt().isBefore(Instant.now().minus(INTENT_LOOKUP_WINDOW))) {
+                    Instant now = Instant.now();
+                    if (payment.getCreatedAt().isBefore(now.minus(INTENT_LOOKUP_WINDOW))
+                            || !dueForIntentLookup(payment.getCreatedAt(), payment.getReconciledAt(), now)) {
                         continue;
                     }
                     var found = provider.findPaymentForOrder(payment.getProviderOrderId());
                     if (found.isEmpty()) {
+                        payments.markAsked(payment.getId(), now);
                         continue;
                     }
                     providerPayment = found.get();
@@ -128,8 +153,12 @@ public class PaymentJobs {
     @Scheduled(fixedDelayString = "${costonomy.mp.payments.refund-interval:PT30S}")
     @SchedulerLock(name = "payment-refund", lockAtMostFor = "PT10M", lockAtLeastFor = "PT0S")
     public void processRefunds() {
-        var pending = refunds.findByStatusIn(
-                java.util.List.of(RefundStatus.REQUESTED, RefundStatus.FAILED));
+        var pending = new java.util.ArrayList<>(refunds.findByStatusIn(
+                java.util.List.of(RefundStatus.REQUESTED, RefundStatus.FAILED)));
+        // Claimed and never finished: the process died between claiming and
+        // writing the outcome. Safe to resend — the provider key is per refund.
+        pending.addAll(refunds.findByStatusAndUpdatedAtBefore(RefundStatus.PROCESSING,
+                Instant.now().minus(RefundService.STUCK_AFTER)));
 
         for (var refund : pending) {
             try {

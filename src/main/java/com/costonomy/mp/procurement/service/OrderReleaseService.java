@@ -49,7 +49,11 @@ public class OrderReleaseService {
      */
     @Transactional
     public boolean releaseIfFunded(Long supplierOrderId) {
-        var order = orders.findById(supplierOrderId).orElse(null);
+        // Locked, so "only one release happens" holds when two routes fire at the
+        // same moment, not only when they arrive in turn. Unlocked, a confirm and
+        // a webhook both read DRAFT and both released; one lost on the version
+        // check and threw — a 500 for the customer if it was the confirm (D-099).
+        var order = orders.lockById(supplierOrderId).orElse(null);
         if (order == null || order.getStatus() != SupplierOrderStatus.DRAFT) {
             return false;
         }

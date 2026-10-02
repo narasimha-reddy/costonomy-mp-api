@@ -12,8 +12,10 @@ import com.costonomy.mp.payment.repository.PaymentRepository;
 import com.costonomy.mp.payment.repository.PaymentTransactionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -33,6 +35,14 @@ import java.util.Map;
  * <p><b>Transitions are checked, never assumed.</b> Doc 03 §6 warns that webhooks
  * arrive out of order, so a late {@code authorized} event cannot drag a captured
  * payment backwards. {@link #transition} refuses rather than reorders.
+ *
+ * <p><b>No provider call holds a database connection.</b> {@link #confirm} and
+ * {@link #performCapture} ask the provider first, with no transaction open, and
+ * only then open a short one to write the answer — through {@link TransactionTemplate},
+ * not {@code @Transactional}, because a self-invocation would bypass the proxy
+ * (CLAUDE.md). The pool is ten connections and a provider read may take fifteen
+ * seconds: ten slow checkouts holding connections would stall every endpoint,
+ * not only payments (D-099).
  */
 @Service
 @RequiredArgsConstructor
@@ -44,6 +54,7 @@ public class PaymentService {
     private final PaymentProvider provider;
     private final AuditService auditService;
     private final OutboxService outbox;
+    private final TransactionTemplate txTemplate;
 
     // ── Creation ─────────────────────────────────────────────────────────
 
@@ -106,7 +117,6 @@ public class PaymentService {
      * <p>This is also doc 46's recovery path. A client that timed out after paying
      * calls here — or never calls, and the reconciliation job asks on its behalf.
      */
-    @Transactional
     public Payment confirm(Long paymentId, String providerPaymentId) {
         var payment = load(paymentId);
 
@@ -151,7 +161,17 @@ public class PaymentService {
                     "That payment doesn't belong to this order.");
         }
 
-        return applyProviderState(payment, providerPayment, "CONFIRM");
+        try {
+            // Re-read inside the transaction: the copy above is detached, and a
+            // webhook may have moved the payment while we were asking.
+            return txTemplate.execute(status -> applyProviderState(
+                    payments.lockById(paymentId).orElseThrow(), providerPayment, "CONFIRM"));
+        } catch (ObjectOptimisticLockingFailureException lostRace) {
+            // A webhook or the sweep wrote first. Report what won (D-018) rather
+            // than a concurrency error: the payment is the answer to "did it work".
+            log.info("Confirm for payment {} lost a race; returning the winning state", paymentId);
+            return load(paymentId);
+        }
     }
 
     /**
@@ -182,9 +202,14 @@ public class PaymentService {
      * webhook is a statement about the past, not the present.
      */
     @Transactional
-    public Payment applyProviderState(Payment payment,
+    public Payment applyProviderState(Payment given,
                                       PaymentProvider.ProviderPayment providerPayment,
                                       String source) {
+
+        // Lock and re-read before deciding anything: the caller's copy may be
+        // detached and stale, and a concurrent writer for the same payment must
+        // wait here rather than deadlock further down.
+        var payment = payments.lockById(given.getId()).orElseThrow();
 
         if (!completes(payment, providerPayment)) {
             // Never applied, whoever brought it: a webhook, the sweep or a
@@ -307,50 +332,76 @@ public class PaymentService {
                 "Accepted " + toCapture.toPlainString(), "SYSTEM");
     }
 
-    /** Perform a pending capture against the provider. Called by the capture job. */
-    @Transactional
+    /**
+     * Perform a pending capture against the provider. Called by the capture job.
+     *
+     * <p>Not {@code @Transactional}: the provider call happens with no transaction
+     * open, and the outcome is written in a short one on a fresh read.
+     *
+     * <p><b>A retryable failure leaves the payment {@code CAPTURE_PENDING}.</b> It
+     * used to return it to {@code AUTHORIZED} "so the job tries again" — but the
+     * job only reads {@code CAPTURE_PENDING}, and nothing else marks a confirmed
+     * order for capture a second time. One gateway blip stranded the payment until
+     * the authorisation lapsed, with the order confirmed and the supplier never
+     * paid (D-099). Staying pending is what makes the next run retry, with the
+     * same key.
+     */
     public void performCapture(Long paymentId) {
-        var payment = load(paymentId);
-        if (payment.getStatus() != PaymentStatus.CAPTURE_PENDING) {
+        var pending = load(paymentId);
+        if (pending.getStatus() != PaymentStatus.CAPTURE_PENDING) {
             return;
         }
 
+        PaymentProvider.ProviderPayment captured = null;
+        PaymentProviderException failure = null;
         try {
-            var captured = provider.capture(payment.getProviderPaymentId(),
-                    payment.getCapturedAmount(),
+            captured = provider.capture(pending.getProviderPaymentId(),
+                    pending.getCapturedAmount(),
                     // Stable per payment: a retry after a network failure reaches
                     // the same capture on the provider's side rather than a second one.
                     "capture-payment-" + paymentId);
-
-            applyProviderState(payment, captured, "CAPTURE_JOB");
-
-            // The unaccepted remainder was never taken, so it is released rather
-            // than refunded — faster for the customer, and not a reversal on their
-            // statement.
-            BigDecimal remainder = payment.getAuthorizedAmount()
-                    .subtract(payment.getCapturedAmount());
-            if (remainder.signum() > 0) {
-                payment.setReleasedAmount(remainder);
-                record(payment, "RELEASE", remainder, "SUCCESS",
-                        payment.getProviderPaymentId(), null, null);
-                payments.save(payment);
-            }
-
         } catch (PaymentProviderException ex) {
-            record(payment, "CAPTURE", payment.getCapturedAmount(), "FAILED",
-                    null, ex.providerCode(), ex.getMessage());
-
-            if (ex.isRetryable()) {
-                // Back to AUTHORIZED: the money is still held, so the payment is
-                // exactly where it was and the job will try again.
-                payment.setStatus(PaymentStatus.AUTHORIZED);
-                payment.setCapturedAmount(BigDecimal.ZERO);
-                payments.save(payment);
-                log.warn("Capture of payment {} failed, will retry: {}", paymentId, ex.getMessage());
-            } else {
-                fail(payment, ex.providerCode(), ex.getMessage());
-            }
+            failure = ex;
         }
+
+        final var result = captured;
+        final var error = failure;
+        txTemplate.executeWithoutResult(status -> {
+            var payment = payments.lockById(paymentId).orElseThrow();
+            if (payment.getStatus() != PaymentStatus.CAPTURE_PENDING) {
+                return;
+            }
+
+            if (error == null) {
+                applyProviderState(payment, result, "CAPTURE_JOB");
+
+                // The unaccepted remainder was never taken, so it is released rather
+                // than refunded — faster for the customer, and not a reversal on their
+                // statement.
+                BigDecimal remainder = payment.getAuthorizedAmount()
+                        .subtract(payment.getCapturedAmount());
+                if (remainder.signum() > 0) {
+                    payment.setReleasedAmount(remainder);
+                    record(payment, "RELEASE", remainder, "SUCCESS",
+                            payment.getProviderPaymentId(), null, null);
+                    payments.save(payment);
+                }
+                return;
+            }
+
+            record(payment, "CAPTURE", payment.getCapturedAmount(), "FAILED",
+                    null, error.providerCode(), error.getMessage());
+
+            if (error.isRetryable()) {
+                // Still CAPTURE_PENDING, so the next run tries again. Saved to move
+                // updated_at, which keeps the oldest-first ordering fair.
+                payment.setReconciledAt(Instant.now());
+                payments.save(payment);
+                log.warn("Capture of payment {} failed, will retry: {}", paymentId, error.getMessage());
+            } else {
+                fail(payment, error.providerCode(), error.getMessage());
+            }
+        });
     }
 
     /**

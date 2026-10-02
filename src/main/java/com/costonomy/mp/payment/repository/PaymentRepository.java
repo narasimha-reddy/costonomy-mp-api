@@ -2,8 +2,13 @@ package com.costonomy.mp.payment.repository;
 
 import com.costonomy.mp.payment.domain.Payment;
 import com.costonomy.mp.payment.domain.PaymentStatus;
+import org.springframework.data.domain.Pageable;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
@@ -16,6 +21,20 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     Optional<Payment> findBySupplierOrderId(Long supplierOrderId);
 
     Optional<Payment> findByProviderPaymentId(String providerPaymentId);
+
+    /**
+     * The payment, locked for the rest of the transaction.
+     *
+     * <p>Every change of payment state goes through this first (D-099). Without it,
+     * a confirm and a webhook for the same payment each inserted a ledger row —
+     * taking a shared lock on the payment through the foreign key — and then both
+     * asked for the exclusive lock to update it: a deadlock, and a 500 for a
+     * customer who had paid. Locking first makes the second writer wait, then see
+     * the first one's answer.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Payment p where p.id = :id")
+    Optional<Payment> lockById(@Param("id") Long id);
 
     Optional<Payment> findByProviderOrderId(String providerOrderId);
 
@@ -35,7 +54,7 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
             where p.status = com.costonomy.mp.payment.domain.PaymentStatus.CAPTURE_PENDING
             order by p.updatedAt asc
             """)
-    List<Payment> findPendingCaptures();
+    List<Payment> findPendingCaptures(Pageable batch);
 
     /**
      * Authorisations that were never resolved. Read by the reconciliation job
@@ -51,5 +70,17 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
               and p.updatedAt < :staleBefore
             order by p.updatedAt asc
             """)
-    List<Payment> findStale(@Param("staleBefore") Instant staleBefore);
+    List<Payment> findStale(@Param("staleBefore") Instant staleBefore, Pageable batch);
+
+    /**
+     * Note that we asked the provider about this payment.
+     *
+     * <p>One column, one statement: the sweep holds a detached copy, and saving it
+     * whole could overwrite a confirm that landed meanwhile. The row's updated_at
+     * moves with it, which is what spaces out the next sweep.
+     */
+    @Transactional
+    @Modifying
+    @Query("update Payment p set p.reconciledAt = :at where p.id = :id")
+    int markAsked(@Param("id") Long id, @Param("at") Instant at);
 }
