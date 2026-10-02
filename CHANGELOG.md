@@ -4,6 +4,52 @@ All notable changes to the Costonomy MP (Mandi) Delivery & Logistics Platform ac
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [feat/shadowfax-provider] - Shadowfax Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Shadowfax** alongside Pidge and Borzo.
+- Database migration `V42__delivery_provider_shadowfax.sql` seeding `SHADOWFAX` row into `delivery_provider` table (seeded disabled, `is_active = 0`).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.shadowfax.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.is_active = 1`.
+- `ShadowfaxDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `ShadowfaxApiClient` HTTP client for Shadowfax Unified API (Forward Integrations):
+  - Token authentication via `Authorization: Token <token>`.
+  - Serviceability verification via `GET /v1/clients/serviceability/?service=Regular&pincodes={pincode}` with distance-based quoting and ETA calculation.
+  - Consignment booking via `POST /v3/clients/orders/` (`order_type: "marketplace"`), returning `awb_number` as `providerDeliveryId`.
+  - Status tracking & Polling via `GET /v4/clients/orders/{awb_number}/track/`, parsing current status and `tracking_details` history.
+  - Deterministic event synthesis (`sfx_evt_{awb}_{status}_{timestamp}`) ensuring `PICKED_UP` precedes `DELIVERED` newest-first so `DeliveryOrderBridge` transitions `supplier_order` through `OUT_FOR_DELIVERY` to `DELIVERED`.
+  - Cancellation via `POST /v3/clients/orders/cancel/` with `request_id: <awb_number>`.
+- `ShadowfaxStatusMapper` mapping Shadowfax statuses (`allocating`, `assigned`, `arrived`, `picked_up`, `out_for_delivery`, `delivered`, `cancelled`) to domain `DeliveryStatus`.
+- Test suites:
+  - `ShadowfaxStatusMappingTest` (2 tests).
+  - `ShadowfaxApiClientContractTest` WireMock tests (6 tests).
+  - `ShadowfaxDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decisions recorded in `docs/DECISIONS.md` (D-099) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-005).
+
+---
+
+## [feat/borzo-provider-wip] - Borzo Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Borzo** alongside Pidge.
+- Database migration `V41__delivery_provider_borzo.sql` seeding `BORZO` row into `delivery_provider` table (seeded disabled, `is_active = 0`).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.borzo.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.is_active = 1`.
+- `BorzoDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `BorzoApiClient` HTTP client for Borzo API (`calculate-order`, `create-order`, `orders`, `cancel-order`).
+  - Extended `QuoteRequest` with `pickupAddress` and `dropAddress`.
+  - Deterministic synthetic polling events (`borzo_evt_{id}_{status}`) ensuring `PICKED_UP` precedes `DELIVERED` newest-first for orderly state advancement through `DeliveryJobs.pollActiveDeliveries()`.
+  - Deduplication via `uk_delivery_event_provider`.
+- `BorzoStatusMapper` mapping Borzo order statuses to domain `DeliveryStatus`.
+- Test suites:
+  - `BorzoStatusMappingTest` (4 tests).
+  - `BorzoApiClientContractTest` (12 tests).
+  - `BorzoPidgeCoexistenceTest` (3 tests).
+  - `BorzoDeliveryFlowIT` Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decisions recorded in `docs/DECISIONS.md` (D-098) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-003).
+
+---
+
 ## [feat/pidge-16-outlet-active-deliveries-and-arrival-radar] - PR 16
 ### Added
 - Outlet Delivery Radar endpoint: `GET /api/v1/outlets/{outletId}/deliveries/radar`.
