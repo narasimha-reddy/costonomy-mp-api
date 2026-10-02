@@ -168,6 +168,11 @@ public class DeliveryService {
             return null;
         }
 
+        if ("PICKUP".equalsIgnoreCase(order.deliveryMode())) {
+            log.info("Auto-dispatch skipped: order {} is customer pickup", supplierOrderId);
+            return null;
+        }
+
         var pickup = directory.pickupFor(order.supplierStoreId());
         var drop = directory.dropFor(order.outletId());
         if (pickup == null || drop == null) {

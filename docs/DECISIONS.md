@@ -3920,3 +3920,20 @@ Xpressbees is gated by:
 - **Cancellation**: `POST /v1/shipments/cancel` sending `awb_number` and cancellation reason.
 - **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
 
+---
+
+## D-108 — Delivery Slots, Recurring Subscriptions, and Delivery Mode Gating
+**2026-10-02 · Settled**
+
+**Decision:**
+1. **Delivery Mode Flexibility & Gating**:
+   - Buyers and suppliers can trade via three delivery modes: Store Pickup (`PICKUP`), Supplier Own Delivery (`SUPPLIER_DELIVERY` / `SUPPLIER_OWN`), and Costonomy Marketplace Delivery (`COSTONOMY_DELIVERY` / `COSTONOMY`).
+   - **Logistics Dispatch Gating Rule**: Automated courier booking and quote auctions (`quoteAndBook`) kick off *only* if `COSTONOMY` delivery mode is selected. For `PICKUP`, courier booking is bypassed completely. For `SUPPLIER_OWN`, the delivery record assigns the store contact as driver without dispatching to external third-party couriers.
+2. **Delivery Slots**:
+   - Suppliers configure daily time windows (e.g., Morning 06:00 - 10:00) with daily order capacity (`max_orders_per_day`) and same-day order cutoff times (`order_cutoff_time`).
+   - Slot availability endpoint evaluates cutoff for today's date and remaining capacity against active orders before allowing checkout.
+3. **Recurring Subscriptions (BigBasket Daily Model)**:
+   - Buyers can subscribe to SKUs with frequencies (`DAILY`, `WEEKDAYS`, `ALTERNATE_DAYS`, `WEEKLY`), preferred delivery slots, skip dates, pause, resume, and cancellation.
+   - Suppliers receive an operational Daily Manifest aggregating bulk SKU packing volumes and scheduled dispatches grouped by time slot.
+   - Daily replenishment orders are generated deterministically and idempotently via `generateDailyOrders`.
+

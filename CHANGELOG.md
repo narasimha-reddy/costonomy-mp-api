@@ -4,6 +4,28 @@ All notable changes to the Costonomy MP (Mandi) Delivery & Logistics Platform ac
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [feat/supplier-buyer-slots-subscriptions] - Delivery Slots, Subscriptions & Logistics Gating
+### Added
+- **Logistics Dispatch Gating**: Strict enforcement in `DeliveryService.autoDispatch` so that third-party courier dispatch (`quoteAndBook`) triggers *only* when `COSTONOMY` delivery mode is selected. `PICKUP` orders are skipped cleanly without driver assignment or courier auction. `SUPPLIER_OWN` orders assign the store contact directly as driver without booking third-party couriers.
+- **Database Migration `V49__delivery_slots_and_subscriptions.sql`**:
+  - `delivery_slot`: Time windows (`start_time`, `end_time`), same-day cutoff time (`order_cutoff_time`), daily capacity (`max_orders_per_day`), and active status.
+  - `subscription`: Recurring subscriptions (`frequency`, `preferred_slot_id`, `delivery_mode`, `status`, `start_date`, `next_delivery_date`).
+  - `subscription_skip_date`: Skip dates for vacations and closures.
+  - `supplier_order`: Added `delivery_slot_id`, `scheduled_delivery_date`, `is_subscription_order`, and `subscription_id`.
+- **Delivery Slots Domain & APIs**:
+  - `DeliverySlotService`: Slot CRUD and availability computation evaluating cutoffs for today and remaining capacity against active orders.
+  - `DeliverySlotController`: `GET /api/v1/supplier-stores/{storeId}/delivery-slots`, `GET /api/v1/supplier-stores/{storeId}/available-slots?date=YYYY-MM-DD`, `POST`, `PUT`, `DELETE`.
+- **Subscriptions Domain & Operational Manifest**:
+  - `SubscriptionService`: Create, pause, resume, cancel, skip date management.
+  - `getManifest`: Aggregated SKU volume packing lists and slot-grouped delivery dispatches for suppliers.
+  - `generateDailyOrders`: Idempotent replenishment order generation.
+  - `SubscriptionController`: Management endpoints for outlets and stores.
+- **Test Suites**:
+  - `DeliverySlotServiceTest` (3 tests).
+  - `SubscriptionServiceTest` (4 tests).
+  - `DeliveryGatingTest` (2 tests).
+  - `DeliverySlotsAndSubscriptionsIT` Testcontainers integration test.
+
 ## [feat/xpressbees-provider] - Xpressbees Delivery Provider Integration
 ### Added
 - Multi-carrier delivery provider integration for **Xpressbees** (`XPRESSBEES`) alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, Blowhorn, and Delhivery.

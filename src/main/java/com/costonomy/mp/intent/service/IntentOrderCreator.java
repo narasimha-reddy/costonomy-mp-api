@@ -283,6 +283,8 @@ public class IntentOrderCreator {
         order.setGstAmount(Pricing.money(plan.gst()));
         order.setDeliveryMode(mode);
         order.setDeliveryFee(Pricing.money(deliveryFee));
+        order.setDeliverySlotId(request.deliverySlotId());
+        order.setScheduledDeliveryDate(request.scheduledDeliveryDate());
         // The goods plus the carriage. What the restaurant pays is one figure, and
         // it is this one -- the fee cannot be collected later without charging
         // twice for a single order.

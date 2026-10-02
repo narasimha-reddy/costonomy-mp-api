@@ -10,6 +10,7 @@ import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 
 /** One supplier's share of a procurement. Doc 02 §4, doc 03 §5. */
 @Entity
@@ -114,6 +115,18 @@ public class SupplierOrder extends BaseEntity {
     @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "delivery_mode", nullable = false, length = 32)
     private DeliveryMode deliveryMode = DeliveryMode.PICKUP;
+
+    @Column(name = "delivery_slot_id")
+    private Long deliverySlotId;
+
+    @Column(name = "scheduled_delivery_date")
+    private LocalDate scheduledDeliveryDate;
+
+    @Column(name = "is_subscription_order", nullable = false)
+    private boolean isSubscriptionOrder = false;
+
+    @Column(name = "subscription_id")
+    private Long subscriptionId;
 
     /**
      * Who cancelled, when this order was. Null otherwise.

@@ -9,6 +9,8 @@ import com.costonomy.mp.procurement.domain.SupplierOrder;
 import com.costonomy.mp.procurement.domain.SupplierOrderItem;
 import com.costonomy.mp.procurement.repository.SupplierOrderItemRepository;
 import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
+import com.costonomy.mp.delivery.slot.DeliverySlot;
+import com.costonomy.mp.delivery.slot.DeliverySlotRepository;
 import com.costonomy.mp.procurement.web.dto.ProcurementDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -37,12 +39,20 @@ public class SupplierOrderMapper {
     private final SkuDirectory skuDirectory;
     private final CanonicalProductRepository products;
     private final ProcurementDirectory directory;
+    private final DeliverySlotRepository deliverySlots;
 
     public ProcurementDtos.SupplierOrderResponse toResponse(SupplierOrder order) {
         var items = supplierOrderItems.findBySupplierOrderId(order.getId());
         var store = directory.stores(List.of(order.getSupplierStoreId()))
                 .get(order.getSupplierStoreId());
         var outlet = directory.outletSummary(order.getOutletId());
+
+        String slotName = null;
+        if (order.getDeliverySlotId() != null) {
+            slotName = deliverySlots.findById(order.getDeliverySlotId())
+                    .map(DeliverySlot::getSlotName)
+                    .orElse(null);
+        }
 
         Map<Long, String> productNames = new HashMap<>();
         Map<Long, String> productImages = new HashMap<>();
@@ -76,6 +86,10 @@ public class SupplierOrderMapper {
                 order.getAcceptedAmount(), acceptedSubtotal(items), acceptedGst(items),
                 order.getPaymentMethod(), order.getPaymentStatus(),
                 order.getDeliveryMode(), order.getDeliveryFee(),
+                order.getDeliverySlotId(), slotName,
+                order.getScheduledDeliveryDate(),
+                order.isSubscriptionOrder(),
+                order.getSubscriptionId(),
                 order.getCancelledBy(), order.getCancellationReason(),
                 items.stream()
                         .map(item -> new ProcurementDtos.SupplierOrderItemResponse(

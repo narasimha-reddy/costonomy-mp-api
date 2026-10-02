@@ -14,6 +14,7 @@ import jakarta.validation.constraints.*;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 
 public final class ProcurementDtos {
@@ -266,6 +267,11 @@ public final class ProcurementDtos {
              */
             DeliveryMode deliveryMode,
             BigDecimal deliveryFee,
+            Long deliverySlotId,
+            String deliverySlotName,
+            LocalDate scheduledDeliveryDate,
+            boolean isSubscriptionOrder,
+            Long subscriptionId,
             /**
              * Whose decision ended it, on a cancelled order. Null otherwise.
              *

@@ -13,6 +13,7 @@ import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -164,7 +165,17 @@ public final class IntentDtos {
              * recalculated between the screen that showed it and the charge that
              * collected it is a silent reprice (§23A.16).
              */
-            @Size(max = 64) String deliveryQuoteReference) {
+            @Size(max = 64) String deliveryQuoteReference,
+            Long deliverySlotId,
+            LocalDate scheduledDeliveryDate) {
+
+        public CreateOrderRequest(
+                List<OrderLine> lines,
+                String paymentMethod,
+                DeliveryMode deliveryMode,
+                String deliveryQuoteReference) {
+            this(lines, paymentMethod, deliveryMode, deliveryQuoteReference, null, null);
+        }
     }
 
     /** What a Costonomy delivery would cost for this request. D-091. */
