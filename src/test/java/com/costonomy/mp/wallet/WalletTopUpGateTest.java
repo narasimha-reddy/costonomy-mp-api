@@ -39,7 +39,9 @@ class WalletTopUpGateTest {
                     topUps,
                     mock(com.costonomy.mp.payment.service.RefundService.class),
                     mock(com.costonomy.mp.common.idempotency.IdempotencyService.class),
-                    mock(AccessControlService.class));
+                    mock(AccessControlService.class),
+                    mock(com.costonomy.mp.wallet.service.WalletHistoryService.class),
+                    mock(com.costonomy.mp.wallet.statement.WalletStatementService.class));
 
     @BeforeEach
     void signIn() {

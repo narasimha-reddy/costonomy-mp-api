@@ -11,7 +11,12 @@ import com.costonomy.mp.common.logging.TraceScope;
 import com.costonomy.mp.identity.security.ActorContext;
 import com.costonomy.mp.payment.service.RefundService;
 import com.costonomy.mp.wallet.domain.WalletEntryKind;
+import com.costonomy.mp.wallet.service.WalletHistoryService;
 import com.costonomy.mp.wallet.service.WalletService;
+import com.costonomy.mp.wallet.statement.StatementPeriod;
+import com.costonomy.mp.wallet.statement.WalletStatementCsv;
+import com.costonomy.mp.wallet.statement.WalletStatementPdf;
+import com.costonomy.mp.wallet.statement.WalletStatementService;
 import com.costonomy.mp.wallet.service.WalletTopUpService;
 import com.costonomy.mp.wallet.service.WalletWithdrawalService;
 import com.costonomy.mp.wallet.web.dto.WalletDtos;
@@ -24,7 +29,13 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.time.LocalDate;
 
 import java.util.List;
 import java.util.Map;
@@ -44,6 +55,8 @@ public class WalletController {
     private final RefundService refunds;
     private final IdempotencyService idempotency;
     private final AccessControlService accessControl;
+    private final WalletHistoryService history;
+    private final WalletStatementService statements;
 
     /**
      * Which payment provider is live. Field-injected because Lombok's constructor
@@ -63,6 +76,88 @@ public class WalletController {
         accessControl.requireScoped(actorId, Permissions.ORDER_VIEW,
                 ScopeType.OUTLET, outletId, "Outlet");
         return ApiResponse.ok(walletResponse(outletId));
+    }
+
+    @GetMapping("/outlets/{outletId}/wallet/transactions")
+    @Operation(
+            summary = "The wallet's transaction history",
+            description = """
+                    D-108. Every movement of the balance, newest first, a page at a time.
+                    All parameters are optional: `months` (comma list of `yyyy-MM`, Asia/Kolkata
+                    months), `kinds` (comma list of entry kinds), `statuses` (comma list of
+                    COMPLETED, IN_PROGRESS, FAILED, RETURNED), `cursor` (the previous page's
+                    `nextCursor`) and `size` (default 20, at most 100).
+
+                    A withdrawal whose refund has not completed is IN_PROGRESS; one the provider
+                    would not send and that went back into the wallet is RETURNED, and the credit
+                    that returned it is its own WITHDRAWAL_REVERSAL entry. A top-up that was
+                    paid and then returned to the customer's bank appears as a TOP_UP with status
+                    RETURNED and no `balanceAfter`: it never changed the balance. `monthTotals`
+                    are the ledger's added and spent for the requested months (or, with none
+                    requested, the months on this page), whatever the kind and status filters say.
+                    `availableMonths` lists every month with any history.
+                    Same permission as reading the wallet.""")
+    public ApiResponse<WalletDtos.HistoryResponse> transactions(
+            @PathVariable Long outletId,
+            @RequestParam(required = false) String months,
+            @RequestParam(required = false) String kinds,
+            @RequestParam(required = false) String statuses,
+            @RequestParam(required = false) String cursor,
+            @RequestParam(required = false) Integer size) {
+        Long actorId = ActorContext.requireUserId();
+        accessControl.requireScoped(actorId, Permissions.ORDER_VIEW,
+                ScopeType.OUTLET, outletId, "Outlet");
+        return ApiResponse.ok(history.history(outletId,
+                WalletHistoryService.parseFilter(months, kinds, statuses), cursor,
+                WalletHistoryService.parseSize(size)));
+    }
+
+    @GetMapping("/outlets/{outletId}/wallet/statement")
+    @Operation(
+            summary = "Download a wallet statement",
+            description = """
+                    D-108. A file, not JSON: the outlet, the period, opening and closing balance,
+                    what was added and spent, and every ledger entry oldest first.
+
+                    Pick the days with `range` (LAST_30, LAST_90, LAST_180, LAST_365, or CUSTOM
+                    with `from` and `to` as `yyyy-MM-dd`, inclusive, at most 366 days, not in
+                    the future) or with `financialYear` (`2025-26`, 1 April to 31 March; the
+                    current year runs to today). `format` is PDF or CSV.
+
+                    Refuses with 422 `STATEMENT_TOO_LARGE` beyond 20,000 entries. Same permission
+                    as reading the wallet.""")
+    public ResponseEntity<byte[]> statement(
+            @PathVariable Long outletId,
+            @RequestParam(required = false) String range,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to,
+            @RequestParam(required = false) String financialYear,
+            @RequestParam(required = false) String format) {
+        Long actorId = ActorContext.requireUserId();
+        accessControl.requireScoped(actorId, Permissions.ORDER_VIEW,
+                ScopeType.OUTLET, outletId, "Outlet");
+
+        boolean pdf;
+        if ("PDF".equalsIgnoreCase(format)) {
+            pdf = true;
+        } else if ("CSV".equalsIgnoreCase(format)) {
+            pdf = false;
+        } else {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "format must be PDF or CSV.");
+        }
+        var period = StatementPeriod.resolve(range, from, to, financialYear,
+                LocalDate.now(StatementPeriod.ZONE));
+
+        var statement = statements.build(outletId, period);
+        byte[] body = pdf ? WalletStatementPdf.render(statement) : WalletStatementCsv.render(statement);
+        String filename = "costonomy-wallet-statement-%s-to-%s.%s".formatted(
+                period.from(), period.to(), pdf ? "pdf" : "csv");
+        return ResponseEntity.ok()
+                .contentType(pdf ? MediaType.APPLICATION_PDF : MediaType.parseMediaType("text/csv;charset=UTF-8"))
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment().filename(filename).build().toString())
+                .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .body(body);
     }
 
     /** The wallet as the client sees it: balance, recent movements and limits. */

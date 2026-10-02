@@ -4247,6 +4247,110 @@ Tests: `WalletTopUpIT` (52 across seven groups), `WalletTopUpLimitsIT` (5, small
 configured limits), `WalletLimitsTest` (3, the IST month), `RazorpayPaymentProviderTest`
 (+3: automatic capture, exact paise, checkout signature).
 
+
+## D-108 — Wallet history and statements, and where each kind of money movement is recorded
+**Raised 2026-09-29 · Settled 2026-09-29**
+
+A restaurant needs to see what happened to its wallet (a scrollable history with month
+headings and filters) and to hand its accountant a file (a statement). Both are *read
+models*: nothing here moves money, and neither keeps a second copy of it.
+
+**Where each kind of movement lives.** "Wallet money" is spread over five places, on
+purpose, and the history and statements read only the first two:
+
+| What | Where | Notes |
+|---|---|---|
+| Every change to the wallet balance | `wallet_transaction` (the ledger) | Append-only. Every row has `direction`, `kind`, `amount` and `balance_after`, written under the wallet lock in the same transaction as the balance, so `(created_at, id)` order is balance order. The source of truth for history and statements. |
+| A payment made to add money | `wallet_top_up` (V41, D-107) | The attempt. A credited one also has a ledger row (`reference = topup-{id}`); one that was paid and *returned* (status REFUNDED) has none, because the balance never moved. |
+| Money paid for an order | `payment`, `payment_transaction`, `refund` | Card, prepaid and credit orders. A refund credited to the wallet writes a ledger row (`REFUND`); a withdrawal writes a `WITHDRAWAL` ledger row pointing at its `refund`. The refund row's status is what says whether a withdrawal has reached the card. |
+| A wallet-paid order | `wallet_transaction` (`ORDER_PAYMENT`, `ORDER_REFUND`, `DISPUTE_REFUND`) | No `payment` row: the ledger *is* the record (D-105). |
+| QuickScan | `quickscan_payment` (D-106) | The payment and its payout. Its wallet effect is a `QUICKSCAN_PAYMENT` debit and, if returned, a `QUICKSCAN_RETURN` credit in the ledger. |
+
+**History: `GET /outlets/{id}/wallet/transactions`** (`ORDER_VIEW`, scoped to the outlet,
+like the wallet itself). Query `months`, `kinds`, `statuses`, `cursor`, `size`; all
+optional. Newest first.
+
+- **Keyset pagination on `(created_at, source, id)`, never offset.** A movement that lands
+  while someone scrolls arrives at the front of a newest-first list, so a page boundary
+  cannot repeat or skip a row; an offset would shift by exactly the number of new rows.
+  Rows at the same microsecond are ordered by `id`, which is balance order. The cursor is
+  opaque to clients and strictly validated (400).
+- **Two sources in one list.** Ledger rows, plus top-ups that were paid and returned,
+  shown as `TOP_UP` with status `RETURNED`, `balanceAfter` null and no effect on any
+  total. The customer will look for a debit on their bank statement; the history has to
+  explain it. Ids of the two tables can coincide, so each item also carries `key`
+  (`L12` / `T12`). A returned top-up is dated when it was *started* (`created_at`), the one
+  timestamp on that row that never changes, which a cursor needs.
+- **Status is what the customer needs to know, not our state machine.** Ledger rows are
+  `COMPLETED`, except a `WITHDRAWAL` whose refund is not `COMPLETED` yet: `IN_PROGRESS`,
+  including when the refund is FAILED (being retried) or NEEDS_REVIEW (a person has it),
+  because the customer's question is "has it arrived". `refundStatus` carries the detail.
+  `FAILED` is accepted as a filter and matches nothing today: a top-up whose Razorpay
+  order could not be created, or that expired unpaid, cost the customer nothing and is not
+  shown.
+- **Months are Asia/Kolkata months, computed in Java.** Each is turned into an instant range
+  and sent to the database as instants; no SQL time-zone conversion, so the answer cannot
+  depend on a database session's zone. 30 September 19:00 UTC is 1 October in India.
+- **`monthTotals` are ledger truth, unfiltered by kind and status.** `added` is the sum of
+  CREDIT rows, `spent` of DEBIT rows, for the months asked for (or, when none is asked for,
+  the months on the page). A returned top-up is in neither. This is what the statement for
+  that month says, so the header and the file cannot disagree because a filter was on.
+  `availableMonths` lists every month with anything to show, whatever the filters.
+- **`instrument`** ("Card •1007", "UPI", "Netbanking") says where a top-up's money came
+  from. V42 adds `wallet_top_up.payment_method` and `payment_detail`, set once, from the
+  payment Razorpay returns, at the moment the top-up is credited or returned
+  (`PaymentProvider.ProviderPayment` gained `method` and `methodDetail`). Only a card's last
+  four digits or a provider wallet's name is kept; never a full card number, a UPI address
+  or a bank account, and anything that is not exactly four digits is dropped at the
+  adapter. Null for every top-up before V42 and for a method Razorpay did not report; the
+  history shows those without an instrument rather than guessing.
+
+**Statement: `GET /outlets/{id}/wallet/statement`** (same permission). `range` LAST_30,
+LAST_90, LAST_180, LAST_365 or CUSTOM (`from`, `to` as `yyyy-MM-dd`, inclusive, at most 366
+days, `to` not in the future, `from` not after `to`), or `financialYear=2025-26` (1 April to
+31 March; the year in progress runs to today; one that has not started is refused);
+`format` PDF or CSV. LAST_n is n days ending today, today included. A period is whole IST
+days: `from` 00:00 IST up to, not including, midnight after `to`.
+
+- **Contents:** outlet name, period, opening and closing balance, total added, total spent,
+  then every ledger row of the period oldest first: date-time IST, description (the same
+  wording as the mobile app's `entryLabel`, `lib/wallet/entryCopy.ts`), reference (the
+  order number, if the movement was about an order), direction, amount, balance after.
+  The CSV adds the ledger's own note as a last column. A returned top-up is **not** on it:
+  it never moved the balance.
+- **It reconciles or it does not exist.** Opening is `balance_after` of the last row before
+  the period (0 if there is none); closing is the last row's `balance_after` in the period
+  (else opening). Before a file is written, every row's `balance_after` must follow from
+  the row before it, `opening + added - spent` must equal `closing`, and, when the period
+  reaches the last row, closing must equal `wallet.balance` (a different statement, in the
+  same transactions). Any mismatch logs at ERROR and answers 500 rather than emit a
+  plausible wrong statement: this is the file a restaurant gives its accountant. All reads
+  are in one read-only transaction so they see one moment.
+- **Bounded:** more than 20,000 rows is `422 STATEMENT_TOO_LARGE` ("choose a shorter
+  period"), checked with a count before any row is loaded.
+- **CSV:** RFC 4180 (CRLF, quoting, every line the same width). Text cells that start with
+  `= + - @` (or tab or carriage return) are prefixed with a single quote so a spreadsheet
+  does not run them: an outlet's name and a ledger note are text a person wrote. Amounts are
+  plain numbers, never prefixed.
+- **PDF: written by hand, no library.** openpdf, pdfbox and iText are not in the local
+  Maven repository and the build runs offline, so adding one would break every build but
+  the author's. `WalletStatementPdf` writes A4 pages with Helvetica and Helvetica-Bold (the
+  standard fonts, nothing embedded), the table header repeated on each page and
+  "Page n of m". The standard fonts have no ₹ glyph, so amounts read "Rs."; any character
+  the fonts cannot draw becomes "?". If richer layout or Indic scripts are ever wanted, that
+  is the time to bring in a library, with a font that has the glyphs.
+- One INFO log line per statement (outlet, period, row count); no amounts.
+
+**Not done.** No push notification or e-mail of a statement; no XLSX; no per-kind filter on
+statements; the history does not show top-ups that are still waiting (CREATED) or being
+returned (REFUND_PENDING), which the wallet home shows as before. The statement file's
+wording is duplicated from the mobile app, not shared, because the two are in different
+repositories.
+
+Tests: `WalletHistoryIT` (18), `WalletStatementIT` (19), `StatementPeriodTest` (8),
+`WalletStatementFilesTest` (9), one more in `RazorpayPaymentProviderTest` and in
+`WalletTopUpLimitsIT` (a returned top-up in the history through the real flow).
+
 ## D-109 — Cancelling an order whose money was debited captures it and refunds it, and a lapsed hold is noticed
 **Raised 2026-09-30 · Settled 2026-09-30** (owner recommendations E-1 to E-6 accepted as defaults; the fee and instant-refund choices are still the owner's, see below)
 
@@ -4854,3 +4958,39 @@ mutation (see the PR); the tests added after the second and third reviews were e
 **Open verifications (test mode, before sign-off).** V-5 the idempotency key's retention (no longer relied on). V-6 the
 refund window. V-7 the exact 400 text for each row of the table, and whether a `failed` refund can become `processed`. V-8
 whether `amount_refunded` includes a pending refund.
+
+## D-111 — QuickScan, top-ups, history and statements meet the money-safety stack
+**Raised 2026-09-30 · Settled 2026-09-30**
+
+D-106 to D-108 were built on the code as it stood before D-109 and D-110, and share one wallet with them. Put together, what
+each side must do for the other:
+
+1. **Only card refund money can go back to a card.** What a wallet can give back is computed from the `refund` table alone
+   (`RefundRepository.withdrawableByPayment`): wallet refunds credited, less withdrawals not reversed. A top-up
+   (`TOP_UP`) and a returned QuickScan payment (`QUICKSCAN_RETURN`) never appear there, so neither is withdrawable. Refund money
+   that QuickScan spent and that came back (a declined payout) is still that card's refund, so it can go back once and no more
+   than was refunded; the balance still caps every withdrawal. A `WITHDRAWAL_REVERSAL` credit puts refund money back into what
+   can be withdrawn, because its refund is `REVERSED` and no longer counted.
+2. **One way to move a balance.** History and statements read the wallet through `WalletService.find`, not the repository:
+   `WalletBalanceWritersTest` says only `WalletService` holds `WalletRepository`. QuickScan's debit and return and the top-up
+   credit are `WalletService` methods, each an atomic update with its ledger row.
+3. **Lock order.** The wallet is locked first (`WalletService.lock`, a locking read before anything is loaded); a top-up
+   then locks its own row, a QuickScan payment inserts its own new row. A QuickScan return runs holding its payment row and
+   then takes the wallet by an atomic credit; nothing that holds the wallet ever waits for a QuickScan row, so the order
+   wallet, refund, payment of the withdrawal is not crossed.
+4. **What a person reads.** A withdrawal whose refund is `REVERSED` is `RETURNED` (the money is back, its own
+   `WITHDRAWAL_REVERSAL` credit says so); `REJECTED`, `FAILED`, `NEEDS_REVIEW` and the rest not yet complete are
+   `IN_PROGRESS`. A statement labels the reversal "Withdrawal returned to your wallet" and still reconciles: it is a ledger
+   credit like any other. The mobile `entryCopy.ts` must carry the same wording (see D-108).
+5. **The provider port carries both sides' fields.** `AuthorizationRequest` has `holdMinutes` (orders, D-109) and `autoCapture`
+   (top-ups, D-107); a top-up sends no hold. A top-up's refund to its source goes with a receipt and notes of its own
+   (`mandi-topup-refund-{id}`, `mandi_topup_id`), which the order refunds' matching (`mandi-refund-`) does not mistake for a refund of
+   an order's payment. A `payout` provider left at MOCK under a production profile refuses to start, as does `withdraw-precheck`
+   set to anything but true.
+
+**Migrations.** V40 to V42 (QuickScan, top-ups, top-up payment method) and V43 and V44 (the stack) are independent and apply in that order
+on a fresh database and on one already at V42, where V43 and V44 are simply the next two.
+
+**Tests.** `PaymentFlowIT$WalletInterplay`: top-up money and QuickScan returns against the withdrawal pre-check, a reversal on
+the history and a statement, a QuickScan payment and a withdrawal of one wallet at once, and top-ups, QuickScan, withdrawals and a
+reversal together (ledger equals balance). `WalletEntryCopyTest`.

@@ -113,6 +113,37 @@ class RazorpayPaymentProviderTest {
     }
 
     @Test
+    @DisplayName("how a payment was made is kept as a method and a safe detail only (D-108)")
+    void paymentMethodAndDetail() {
+        routes.put("/v1/payments/pay_card", new Canned(200, """
+                {"id":"pay_card","order_id":"o","status":"captured","amount":100,"method":"card",
+                 "card":{"last4":"1007","network":"Visa","name":"A Person","number":"4111111111111111"}}"""));
+        routes.put("/v1/payments/pay_upi", new Canned(200, """
+                {"id":"pay_upi","order_id":"o","status":"captured","amount":100,"method":"upi","vpa":"someone@bank"}"""));
+        routes.put("/v1/payments/pay_nb", new Canned(200, """
+                {"id":"pay_nb","order_id":"o","status":"captured","amount":100,"method":"netbanking","bank":"HDFC"}"""));
+        routes.put("/v1/payments/pay_wallet", new Canned(200, """
+                {"id":"pay_wallet","order_id":"o","status":"captured","amount":100,"method":"wallet","wallet":"freecharge"}"""));
+        routes.put("/v1/payments/pay_odd", new Canned(200, """
+                {"id":"pay_odd","order_id":"o","status":"captured","amount":100,"method":"card","card":{"last4":"41111111"}}"""));
+        routes.put("/v1/payments/pay_none", new Canned(200, """
+                {"id":"pay_none","order_id":"o","status":"captured","amount":100}"""));
+
+        var card = razorpay.fetchPayment("pay_card");
+        assertThat(card.method()).isEqualTo("card");
+        assertThat(card.methodDetail()).isEqualTo("1007");
+        var upi = razorpay.fetchPayment("pay_upi");
+        assertThat(upi.method()).isEqualTo("upi");
+        // Neither the address nor the bank is kept: not needed to say where money came from.
+        assertThat(upi.methodDetail()).isNull();
+        assertThat(razorpay.fetchPayment("pay_nb").methodDetail()).isNull();
+        assertThat(razorpay.fetchPayment("pay_wallet").methodDetail()).isEqualTo("freecharge");
+        // Anything but exactly four digits is dropped, so a full number can never be stored.
+        assertThat(razorpay.fetchPayment("pay_odd").methodDetail()).isNull();
+        assertThat(razorpay.fetchPayment("pay_none").method()).isNull();
+    }
+
+    @Test
     @DisplayName("a payment carries the order it completes")
     void paymentCarriesItsOrder() {
         routes.put("/v1/payments/pay_A", new Canned(200, """

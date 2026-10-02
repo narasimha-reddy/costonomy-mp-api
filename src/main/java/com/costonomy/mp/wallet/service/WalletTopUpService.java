@@ -452,7 +452,8 @@ public class WalletTopUpService {
         if (breach != null) {
             // The money is captured and cannot be credited. It goes back — never
             // dropped, never over-credited (D-107).
-            if (topUps.markRefundPending(topUpId, payment.providerPaymentId(), truncate(breach)) == 1) {
+            if (topUps.markRefundPending(topUpId, payment.providerPaymentId(), truncate(breach),
+                    payment.method(), payment.methodDetail()) == 1) {
                 audit.record(null, null, "WALLET_TOP_UP_REFUND_DUE", "WALLET_TOP_UP", topUpId,
                         topUp.getStatus().name(), WalletTopUpStatus.REFUND_PENDING.name(), breach, "SYSTEM");
                 log.warn("Wallet top-up {} of {} captured as {} but would break a wallet limit ({}); refunding it",
@@ -461,7 +462,8 @@ public class WalletTopUpService {
             return Held.REFUND_DUE;
         }
 
-        if (topUps.markCredited(topUpId, payment.providerPaymentId(), now) != 1) {
+        if (topUps.markCredited(topUpId, payment.providerPaymentId(), now,
+                payment.method(), payment.methodDetail()) != 1) {
             // Cannot happen while both locks are held; if it ever does, crediting
             // anyway is exactly the double credit this exists to prevent.
             log.error("Wallet top-up {} could not move to CREDITED although locked; not credited", topUpId);

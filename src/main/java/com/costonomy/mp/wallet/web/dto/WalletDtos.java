@@ -65,6 +65,43 @@ public final class WalletDtos {
             Instant at) {
     }
 
+    /**
+     * One line of the wallet history (D-108): a ledger row, or a top-up that was paid and
+     * returned. The two live in different tables and their ids can coincide, so {@code key}
+     * ("L12" or "T12") is what a list should use to tell rows apart.
+     */
+    public record HistoryItem(
+            String key,
+            Long id,
+            WalletDirection direction,
+            String kind,
+            BigDecimal amount,
+            /** What the balance became. Null for a returned top-up, which never touched it. */
+            BigDecimal balanceAfter,
+            Long supplierOrderId,
+            String reason,
+            /** COMPLETED, IN_PROGRESS (a withdrawal still on its way) or RETURNED. */
+            String status,
+            /** A withdrawal's refund status (as on the wallet), else null. */
+            String refundStatus,
+            /** "Card •1007", "UPI", "Netbanking"; null when unknown or not a top-up. */
+            String instrument,
+            Instant at) {
+    }
+
+    /** What a month's ledger added and spent, in rupees. Ledger only: a returned top-up is neither. */
+    public record MonthTotal(String month, BigDecimal added, BigDecimal spent) {
+    }
+
+    public record HistoryResponse(
+            List<HistoryItem> items,
+            List<MonthTotal> monthTotals,
+            /** Every Asia/Kolkata month with any history for this outlet, newest first, filters ignored. */
+            List<String> availableMonths,
+            /** Pass back as {@code cursor} for the next page; null on the last one. */
+            String nextCursor) {
+    }
+
     /** Send wallet money back to the card or bank it came from (D-104). */
     public record WithdrawRequest(
             @NotNull @Positive @Digits(integer = 15, fraction = 2) BigDecimal amount) {

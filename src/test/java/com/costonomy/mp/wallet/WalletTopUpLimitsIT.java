@@ -144,5 +144,17 @@ class WalletTopUpLimitsIT extends AbstractIntegrationTest {
         assertThat(t.dbStatus(idB)).isEqualTo("REFUNDED");
         assertThat(t.ledgerRows(idB)).isZero();
         assertThat(t.balance(buyer)).isEqualByComparingTo("0");
+
+        // D-108: the customer sees the money that left their bank and came back, and how it was paid.
+        var history = t.call("GET", buyer.token(),
+                "/api/v1/outlets/" + buyer.outletId() + "/wallet/transactions?statuses=RETURNED", null, null);
+        assertThat(history.status()).isEqualTo(200);
+        var items = history.data().get("items");
+        assertThat(items).hasSize(1);
+        assertThat(items.get(0).get("key").asText()).isEqualTo("T" + idB);
+        assertThat(items.get(0).get("status").asText()).isEqualTo("RETURNED");
+        assertThat(items.get(0).get("amount").decimalValue()).isEqualByComparingTo("800.00");
+        assertThat(items.get(0).get("balanceAfter").isNull()).isTrue();
+        assertThat(items.get(0).get("instrument").asText()).isEqualTo("Card \u20221111");
     }
 }
