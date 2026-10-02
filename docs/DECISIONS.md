@@ -3604,3 +3604,59 @@ full runs passed back to back. Point 8 was found by that suite.
 test ids cannot be exercised yet. Real webhook delivery from Razorpay (through a
 tunnel) is simulated with correctly signed requests rather than observed.
 OPEN-005 (the delivery fee) is unaffected.
+
+---
+
+## D-099 — No provider call holds a connection, and every payment write takes its lock first
+**Raised 2026-09-27 · Settled 2026-09-27**
+
+A review of D-098's work for load and concurrency, with Docker available so the
+integration suite could run in full for the first time on that branch. It found
+five defects; the concurrency ones only by writing tests that race two real
+requests rather than reading the code.
+
+**Provider calls ran inside database transactions.** `PaymentService.confirm`,
+`performCapture` and `RefundService.process` called the provider while holding a
+connection. The pool is ten and a provider read may take fifteen seconds, so ten
+slow checkouts would stall every endpoint, not only payments. Each now asks the
+provider with no transaction open and writes the answer in a short one, through
+`TransactionTemplate` — not `@Transactional`, because a self-invocation would
+bypass the proxy. A refund is claimed as PROCESSING and committed before the
+call; one left there by a process that died mid-call is resent after five
+minutes, which the per-refund provider key makes safe.
+
+*Not changed:* order creation still calls the provider inside
+`IntentOrderCreator.create`, because that transaction keeps the order and its
+payment atomic. Moving the call out changes the order flow and is for its owner
+to decide.
+
+**A retryable capture failure stranded the payment.** It returned the payment to
+AUTHORIZED "so the job tries again", but the capture job reads only
+CAPTURE_PENDING and nothing marks a confirmed order for capture twice. The
+authorisation would lapse with the order confirmed and the supplier unpaid. It now
+stays CAPTURE_PENDING. The test for it asserted AUTHORIZED and called that
+retried; it now asserts two runs make two attempts.
+
+**Confirm and a webhook deadlocked.** Each inserted a ledger row — a shared lock
+on the payment through the foreign key — then asked for the exclusive lock to
+update it. MySQL killed one: a 500 for a customer who had paid. Every state change
+now takes `PaymentRepository.lockById` first. `OrderReleaseService.releaseIfFunded`
+had the same race one level up, on the order — its own Javadoc promised "only one
+release happens" and it did not hold under concurrency — so it locks the order.
+Both are proven by five consecutive races in `PaymentFlowIT$Hardening`.
+
+**All twenty-one jobs shared one scheduler thread** (Spring's default), so a slow
+payment sweep delayed captures, the outbox, notifications and settlement.
+`spring.task.scheduling.pool.size=8`; ShedLock still keeps each job single.
+
+**The sweep would have hit rate limits.** It asked the provider about every
+unpaid intent every minute for a day. It now backs off with age — a fifth of it,
+two to thirty minutes — about sixty lookups per abandoned checkout instead of
+1,440, recorded with a one-column update so it cannot overwrite a concurrent
+confirm. Capture and reconcile runs are batched (100 and 200).
+
+`StorefrontIT$Suppliers.radiusCountsWhatItExcluded` listed every supplier near
+Hyderabad and failed once more of them existed; it now searches for its own
+uniquely named stores.
+
+Full suite on this change alone: 317 unit, 326 integration, no failures.

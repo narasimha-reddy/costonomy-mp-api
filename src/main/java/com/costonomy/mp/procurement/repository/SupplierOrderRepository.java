@@ -2,7 +2,9 @@ package com.costonomy.mp.procurement.repository;
 
 import com.costonomy.mp.procurement.domain.SupplierOrder;
 import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -11,6 +13,11 @@ import java.util.Collection;
 import java.util.List;
 
 public interface SupplierOrderRepository extends JpaRepository<SupplierOrder, Long> {
+
+    /** The order, locked for the rest of the transaction. See OrderReleaseService.releaseIfFunded. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select o from SupplierOrder o where o.id = :id")
+    java.util.Optional<SupplierOrder> lockById(@Param("id") Long id);
 
     List<SupplierOrder> findByProcurementId(Long procurementId);
 

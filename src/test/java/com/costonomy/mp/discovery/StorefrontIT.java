@@ -229,15 +229,20 @@ class StorefrontIT extends AbstractIntegrationTest {
         @DisplayName("a radius narrows the list and says what it left out")
         void radiusCountsWhatItExcluded() throws Exception {
             var outlet = newOutlet();
-            newStore("Next Door", HYD_LAT, HYD_LON);
-            newStore("Across Town", NEARBY_LAT, NEARBY_LON);
+            // Named uniquely and searched for by that name: the suite shares one
+            // database, and a list of every supplier near Hyderabad is a list of
+            // whatever other test classes created there — enough of them pushed
+            // Next Door off the page and failed this for a reason it isn't about.
+            String run = "R" + System.nanoTime();
+            newStore("Next Door " + run, HYD_LAT, HYD_LON);
+            newStore("Across Town " + run, NEARBY_LAT, NEARBY_LON);
 
             // Across Town is about 7 km away; 2 km keeps only the near one, and the
             // other is counted rather than silently dropped.
-            var page = directory(outlet, "&radiusKm=2");
+            var page = directory(outlet, "&radiusKm=2&q=" + run);
             assertThat(page.get("suppliers").findValuesAsText("supplierName"))
-                    .contains("Next Door")
-                    .doesNotContain("Across Town");
+                    .contains("Next Door " + run)
+                    .doesNotContain("Across Town " + run);
             assertThat(page.get("beyondRadius").asInt()).isGreaterThanOrEqualTo(1);
         }
 
