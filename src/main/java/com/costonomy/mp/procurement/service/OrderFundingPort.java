@@ -75,6 +75,16 @@ public interface OrderFundingPort {
     void onOrderUnfulfilled(Long supplierOrderId, String reason);
 
     /**
+     * The intent a client can still pay this order against, if any (D-102).
+     *
+     * <p>A read: it never creates a provider order. Empty for a funding method with
+     * no client step (credit, wallet), or once the payment is funded or ended.
+     */
+    default java.util.Optional<FundingIntent> openIntent(Long supplierOrderId) {
+        return java.util.Optional.empty();
+    }
+
+    /**
      * What the client needs to pay for one order.
      *
      * @param providerOrderId the intent to open a checkout against

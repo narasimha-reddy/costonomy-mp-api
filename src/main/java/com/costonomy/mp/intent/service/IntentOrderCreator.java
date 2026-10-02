@@ -220,7 +220,12 @@ public class IntentOrderCreator {
             var order = supplierOrders.findById(existing.getSupplierOrderId())
                     .orElseThrow(() -> new NotFoundException("SupplierOrder",
                             existing.getSupplierOrderId()));
-            return response(intentId, order, List.of());
+            // With the intent still open, if it is: a retry that lost its first
+            // response needs the checkout it never saw. Returned without it, the
+            // app read "nothing to pay" and the order could never be paid (D-102).
+            // A read — no second provider order.
+            return response(intentId, order,
+                    funding.openIntent(order.getId()).map(List::of).orElse(List.of()));
         }
 
         var plan = plan(actorId, intentId, request);
