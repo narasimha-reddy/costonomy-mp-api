@@ -4994,3 +4994,28 @@ on a fresh database and on one already at V42, where V43 and V44 are simply the 
 **Tests.** `PaymentFlowIT$WalletInterplay`: top-up money and QuickScan returns against the withdrawal pre-check, a reversal on
 the history and a statement, a QuickScan payment and a withdrawal of one wallet at once, and top-ups, QuickScan, withdrawals and a
 reversal together (ledger equals balance). `WalletEntryCopyTest`.
+
+## D-112 — One wallet entry in full: `GET /outlets/{outletId}/wallet/transactions/{entryId}`
+
+The transaction-details page (money received or paid, with a receipt to share) needs one entry explained, not a list row.
+Read-only: no schema change, no migration, no change to the history list.
+
+1. **Our transaction id is the ledger entry id**, a plain decimal string (`"184"`). `entryId` in the path accepts that or
+   the list's `key` (`L184`). A returned top-up (`T12`) never touched the ledger, has no transaction id, and is a 404.
+2. **Same door as the history.** `ORDER_VIEW` on the outlet; the entry is looked up in the outlet's own wallet, so another
+   outlet's entry, a missing one and a malformed id are all `404`, never `403`. The status uses the list's rule
+   (`WalletHistoryService.statusOf`), so list and detail cannot disagree.
+3. **Counterparty by kind.** QuickScan payment/return: payee name and the VPA masked to the first two characters of the
+   handle, bullets, and the `@bank` (`sr••••@okhdfc`). Order payment/refund/dispute refund: the supplier shop and the order
+   number. Top-up: the instrument in the history's form (`Card •1111`, `UPI`). Withdrawal and its reversal, refund: the
+   statement's plain words.
+4. **References are only what we hold.** Order number, QuickScan payment id, Razorpay payment id (top-up, or an order paid
+   through Razorpay, or the card payment a withdrawal refunds), our refund id and the provider's refund id once sent, and a
+   payout id only when it is a real provider id (a mock's is not shown). **No UTR or bank reference is stored anywhere**, so
+   none is returned. Our own transaction id is not repeated in `references`. No keys, signatures or full card/UPI data.
+5. **The full VPA leaves only as `actions.payeeVpa`**, and only when `actions.canPayAgain`: a QuickScan payment (not a
+   return) whose payee VPA still passes QuickScan's own validation. It is the caller's own past payment; the app needs it to
+   prefill a new one. Everywhere else the VPA is masked.
+
+**Tests.** `WalletTransactionDetailIT` (every kind from seeded rows, masking, pay-again, tenancy, 401, 404s) and
+`WalletEntryDetailMaskTest`.
