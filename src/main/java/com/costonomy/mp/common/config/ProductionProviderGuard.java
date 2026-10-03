@@ -67,5 +67,71 @@ public class ProductionProviderGuard {
             throw new IllegalStateException("costonomy.mp.quickscan.enabled is true under a production "
                     + "profile. QuickScan needs legal sign-off before production; leave it disabled.");
         }
+
+        // D-113: bills are private. Local disk is not storage anyone can rely on, and the fake reader
+        // answers every bill with the same made-up one. Both default to the local forms, so a deploy that
+        // forgets them is refused, not quietly run on them.
+        if ("LOCAL".equalsIgnoreCase(environment.getProperty("costonomy.mp.invoices.storage.provider", "LOCAL").trim())) {
+            throw new IllegalStateException("costonomy.mp.invoices.storage.provider is LOCAL under a production "
+                    + "profile. Bills are private: set it to S3.");
+        }
+        if ("FAKE".equalsIgnoreCase(environment.getProperty("costonomy.mp.invoices.reader.provider", "FAKE").trim())) {
+            throw new IllegalStateException("costonomy.mp.invoices.reader.provider is FAKE under a production "
+                    + "profile. Set it to HTTP.");
+        }
+        // D-114, D-115: the real reader signs in to the cost app with a username and password (a static token is for
+        // quick local tests only), over https, as a known cost-app user, and each marketplace outlet sees only the cost
+        // outlet it is mapped to. Only whether a value is set or well formed is looked at; no value is ever printed.
+        if (!blank(environment.getProperty("costonomy.mp.invoices.reader.token"))) {
+            throw new IllegalStateException("costonomy.mp.invoices.reader.token is set under a production profile. "
+                    + "It is for quick tests only; remove INVOICE_READER_TOKEN and use the reader's sign-in.");
+        }
+        if (blank(environment.getProperty("costonomy.mp.invoices.reader.username"))
+                || blank(environment.getProperty("costonomy.mp.invoices.reader.password"))) {
+            throw new IllegalStateException("costonomy.mp.invoices.reader.username and .password are not set under a "
+                    + "production profile. Set INVOICE_READER_USERNAME and INVOICE_READER_PASSWORD.");
+        }
+        String baseUrl = environment.getProperty("costonomy.mp.invoices.reader.base-url", "").strip();
+        if (!baseUrl.toLowerCase(java.util.Locale.ROOT).startsWith("https://")) {
+            throw new IllegalStateException("costonomy.mp.invoices.reader.base-url is not an https URL under a "
+                    + "production profile. Set INVOICE_READER_BASE_URL to the cost app's https address.");
+        }
+        if (positive(environment.getProperty("costonomy.mp.invoices.reader.user-id", "0")) <= 0) {
+            throw new IllegalStateException("costonomy.mp.invoices.reader.user-id is not set under a production "
+                    + "profile. Set INVOICE_READER_USER_ID to the reading account's cost-app user id.");
+        }
+        if (positive(environment.getProperty("costonomy.mp.invoices.reader.outlet", "0")) <= 0) {
+            throw new IllegalStateException("costonomy.mp.invoices.reader.outlet is not set under a production "
+                    + "profile. Set INVOICE_READER_OUTLET to the reading account's own cost-app outlet.");
+        }
+        if (!"false".equalsIgnoreCase(environment.getProperty("costonomy.mp.invoices.cost-outlet-fallback", "false")
+                .strip())) {
+            throw new IllegalStateException("costonomy.mp.invoices.cost-outlet-fallback is on under a production "
+                    + "profile. It would show one cost outlet's suppliers and prices to every outlet; use "
+                    + "INVOICE_COST_OUTLET_MAP instead.");
+        }
+        if (blank(environment.getProperty("costonomy.mp.invoices.cost-outlet-map"))) {
+            throw new IllegalStateException("costonomy.mp.invoices.cost-outlet-map is empty under a production "
+                    + "profile. Set INVOICE_COST_OUTLET_MAP to mpOutletId:costOutletId pairs.");
+        }
+        try {
+            com.costonomy.mp.wallet.invoice.costapi.CostOutletMap.parse(
+                    environment.getProperty("costonomy.mp.invoices.cost-outlet-map"));
+        } catch (IllegalStateException e) {
+            throw new IllegalStateException(e.getMessage() + " (under a production profile)");
+        }
+    }
+
+    /** The number, or 0 when it is not one. */
+    private static long positive(String value) {
+        try {
+            return Long.parseLong(value.strip());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
     }
 }

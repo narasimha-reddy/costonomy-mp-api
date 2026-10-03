@@ -197,6 +197,9 @@ class MigrationIT extends AbstractIntegrationTest {
                         // that could be edited would be a metric that could be
                         // rewritten after the fact.
                         "analytics_event",
+                        // A page of a wallet bill (D-113): written once with the bill, removed with it
+                        // (ON DELETE CASCADE), never edited. A different file would be a different page.
+                        "wallet_entry_invoice_page",
                         // A correction to a payout is a record of what was agreed.
                         // Editing one would rewrite what a supplier was paid.
                         "settlement_adjustment",

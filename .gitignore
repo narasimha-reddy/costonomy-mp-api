@@ -14,3 +14,4 @@ target/
 application-local.properties
 .env
 var/uploads/
+var/invoices/

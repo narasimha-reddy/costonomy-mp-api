@@ -114,7 +114,9 @@ public final class WalletDtos {
             String counterpartyDetail,
             /** Real identifiers we hold, in display order. Our own transaction id is not repeated here. */
             List<Reference> references,
-            Actions actions) {
+            Actions actions,
+            /** The shop's bill on this payment, or null (D-113). */
+            com.costonomy.mp.wallet.invoice.web.InvoiceDtos.Summary invoice) {
     }
 
     public record Reference(String label, String value, boolean copyable) {
@@ -122,6 +124,8 @@ public final class WalletDtos {
 
     public record Actions(
             boolean canPayAgain,
+            /** A bill can be attached: an order payment or a QuickScan payment (D-113). */
+            boolean canAddBill,
             /** The full VPA, present only when {@code canPayAgain}: the caller's own past payment. */
             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
             String payeeVpa) {
