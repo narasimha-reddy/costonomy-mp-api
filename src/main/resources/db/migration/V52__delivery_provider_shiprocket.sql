@@ -1,4 +1,4 @@
--- V44 — Shiprocket as a delivery provider alongside Pidge, Borzo, Shadowfax and Porter.
+-- V52 — Shiprocket as a delivery provider alongside Pidge, Borzo, Shadowfax and Porter.
 --
 -- Seeded disabled (enabled = 0), same as PIDGE, BORZO, SHADOWFAX and PORTER. The adapter bean has
 -- its own independent flag (costonomy.mp.shiprocket.enabled). Flipping this row

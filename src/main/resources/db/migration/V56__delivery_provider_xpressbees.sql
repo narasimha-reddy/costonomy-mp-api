@@ -1,4 +1,4 @@
--- V48 — Xpressbees as an on-demand intra-city and express delivery provider.
+-- V56 — Xpressbees as an on-demand intra-city and express delivery provider.
 --
 -- Seeded disabled (enabled = 0), same as other carriers. The adapter bean has
 -- its own independent flag (costonomy.mp.xpressbees.enabled). Flipping this row

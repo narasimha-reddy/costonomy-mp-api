@@ -1522,7 +1522,7 @@ Avoid modifying the domain model for every new provider.
 **Borzo — added 2026-10-01, see D-098.** `delivery.provider.borzo`: `BorzoApiClient`,
 `BorzoDeliveryProvider`, `BorzoStatusMapper`, `BorzoContractException`, gated by
 its own `costonomy.mp.borzo.enabled` flag (independent of Pidge's single-valued
-`costonomy.mp.providers.delivery` switch) plus a `delivery_provider` row (V41,
+`costonomy.mp.providers.delivery` switch) plus a `delivery_provider` row (V49,
 seeded disabled). One port-level exception to "only a new adapter and
 configuration": `DeliveryProvider.QuoteRequest` gained `pickupAddress`/
 `dropAddress`, because Borzo's `calculate-order` requires address text per

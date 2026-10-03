@@ -3540,7 +3540,7 @@ switch that cannot also equal `"BORZO"`. Rather than widen that property into a
 list (touching Pidge's tested activation path for no reason), Borzo gets its
 own flag, `costonomy.mp.borzo.enabled`, so it can run next to Pidge, next to
 the mocks, or alone. Both still need the matching `delivery_provider.enabled`
-row (V41, seeded `0`) before `DeliveryProviderRegistry` actually offers the
+row (V49, seeded `0`) before `DeliveryProviderRegistry` actually offers the
 adapter a quote — the same dual-gate Pidge already uses.
 `BorzoPidgeCoexistenceTest` proves the two switches don't interfere.
 

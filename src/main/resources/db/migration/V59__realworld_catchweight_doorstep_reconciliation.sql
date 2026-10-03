@@ -1,4 +1,4 @@
--- V51: Real-world B2B food operations: Catch-weight reconciliation, doorstep verification, store MOV, and free delivery thresholds.
+-- V59: Real-world B2B food operations: Catch-weight reconciliation, doorstep verification, store MOV, and free delivery thresholds.
 --
 -- 1. Catch-weight items (meat, poultry, seafood, produce, paneer) vary by natural weight
 --    at packing/dispatch. Dispatched weight differences trigger server-side delta adjustments.

@@ -1,4 +1,4 @@
--- V47 — Delhivery as an on-demand intra-city and express delivery provider.
+-- V55 — Delhivery as an on-demand intra-city and express delivery provider.
 --
 -- Seeded disabled (enabled = 0), same as other carriers. The adapter bean has
 -- its own independent flag (costonomy.mp.delhivery.enabled). Flipping this row

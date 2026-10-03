@@ -1,4 +1,4 @@
--- V45 — LoadShare Networks as a delivery provider alongside Pidge, Borzo, Shadowfax, Porter and Shiprocket.
+-- V53 — LoadShare Networks as a delivery provider alongside Pidge, Borzo, Shadowfax, Porter and Shiprocket.
 --
 -- Seeded disabled (enabled = 0), same as other carriers. The adapter bean has
 -- its own independent flag (costonomy.mp.loadshare.enabled). Flipping this row
