@@ -276,7 +276,8 @@ public class StorefrontService {
 
     /** One purchasable offer, before distance and ratings are attached. */
     private record SkuRow(Long offerId, Long skuId, String skuName, String brandName,
-                          BigDecimal packSize, String packUnit, BigDecimal sellingPrice,
+                          String grade, BigDecimal packSize, String packUnit,
+                          BigDecimal mrp, BigDecimal sellingPrice,
                           BigDecimal gstRate, String availability, BigDecimal availableQuantity,
                           String skuImageUrl, String canonicalImageUrl,
                           Long canonicalProductId, String canonicalProductName,
@@ -297,7 +298,8 @@ public class StorefrontService {
                        cp.id, cp.name,
                        s.id, o.display_name, s.name,
                        cp.category_id, pc.name,
-                       k.measure_value, k.measure_unit
+                       k.measure_value, k.measure_unit,
+                       k.grade, coalesce(f.mrp, k.mrp) as mrp
                   from supplier_offer f
                   join supplier_sku k on k.id = f.supplier_sku_id
                   join canonical_product cp on cp.id = k.canonical_product_id
@@ -317,7 +319,8 @@ public class StorefrontService {
                 rs -> {
                     rows.add(new SkuRow(
                             rs.getLong(1), rs.getLong(2), rs.getString(3), rs.getString(4),
-                            rs.getBigDecimal(5), rs.getString(6), rs.getBigDecimal(7),
+                            rs.getString(22), rs.getBigDecimal(5), rs.getString(6),
+                            rs.getBigDecimal(23), rs.getBigDecimal(7),
                             rs.getBigDecimal(8), rs.getString(9), rs.getBigDecimal(10),
                             rs.getString(11), rs.getString(12),
                             rs.getLong(13), rs.getString(14),
@@ -354,15 +357,21 @@ public class StorefrontService {
             String key = row.storeId() + ":" + row.canonicalProductId();
             BigDecimal incl = row.sellingPrice() != null
                     ? packInclusiveOfGst(row.sellingPrice(), row.gstRate()) : null;
+            BigDecimal discountAmount = Pricing.discountAmount(row.mrp(), row.sellingPrice());
+            Integer discountPercent = Pricing.discountPercent(row.mrp(), row.sellingPrice());
             brandOptionsByStoreProduct.computeIfAbsent(key, k -> new ArrayList<>())
                     .add(new DiscoveryDtos.BrandOption(
                             row.skuId(),
                             row.offerId(),
                             row.skuName(),
                             row.brandName(),
+                            row.grade(),
                             row.packSize(),
                             row.packUnit(),
+                            row.mrp(),
                             row.sellingPrice(),
+                            discountAmount,
+                            discountPercent,
                             row.gstRate(),
                             incl,
                             blankToNull(row.skuImageUrl()) != null
@@ -397,10 +406,18 @@ public class StorefrontService {
             var metrics = ratings.get(row.storeId());
             String key = row.storeId() + ":" + row.canonicalProductId();
             List<DiscoveryDtos.BrandOption> brandOptions = brandOptionsByStoreProduct.getOrDefault(key, List.of());
+            BigDecimal rowDiscountAmount = Pricing.discountAmount(row.mrp(), row.sellingPrice());
+            Integer rowDiscountPercent = Pricing.discountPercent(row.mrp(), row.sellingPrice());
 
             out.add(new Sized(new DiscoveryDtos.StorefrontSku(
                     row.offerId(), row.skuId(), row.skuName(), row.brandName(),
-                    row.packSize(), row.packUnit(), row.sellingPrice(), row.gstRate(),
+                    row.grade(),
+                    row.packSize(), row.packUnit(),
+                    row.mrp(),
+                    row.sellingPrice(),
+                    rowDiscountAmount,
+                    rowDiscountPercent,
+                    row.gstRate(),
                     row.availability(), row.availableQuantity(),
                     // The SKU's own picture when the supplier uploaded one, the
                     // canonical product's otherwise. Blank is not a URL — an empty

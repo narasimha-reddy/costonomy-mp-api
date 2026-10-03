@@ -75,6 +75,36 @@ public class SupplierCatalogController {
         return ApiResponse.ok(supplierCatalog.priceHistory(ActorContext.requireUserId(), skuId));
     }
 
+    @GetMapping("/supplier-stores/{storeId}/products/{productId}/variants")
+    @Operation(
+            summary = "Get item variants and brand options",
+            description = """
+                    Unified Item Variant Manager: retrieves all brand and grade variants for
+                    a canonical item under this store, sorted with lowest priced first, plus
+                    top-selling preset recommendations.
+                    """)
+    public ApiResponse<CatalogDtos.ItemVariantGroupResponse> getItemVariants(
+            @PathVariable Long storeId,
+            @PathVariable Long productId) {
+        return ApiResponse.ok(supplierCatalog.getItemVariants(
+                ActorContext.requireUserId(), storeId, productId));
+    }
+
+    @PostMapping("/supplier-stores/{storeId}/products/{productId}/variants/batch")
+    @Operation(
+            summary = "Batch save or update variants under an item",
+            description = """
+                    Unified Item Variant Manager: batch creates or updates multiple brand & grade
+                    variants with individual MRP, selling price, stock and pack size in one screen action.
+                    """)
+    public ApiResponse<CatalogDtos.ItemVariantGroupResponse> batchUpdateVariants(
+            @PathVariable Long storeId,
+            @PathVariable Long productId,
+            @Valid @RequestBody CatalogDtos.BatchUpdateVariantsRequest request) {
+        return ApiResponse.ok(supplierCatalog.batchUpdateVariants(
+                ActorContext.requireUserId(), storeId, request));
+    }
+
     // ── Bulk import ──────────────────────────────────────────────────────
 
     @PostMapping(value = "/supplier-stores/{storeId}/catalog/import", consumes = "multipart/form-data")

@@ -177,15 +177,22 @@ public class RecommendationService {
             if (store == null || !store.tradeable()) {
                 continue;
             }
+            BigDecimal mrp = offer.getMrp() != null ? offer.getMrp() : sku.getMrp();
+            BigDecimal discountAmount = Pricing.discountAmount(mrp, offer.getSellingPrice());
+            Integer discountPercent = Pricing.discountPercent(mrp, offer.getSellingPrice());
             brandOptionsByStore.computeIfAbsent(offer.getSupplierStoreId(), k -> new ArrayList<>())
                     .add(new DiscoveryDtos.BrandOption(
                             sku.getId(),
                             offer.getId(),
                             sku.getName(),
                             sku.getBrandId() == null ? null : brandNames.get(sku.getBrandId()),
+                            sku.getGrade(),
                             sku.getPackSize(),
                             sku.getPackUnit(),
+                            mrp,
                             offer.getSellingPrice(),
+                            discountAmount,
+                            discountPercent,
                             offer.getGstRate(),
                             packInclusiveOfGst(offer),
                             blankToNull(sku.getImageUrl()) != null ? sku.getImageUrl() : blankToNull(product.getImageUrl()),
@@ -272,14 +279,22 @@ public class RecommendationService {
         BigDecimal itemTotal = offer.getSellingPrice().multiply(quantity);
         BigDecimal gstAmount = itemTotal.multiply(offer.getGstRate())
                 .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP);
+        BigDecimal mrp = offer.getMrp() != null ? offer.getMrp() : sku.getMrp();
+        BigDecimal discountAmount = Pricing.discountAmount(mrp, offer.getSellingPrice());
+        Integer discountPercent = Pricing.discountPercent(mrp, offer.getSellingPrice());
 
         return new DiscoveryDtos.RecommendedOffer(
                 scored.offerId(), sku.getId(), store.storeId(),
                 store.supplierName(), store.storeName(),
                 sku.getName(),
                 sku.getBrandId() == null ? null : brandNames.get(sku.getBrandId()),
+                sku.getGrade(),
                 sku.getPackSize(), sku.getPackUnit(),
-                offer.getSellingPrice(), offer.getGstRate(),
+                mrp,
+                offer.getSellingPrice(),
+                discountAmount,
+                discountPercent,
+                offer.getGstRate(),
                 itemTotal, gstAmount, scored.effectiveTotal(),
                 offer.getAvailability(), offer.getAvailableQuantity(),
                 scored.coversFullQuantity(),

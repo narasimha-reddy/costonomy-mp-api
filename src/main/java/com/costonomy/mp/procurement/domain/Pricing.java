@@ -77,6 +77,31 @@ public final class Pricing {
     }
 
     /**
+     * Compute discount amount (MRP - Selling Price).
+     * Returns null if MRP is null, sellingPrice is null, or sellingPrice >= MRP.
+     */
+    public static BigDecimal discountAmount(BigDecimal mrp, BigDecimal sellingPrice) {
+        if (mrp == null || sellingPrice == null || mrp.compareTo(sellingPrice) <= 0) {
+            return null;
+        }
+        return mrp.subtract(sellingPrice).setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Compute discount percentage: ((MRP - Selling Price) / MRP) * 100 rounded to integer percent.
+     * Returns null if MRP is null, sellingPrice is null, or sellingPrice >= MRP or MRP <= 0.
+     */
+    public static Integer discountPercent(BigDecimal mrp, BigDecimal sellingPrice) {
+        if (mrp == null || sellingPrice == null || mrp.compareTo(sellingPrice) <= 0 || mrp.compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+        return mrp.subtract(sellingPrice)
+                .multiply(HUNDRED)
+                .divide(mrp, 0, RoundingMode.HALF_UP)
+                .intValue();
+    }
+
+    /**
      * Whether two prices differ.
      *
      * <p>{@code compareTo}, never {@code equals}: {@code 410.00} and {@code 410.0000}

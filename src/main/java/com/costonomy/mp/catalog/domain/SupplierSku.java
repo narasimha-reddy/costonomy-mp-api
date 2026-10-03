@@ -39,11 +39,24 @@ public class SupplierSku extends BaseEntity {
     @Column(name = "brand_id")
     private Long brandId;
 
+    /**
+     * Quality / variant grade of the product or brand (e.g. "Grade A", "Grade B",
+     * "Grade C", "Premium", "Standard", or loose commodity grade like "Elaichi Grade A").
+     */
+    @Column(name = "grade", length = 100)
+    private String grade;
+
     @Column(name = "pack_size", nullable = false, precision = 19, scale = 4)
     private BigDecimal packSize;
 
     @Column(name = "pack_unit", nullable = false, length = 32)
     private String packUnit;
+
+    /**
+     * Printed MRP or benchmark market retail price. Optional for loose/unbranded commodities.
+     */
+    @Column(name = "mrp", precision = 19, scale = 4)
+    private BigDecimal mrp;
 
     /**
      * How much is inside one pack, when the pack unit does not say.
