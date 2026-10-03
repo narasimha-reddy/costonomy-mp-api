@@ -1519,7 +1519,7 @@ Each provider should require only a new adapter and configuration.
 
 Avoid modifying the domain model for every new provider.
 
-**Borzo — added 2026-10-01, see D-098.** `delivery.provider.borzo`: `BorzoApiClient`,
+**Borzo — added 2026-10-01, see D-113.** `delivery.provider.borzo`: `BorzoApiClient`,
 `BorzoDeliveryProvider`, `BorzoStatusMapper`, `BorzoContractException`, gated by
 its own `costonomy.mp.borzo.enabled` flag (independent of Pidge's single-valued
 `costonomy.mp.providers.delivery` switch) plus a `delivery_provider` row (V49,

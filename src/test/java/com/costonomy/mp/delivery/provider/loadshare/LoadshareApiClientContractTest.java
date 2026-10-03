@@ -128,7 +128,7 @@ class LoadshareApiClientContractTest {
     }
 
     @Test
-    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit (D-101)")
+    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit (D-116)")
     void calculateQuote_exceeds30Km() {
         var longRouteRequest = new DeliveryProvider.QuoteRequest(
                 101L,

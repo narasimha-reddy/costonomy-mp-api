@@ -27,8 +27,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * HTTP client for the LoadShare Networks Hyperlocal v2 Delivery API.
  *
  * <p>Implements checkServiceability, order creation, order tracking, and order cancellation.
- * Adheres strictly to the fail-closed principles, 30 km intra-city radius ceiling (D-101),
- * verified carrier fares (D-102), and deterministic event ordering (D-099, D-100).
+ * Adheres strictly to the fail-closed principles, 30 km intra-city radius ceiling (D-116),
+ * verified carrier fares (D-117), and deterministic event ordering (D-114, D-115).
  */
 @Component
 @Slf4j

@@ -1,4 +1,4 @@
--- D-109: Support item multi-brand catalog options with grades, MRP benchmarks and discount displays.
+-- (no decision record yet; D-109 here was a placeholder): Support item multi-brand catalog options with grades, MRP benchmarks and discount displays.
 --
 -- A product (e.g. Paneer, Elaichi, Floor Cleaner, Basmati Biryani Rice) supports
 -- multiple brands as well as different grades (e.g., "Grade A", "Grade B", "Grade C",

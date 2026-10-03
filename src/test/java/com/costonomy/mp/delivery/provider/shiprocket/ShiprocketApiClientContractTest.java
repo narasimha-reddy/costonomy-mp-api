@@ -111,7 +111,7 @@ class ShiprocketApiClientContractTest {
     }
 
     @Test
-    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit (D-101)")
+    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit (D-116)")
     void declinesWhenExceeds30KmRadius() {
         // Indiranagar, Bengaluru to Hosur (~45 km)
         var longRouteRequest = new DeliveryProvider.QuoteRequest(

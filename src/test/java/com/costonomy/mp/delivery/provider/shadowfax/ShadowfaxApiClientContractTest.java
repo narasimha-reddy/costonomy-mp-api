@@ -91,7 +91,7 @@ class ShadowfaxApiClientContractTest {
     }
 
     @Test
-    @DisplayName("declines a serviceable route because Shadowfax gives no fare (D-102)")
+    @DisplayName("declines a serviceable route because Shadowfax gives no fare (D-117)")
     void declinesServiceableRouteBecauseNoCarrierFare() {
         server.expect(requestTo(SERVICEABILITY_URL))
                 .andRespond(withSuccess("""
@@ -218,7 +218,7 @@ class ShadowfaxApiClientContractTest {
     }
 
     @Test
-    @DisplayName("refuses to book without a carrier fare and sends nothing (D-102)")
+    @DisplayName("refuses to book without a carrier fare and sends nothing (D-117)")
     void refusesToBookWithoutFareAndSendsNothing() {
         assertThatThrownBy(() -> client.createOrder(validHydBooking()))
                 .isInstanceOf(ShadowfaxContractException.class)

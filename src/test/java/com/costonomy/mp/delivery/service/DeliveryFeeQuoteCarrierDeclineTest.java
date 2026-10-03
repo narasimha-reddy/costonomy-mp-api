@@ -28,7 +28,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * D-102: when every carrier declines (Shadowfax, Porter) or fails, the checkout fee is the
+ * D-117: when every carrier declines (Shadowfax, Porter) or fails, the checkout fee is the
  * platform's own rate card, labelled ESTIMATED. It is never a carrier price, and no carrier
  * is named on the quote.
  */
@@ -83,7 +83,7 @@ class DeliveryFeeQuoteCarrierDeclineTest {
         var declining = mock(DeliveryProvider.class);
         var failing = mock(DeliveryProvider.class);
         when(declining.quote(any())).thenReturn(DeliveryProvider.Quote.unserviceable(
-                "Porter fare contract not verified against a live response; a rate card is not a quote (D-102)"));
+                "Porter fare contract not verified against a live response; a rate card is not a quote (D-117)"));
         when(failing.quote(any())).thenThrow(
                 new DeliveryProviderException("SHADOWFAX", "Shadowfax serviceability timeout", true));
         when(registry.enabled()).thenReturn(List.of(
