@@ -13,6 +13,8 @@ import com.costonomy.mp.wallet.domain.WalletTransaction;
 import com.costonomy.mp.wallet.invoice.domain.InvoiceStatus;
 import com.costonomy.mp.wallet.invoice.domain.WalletEntryInvoice;
 import com.costonomy.mp.wallet.invoice.domain.WalletEntryInvoicePage;
+import com.costonomy.mp.wallet.invoice.domain.WalletEntryInvoiceWaiver;
+import com.costonomy.mp.wallet.invoice.repository.WalletEntryInvoiceWaiverRepository;
 import com.costonomy.mp.wallet.invoice.reader.InvoiceReading;
 import com.costonomy.mp.wallet.invoice.repository.WalletEntryInvoicePageRepository;
 import com.costonomy.mp.wallet.invoice.repository.WalletEntryInvoiceRepository;
@@ -69,6 +71,8 @@ public class WalletInvoiceService {
     private final ObjectMapper stored;
     private final TransactionTemplate tx;
     private final com.costonomy.mp.wallet.invoice.costapi.CostOutletMap outletMap;
+    private final WalletEntryInvoiceWaiverRepository waivers;
+    private final BillStatuses billStatuses;
 
     public static final int MAX_IDEMPOTENCY_KEY = 128;
     static final int HISTORY_KEPT = 20;
@@ -77,7 +81,8 @@ public class WalletInvoiceService {
                                 WalletEntryInvoicePageRepository pages, InvoiceStorage storage,
                                 InvoiceLinkSigner signer, InvoiceProperties props, InvoiceReadingService reading,
                                 AuditService audit, ObjectMapper json, PlatformTransactionManager txManager,
-                                com.costonomy.mp.wallet.invoice.costapi.CostOutletMap outletMap) {
+                                com.costonomy.mp.wallet.invoice.costapi.CostOutletMap outletMap,
+                                WalletEntryInvoiceWaiverRepository waivers, BillStatuses billStatuses) {
         this.em = em;
         this.wallets = wallets;
         this.invoices = invoices;
@@ -91,6 +96,8 @@ public class WalletInvoiceService {
         this.stored = InvoiceJson.storage(json);
         this.tx = new TransactionTemplate(txManager);
         this.outletMap = outletMap;
+        this.waivers = waivers;
+        this.billStatuses = billStatuses;
     }
 
     // ── upload ───────────────────────────────────────────────────────────
@@ -136,6 +143,15 @@ public class WalletInvoiceService {
                 storedKeys.add(key);
             }
             WalletEntryInvoice saved = tx.execute(s -> {
+                // The entry's row lock, first, orders this against a 'No bill needed' being set at the same moment
+                // (M1): the waiver read below is read after the lock, so a waiver committed meanwhile is seen and cleared.
+                lockEntry(entry.getId());
+                // D-116: a bill replaces 'No bill needed', in this same transaction.
+                waivers.findByWalletTransactionId(entry.getId()).ifPresent(waiver -> {
+                    waivers.delete(waiver);
+                    audit.record(actorId, null, WAIVER_AUDIT, "WALLET_TRANSACTION", entry.getId(),
+                            "WAIVED", "CLEARED", "a bill was added", null);
+                });
                 var invoice = new WalletEntryInvoice();
                 invoice.setWalletTransactionId(entry.getId());
                 invoice.setOutletId(outletId);
@@ -208,6 +224,87 @@ public class WalletInvoiceService {
         });
         // After the rows are gone: a failure here leaves an orphan file, never a bill that points at nothing.
         removeFiles(removed);
+    }
+
+    // ── 'No bill needed' (D-116) ─────────────────────────────────────────
+
+    static final String WAIVER_AUDIT = "WALLET_INVOICE_WAIVER";
+
+    /**
+     * Marks an eligible payment without a bill 'No bill needed'. 422 INVOICE_NOT_ALLOWED for any other entry, 409
+     * INVOICE_EXISTS when it has a bill. Already marked: answered the same, nothing written.
+     *
+     * <p>M1: the entry's row lock is the transaction's first statement, so everything read after it (the bill, the
+     * waiver) is read after a racing upload has committed or before it has started: the database runs REPEATABLE
+     * READ, and its snapshot is taken at the first plain read, which now comes after the lock. Upload takes the same
+     * lock first and clears a waiver in its own transaction, so a bill and a waiver never stay side by side.
+     */
+    public void waive(Long outletId, String entryKey, Long actorId) {
+        Long walletId = walletIdOf(outletId);
+        Long entryId = WalletEntryDetailService.parse(entryKey);
+        try {
+            tx.executeWithoutResult(s -> {
+                WalletTransaction entry = lockedEntryOf(walletId, entryId);
+                var facts = billStatuses.forEntries(walletId, List.of(entry.getId())).get(entry.getId());
+                if (facts == null || !facts.eligible()) {
+                    throw new BusinessException(ErrorCode.INVOICE_NOT_ALLOWED,
+                            "Only a completed payment from your wallet can be marked 'No bill needed'.");
+                }
+                if (facts.hasBill()) {
+                    throw new BusinessException(ErrorCode.INVOICE_EXISTS,
+                            "This payment already has a bill, so it cannot be marked 'No bill needed'.");
+                }
+                if (facts.waived()) {
+                    return;
+                }
+                var waiver = new WalletEntryInvoiceWaiver();
+                waiver.setWalletTransactionId(entry.getId());
+                waiver.setOutletId(outletId);
+                waiver.setWaivedBy(actorId);
+                waiver.setWaivedAt(Instant.now());
+                waivers.saveAndFlush(waiver);
+                audit.record(actorId, null, WAIVER_AUDIT, "WALLET_TRANSACTION", entry.getId(),
+                        null, "WAIVED", null, null);
+            });
+        } catch (DataIntegrityViolationException e) {
+            // L4: two requests at once, and the unique key let the other through: that one is the answer, but only
+            // when its waiver is really there. Anything else (a foreign key, say) is not a success.
+            if (waivers.findByWalletTransactionId(entryId).isEmpty()) {
+                throw e;
+            }
+        }
+    }
+
+    /** Undoes 'No bill needed'. Nothing to undo is answered the same. Same 404 rules as the bill. */
+    public void unwaive(Long outletId, String entryKey, Long actorId) {
+        Long walletId = walletIdOf(outletId);
+        Long entryId = WalletEntryDetailService.parse(entryKey);
+        tx.executeWithoutResult(s -> {
+            WalletTransaction entry = lockedEntryOf(walletId, entryId);
+            waivers.findByWalletTransactionId(entry.getId()).ifPresent(waiver -> {
+                waivers.delete(waiver);
+                audit.record(actorId, null, WAIVER_AUDIT, "WALLET_TRANSACTION", entry.getId(),
+                        "WAIVED", "CLEARED", null, null);
+            });
+        });
+    }
+
+    /** Upload's lock: the first statement of its transaction (see {@link #waive}). */
+    private void lockEntry(Long entryId) {
+        em.find(WalletTransaction.class, entryId, jakarta.persistence.LockModeType.PESSIMISTIC_WRITE);
+    }
+
+    private Long walletIdOf(Long outletId) {
+        return wallets.find(outletId).orElseThrow(WalletInvoiceService::entryNotFound).getId();
+    }
+
+    /** The outlet wallet's entry, locked; the first statement of the transaction it runs in. 404 when not there. */
+    private WalletTransaction lockedEntryOf(Long walletId, Long entryId) {
+        return em.createQuery("select t from WalletTransaction t where t.id = :id and t.walletId = :w",
+                        WalletTransaction.class)
+                .setParameter("id", entryId).setParameter("w", walletId)
+                .setLockMode(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+                .getResultList().stream().findFirst().orElseThrow(WalletInvoiceService::entryNotFound);
     }
 
     // ── review (D-114) ───────────────────────────────────────────────────

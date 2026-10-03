@@ -30,6 +30,21 @@ public record WalletStatement(
             BigDecimal amount,
             BigDecimal balanceAfter,
             /** The ledger's own note; free text, so a file must treat it as untrusted. */
-            String note) {
+            String note,
+            /**
+             * D-116: Pending, Reading, Added, Reviewed, Unreadable or No bill needed, by the History's rules; empty
+             * when the entry needs no bill (or is before the tracking start without one).
+             */
+            String bill,
+            /** D-116: the shop on the bill (the review's, else as read), else empty. Text from paper: untrusted. */
+            String shop,
+            /** D-116: the bill's number (the review's, else as read), else empty. Text from paper: untrusted. */
+            String billNumber) {
+
+        /** A row with no bill columns. */
+        public Line(Instant at, String description, String reference, WalletDirection direction, BigDecimal amount,
+                    BigDecimal balanceAfter, String note) {
+            this(at, description, reference, direction, amount, balanceAfter, note, "", "", "");
+        }
     }
 }

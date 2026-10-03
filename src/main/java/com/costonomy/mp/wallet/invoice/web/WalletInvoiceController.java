@@ -92,6 +92,31 @@ public class WalletInvoiceController {
         return ApiResponse.ok(service.review(outletId, entryId, actorId, body, idempotencyKey));
     }
 
+    @PutMapping("/outlets/{outletId}/wallet/transactions/{entryId}/invoice/waiver")
+    @Operation(summary = "Mark a wallet payment 'No bill needed' (D-116)",
+            description = """
+                    Clears the payment's "Bill pending" in the History and its counts; undone with DELETE on the same
+                    path. Only for an order or QuickScan payment from the wallet that completed (422
+                    INVOICE_NOT_ALLOWED otherwise) and has no bill (409 INVOICE_EXISTS). Marking it again answers the
+                    same. Adding a bill later clears it. Audited as WALLET_INVOICE_WAIVER. Needs QUICKSCAN_PAY on the
+                    outlet, as for adding a bill.""")
+    public ApiResponse<InvoiceDtos.Waiver> waive(@PathVariable Long outletId, @PathVariable String entryId) {
+        Long actorId = ActorContext.requireUserId();
+        requireWrite(actorId, outletId);
+        service.waive(outletId, entryId, actorId);
+        return ApiResponse.ok(new InvoiceDtos.Waiver(true));
+    }
+
+    @DeleteMapping("/outlets/{outletId}/wallet/transactions/{entryId}/invoice/waiver")
+    @Operation(summary = "Undo 'No bill needed' (D-116)",
+            description = "204, also when it was not set. Audited as WALLET_INVOICE_WAIVER. Needs QUICKSCAN_PAY.")
+    public ResponseEntity<Void> unwaive(@PathVariable Long outletId, @PathVariable String entryId) {
+        Long actorId = ActorContext.requireUserId();
+        requireWrite(actorId, outletId);
+        service.unwaive(outletId, entryId, actorId);
+        return ResponseEntity.noContent().build();
+    }
+
     /** Inside the outlet (else 404, as for reading), then allowed to pay from its wallet (else 403). */
     private void requireWrite(Long actorId, Long outletId) {
         accessControl.requireScoped(actorId, Permissions.ORDER_VIEW, ScopeType.OUTLET, outletId, "Outlet");

@@ -300,13 +300,16 @@ class WalletInvoiceReviewIT extends AbstractIntegrationTest {
     }
 
     @Test
-    @DisplayName("an unreadable bill: an empty draft, filled in by hand; at least one line is needed")
+    @DisplayName("an unreadable bill: an empty draft, filled in by hand; at least one line is needed; then REVIEWED, not counted as unreadable (D-116 M3)")
     void unreadableFilledByHand() throws Exception {
         read();
         jdbc.update("update wallet_entry_invoice set status = 'UNREADABLE', reading_json = null, total = null, "
                 + "error_text = 'We could not read this bill. You can still view the photo.' where outlet_id = ?",
                 buyer.outletId());
         var d = get().data();
+        // M3: before the review it is 'Check bill' (UNREADABLE) and counted.
+        assertThat(billInHistory()).isEqualTo("UNREADABLE");
+        assertThat(history().at("/billSummary/unreadable").asInt()).isEqualTo(1);
         var draft = d.get("draft");
         assertThat(draft.at("/supplier/name").asText()).isEmpty();
         assertThat(draft.at("/supplier/id").isNull()).isTrue();
@@ -330,6 +333,26 @@ class WalletInvoiceReviewIT extends AbstractIntegrationTest {
         assertThat(reply.data().at("/review/total").decimalValue()).isEqualByComparingTo("2820");
         assertThat(reply.data().at("/check/matches").asBoolean()).isTrue();
         assertThat(reply.data().get("status").asText()).isEqualTo("UNREADABLE");
+        // M3 (owner's decision): filled in by hand, it is REVIEWED everywhere and no longer counted as unreadable.
+        assertThat(billInHistory()).isEqualTo("REVIEWED");
+        assertThat(history().at("/billSummary/unreadable").asInt()).isZero();
+        assertThat(t.call("GET", buyer.token(), "/api/v1/outlets/" + buyer.outletId() + "/wallet/transactions/" + entry,
+                null, null).data().get("billStatus").asText()).isEqualTo("REVIEWED");
+    }
+
+    private JsonNode history() throws Exception {
+        var reply = t.call("GET", buyer.token(), "/api/v1/outlets/" + buyer.outletId() + "/wallet/transactions", null, null);
+        assertThat(reply.status()).isEqualTo(200);
+        return reply.data();
+    }
+
+    private String billInHistory() throws Exception {
+        for (var item : history().get("items")) {
+            if (item.get("id").asLong() == entry) {
+                return item.get("bill").isNull() ? null : item.at("/bill/status").asText();
+            }
+        }
+        throw new AssertionError("entry not in the History");
     }
 
     @Test

@@ -96,19 +96,28 @@ public class WalletController {
                     are the ledger's added and spent for the requested months (or, with none
                     requested, the months on this page), whatever the kind and status filters say.
                     `availableMonths` lists every month with any history.
+
+                    D-116: each item has `bill`, null or `{"status": ...}` with PENDING, READING, ADDED,
+                    REVIEWED or UNREADABLE, on order and QuickScan payments from the wallet (PENDING only from
+                    the tracking start, INVOICE_TRACKING_START; 'No bill needed' shows null). `bills` (comma list
+                    of those five) keeps only entries whose bill status is one of them; it composes with the other
+                    filters and the cursor, and leaves `monthTotals` unfiltered. `billSummary` {pending, reading,
+                    unreadable} counts all months since the tracking start, filters ignored, and each
+                    `monthTotals` item has `billsPending`.
                     Same permission as reading the wallet.""")
     public ApiResponse<WalletDtos.HistoryResponse> transactions(
             @PathVariable Long outletId,
             @RequestParam(required = false) String months,
             @RequestParam(required = false) String kinds,
             @RequestParam(required = false) String statuses,
+            @RequestParam(required = false) String bills,
             @RequestParam(required = false) String cursor,
             @RequestParam(required = false) Integer size) {
         Long actorId = ActorContext.requireUserId();
         accessControl.requireScoped(actorId, Permissions.ORDER_VIEW,
                 ScopeType.OUTLET, outletId, "Outlet");
         return ApiResponse.ok(history.history(outletId,
-                WalletHistoryService.parseFilter(months, kinds, statuses), cursor,
+                WalletHistoryService.parseFilter(months, kinds, statuses, bills), cursor,
                 WalletHistoryService.parseSize(size)));
     }
 
@@ -171,13 +180,15 @@ public class WalletController {
                 .map(entry -> entry.getRefundId())
                 .filter(Objects::nonNull)
                 .toList());
+        // The bill chip, as the History list shows it (D-116): one query for all of them.
+        var bills = history.billsOf(wallet.getId(), entries.stream().map(entry -> entry.getId()).toList());
         var recent = entries.stream()
                 .map(entry -> new WalletDtos.EntryResponse(
                         entry.getId(), entry.getDirection(), entry.getKind().name(), entry.getAmount(),
                         entry.getBalanceAfter(), entry.getSupplierOrderId(), entry.getReason(),
                         entry.getKind() == WalletEntryKind.WITHDRAWAL && refundStatus.containsKey(entry.getRefundId())
                                 ? refundStatus.get(entry.getRefundId()).name() : null,
-                        entry.getCreatedAt()))
+                        entry.getCreatedAt(), bills.get(entry.getId())))
                 .toList();
 
         return new WalletDtos.WalletResponse(

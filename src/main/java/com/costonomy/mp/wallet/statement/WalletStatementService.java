@@ -54,6 +54,8 @@ public class WalletStatementService {
     private final EntityManager em;
     private final WalletService wallets;
     private final JdbcTemplate jdbc;
+    private final com.costonomy.mp.wallet.invoice.service.BillStatuses billStatuses;
+    private final com.fasterxml.jackson.databind.ObjectMapper json;
 
     @Transactional(readOnly = true)
     public WalletStatement build(Long outletId, StatementPeriod period) {
@@ -103,6 +105,8 @@ public class WalletStatementService {
         BigDecimal opening = before.isEmpty() ? BigDecimal.ZERO : before.get(0);
 
         var orderNumbers = orderNumbers(rows);
+        // D-116: the Bill, Shop and Bill no. columns, for the whole period in one query.
+        var bills = billStatuses.forStatement(wallet.getId(), start, end, this::reviewShopAndNumber);
         BigDecimal added = BigDecimal.ZERO;
         BigDecimal spent = BigDecimal.ZERO;
         BigDecimal running = opening;
@@ -125,7 +129,10 @@ public class WalletStatementService {
                     WalletEntryCopy.label(row.getKind(), row.getDirection()),
                     row.getSupplierOrderId() == null ? "" : orderNumbers.getOrDefault(row.getSupplierOrderId(), ""),
                     row.getDirection(), row.getAmount(), row.getBalanceAfter(),
-                    row.getReason() == null ? "" : row.getReason()));
+                    row.getReason() == null ? "" : row.getReason(),
+                    billWord(bills.get(row.getId())),
+                    bills.containsKey(row.getId()) ? orEmpty(bills.get(row.getId()).shop()) : "",
+                    bills.containsKey(row.getId()) ? orEmpty(bills.get(row.getId()).billNumber()) : ""));
         }
         BigDecimal closing = rows.isEmpty() ? opening : rows.get(rows.size() - 1).getBalanceAfter();
 
@@ -168,6 +175,38 @@ public class WalletStatementService {
         log.error("Wallet statement for outlet {} ({} to {}) does not reconcile: {}. Not produced.",
                 outletId, period.from(), period.to(), what);
         return new IllegalStateException("Wallet statement does not reconcile");
+    }
+
+    /** The statement's word for a bill status (D-116); empty when there is none. */
+    static String billWord(com.costonomy.mp.wallet.invoice.service.BillStatuses.StatementBill bill) {
+        if (bill == null || bill.status() == null) {
+            return "";
+        }
+        return switch (bill.status()) {
+            case PENDING -> "Pending";
+            case READING -> "Reading";
+            case ADDED -> "Added";
+            case REVIEWED -> "Reviewed";
+            case UNREADABLE -> "Unreadable";
+            case NOT_REQUIRED -> "No bill needed";
+        };
+    }
+
+    private static String orEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    /** {shop, bill number} from a saved review; nulls when it cannot be read. */
+    private String[] reviewShopAndNumber(String reviewJson) {
+        try {
+            var node = json.readTree(reviewJson);
+            String shop = node.at("/supplier/name").isTextual() ? node.at("/supplier/name").asText() : null;
+            String number = node.path("invoiceNumber").isTextual() ? node.path("invoiceNumber").asText() : null;
+            return new String[]{shop, number};
+        } catch (java.io.IOException | RuntimeException e) {
+            log.warn("A bill review could not be read for a statement; using what was read instead");
+            return new String[]{null, null};
+        }
     }
 
     private Map<Long, String> orderNumbers(List<WalletTransaction> rows) {
