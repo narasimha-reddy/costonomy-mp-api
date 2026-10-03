@@ -3,7 +3,8 @@
 For a developer joining Mandi and working through Claude Code. Read this once,
 then let `CLAUDE.md` do the rest.
 
-Last updated **20 September 2026**, from the branch
+Last updated **27 September 2026**, from the Razorpay branches
+(`feat/razorpay-1-adapter` → `-2-hardening` → `-3-small-fixes`), which build on
 `feat/edit-open-request-quantities`.
 
 ---
@@ -86,7 +87,12 @@ Flyway applies **V1–V36** on startup and the data survives restarts.
 
 - API: <http://localhost:7070/costonomy-mp-api>
 - Swagger: `/swagger-ui.html` · OpenAPI: `/api-docs`
-- Every OTP is `123456` locally, and every provider is a mock
+- Every OTP is `123456` locally — **but only if your gitignored
+  `application-local.properties` says so**: `costonomy.mp.otp.mock-code=123456`.
+  The committed config sets it for tests alone, so a fresh local file sends real
+  random codes and every sign-in fails with `OTP_INVALID`.
+- Every provider is a mock, unless you point payments at Razorpay's test mode —
+  `docs/RAZORPAY.md`
 
 ### Seed it
 
@@ -154,7 +160,20 @@ MySQL container and the Spring context:
 mvn -o verify -Dit.test=StorefrontIT
 ```
 
-Run the whole suite before you open a PR, not between edits. Testcontainers
+Run the whole suite before you open a PR, not between edits.
+
+**No Docker Desktop? Colima works** (open source, no admin rights), but
+Testcontainers has to be told where it is:
+
+```bash
+colima start
+export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
+export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
+```
+
+Its VM clock runs a fraction of a second ahead of the Mac's, so a test that stamps
+a row with MySQL's `now()` and then compares it with `Instant.now()` is a coin
+toss. `SettlementFlowIT` had one; write new ones against a single clock. Testcontainers
 reuse is deliberately not enabled — `CLAUDE.md` explains why, and the short
 version is that it would make `MigrationIT` pass while checking nothing.
 
@@ -227,11 +246,72 @@ evidence in the answer.
 
 ---
 
-## 5. State of play — 20 September 2026
+## 5. State of play — 27 September 2026
 
 Phases 1 and 3–17 of `docs/specs/00-README.md` §8 are complete, and the mobile
-app is built across both roles. Recent work, all on
-`feat/edit-open-request-quantities`:
+app is built across both roles.
+
+### Latest: Razorpay payments (D-098 … D-104)
+
+Stacked PRs. **Three migrations**: `V41` (`refund.attempts`), `V42` (refunds to
+the wallet: `refund.destination`, the wallet ledger's kind and reference, the
+`WALLET_WITHDRAW` permission) and `V43` (`dispute_refund`, `supplier_deduction`,
+`DISPUTE_REFUND_DECIDE`, `REFUND_DECIDE`). Otherwise the payment tables from `V11`
+are used as they were.
+
+| PR | What it changed |
+|---|---|
+| `feat/razorpay-1-adapter` | The Razorpay adapter now matches Razorpay's documented API: manual capture, the webhook event-id header, the refund idempotency header, lookup by order. **Confirm checks the payment belongs to this order** — before, any payment funded any order. `docs/RAZORPAY.md` covers running against test mode (D-098) |
+| `feat/razorpay-2-hardening` | No provider call holds a database connection; every payment state change locks the payment row first, and order release locks the order; 8 scheduler threads instead of 1; the sweep backs off; a failed capture stays queued instead of being stranded (D-099) |
+| `feat/razorpay-3-small-fixes` | The seed script runs on a fresh database again; the wallet top-up is refused unless payments run on the mock; a spent delivery quote says "already used" |
+| `feat/razorpay-7-payment-tracing` | A payment's story reads from the logs by its id: every job run has a correlation id (in logs and audit), payment and Razorpay ids ride on every line in scope, each state change and each Razorpay call is one INFO line (D-100) |
+| `feat/razorpay-8-review-fixes` | Fixes from three independent reviews: a declined attempt can no longer fail a paid order; the sweep cannot be starved; pending refunds wait for the provider; refunds cannot be over-promised and go to `NEEDS_REVIEW` instead of retrying for ever; a production profile refuses mock providers (D-101) |
+| `feat/razorpay-9-payment-intent-lookup` | `GET /supplier-orders/{id}/payment-intent`, so the pay screen asks the server for an order's checkout; a repeated Create Order returns it (D-102) |
+| `feat/razorpay-10-capture-at-dispatch` | **Money is held until the supplier marks the order ready, and taken there** (D-103). A cancellation before ready drops the hold — nothing charged. "Ready" is refused when a hold is about to lapse |
+| `feat/razorpay-11-dispute-refunds` | **Refunds go to the wallet; a withdrawal goes back to the card** (D-104, part one). The restaurant's own refund endpoint is gone. `POST /outlets/{id}/wallet/withdraw` sends refund money back to the payments it came from. Part two is the next PR |
+| `feat/razorpay-12-dispute-refund-requests` | **Refunds are asked for on a dispute** (D-104 part two). The supplier approves or declines; operations decides after a decline or 48 hours. An approval credits the wallet and is taken from the supplier's payout for the order — capped at it, refused once it is approved, and a payout cannot be approved while a refund on it is undecided. **Costonomy never funds a refund.** Dispute lists per outlet and per store |
+| `feat/razorpay-15-order-payment-status` | **An order's payment status is read live from how it was paid** (D-105). It was a copy written once as "AUTHORIZED" for every order: wallet orders, credit orders and card orders already charged, refunded or released all said "Authorized" |
+| `feat/quickscan-1-wallet-payments` | **QuickScan, part one: pay any UPI merchant from the wallet** (D-106), sandbox only — behind `costonomy.mp.quickscan.enabled` (default off), which `ProductionProviderGuard` now refuses under a production profile until legal has signed off. `V44` adds `quickscan_payment` and `QUICKSCAN_PAY`. A `PayoutProvider` port (mock only, RazorpayX later) sends the payout after the wallet debit, in the `RefundService.process` shape — `PAYOUT_PENDING` → `PAID`/`FAILED` (money returned) or `NEEDS_REVIEW` after 5 attempts (money left out — the payout may have reached the shop) |
+| `feat/wallet-1-razorpay-top-up` | **Add money to the wallet through Razorpay** (D-107). `POST /outlets/{id}/wallet/top-ups` opens an auto-captured Razorpay order; `.../{id}/confirm` verifies the checkout signature, asks Razorpay what the payment is and credits the wallet once; `GET .../{id}` gives the status. Limits (max balance, monthly, min/max single — a stand-in for KYC) are checked at creation and again at credit time; a captured payment that would break one is refunded to its source, never dropped. `WalletTopUpJobs` credits a captured payment whose confirm never arrived. `V45` adds `wallet_top_up`; `GET /outlets/{id}/wallet` gains `limits` |
+
+What you will notice:
+
+- `POST /outlets/{id}/wallet/top-up` returns **403** unless payments run on the
+  mock (`costonomy.mp.providers.payment`, set by `PAYMENT_PROVIDER`). It credited
+  money that didn't exist.
+- New setting `SCHEDULER_THREADS` (default 8).
+- New settings `QUICKSCAN_ENABLED` (default `false`), `QUICKSCAN_MAX_AMOUNT`
+  (default 10000), `QUICKSCAN_FEE` (default 0) and `PAYOUT_PROVIDER` (default
+  `MOCK`) — see D-106.
+- Refund keys sent to the provider are `mandi-refund-{id}` (Razorpay needs ten
+  characters).
+- **Money is held, not taken, until "ready"** (D-103). A payment is AUTHORIZED
+  while the supplier prepares; `CAPTURE_PENDING` / `CAPTURED` only after the
+  supplier marks the order ready. Tests and scripts that expect a capture straight
+  after paying need to move the order to ready first.
+- **Searching the logs:** `payment=160` finds one payment's whole sequence; a job
+  run's lines share `job-<method>-<id>`, and so do the audit rows it wrote. The
+  log pattern appends the ids, so custom log configs need `%X{trace}` too.
+- **`POST /payments/{id}/refund` is gone** (D-104) — a restaurant could refund
+  itself. Refunds are credited to the wallet (`refund.destination = WALLET`);
+  `POST /outlets/{id}/wallet/withdraw` (needs `WALLET_WITHDRAW` and an
+  `Idempotency-Key`) sends refund money back to its card. Only refund money can
+  be withdrawn. Wallet statement rows now carry `kind`, and a withdrawal's
+  `refundStatus`.
+- **Settlement approval can now be refused** with "Refund requests on this
+  settlement's orders need a decision first" (409), and a settlement can carry
+  DEBIT `REFUND` adjustments it did not have before (D-104).
+- New endpoints: `GET /outlets/{id}/disputes`, `GET /supplier-stores/{id}/disputes`,
+  `GET /disputes/{id}/refund-limit`, `POST /disputes/{id}/refund-request`,
+  `POST /dispute-refunds/{id}/approve|decline`, and `GET /admin/dispute-refunds`
+  with `POST /admin/dispute-refunds/{id}/approve|decline`. Dispute responses carry
+  `refundRequest`.
+- `costonomy-mp-mobile/tools/razorpay-e2e` pays real test-mode orders end to end,
+  31 cases, mostly failures. It needs this API on Razorpay test keys.
+
+Tests after these PRs: 354 unit, 384 integration.
+
+### Earlier, on `feat/edit-open-request-quantities`
 
 | Migration | What it added |
 |---|---|
@@ -261,11 +341,45 @@ These are live questions, not omissions. Do not close one silently.
 5. **OPEN-005 in `DECISIONS.md`** — the delivery fee is never charged to the
    restaurant, because it is only known after the payment is authorised. Read it
    before touching the payment flow.
+6. **Order creation still calls Razorpay inside its transaction.**
+   `IntentOrderCreator.create` keeps the order and its payment atomic, so the
+   provider call holds a connection there — the one place D-099 left alone.
+   Changing it changes the order flow.
+7. **A truly simultaneous duplicate order gets a 500.** Exactly one order is
+   created, as `IntentFlowIT$Concurrency` requires, but the losing call surfaces
+   the lock error rather than a clean conflict. The app no longer sends one
+   (mobile, D-099).
+8. **Not yet tested:** UPI (not offered on the test account's checkout), native
+   checkout on a phone (needs a dev build), and a webhook actually delivered by
+   Razorpay — the suite sends correctly signed ones instead.
+9. **Paying suppliers is still manual.** An operator marks a settlement paid with a
+   reference typed in; nothing moves money to a supplier. A design with three
+   options (Route, Payouts, a wallet with virtual accounts) is with the team; it
+   has a legal question to answer first.
+10. **The supplier directory lists the first 100 suppliers by name, then sorts by
+    distance** — so the nearest can be missing where there are more than 100
+    (D-101). A discovery fix, not a payments one.
+11. **Refund money held in a wallet needs a legal answer** (D-104) — RBI's rules on
+    prepaid payment instruments. Do not go live with wallet refunds until someone
+    qualified has said it is allowed.
+12. **A refund after the supplier's payout is approved is refused** (D-104) — the
+    restaurant is told to contact support, and there is no in-app way for ops to
+    recover it from the supplier. Deliberate, so Costonomy never funds one; worth
+    revisiting if disputes commonly arrive after payout.
+13. **A withdrawal that cannot finish** (Razorpay's refund window, a short Razorpay
+    balance) sits in NEEDS_REVIEW with the money out of the wallet. There is no ops
+    screen to put it back yet.
 
-### One trap that has already bitten
+### Traps that have already bitten
 
 `CreateSupplierRequest` and `CreateStoreRequest` now require a contact name and
 number (D-097). Anything that creates a supplier through the API must send them —
 that includes `tools/seed-local.py` and every integration-test fixture. When you
 add a required field, grep the test sources and the seed script in the same
 change, or you will break 209 tests and a new developer's first afternoon.
+
+**Never call a provider inside a transaction, and never change a payment's state
+except through `PaymentService.applyProviderState`.** It takes the row lock
+before deciding anything. Writing the status anywhere else brings back the
+deadlock D-099 fixed: a confirm and a webhook for the same payment, a 500 for a
+customer who had paid.

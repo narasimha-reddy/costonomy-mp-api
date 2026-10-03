@@ -13,6 +13,20 @@ public interface WalletRepository extends JpaRepository<Wallet, Long> {
 
     Optional<Wallet> findByOutletId(Long outletId);
 
+    boolean existsByOutletId(Long outletId);
+
+    @Query("select w.outletId from Wallet w where w.id = :walletId")
+    Long outletIdOf(@Param("walletId") Long walletId);
+
+    /**
+     * The wallet, held until the transaction ends (D-104). A withdrawal decides
+     * how much can go back to which card while holding it, so two withdrawals
+     * cannot both spend the same credit.
+     */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select w from Wallet w where w.outletId = :outletId")
+    Optional<Wallet> lockByOutletId(@Param("outletId") Long outletId);
+
     /**
      * Take money, but only if it is there.
      *

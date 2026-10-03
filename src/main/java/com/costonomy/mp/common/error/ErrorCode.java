@@ -125,8 +125,49 @@ public enum ErrorCode {
             "This payment has already moved on."),
     REFUND_ALREADY_REQUESTED(HttpStatus.CONFLICT,
             "A refund has already been requested for this."),
+    /**
+     * A top-up's payment has not been captured yet (D-107). Not a failure: the
+     * money is safe and a background job credits it as soon as it clears, so the
+     * client should say "processing" and look at the top-up again, not retry
+     * the payment.
+     */
+    TOP_UP_PROCESSING(HttpStatus.CONFLICT,
+            "Your payment is still being processed. It will be added to your wallet as soon as it clears."),
+    /**
+     * Adding this money would take the wallet past what it may hold, or past the
+     * month's top-up limit (D-107). At order time it is a refusal; at credit time
+     * it means the payment was captured and is being returned.
+     */
+    WALLET_LIMIT_EXCEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That would take your wallet over its limit."),
+    /**
+     * A wallet statement for the period would run to more rows than a file can
+     * reasonably hold (D-108). The customer's fix is a shorter period.
+     */
+    STATEMENT_TOO_LARGE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That period has too many entries for one statement. Please choose a shorter period."),
     WEBHOOK_SIGNATURE_INVALID(HttpStatus.BAD_REQUEST,
             "Invalid webhook signature."),
+    /**
+     * More was asked to go back to the card or bank than can. The details carry
+     * {@code withdrawableNow} (what can go back right now, and so what to offer instead),
+     * {@code blocked} (wallet money whose original payment can no longer be refunded) and
+     * {@code unavailable} (money that could not be checked with the provider just now) (D-110).
+     */
+    WITHDRAWAL_EXCEEDS_REFUNDABLE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That much can't go back to your card or bank right now."),
+    /** Operations acted on a refund without a fresh read of the provider's refunds behind it (D-110). */
+    REFUND_VERIFICATION_REQUIRED(HttpStatus.CONFLICT,
+            "Check this refund against the payment provider first."),
+    /** A money-moving operations action above the threshold needs a second person (D-110). */
+    SECOND_APPROVER_REQUIRED(HttpStatus.CONFLICT,
+            "This needs a second person to approve it."),
+    /** What operations said about the provider's records is not what the provider's records show (D-110). */
+    REFUND_VERIFICATION_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "The payment provider's records don't match."),
+    /** Refunds are failing for a reason on our side (D-110); nothing is lost and the wallet is untouched. */
+    WITHDRAWALS_PAUSED(HttpStatus.SERVICE_UNAVAILABLE,
+            "Withdrawals are paused for a short while. Your money is safe in your wallet."),
 
     // ── Delivery (422) ───────────────────────────────────────────────────
     DELIVERY_UNAVAILABLE(HttpStatus.UNPROCESSABLE_ENTITY,

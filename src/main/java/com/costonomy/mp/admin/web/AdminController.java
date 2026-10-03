@@ -36,6 +36,7 @@ public class AdminController {
     private final AdminModerationService moderation;
     private final AdminConfigService config;
     private final OperationsDashboardService dashboard;
+    private final com.costonomy.mp.trust.service.DisputeRefundService disputeRefunds;
 
     // ── Suppliers ────────────────────────────────────────────────────────
 
@@ -283,6 +284,65 @@ public class AdminController {
                 request.get("resolutionType"), request.get("resolution"),
                 request.get("internalNote"));
         return ApiResponse.ok(Map.of("resolved", true));
+    }
+
+    // ── Payments ─────────────────────────────────────────────────────────
+
+    @PostMapping("/payments/{id}/clear-review")
+    @Operation(
+            summary = "Put a payment stopped for a person back in the cancellation job's hands",
+            description = """
+                    Requires PAYMENT_RECONCILE and a `reason` (what was checked), which is
+                    audited. A cancelled order's payment is stopped for a person when it
+                    cannot safely be returned automatically (Razorpay does not know it, it
+                    does not match the order, it was refunded outside Mandi); this clears
+                    that flag so the job asks Razorpay again on its next run. It does not
+                    capture, release or refund anything itself, and it decides nothing about
+                    the money: fix or check the cause first, then clear. Refused if the
+                    payment is not waiting for a person.
+                    """)
+    public ApiResponse<Map<String, Object>> clearPaymentReview(
+            @PathVariable Long id,
+            @Valid @RequestBody AdminDtos.ClearPaymentReviewRequest request) {
+        moderation.clearPaymentReview(ActorContext.requireUserId(), id, request.reason());
+        return ApiResponse.ok(Map.of("cleared", true));
+    }
+
+    // ── Dispute refunds (D-104) ──────────────────────────────────────────
+
+    @GetMapping("/dispute-refunds")
+    @Operation(summary = "Refunds waiting for operations",
+            description = "Declined by the supplier, or unanswered for 48 hours. Oldest first. "
+                    + "Requires DISPUTE_INSPECT. Each one holds the supplier's payout for its "
+                    + "order until it is decided.")
+    public ApiResponse<List<com.costonomy.mp.trust.web.dto.TrustDtos.DisputeRefundResponse>> escalatedRefunds() {
+        return ApiResponse.ok(disputeRefunds.escalated(ActorContext.requireUserId()));
+    }
+
+    @PostMapping("/dispute-refunds/{id}/approve")
+    @Operation(
+            summary = "Approve a refund the supplier declined or did not answer",
+            description = """
+                    Requires REFUND_DECIDE and a `note`, which both parties see. **Moves
+                    money**: the restaurant's wallet is credited now and the supplier's payout
+                    for the order is charged — Costonomy never funds a refund (D-104). Refused
+                    if that payout cannot cover it or has already been approved.
+                    """)
+    public ApiResponse<com.costonomy.mp.trust.web.dto.TrustDtos.DisputeRefundResponse> approveRefund(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> request) {
+        return ApiResponse.ok(disputeRefunds.opsApprove(ActorContext.requireUserId(), id,
+                request.get("note")));
+    }
+
+    @PostMapping("/dispute-refunds/{id}/decline")
+    @Operation(summary = "Decline a refund the supplier declined or did not answer",
+            description = "Requires REFUND_DECIDE and a `note`. Final.")
+    public ApiResponse<com.costonomy.mp.trust.web.dto.TrustDtos.DisputeRefundResponse> declineRefund(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> request) {
+        return ApiResponse.ok(disputeRefunds.opsDecline(ActorContext.requireUserId(), id,
+                request.get("note")));
     }
 
     // ── Audit ────────────────────────────────────────────────────────────

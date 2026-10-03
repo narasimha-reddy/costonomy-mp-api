@@ -35,6 +35,10 @@ public final class Permissions {
     public static final String RATING_CREATE = "RATING_CREATE";
     public static final String CREDIT_REQUEST = "CREDIT_REQUEST";
     public static final String PAYMENT_CREATE = "PAYMENT_CREATE";
+    /** Send wallet money back to the card it came from. D-104, V42. */
+    public static final String WALLET_WITHDRAW = "WALLET_WITHDRAW";
+    /** Pay a shop by QR from the wallet. D-106, V44. */
+    public static final String QUICKSCAN_PAY = "QUICKSCAN_PAY";
 
     // Supplier
     public static final String SUPPLIER_VIEW = "SUPPLIER_VIEW";
@@ -56,6 +60,8 @@ public final class Permissions {
     public static final String CREDIT_MODIFY = "CREDIT_MODIFY";
     /** Answer a dispute raised against this store's order. Doc 04 §16. */
     public static final String DISPUTE_RESPOND = "DISPUTE_RESPOND";
+    /** Approve or decline a dispute refund; an approval comes out of the payout. D-104, V43. */
+    public static final String DISPUTE_REFUND_DECIDE = "DISPUTE_REFUND_DECIDE";
     public static final String SETTLEMENT_VIEW = "SETTLEMENT_VIEW";
     public static final String PERFORMANCE_VIEW = "PERFORMANCE_VIEW";
 
@@ -101,5 +107,13 @@ public final class Permissions {
     public static final String PAYMENT_INSPECT = "PAYMENT_INSPECT";
     public static final String DELIVERY_INSPECT = "DELIVERY_INSPECT";
     public static final String DISPUTE_INSPECT = "DISPUTE_INSPECT";
+    /** Decide a dispute refund the supplier declined or did not answer. Moves money. D-104, V43. */
+    public static final String REFUND_DECIDE = "REFUND_DECIDE";
     public static final String CONFIG_VIEW = "CONFIG_VIEW";
+    /**
+     * Decide what happens to a refund the provider did not send: verify it, retry it, put a
+     * withdrawal back in the wallet, send a cancellation refund to the wallet, mark it done, block
+     * a payment as a refund source. Moves money. Its read side is PAYMENT_INSPECT. D-110, V48.
+     */
+    public static final String REFUND_OPERATE = "REFUND_OPERATE";
 }

@@ -9,8 +9,8 @@ package com.costonomy.mp.wallet.domain;
  * is a balance already paid in.
  */
 public enum WalletDirection {
-    /** Out, to fund an order. */
+    /** Out: to fund an order, or back to a card. */
     DEBIT,
-    /** In: a top-up, or an order that was cancelled. */
+    /** In: a top-up, a cancelled wallet order, or a refund. */
     CREDIT
 }

@@ -113,6 +113,48 @@ public class AdminModerationService {
         return rows.get(0);
     }
 
+    // ── Payments ─────────────────────────────────────────────────────────
+
+    /**
+     * Put a cancelled order's payment, stopped for a person, back in the cancellation
+     * job's hands (D-109, F2).
+     *
+     * <p>Moves no money and decides nothing: the job asks Razorpay again on its next run and
+     * does whatever the provider's answer allows, with every check it always makes. What this
+     * removes is the one thing only a person could: the flag that keeps the job away. So it is
+     * gated on the reconcile permission, and the reason is required and audited.
+     *
+     * <p>Conditional in one statement, so two operators clearing at once cannot both succeed
+     * and only a payment that is actually waiting can be touched.
+     */
+    @Transactional
+    public void clearPaymentReview(Long actorId, Long paymentId, String reason) {
+        accessControl.require(actorId, Permissions.PAYMENT_RECONCILE, ScopeType.PLATFORM, null);
+
+        var rows = jdbc.queryForList("select review_reason from payment where id = ?", String.class, paymentId);
+        if (rows.isEmpty()) {
+            throw new NotFoundException("Payment", paymentId);
+        }
+        int applied = jdbc.update("""
+                update payment
+                   set review_required_at = null, review_reason = null,
+                       version = version + 1, updated_at = now(6)
+                 where id = ? and status = 'CANCEL_PENDING' and review_required_at is not null
+                """, paymentId);
+        if (applied == 0) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "This payment isn't waiting for a person.");
+        }
+
+        // What the person checked comes first: the audit column is 500 characters, and the
+        // stored reason it replaces can be 200 of them.
+        String detail = "Checked: " + reason + ". Was: " + rows.get(0);
+        auditService.record(actorId, null, "PAYMENT_REVIEW_CLEARED", "PAYMENT", paymentId,
+                "CANCEL_PENDING", "CANCEL_PENDING",
+                detail.length() <= 500 ? detail : detail.substring(0, 500), "ADMIN");
+        log.warn("Payment {} review cleared by operator {}: {}", paymentId, actorId, reason);
+    }
+
     // ── Catalog ──────────────────────────────────────────────────────────
 
     /**

@@ -86,6 +86,21 @@ public class CreditFundingAdapter implements OrderFundingPort {
                 .orElse(false);
     }
 
+    /**
+     * ON_CREDIT while the supplier's credit covers it (reserved or drawn); RELEASED,
+     * FAILED or EXPIRED when it does not; PENDING while the request is open. Money
+     * never passes through Mandi on credit, so "authorised" was never true of it.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Optional<String> paymentState(Long supplierOrderId) {
+        return reservations.findBySupplierOrderId(supplierOrderId).map(reservation -> switch (reservation.getStatus()) {
+            case RESERVED, UTILIZED -> "ON_CREDIT";
+            case REQUESTED -> "PENDING";
+            case RELEASED, EXPIRED, FAILED -> reservation.getStatus().name();
+        });
+    }
+
     @Override
     @Transactional
     public void onOrderAccepted(Long supplierOrderId, BigDecimal acceptedAmount) {

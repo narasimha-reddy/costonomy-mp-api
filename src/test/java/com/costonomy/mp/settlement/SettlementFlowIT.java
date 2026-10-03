@@ -159,11 +159,12 @@ class SettlementFlowIT extends AbstractIntegrationTest {
         checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
 
         long orderId = placed.orderId();
-        // The capture is what reconciliation checks the settlement against.
-        paymentJobs.capturePending();
 
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/preparing");
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/ready");
+        // The capture is what reconciliation checks the settlement against, and
+        // since D-103 it follows "ready" rather than the payment.
+        paymentJobs.capturePending();
 
         long deliveryId = json.readTree(mvc.perform(MockMvcRequestBuilders
                         .post("/api/v1/supplier-orders/" + orderId + "/delivery")
@@ -203,8 +204,14 @@ class SettlementFlowIT extends AbstractIntegrationTest {
                     (scope_type, scope_id, rate_percent, config_version, description,
                      effective_from, status, created_at, updated_at, version)
                 values ('SUPPLIER', ?, ?, 1, 'Negotiated for this test',
-                        now(6), 'ACTIVE', now(6), now(6), 0)
+                        now(6) - interval 1 minute, 'ACTIVE', now(6), now(6), 0)
                 """, supplierId, new BigDecimal(ratePercent));
+        // A minute back, not now(6): that is the database's clock, and the
+        // calculation reads the application's. Where the two differ — MySQL in a
+        // Docker VM runs about 0.2s ahead of the host on macOS — a rate stamped
+        // "now" was not yet effective when settlement ran a moment later, and the
+        // negotiated supplier was charged the default rate. Still set before the
+        // run, which is all the test means.
     }
 
     /** Generate over a window wide enough to include everything this test made. */
@@ -269,10 +276,10 @@ class SettlementFlowIT extends AbstractIntegrationTest {
             long itemId = jdbc.queryForObject(
                     "select id from supplier_order_item where supplier_order_id = ?",
                     Long.class, orderId);
-            paymentJobs.capturePending();
-
             supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/preparing");
             supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/ready");
+            // Taken at "ready" since D-103.
+            paymentJobs.capturePending();
             long deliveryId = json.readTree(mvc.perform(MockMvcRequestBuilders
                             .post("/api/v1/supplier-orders/" + orderId + "/delivery")
                             .header("Authorization", "Bearer " + seller.token())

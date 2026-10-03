@@ -2,6 +2,7 @@ package com.costonomy.mp.payment.service;
 
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
+import com.costonomy.mp.common.logging.TraceScope;
 import com.costonomy.mp.payment.domain.PaymentWebhookEvent;
 import com.costonomy.mp.payment.provider.PaymentProvider;
 import com.costonomy.mp.payment.repository.PaymentRepository;
@@ -64,9 +65,13 @@ public class PaymentWebhookService {
      * state by the same calls with no enclosing transaction either.
      *
      * @param rawBody exactly as received — the signature is over these bytes
+     * @param eventIdHeader the provider's event id from the request headers.
+     *                      Razorpay sends it only there ({@code X-Razorpay-Event-Id});
+     *                      a body {@code id} is accepted as a fallback for providers
+     *                      that put it in the payload, as the mock does
      * @return true if this call processed it; false if it was a duplicate
      */
-    public boolean handle(String rawBody, String signatureHeader) {
+    public boolean handle(String rawBody, String signatureHeader, String eventIdHeader) {
         if (!provider.verifySignature(rawBody, signatureHeader)) {
             // Logged without the body: an unverified payload is attacker-controlled
             // and should not be written into our logs verbatim.
@@ -81,12 +86,22 @@ public class PaymentWebhookService {
             throw new BusinessException(ErrorCode.MALFORMED_REQUEST);
         }
 
-        String eventId = text(payload, "id", "event_id");
+        String eventId = eventIdHeader != null && !eventIdHeader.isBlank()
+                ? eventIdHeader : text(payload, "id", "event_id");
         String eventType = text(payload, "event", "type", "event_type");
         if (eventId == null || eventType == null) {
             throw new BusinessException(ErrorCode.MALFORMED_REQUEST);
         }
 
+        // Razorpay's event id on every line from here, so a delivery can be found
+        // by the id their dashboard shows (D-100).
+        try (var trace = TraceScope.of("rzp_event", eventId, "event_type", eventType)) {
+            log.info("Webhook {} {} received", eventId, eventType);
+            return record(eventId, eventType, rawBody, payload);
+        }
+    }
+
+    private boolean record(String eventId, String eventType, String rawBody, JsonNode payload) {
         var event = new PaymentWebhookEvent();
         event.setProvider(provider.name());
         event.setProviderEventId(eventId);
@@ -102,13 +117,18 @@ public class PaymentWebhookService {
             // uk_webhook_provider_event: a retry of an event we already have.
             // Reporting success is correct — the provider's question is "did you
             // receive this", and we did. A non-200 makes them retry it forever.
-            log.debug("Duplicate webhook {} ignored", eventId);
+            log.info("Webhook {} is a duplicate delivery; already handled", eventId);
             return false;
         }
 
         try {
             process(event, payload);
-            event.setStatus("PROCESSED");
+            // process() marks an event about nothing we hold IGNORED; overwriting
+            // that with PROCESSED made those events indistinguishable from real
+            // work, which is the one thing keeping them was for.
+            if (!"IGNORED".equals(event.getStatus())) {
+                event.setStatus("PROCESSED");
+            }
             event.setProcessedAt(Instant.now());
         } catch (RuntimeException ex) {
             // The event stays stored with its error. Replaying it later is possible
@@ -119,6 +139,7 @@ public class PaymentWebhookService {
         }
 
         store.finish(event);
+        log.info("Webhook {} {}", eventId, event.getStatus());
         return true;
     }
 
@@ -149,7 +170,12 @@ public class PaymentWebhookService {
         }
 
         event.setPaymentId(payment.getId());
+        try (var trace = PaymentTrace.of(payment)) {
+            apply(payment, providerPaymentId);
+        }
+    }
 
+    private void apply(com.costonomy.mp.payment.domain.Payment payment, String providerPaymentId) {
         // Asking the provider rather than trusting the payload's amounts. The
         // signature proves the message came from them, not that it is still
         // current — and an out-of-order event describes a past state.
@@ -158,13 +184,9 @@ public class PaymentWebhookService {
 
         // Authorisation is what lets the order reach its supplier. Doing it here
         // means a customer who closes the app mid-checkout still gets their order
-        // placed, because the webhook arrives regardless (doc 46).
-        if (updated.getStatus().fundsSecured()) {
-            orderRelease.releaseIfFunded(updated.getSupplierOrderId());
-        } else if (updated.getStatus() == com.costonomy.mp.payment.domain.PaymentStatus.FAILED) {
-            orderRelease.abandonUnfunded(updated.getSupplierOrderId(),
-                    "Payment failed: " + String.valueOf(updated.getFailureCode()));
-        }
+        // placed, because the webhook arrives regardless (doc 46). What follows is
+        // the same rule the confirm call and the sweep apply (PaymentFollowUp).
+        PaymentFollowUp.apply(orderRelease, updated);
     }
 
     // ── payload helpers ──────────────────────────────────────────────────

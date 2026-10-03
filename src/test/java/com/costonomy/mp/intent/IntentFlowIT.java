@@ -159,6 +159,12 @@ class IntentFlowIT extends AbstractIntegrationTest {
             // the early return are what make this safe.
             var second = createOrder(open.buyer().token(), open.intentId(), Map.of());
             assertThat(second.at("/data/supplierOrderId").asLong()).isEqualTo(orderId);
+            // And with the checkout it may never have seen (D-102): returned
+            // without it, the app read "nothing to pay" and the order stayed
+            // unpayable. The same provider order — the retry creates nothing.
+            assertThat(second.at("/data/payment/providerOrderId").asText())
+                    .isNotBlank()
+                    .isEqualTo(first.at("/data/payment/providerOrderId").asText());
 
             assertThat(ordersFor(open.buyer().outletId())).isEqualTo(1);
         }

@@ -44,6 +44,25 @@ public final class NotificationRules {
         return BY_EVENT.getOrDefault(eventType, List.of());
     }
 
+    /**
+     * The rules for an event whose wording depends on how it happened (D-109): a
+     * refund that reached the wallet reads differently from one going back to the
+     * bank. The producer names the variant in the payload; an event with none, or
+     * one no rule was written for, keeps the event's own rule, so a mistyped or new
+     * variant can only ever refine wording, never lose a notification. A variant
+     * registered with no rule at all ({@code silence}) is the one deliberate way to
+     * send nothing.
+     */
+    public static List<NotificationRule> forEvent(String eventType, String variant) {
+        if (variant != null && !variant.isBlank()) {
+            var refined = BY_EVENT.get(eventType + "#" + variant);
+            if (refined != null) {
+                return refined;
+            }
+        }
+        return forEvent(eventType);
+    }
+
     /** Every rule, for tests that assert properties across the whole catalogue. */
     public static List<NotificationRule> all() {
         return BY_EVENT.values().stream().flatMap(List::stream).toList();
@@ -210,7 +229,47 @@ public final class NotificationRules {
         add(rules, new NotificationRule("RefundCompleted", OUTLET, PAYMENTS, false,
                 List.of(IN_APP, PUSH),
                 "Refund sent",
-                "{amount} has been refunded.", "SUPPLIER_ORDER"));
+                "{amount} has been refunded.", "SUPPLIER_ORDER", "supplierOrderId"));
+
+        // The same event, worded for where the money went (D-109). Selected by the
+        // payload's notificationVariant.
+        add(rules, new NotificationRule("RefundCompleted#WALLET", OUTLET, PAYMENTS, false,
+                List.of(IN_APP, PUSH),
+                "Added to your wallet",
+                "{amount} has been added to your wallet.", "SUPPLIER_ORDER", "supplierOrderId"));
+
+        add(rules, new NotificationRule("RefundCompleted#CANCELLATION_TO_SOURCE", OUTLET, PAYMENTS, false,
+                List.of(IN_APP, PUSH),
+                "Refund sent",
+                "{amount} for order {orderNumber} has been refunded to the account you paid from.",
+                "SUPPLIER_ORDER", "supplierOrderId"));
+
+        // Refunds the restaurant is already told about, or that would only mislead (F5).
+        // A variant with no rule sends nothing, unlike an unknown variant, which keeps the
+        // event's own rule: naming one of these is a decision, made by the producer.
+        //   DISPUTE    - an approved dispute refund; DisputeRefundApproved says it was added
+        //                to the wallet, and a second push for the same event is noise.
+        //   WITHDRAWAL - one part of a wallet withdrawal; each part would read "refunded"
+        //                and open whichever old order the money was drawn from.
+        silence(rules, "RefundCompleted#DISPUTE");
+        silence(rules, "RefundCompleted#WITHDRAWAL");
+
+        // A cancelled order whose money had already left the payer's account (D-109):
+        // told when the refund starts, not only when it lands days later.
+        add(rules, new NotificationRule("RefundRequested", OUTLET, PAYMENTS, false,
+                List.of(IN_APP, PUSH),
+                "Refund started",
+                "Refund started: {amount} for order {orderNumber} is on its way back to the account "
+                        + "you paid from (5–7 working days).", "SUPPLIER_ORDER", "supplierOrderId"));
+
+        // With instant refund switched on (costonomy.mp.razorpay.cancel-refund-speed=optimum)
+        // the days do not apply: it is sent instantly where the bank allows and falls back to
+        // the normal speed where not, so no number of days is promised either way (F5).
+        add(rules, new NotificationRule("RefundRequested#INSTANT", OUTLET, PAYMENTS, false,
+                List.of(IN_APP, PUSH),
+                "Refund started",
+                "Refund started: {amount} for order {orderNumber} is on its way back to the account "
+                        + "you paid from.", "SUPPLIER_ORDER", "supplierOrderId"));
 
         // ── Credit ───────────────────────────────────────────────────────
         add(rules, new NotificationRule("CreditRequested", SUPPLIER_STORE, CREDIT, true,
@@ -279,6 +338,31 @@ public final class NotificationRules {
                 "Dispute resolved",
                 "Dispute {disputeNumber} was closed.", "DISPUTE", "supplierOrderId"));
 
+        // D-104. Critical: the request has a 48-hour clock, and the answers are money.
+        add(rules, new NotificationRule("DisputeRefundRequested", SUPPLIER_STORE, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund requested",
+                "A restaurant asked for a refund of ₹{amount} on dispute {disputeNumber}. "
+                        + "Please answer within 48 hours.", "DISPUTE", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DisputeRefundApproved", OUTLET, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund approved",
+                "₹{amount} from dispute {disputeNumber} has been added to your wallet.",
+                "DISPUTE", "supplierOrderId"));
+
+        // The supplier too: it comes out of their payout, whoever approved it.
+        add(rules, new NotificationRule("DisputeRefundApproved", SUPPLIER_STORE, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund approved",
+                "A refund of ₹{amount} on dispute {disputeNumber} was approved. It will be "
+                        + "taken from your payout for the order.", "DISPUTE", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DisputeRefundDeclined", OUTLET, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund declined",
+                "Your refund on dispute {disputeNumber} was declined.", "DISPUTE", "supplierOrderId"));
+
         add(rules, new NotificationRule("ReceivingCompleted", SUPPLIER_STORE, ORDERS, false,
                 List.of(IN_APP),
                 "Order received",
@@ -291,6 +375,11 @@ public final class NotificationRules {
                 "SUPPLIER_ORDER"));
 
         return rules;
+    }
+
+    /** Registers a variant that deliberately sends nothing; see {@link #forEvent(String, String)}. */
+    private static void silence(Map<String, List<NotificationRule>> rules, String variantKey) {
+        rules.put(variantKey, List.of());
     }
 
     private static void add(Map<String, List<NotificationRule>> rules, NotificationRule rule) {

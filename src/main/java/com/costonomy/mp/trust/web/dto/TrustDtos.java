@@ -137,7 +137,52 @@ public final class TrustDtos {
             Instant createdAt,
             List<DisputeItemResponse> items,
             List<DisputeMessageResponse> messages,
-            List<EvidenceResponse> evidence) {
+            List<EvidenceResponse> evidence,
+            /** The refund asked for on this dispute, if any. D-104. */
+            DisputeRefundResponse refundRequest) {
+    }
+
+    // ── Refunds on a dispute (D-104) ─────────────────────────────────────
+
+    public record RequestDisputeRefundRequest(
+            @jakarta.validation.constraints.NotNull
+            @jakarta.validation.constraints.Positive
+            @jakarta.validation.constraints.Digits(integer = 15, fraction = 2) BigDecimal amount,
+            @jakarta.validation.constraints.Size(max = 500) String reason) {
+    }
+
+    /** A supplier's or an operator's answer. A note is required to decline. */
+    public record DisputeRefundDecisionRequest(
+            @jakarta.validation.constraints.Size(max = 500) String note) {
+    }
+
+    public record DisputeRefundResponse(
+            Long id,
+            Long disputeId,
+            Long supplierOrderId,
+            Long outletId,
+            Long supplierStoreId,
+            BigDecimal amount,
+            String reason,
+            com.costonomy.mp.trust.domain.DisputeRefundStatus status,
+            Instant requestedAt,
+            /** Until when the supplier alone decides; after it operations may too. */
+            Instant supplierAnswerBy,
+            String supplierNote,
+            Instant supplierDecidedAt,
+            String opsNote,
+            Instant opsDecidedAt,
+            /** The wallet refund an approval made, for a card-paid order. */
+            Long refundId) {
+    }
+
+    /**
+     * How much could be asked for on this dispute's order, or why nothing can.
+     * For the form, so the restaurant is told before asking rather than refused after.
+     */
+    public record DisputeRefundLimitResponse(
+            BigDecimal maxAmount,
+            String refusal) {
     }
 
     public record DisputeItemResponse(

@@ -254,9 +254,16 @@ public class DeliveryFeeQuoteService {
                 || !quote.getSupplierStoreId().equals(supplierStoreId)
                 || (quote.getIntentId() != null && !quote.getIntentId().equals(intentId));
 
-        if (mismatched || quote.isConsumed()) {
+        if (mismatched) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "That delivery quote belongs to a different request.");
+        }
+        // Said separately because it is a different thing: a quote already spent
+        // usually means this order was placed a moment ago, by a repeated tap. One
+        // message for both sent a restaurant looking for a wrong request (D-099).
+        if (quote.isConsumed()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "This delivery fee was already used for an order. Check your orders before trying again.");
         }
 
         // Expiry is a price change, not an error to swallow. §23A.16: the

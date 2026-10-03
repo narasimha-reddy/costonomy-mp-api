@@ -88,4 +88,22 @@ public class WalletFundingAdapter implements OrderFundingPort {
     public void onOrderUnfulfilled(Long supplierOrderId, String reason) {
         wallets.refundFor(supplierOrderId, reason);
     }
+
+    @Override
+    public java.util.Optional<String> paymentState(Long supplierOrderId) {
+        return wallets.paymentState(supplierOrderId);
+    }
+
+    @Override
+    public BigDecimal refundableToWallet(Long supplierOrderId) {
+        return wallets.refundableForOrder(supplierOrderId);
+    }
+
+    /** A dispute refund on a wallet-paid order goes back into the wallet (D-104). */
+    @Override
+    public Long refundToWallet(Long supplierOrderId, BigDecimal amount, String key,
+                               Long actorId, String note) {
+        wallets.creditDisputeRefund(supplierOrderId, amount, key);
+        return null;
+    }
 }

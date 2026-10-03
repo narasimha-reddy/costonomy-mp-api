@@ -33,8 +33,9 @@ import java.util.Map;
  *
  * <p><b>Mandi records, it does not adjudicate.</b> Doc 01 §23: disputes exist for
  * intelligence and audit. A resolution is what the two parties agreed, written
- * down — no money moves here, and nothing in this class issues a refund or a
- * credit note on anyone's behalf.
+ * down — no money moves here. A refund asked for on a dispute is decided in
+ * {@link DisputeRefundService}, by the supplier, or by operations when the
+ * supplier declines or does not answer (D-104).
  */
 @Service
 @RequiredArgsConstructor
@@ -46,6 +47,7 @@ public class DisputeService {
     private final DisputeMessageRepository messages;
     private final DisputeEvidenceRepository evidence;
     private final DisputeNumberGenerator disputeNumbers;
+    private final DisputeRefundRepository refundRequests;
     private final TrustDirectory directory;
     private final AccessControlService accessControl;
     private final AuditService auditService;
@@ -225,6 +227,30 @@ public class DisputeService {
                 .toList();
     }
 
+    /**
+     * An outlet's disputes, newest first — the restaurant's Disputes section (D-104).
+     * Capped: a list for a screen, not an export.
+     */
+    @Transactional(readOnly = true)
+    public List<TrustDtos.DisputeResponse> forOutlet(Long actorId, Long outletId) {
+        accessControl.requireScoped(actorId, Permissions.ORDER_VIEW, ScopeType.OUTLET, outletId, "Outlet");
+        return disputes.findByOutletIdOrderByCreatedAtDesc(outletId).stream().limit(LIST_LIMIT)
+                .map(dispute -> toResponse(dispute, directory.order(dispute.getSupplierOrderId())))
+                .toList();
+    }
+
+    /** A store's disputes, newest first — the supplier's Disputes section. */
+    @Transactional(readOnly = true)
+    public List<TrustDtos.DisputeResponse> forStore(Long actorId, Long storeId) {
+        accessControl.requireScoped(actorId, Permissions.ORDER_VIEW, ScopeType.SUPPLIER_STORE,
+                storeId, "SupplierStore");
+        return disputes.findBySupplierStoreIdOrderByCreatedAtDesc(storeId).stream().limit(LIST_LIMIT)
+                .map(dispute -> toResponse(dispute, directory.order(dispute.getSupplierOrderId())))
+                .toList();
+    }
+
+    private static final int LIST_LIMIT = 100;
+
     // ── internals ────────────────────────────────────────────────────────
 
     private TrustDtos.DisputeResponse close(Dispute dispute, Long actorId, String side,
@@ -364,6 +390,8 @@ public class DisputeService {
                 dispute.getCategory().name(), dispute.getStatus(), dispute.getDescription(),
                 dispute.getClaimedAmount(), dispute.getResolution(), dispute.getResolutionType(),
                 dispute.getRespondedAt(), dispute.getResolvedAt(), dispute.getCreatedAt(),
-                items, thread, attachments);
+                items, thread, attachments,
+                refundRequests.findByDisputeId(dispute.getId())
+                        .map(DisputeRefundService::toResponse).orElse(null));
     }
 }

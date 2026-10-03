@@ -40,6 +40,7 @@ public class SupplierOrderMapper {
     private final CanonicalProductRepository products;
     private final ProcurementDirectory directory;
     private final DeliverySlotRepository deliverySlots;
+    private final OrderFunding funding;
 
     public ProcurementDtos.SupplierOrderResponse toResponse(SupplierOrder order) {
         var items = supplierOrderItems.findBySupplierOrderId(order.getId());
@@ -70,6 +71,7 @@ public class SupplierOrderMapper {
         var descriptors = skuDirectory.describe(
                 items.stream().map(SupplierOrderItem::getSupplierSkuId).toList());
 
+        var cancelRefund = funding.cancelRefund(order).orElse(null);
         return new ProcurementDtos.SupplierOrderResponse(
                 order.getId(), order.getOrderNumber(), order.getSupplierStoreId(),
                 store == null ? null : store.supplierName(),
@@ -85,13 +87,18 @@ public class SupplierOrderMapper {
                 order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
                 order.getAcceptedAmount(), acceptedSubtotal(items), acceptedGst(items),
                 order.getWeightAdjustmentAmount(), order.getDoorstepRefundAmount(), order.getFinalPayableAmount(),
-                order.getPaymentMethod(), order.getPaymentStatus(),
+                // Live, from the funding method: the stored copy is written once,
+                // at release, and goes stale the moment the money moves again.
+                order.getPaymentMethod(), funding.paymentState(order),
+                funding.paymentInstrument(order),
                 order.getDeliveryMode(), order.getDeliveryFee(),
                 order.getDeliverySlotId(), slotName,
                 order.getScheduledDeliveryDate(),
                 order.isSubscriptionOrder(),
                 order.getSubscriptionId(),
                 order.getCancelledBy(), order.getCancellationReason(),
+                cancelRefund == null ? null : cancelRefund.amount(),
+                cancelRefund == null ? null : cancelRefund.completedAt(),
                 items.stream()
                         .map(item -> new ProcurementDtos.SupplierOrderItemResponse(
                                 item.getId(), item.getCanonicalProductId(),
