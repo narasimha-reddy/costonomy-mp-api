@@ -256,6 +256,9 @@ public final class ProcurementDtos {
              */
             BigDecimal acceptedSubtotal,
             BigDecimal acceptedGst,
+            BigDecimal weightAdjustmentAmount,
+            BigDecimal doorstepRefundAmount,
+            BigDecimal finalPayableAmount,
             String paymentMethod,
             String paymentStatus,
             /**
@@ -441,6 +444,14 @@ public final class ProcurementDtos {
             BigDecimal requestedQuantity,
             /** Null until the supplier answers; zero means they declined this line. */
             BigDecimal acceptedQuantity,
+            BigDecimal fulfilledQuantity,
+            BigDecimal dispatchedWeight,
+            Instant weighedAt,
+            BigDecimal weightDeltaAmount,
+            BigDecimal doorstepAcceptedQty,
+            BigDecimal doorstepRejectedQty,
+            String doorstepRejectionReason,
+            BigDecimal doorstepRefundAmount,
             String unit,
             BigDecimal unitPrice,
             /** The same price with its GST added. See {@code Pricing.inclusiveOfGst}. */
@@ -462,5 +473,17 @@ public final class ProcurementDtos {
              */
             BigDecimal acceptedLineTotal,
             String status) {
+    }
+
+    public record RecordDispatchWeightItem(
+            @NotNull(message = "Item ID is required") Long supplierOrderItemId,
+            @NotNull(message = "Dispatched weight is required")
+            @DecimalMin(value = "0.0001", message = "Weight must be greater than zero")
+            BigDecimal dispatchedWeight) {
+    }
+
+    public record RecordDispatchWeightsRequest(
+            @NotEmpty(message = "Enter weights for dispatched lines")
+            @Valid List<RecordDispatchWeightItem> weights) {
     }
 }

@@ -9,6 +9,7 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 
 /**
  * One line of a supplier order.
@@ -63,6 +64,42 @@ public class SupplierOrderItem extends BaseEntity {
     /** What actually arrived. Set at receiving (Phase 12). */
     @Column(name = "fulfilled_quantity", precision = 19, scale = 4)
     private BigDecimal fulfilledQuantity;
+
+    /**
+     * Exact weight dispatched from warehouse/packhouse for catch-weight lines (e.g. 4.82 kg).
+     */
+    @Column(name = "dispatched_weight", precision = 19, scale = 4)
+    private BigDecimal dispatchedWeight;
+
+    @Column(name = "weighed_at")
+    private Instant weighedAt;
+
+    /**
+     * Delta amount (refund or surcharge) due to difference between acceptedQuantity and dispatchedWeight.
+     */
+    @Column(name = "weight_delta_amount", precision = 19, scale = 4)
+    private BigDecimal weightDeltaAmount;
+
+    /**
+     * Doorstep verification: quantity accepted by chef at the door.
+     */
+    @Column(name = "doorstep_accepted_qty", precision = 19, scale = 4)
+    private BigDecimal doorstepAcceptedQty;
+
+    /**
+     * Doorstep verification: quantity rejected by chef at the door (damaged/spoiled/wrong grade).
+     */
+    @Column(name = "doorstep_rejected_qty", precision = 19, scale = 4)
+    private BigDecimal doorstepRejectedQty;
+
+    @Column(name = "doorstep_rejection_reason", length = 64)
+    private String doorstepRejectionReason;
+
+    /**
+     * Credit note / refund amount automatically generated for doorstep-rejected quantity.
+     */
+    @Column(name = "doorstep_refund_amount", precision = 19, scale = 4)
+    private BigDecimal doorstepRefundAmount;
 
     @Column(name = "unit", nullable = false, length = 32)
     private String unit;

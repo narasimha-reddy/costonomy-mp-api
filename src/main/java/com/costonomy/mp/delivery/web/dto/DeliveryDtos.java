@@ -119,6 +119,8 @@ public final class DeliveryDtos {
             BigDecimal ownDeliveryFee,
             /** Null means no minimum. */
             BigDecimal ownDeliveryMinOrderValue,
+            BigDecimal minOrderValue,
+            BigDecimal freeDeliveryThreshold,
             /** Null means no limit beyond the platform's own serviceability. */
             BigDecimal maxDeliveryRadiusKm) {
     }
@@ -130,6 +132,10 @@ public final class DeliveryDtos {
             BigDecimal ownDeliveryFee,
             @DecimalMin(value = "0.0", message = "A minimum order value can't be negative")
             BigDecimal ownDeliveryMinOrderValue,
+            @DecimalMin(value = "0.0", message = "Store minimum order value can't be negative")
+            BigDecimal minOrderValue,
+            @DecimalMin(value = "0.0", message = "Free delivery threshold can't be negative")
+            BigDecimal freeDeliveryThreshold,
             @DecimalMin(value = "0.1", message = "A delivery radius must be at least 0.1 km")
             @DecimalMax(value = "500.0", message = "A delivery radius of more than 500 km is not a radius")
             BigDecimal maxDeliveryRadiusKm) {

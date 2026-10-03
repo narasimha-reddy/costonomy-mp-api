@@ -91,6 +91,7 @@ public class SupplierCatalogService {
         sku.setName(request.name());
         sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
         sku.setGrade(blankToNull(request.grade()));
+        sku.setCatchWeight(Boolean.TRUE.equals(request.isCatchWeight()));
         sku.setPackSize(request.packSize());
 
         var pack = Unit.parse(request.packUnit(), "Pack unit");
@@ -144,6 +145,7 @@ public class SupplierCatalogService {
         if (request.name() != null) sku.setName(request.name());
         if (request.brandName() != null) sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
         if (request.grade() != null) sku.setGrade(blankToNull(request.grade()));
+        if (request.isCatchWeight() != null) sku.setCatchWeight(request.isCatchWeight());
         if (request.packSize() != null) sku.setPackSize(request.packSize());
         // The pack unit and its measure are validated together even when only one
         // of them was sent: changing KG to PKT without saying what is in the
@@ -533,6 +535,7 @@ public class SupplierCatalogService {
         return new CatalogDtos.SkuResponse(
                 sku.getId(), sku.getSupplierStoreId(), sku.getCanonicalProductId(), productName,
                 categoryId, sku.getSkuCode(), sku.getName(), brandName, sku.getGrade(),
+                sku.isCatchWeight(),
                 sku.getPackSize(), sku.getPackUnit(),
                 sku.getMeasureValue(), sku.getMeasureUnit(),
                 sku.getImageUrl(), productImage,
@@ -620,5 +623,98 @@ public class SupplierCatalogService {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
+    }
+
+    // ── Morning Mandi Fast Rate Sheet (60-second Repricing Grid) ────────
+
+    @Transactional(readOnly = true)
+    public CatalogDtos.RateSheetResponse getRateSheet(Long actorId, Long storeId) {
+        accessControl.requireScoped(actorId, Permissions.CATALOG_VIEW,
+                ScopeType.SUPPLIER_STORE, storeId, "SupplierStore");
+
+        var storeSkus = skus.findBySupplierStoreIdAndStatus(storeId, "ACTIVE", org.springframework.data.domain.Pageable.unpaged()).getContent();
+        if (storeSkus.isEmpty()) {
+            storeSkus = skus.findBySupplierStoreId(storeId, org.springframework.data.domain.Pageable.unpaged()).getContent();
+        }
+
+        var productMap = products.findAllById(storeSkus.stream().map(SupplierSku::getCanonicalProductId).distinct().toList())
+                .stream().collect(java.util.stream.Collectors.toMap(p -> p.getId(), p -> p.getName()));
+
+        var brandIds = storeSkus.stream().map(SupplierSku::getBrandId).filter(java.util.Objects::nonNull).distinct().toList();
+        var brandMap = directory.brandNames(brandIds);
+
+        var offersBySku = offers.findBySupplierStoreIdAndStatus(storeId, "ACTIVE").stream()
+                .collect(java.util.stream.Collectors.toMap(SupplierOffer::getSupplierSkuId, o -> o, (first, second) -> first));
+
+        var rows = storeSkus.stream()
+                .map(sku -> {
+                    SupplierOffer offer = offersBySku.get(sku.getId());
+                    BigDecimal sellingPrice = offer != null ? offer.getSellingPrice() : null;
+                    BigDecimal mrp = offer != null && offer.getMrp() != null ? offer.getMrp() : sku.getMrp();
+                    BigDecimal gstRate = offer != null ? offer.getGstRate() : BigDecimal.ZERO;
+                    String availability = offer != null ? offer.getAvailability() : "AVAILABLE";
+                    BigDecimal availableQty = offer != null ? offer.getAvailableQuantity() : null;
+                    Instant updatedAt = offer != null ? offer.getEffectiveFrom() : sku.getUpdatedAt();
+
+                    return new CatalogDtos.RateSheetRow(
+                            sku.getId(),
+                            sku.getCanonicalProductId(),
+                            productMap.get(sku.getCanonicalProductId()),
+                            sku.getName(),
+                            sku.getBrandId() != null ? brandMap.get(sku.getBrandId()) : null,
+                            sku.getGrade(),
+                            sku.isCatchWeight(),
+                            sku.getPackSize(),
+                            sku.getPackUnit(),
+                            mrp,
+                            sellingPrice,
+                            gstRate,
+                            availability,
+                            availableQty,
+                            updatedAt
+                    );
+                })
+                .sorted(Comparator.comparing(CatalogDtos.RateSheetRow::productName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
+                .toList();
+
+        return new CatalogDtos.RateSheetResponse(storeId, rows);
+    }
+
+    @Transactional
+    public CatalogDtos.UpdateRateSheetResponse updateRateSheet(
+            Long actorId, Long storeId, CatalogDtos.UpdateRateSheetRequest request) {
+
+        accessControl.requireScoped(actorId, Permissions.CATALOG_EDIT,
+                ScopeType.SUPPLIER_STORE, storeId, "SupplierStore");
+
+        int updatedCount = 0;
+        for (CatalogDtos.UpdateRateSheetItem item : request.rows()) {
+            var skuOpt = skus.findById(item.skuId());
+            if (skuOpt.isEmpty() || !skuOpt.get().getSupplierStoreId().equals(storeId)) {
+                continue;
+            }
+            SupplierSku sku = skuOpt.get();
+            var currentOffer = offers.findBySupplierSkuIdAndStatus(sku.getId(), "ACTIVE");
+            BigDecimal gstRate = currentOffer.map(SupplierOffer::getGstRate).orElse(BigDecimal.ZERO);
+
+            CatalogDtos.UpdateSkuRequest updateReq = new CatalogDtos.UpdateSkuRequest(
+                    sku.getCanonicalProductId(), sku.getSkuCode(), sku.getName(),
+                    null, sku.getGrade(), sku.isCatchWeight(), sku.getPackSize(), sku.getPackUnit(),
+                    sku.getMeasureValue(), sku.getMeasureUnit(), item.mrp() != null ? item.mrp() : sku.getMrp(),
+                    sku.getImageUrl(), sku.getDescription(), sku.getLengthCm(), sku.getWidthCm(),
+                    sku.getHeightCm(), sku.getWeightGrams(), sku.getYoutubeUrl(), List.of(),
+                    sku.getStatus(), item.sellingPrice(), gstRate,
+                    item.availability() != null ? item.availability() : "AVAILABLE",
+                    item.availableQuantity()
+            );
+
+            supersedeOffer(sku, updateReq, actorId);
+            updatedCount++;
+        }
+
+        auditService.record(actorId, null, "RATE_SHEET_UPDATED", "SUPPLIER_STORE",
+                storeId, null, null, "Repriced " + updatedCount + " lines in morning rate sheet", "API");
+
+        return new CatalogDtos.UpdateRateSheetResponse(updatedCount, getRateSheet(actorId, storeId).rows());
     }
 }

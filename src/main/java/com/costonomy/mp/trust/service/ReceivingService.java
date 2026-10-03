@@ -16,6 +16,9 @@ import com.costonomy.mp.trust.domain.ReceivingStatus;
 import com.costonomy.mp.trust.repository.ReceivingItemRepository;
 import com.costonomy.mp.trust.repository.ReceivingRepository;
 import com.costonomy.mp.trust.web.dto.TrustDtos;
+import com.costonomy.mp.procurement.domain.Pricing;
+import com.costonomy.mp.wallet.domain.WalletDirection;
+import com.costonomy.mp.wallet.service.WalletService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -54,6 +57,7 @@ public class ReceivingService {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
+    private final WalletService walletService;
 
     @Transactional
     public TrustDtos.ReceivingResponse receive(Long actorId, Long supplierOrderId,
@@ -120,6 +124,7 @@ public class ReceivingService {
         BigDecimal totalReceived = BigDecimal.ZERO;
         BigDecimal totalDamaged = BigDecimal.ZERO;
         BigDecimal totalMissing = BigDecimal.ZERO;
+        BigDecimal totalRefundAmount = BigDecimal.ZERO;
         boolean discrepancy = false;
 
         List<ReceivingItem> items = new ArrayList<>();
@@ -168,6 +173,22 @@ public class ReceivingService {
             // Added to the order line, not over it. This is what makes a real fill
             // rate possible (D-019's last gap).
             directory.recordFulfilled(answer.supplierOrderItemId(), answer.receivedQuantity());
+
+            // Doorstep verification & partial line rejection arithmetic
+            BigDecimal rejectedQty = answer.damagedQuantity().add(answer.missingQuantity());
+            BigDecimal lineRefund = BigDecimal.ZERO;
+            if (rejectedQty.compareTo(BigDecimal.ZERO) > 0) {
+                BigDecimal unitPrice = line.unitPrice() != null ? line.unitPrice() : BigDecimal.ZERO;
+                BigDecimal gstRate = line.gstRate() != null ? line.gstRate() : BigDecimal.ZERO;
+                BigDecimal val = Pricing.lineItemValue(unitPrice, rejectedQty);
+                BigDecimal gst = Pricing.lineGst(val, gstRate);
+                lineRefund = Pricing.lineTotal(val, gst);
+                totalRefundAmount = totalRefundAmount.add(lineRefund);
+            }
+            String rejectionReason = answer.rejectionReason() != null ? answer.rejectionReason()
+                    : (answer.damagedQuantity().signum() > 0 ? "DAMAGED" : (answer.missingQuantity().signum() > 0 ? "SHORT_DELIVERY" : null));
+            directory.recordDoorstepReconciliation(answer.supplierOrderItemId(), answer.receivedQuantity(),
+                    rejectedQty, rejectionReason, lineRefund);
         }
         receivingItems.saveAll(items);
 
@@ -177,6 +198,15 @@ public class ReceivingService {
         receiving.setTotalMissingQuantity(totalMissing);
         receiving.setHasDiscrepancy(discrepancy);
         receivings.save(receiving);
+
+        // Process instant doorstep refund & credit note if items were rejected
+        String creditNoteNumber = null;
+        if (totalRefundAmount.compareTo(BigDecimal.ZERO) > 0) {
+            creditNoteNumber = "CN-" + order.orderNumber() + "-01";
+            directory.updateOrderFinancialReconciliation(supplierOrderId, totalRefundAmount);
+            walletService.recordAdjustment(order.outletId(), supplierOrderId, WalletDirection.CREDIT,
+                    totalRefundAmount, "Doorstep rejection refund for " + order.orderNumber() + " (" + creditNoteNumber + ")");
+        }
 
         // → COMPLETED. The order is finished because the restaurant says the goods
         // are in, which is the only party that can know — whether they were
@@ -192,7 +222,8 @@ public class ReceivingService {
                 Map.of("outletId", order.outletId(),
                         "supplierStoreId", order.supplierStoreId(),
                         "orderNumber", order.orderNumber(),
-                        "hasDiscrepancy", discrepancy),
+                        "hasDiscrepancy", discrepancy,
+                        "instantRefundAmount", totalRefundAmount.toPlainString()),
                 actorId);
 
         return toResponse(receiving, order);
@@ -238,15 +269,23 @@ public class ReceivingService {
                             line == null ? null : line.requestedQuantity(),
                             item.getAcceptedQuantity(), item.getReceivedQuantity(),
                             item.getDamagedQuantity(), item.getMissingQuantity(),
+                            line == null ? null : line.doorstepRejectionReason(),
+                            line == null ? null : line.doorstepRefundAmount(),
                             item.getUnit(), item.getNote());
                 })
                 .toList();
+
+        BigDecimal totalRefund = items.stream()
+                .map(item -> item.refundAmount() != null ? item.refundAmount() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        String cnNumber = totalRefund.signum() > 0 ? "CN-" + order.orderNumber() + "-01" : null;
 
         return new TrustDtos.ReceivingResponse(
                 receiving.getId(), receiving.getSupplierOrderId(), order.orderNumber(),
                 receiving.getStatus(), receiving.getHasDiscrepancy(),
                 receiving.getTotalAcceptedQuantity(), receiving.getTotalReceivedQuantity(),
                 receiving.getTotalDamagedQuantity(), receiving.getTotalMissingQuantity(),
+                Pricing.money(totalRefund), cnNumber,
                 receiving.getNotes(), receiving.getReceivedAt(), items);
     }
 }

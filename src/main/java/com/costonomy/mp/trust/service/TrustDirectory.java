@@ -55,20 +55,28 @@ public class TrustDirectory {
             String productName,
             BigDecimal requestedQuantity,
             BigDecimal acceptedQuantity,
-            String unit) {
+            String unit,
+            BigDecimal unitPrice,
+            BigDecimal gstRate,
+            BigDecimal doorstepRefundAmount,
+            String doorstepRejectionReason) {
     }
 
     public List<OrderLine> linesOf(Long supplierOrderId) {
         List<OrderLine> lines = new ArrayList<>();
         jdbc.query("""
-                select i.id, p.name, i.requested_quantity, i.accepted_quantity, i.unit
+                select i.id, p.name, i.requested_quantity, i.accepted_quantity, i.unit,
+                       i.unit_price_snapshot, i.gst_rate_snapshot,
+                       i.doorstep_refund_amount, i.doorstep_rejection_reason
                   from supplier_order_item i
                   join canonical_product p on p.id = i.canonical_product_id
                  where i.supplier_order_id = ? order by i.id
                 """,
                 rs -> {
                     lines.add(new OrderLine(rs.getLong(1), rs.getString(2),
-                            rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getString(5)));
+                            rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getString(5),
+                            rs.getBigDecimal(6), rs.getBigDecimal(7),
+                            rs.getBigDecimal(8), rs.getString(9)));
                 },
                 supplierOrderId);
         return lines;
@@ -89,6 +97,27 @@ public class TrustDirectory {
                    set fulfilled_quantity = ?
                  where id = ?
                 """, fulfilledQuantity, supplierOrderItemId);
+    }
+
+    public void recordDoorstepReconciliation(Long supplierOrderItemId, BigDecimal acceptedQty,
+                                             BigDecimal rejectedQty, String reason, BigDecimal refundAmount) {
+        jdbc.update("""
+                update supplier_order_item
+                   set doorstep_accepted_qty = ?,
+                       doorstep_rejected_qty = ?,
+                       doorstep_rejection_reason = ?,
+                       doorstep_refund_amount = ?
+                 where id = ?
+                """, acceptedQty, rejectedQty, reason, refundAmount, supplierOrderItemId);
+    }
+
+    public void updateOrderFinancialReconciliation(Long supplierOrderId, BigDecimal doorstepRefundAmount) {
+        jdbc.update("""
+                update supplier_order
+                   set doorstep_refund_amount = ?,
+                       final_payable_amount = accepted_amount - ?
+                 where id = ?
+                """, doorstepRefundAmount, doorstepRefundAmount, supplierOrderId);
     }
 
     /**

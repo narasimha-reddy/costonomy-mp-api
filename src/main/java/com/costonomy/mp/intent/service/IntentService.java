@@ -584,7 +584,8 @@ public class IntentService {
                 source.withinOrderWindow(), source.items(),
                 source.agreedValue(), source.agreedGst(), source.agreedTotal(),
                 source.pricedComplete(), source.priceChanged(),
-                null, source.supplierOrderId(), source.supplierOrderNumber());
+                null, source.supplierOrderId(), source.supplierOrderNumber(),
+                source.minOrderValue(), source.freeDeliveryThreshold());
     }
 
     // ── Ending and repeating ─────────────────────────────────────────────

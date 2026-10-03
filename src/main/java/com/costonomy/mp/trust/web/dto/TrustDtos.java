@@ -35,6 +35,7 @@ public final class TrustDtos {
             @NotNull @DecimalMin(value = "0.00") BigDecimal receivedQuantity,
             @NotNull @DecimalMin(value = "0.00") BigDecimal damagedQuantity,
             @NotNull @DecimalMin(value = "0.00") BigDecimal missingQuantity,
+            String rejectionReason,
             @Size(max = 500) String note) {
     }
 
@@ -48,6 +49,8 @@ public final class TrustDtos {
             BigDecimal totalReceivedQuantity,
             BigDecimal totalDamagedQuantity,
             BigDecimal totalMissingQuantity,
+            BigDecimal instantRefundAmount,
+            String creditNoteNumber,
             String notes,
             Instant receivedAt,
             List<ReceivingItemResponse> items) {
@@ -62,6 +65,8 @@ public final class TrustDtos {
             BigDecimal receivedQuantity,
             BigDecimal damagedQuantity,
             BigDecimal missingQuantity,
+            String rejectionReason,
+            BigDecimal refundAmount,
             String unit,
             String note) {
     }

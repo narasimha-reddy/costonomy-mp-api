@@ -11,13 +11,19 @@ import com.costonomy.mp.procurement.domain.*;
 import com.costonomy.mp.procurement.repository.SupplierOrderItemRepository;
 import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
 import com.costonomy.mp.procurement.web.dto.ProcurementDtos;
+import com.costonomy.mp.common.audit.AuditService;
+import com.costonomy.mp.common.outbox.OutboxService;
+import com.costonomy.mp.wallet.domain.WalletDirection;
+import com.costonomy.mp.wallet.service.WalletService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -53,6 +59,9 @@ public class SupplierOrderService {
     private final ProcurementDirectory directory;
     private final AccessControlService accessControl;
     private final IdempotencyService idempotency;
+    private final WalletService walletService;
+    private final OutboxService outbox;
+    private final AuditService auditService;
 
     // ── Supplier inbox ───────────────────────────────────────────────────
 
@@ -127,6 +136,115 @@ public class SupplierOrderService {
                 ProcurementDtos.SupplierOrderResponse.class,
                 () -> transitions.advance(actorId, orderId, SupplierOrderStatus.READY_FOR_PICKUP,
                         Permissions.ORDER_READY));
+    }
+
+    /**
+     * Record actual weighed dispatch quantities for catch-weight perishable lines (meat, paneer, produce).
+     *
+     * <p>Under Guardrail 3, all pricing recalculations (unit price * dispatched weight, GST, delta amounts)
+     * are strictly executed server-side.
+     * If the dispatched weight is less than accepted (e.g. 4.82 kg instead of 5.0 kg),
+     * the weight delta refund is credited back to the restaurant's wallet immediately.
+     */
+    @Transactional
+    public ProcurementDtos.SupplierOrderResponse recordDispatchWeights(
+            Long actorId, Long orderId, ProcurementDtos.RecordDispatchWeightsRequest request) {
+
+        var order = orders.findById(orderId)
+                .orElseThrow(() -> new NotFoundException("SupplierOrder", orderId));
+
+        accessControl.requireScoped(actorId, Permissions.ORDER_PREPARE,
+                ScopeType.SUPPLIER_STORE, order.getSupplierStoreId(), "SupplierOrder");
+
+        if (order.getStatus() != SupplierOrderStatus.CONFIRMED
+                && order.getStatus() != SupplierOrderStatus.PREPARING
+                && order.getStatus() != SupplierOrderStatus.READY_FOR_PICKUP) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Weights can only be recorded while preparing or readying the order.");
+        }
+
+        var items = orderItems.findBySupplierOrderId(orderId);
+        Map<Long, SupplierOrderItem> itemsById = new HashMap<>();
+        items.forEach(i -> itemsById.put(i.getId(), i));
+
+        Instant now = Instant.now();
+        BigDecimal totalWeightDeltaRefund = BigDecimal.ZERO;
+
+        for (ProcurementDtos.RecordDispatchWeightItem entry : request.weights()) {
+            SupplierOrderItem item = itemsById.get(entry.supplierOrderItemId());
+            if (item == null) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "Order item %d does not belong to this order.".formatted(entry.supplierOrderItemId()));
+            }
+
+            BigDecimal dispatched = entry.dispatchedWeight();
+            if (dispatched == null || dispatched.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "Dispatched weight must be greater than zero.");
+            }
+
+            // Guardrail 3: Server-side financial calculation for catch-weight
+            BigDecimal originalLineTotal = item.getLineTotal();
+            BigDecimal newLineValue = Pricing.lineItemValue(item.getUnitPriceSnapshot(), dispatched);
+            BigDecimal newLineGst = Pricing.lineGst(newLineValue, item.getGstRateSnapshot());
+            BigDecimal newLineTotal = Pricing.lineTotal(newLineValue, newLineGst);
+
+            // delta = original - new (positive = refund to customer)
+            BigDecimal deltaAmount = originalLineTotal.subtract(newLineTotal);
+
+            item.setDispatchedWeight(dispatched);
+            item.setWeighedAt(now);
+            item.setWeightDeltaAmount(deltaAmount);
+            item.setLineItemValue(newLineValue);
+            item.setLineGst(newLineGst);
+            item.setLineTotal(newLineTotal);
+            orderItems.save(item);
+
+            if (deltaAmount.compareTo(BigDecimal.ZERO) > 0) {
+                totalWeightDeltaRefund = totalWeightDeltaRefund.add(deltaAmount);
+            }
+        }
+
+        // Recalculate order subtotal and totals
+        var allItems = orderItems.findBySupplierOrderId(orderId);
+        BigDecimal newSubtotal = allItems.stream()
+                .map(SupplierOrderItem::getLineItemValue)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal newGst = allItems.stream()
+                .map(SupplierOrderItem::getLineGst)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal newItemsTotal = allItems.stream()
+                .map(SupplierOrderItem::getLineTotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal finalTotal = newItemsTotal.add(order.getDeliveryFee());
+
+        order.setSubtotal(Pricing.money(newSubtotal));
+        order.setGstAmount(Pricing.money(newGst));
+        order.setAcceptedAmount(Pricing.money(finalTotal));
+        order.setTotalAmount(Pricing.money(finalTotal));
+        order.setWeightAdjustmentAmount(Pricing.money(totalWeightDeltaRefund));
+        orders.save(order);
+
+        // Instant refund reconciliation via wallet
+        if (totalWeightDeltaRefund.compareTo(BigDecimal.ZERO) > 0) {
+            walletService.recordAdjustment(order.getOutletId(), order.getId(),
+                    WalletDirection.CREDIT, totalWeightDeltaRefund,
+                    "Catch-weight variance refund for order " + order.getOrderNumber());
+        }
+
+        auditService.record(actorId, null, "ORDER_WEIGHTS_RECORDED", "SUPPLIER_ORDER",
+                order.getId(), order.getStatus().name(), order.getStatus().name(),
+                "Catch-weight adjusted by " + totalWeightDeltaRefund.toPlainString(), "API");
+
+        outbox.publish("CatchWeightReconciled", "SUPPLIER_ORDER", order.getId(),
+                Map.of("outletId", order.getOutletId(),
+                        "supplierStoreId", order.getSupplierStoreId(),
+                        "orderNumber", order.getOrderNumber(),
+                        "weightAdjustmentAmount", totalWeightDeltaRefund.toPlainString(),
+                        "finalAmount", finalTotal.toPlainString()),
+                actorId, now);
+
+        return mapper.toResponse(order);
     }
 
     /**

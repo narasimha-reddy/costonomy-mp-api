@@ -81,7 +81,7 @@ class DeliveryGatingTest {
         when(directory.dropFor(10L)).thenReturn(new DeliveryDirectory.Place(
                 "Outlet", "Address 2", BigDecimal.TEN, BigDecimal.TEN, "Manager", "+918888888888"));
 
-        var policy = new DeliveryDirectory.DeliveryPolicy(true, false, BigDecimal.ZERO, null, null);
+        var policy = new DeliveryDirectory.DeliveryPolicy(true, false, BigDecimal.ZERO, null, BigDecimal.ZERO, null, null);
         when(directory.deliveryPolicy(20L)).thenReturn(policy);
 
         var result = service.autoDispatch(101L);

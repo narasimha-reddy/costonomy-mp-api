@@ -96,6 +96,24 @@ public class SupplierOrder extends BaseEntity {
     @Column(name = "accepted_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal acceptedAmount = BigDecimal.ZERO;
 
+    /**
+     * Adjustment for catch-weight variance at dispatch. Positive = refund to buyer, negative = surcharge.
+     */
+    @Column(name = "weight_adjustment_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal weightAdjustmentAmount = BigDecimal.ZERO;
+
+    /**
+     * Total refund credited back to buyer for goods rejected at the doorstep.
+     */
+    @Column(name = "doorstep_refund_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal doorstepRefundAmount = BigDecimal.ZERO;
+
+    /**
+     * Final reconciled payable amount after weight adjustments and doorstep rejections.
+     */
+    @Column(name = "final_payable_amount", precision = 19, scale = 4)
+    private BigDecimal finalPayableAmount;
+
     @Column(name = "payment_method", nullable = false, length = 32)
     private String paymentMethod = "PREPAID";
 

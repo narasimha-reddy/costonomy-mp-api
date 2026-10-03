@@ -326,7 +326,9 @@ public final class IntentDtos {
             AcceptanceResponse acceptance,
             /** The order this became, if it became one. */
             Long supplierOrderId,
-            String supplierOrderNumber) {
+            String supplierOrderNumber,
+            BigDecimal minOrderValue,
+            BigDecimal freeDeliveryThreshold) {
     }
 
     /**

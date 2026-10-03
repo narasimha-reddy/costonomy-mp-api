@@ -142,6 +142,31 @@ public class WalletService {
         record(refreshed, supplierOrderId, WalletDirection.CREDIT, debit.getAmount(), reason);
     }
 
+    /**
+     * Credit or debit adjustment for catch-weight reconciliation or doorstep line rejection.
+     */
+    @Transactional
+    public void recordAdjustment(Long outletId, Long supplierOrderId, WalletDirection direction,
+                                 BigDecimal amount, String reason) {
+        if (amount == null || amount.signum() <= 0) {
+            return;
+        }
+        var wallet = forOutlet(outletId);
+        if (direction == WalletDirection.CREDIT) {
+            wallets.credit(wallet.getId(), amount);
+        } else {
+            if (wallets.debit(wallet.getId(), amount) == 0) {
+                log.warn("Wallet {} could not cover adjustment debit {} for order {}",
+                        wallet.getId(), amount, supplierOrderId);
+                return;
+            }
+        }
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, supplierOrderId, direction, amount, reason);
+    }
+
     /** Whether this order's money has been taken and not given back. */
     @Transactional(readOnly = true)
     public boolean isPaid(Long supplierOrderId) {

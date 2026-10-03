@@ -202,20 +202,24 @@ public class DeliveryDirectory {
             boolean costonomyDeliveryEnabled,
             BigDecimal ownDeliveryFee,
             BigDecimal ownDeliveryMinOrderValue,
+            BigDecimal minOrderValue,
+            BigDecimal freeDeliveryThreshold,
             BigDecimal maxDeliveryRadiusKm) {
 
         public static final DeliveryPolicy DEFAULT = new DeliveryPolicy(
-                false, true, BigDecimal.ZERO, null, null);
+                false, true, BigDecimal.ZERO, null, BigDecimal.ZERO, null, null);
     }
 
     public DeliveryPolicy deliveryPolicy(Long supplierStoreId) {
         var rows = jdbc.query("""
                 select own_delivery_enabled, costonomy_delivery_enabled, own_delivery_fee,
-                       own_delivery_min_order_value, max_delivery_radius_km
+                       own_delivery_min_order_value, coalesce(min_order_value, 0), free_delivery_threshold,
+                       max_delivery_radius_km
                   from supplier_delivery_policy where supplier_store_id = ?
                 """,
                 (rs, row) -> new DeliveryPolicy(rs.getBoolean(1), rs.getBoolean(2),
-                        rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getBigDecimal(5)),
+                        rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getBigDecimal(5),
+                        rs.getBigDecimal(6), rs.getBigDecimal(7)),
                 supplierStoreId);
         return rows.isEmpty() ? DeliveryPolicy.DEFAULT : rows.get(0);
     }

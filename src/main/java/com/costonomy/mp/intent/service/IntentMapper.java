@@ -283,7 +283,9 @@ public class IntentMapper {
                     anyPriceChanged,
                     toAcceptance(acceptance),
                     link == null ? null : link.getSupplierOrderId(),
-                    link == null ? null : orderNumbers.get(link.getSupplierOrderId())));
+                    link == null ? null : orderNumbers.get(link.getSupplierOrderId()),
+                    store == null ? BigDecimal.ZERO : store.minOrderValue(),
+                    store == null ? null : store.freeDeliveryThreshold()));
         }
         return responses;
     }

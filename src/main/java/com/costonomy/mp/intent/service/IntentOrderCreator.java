@@ -187,7 +187,7 @@ public class IntentOrderCreator {
         BigDecimal deliveryFee = BigDecimal.ZERO;
         if (request != null && request.deliveryMode() != null) {
             deliveryFee = deliveryFeeFor(
-                    request.deliveryMode(), plan.intent(), request, Instant.now(), false);
+                    request.deliveryMode(), plan.intent(), request, Instant.now(), false, plan.subtotal());
         }
 
         return new IntentDtos.OrderPreviewResponse(
@@ -263,7 +263,7 @@ public class IntentOrderCreator {
                     "Choose how this order should reach you.");
         }
         DeliveryMode mode = request.deliveryMode();
-        BigDecimal deliveryFee = deliveryFeeFor(mode, intent, request, now, true);
+        BigDecimal deliveryFee = deliveryFeeFor(mode, intent, request, now, true, plan.subtotal());
 
         var order = new SupplierOrder();
         // No procurement: the intent was the basket. The link to where this came
@@ -478,6 +478,18 @@ public class IntentOrderCreator {
             gst = gst.add(lineGst);
         }
 
+        var deliveryPolicy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
+        if (deliveryPolicy.minOrderValue() != null
+                && deliveryPolicy.minOrderValue().compareTo(BigDecimal.ZERO) > 0
+                && subtotal.compareTo(deliveryPolicy.minOrderValue()) < 0) {
+            blockers.add(new IntentDtos.Blocker(null, null,
+                    ErrorCode.VALIDATION_ERROR.name(),
+                    "Minimum order value for %s is ₹%s (current items total: ₹%s)."
+                            .formatted(store == null ? "this store" : store.storeName(),
+                                    deliveryPolicy.minOrderValue().stripTrailingZeros().toPlainString(),
+                                    Pricing.money(subtotal).stripTrailingZeros().toPlainString())));
+        }
+
         return new Plan(intent, acceptance, lines,
                 Pricing.money(subtotal), Pricing.money(gst),
                 Pricing.money(subtotal.add(gst)), blockers);
@@ -500,9 +512,17 @@ public class IntentOrderCreator {
      */
     private BigDecimal deliveryFeeFor(DeliveryMode mode, com.costonomy.mp.intent.domain.Intent intent,
                                       IntentDtos.CreateOrderRequest request, Instant now,
-                                      boolean requireQuote) {
+                                      boolean requireQuote, BigDecimal subtotal) {
 
         var policy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
+
+        // Free delivery threshold check: if order subtotal qualifies, carriage is waived!
+        if (policy.freeDeliveryThreshold() != null
+                && policy.freeDeliveryThreshold().compareTo(BigDecimal.ZERO) > 0
+                && subtotal != null
+                && subtotal.compareTo(policy.freeDeliveryThreshold()) >= 0) {
+            return BigDecimal.ZERO;
+        }
 
         return switch (mode) {
             case PICKUP -> BigDecimal.ZERO;
@@ -511,6 +531,13 @@ public class IntentOrderCreator {
                 if (!policy.ownDeliveryEnabled()) {
                     throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                             "This supplier doesn't deliver. Choose pickup or our delivery.");
+                }
+                if (policy.ownDeliveryMinOrderValue() != null
+                        && subtotal != null
+                        && subtotal.compareTo(policy.ownDeliveryMinOrderValue()) < 0) {
+                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                            "Supplier delivery requires at least ₹%s of goods."
+                                    .formatted(policy.ownDeliveryMinOrderValue().stripTrailingZeros().toPlainString()));
                 }
                 yield policy.ownDeliveryFee() == null ? BigDecimal.ZERO : policy.ownDeliveryFee();
             }

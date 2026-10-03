@@ -46,6 +46,13 @@ public class SupplierSku extends BaseEntity {
     @Column(name = "grade", length = 100)
     private String grade;
 
+    /**
+     * Whether this SKU is variable / catch weight (e.g. whole fish, poultry, cuts of meat,
+     * paneer blocks, fresh produce) requiring exact weighing at dispatch.
+     */
+    @Column(name = "is_catch_weight", nullable = false)
+    private boolean isCatchWeight = false;
+
     @Column(name = "pack_size", nullable = false, precision = 19, scale = 4)
     private BigDecimal packSize;
 

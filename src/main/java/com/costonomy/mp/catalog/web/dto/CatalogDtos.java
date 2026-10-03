@@ -1,5 +1,6 @@
 package com.costonomy.mp.catalog.web.dto;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 
 import java.math.BigDecimal;
@@ -121,6 +122,7 @@ public final class CatalogDtos {
             @NotBlank(message = "Enter the product name") @Size(max = 250) String name,
             @Size(max = 200) String brandName,
             @Size(max = 100) String grade,
+            Boolean isCatchWeight,
             @NotNull(message = "Enter the pack size")
             @DecimalMin(value = "0.0001", message = "Pack size must be greater than zero")
             BigDecimal packSize,
@@ -169,13 +171,27 @@ public final class CatalogDtos {
 
         public CreateSkuRequest(
                 Long canonicalProductId, String skuCode, String name, String brandName,
+                String grade, BigDecimal packSize, String packUnit, BigDecimal measureValue,
+                String measureUnit, BigDecimal mrp, String imageUrl, String description,
+                BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                BigDecimal weightGrams, String youtubeUrl, List<String> images,
+                BigDecimal sellingPrice, BigDecimal gstRate, String availability,
+                BigDecimal availableQuantity) {
+            this(canonicalProductId, skuCode, name, brandName, grade, false, packSize, packUnit,
+                    measureValue, measureUnit, mrp, imageUrl, description, lengthCm,
+                    widthCm, heightCm, weightGrams, youtubeUrl, images, sellingPrice,
+                    gstRate, availability, availableQuantity);
+        }
+
+        public CreateSkuRequest(
+                Long canonicalProductId, String skuCode, String name, String brandName,
                 BigDecimal packSize, String packUnit, BigDecimal measureValue,
                 String measureUnit, String imageUrl, String description,
                 BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                 BigDecimal weightGrams, String youtubeUrl, List<String> images,
                 BigDecimal sellingPrice, BigDecimal gstRate, String availability,
                 BigDecimal availableQuantity) {
-            this(canonicalProductId, skuCode, name, brandName, null, packSize, packUnit,
+            this(canonicalProductId, skuCode, name, brandName, null, false, packSize, packUnit,
                     measureValue, measureUnit, null, imageUrl, description, lengthCm,
                     widthCm, heightCm, weightGrams, youtubeUrl, images, sellingPrice,
                     gstRate, availability, availableQuantity);
@@ -193,6 +209,7 @@ public final class CatalogDtos {
             @Size(max = 250) String name,
             @Size(max = 200) String brandName,
             @Size(max = 100) String grade,
+            Boolean isCatchWeight,
             @DecimalMin(value = "0.0001") BigDecimal packSize,
             @Size(max = 32) String packUnit,
             @DecimalMin(value = "0.0001") BigDecimal measureValue,
@@ -225,13 +242,27 @@ public final class CatalogDtos {
 
         public UpdateSkuRequest(
                 Long canonicalProductId, String skuCode, String name, String brandName,
+                String grade, BigDecimal packSize, String packUnit, BigDecimal measureValue,
+                String measureUnit, BigDecimal mrp, String imageUrl, String description,
+                BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                BigDecimal weightGrams, String youtubeUrl, List<String> images,
+                String status, BigDecimal sellingPrice, BigDecimal gstRate,
+                String availability, BigDecimal availableQuantity) {
+            this(canonicalProductId, skuCode, name, brandName, grade, null, packSize, packUnit,
+                    measureValue, measureUnit, mrp, imageUrl, description, lengthCm,
+                    widthCm, heightCm, weightGrams, youtubeUrl, images, status,
+                    sellingPrice, gstRate, availability, availableQuantity);
+        }
+
+        public UpdateSkuRequest(
+                Long canonicalProductId, String skuCode, String name, String brandName,
                 BigDecimal packSize, String packUnit, BigDecimal measureValue,
                 String measureUnit, String imageUrl, String description,
                 BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
                 BigDecimal weightGrams, String youtubeUrl, List<String> images,
                 String status, BigDecimal sellingPrice, BigDecimal gstRate,
                 String availability, BigDecimal availableQuantity) {
-            this(canonicalProductId, skuCode, name, brandName, null, packSize, packUnit,
+            this(canonicalProductId, skuCode, name, brandName, null, null, packSize, packUnit,
                     measureValue, measureUnit, null, imageUrl, description, lengthCm,
                     widthCm, heightCm, weightGrams, youtubeUrl, images, status,
                     sellingPrice, gstRate, availability, availableQuantity);
@@ -243,19 +274,12 @@ public final class CatalogDtos {
             Long supplierStoreId,
             Long canonicalProductId,
             String canonicalProductName,
-            /**
-             * The canonical product's category.
-             *
-             * <p>Free to include — the product is already loaded to get its name —
-             * and without it a supplier's own catalog cannot be grouped or filtered
-             * by category at all. The name is deliberately not repeated here: a
-             * client that needs it already holds the category list.
-             */
             Long categoryId,
             String skuCode,
             String name,
             String brandName,
             String grade,
+            boolean isCatchWeight,
             BigDecimal packSize,
             String packUnit,
             /** What is inside one pack, or null when the pack unit already says. */
@@ -293,6 +317,26 @@ public final class CatalogDtos {
         public SkuResponse(
                 Long id, Long supplierStoreId, Long canonicalProductId,
                 String canonicalProductName, Long categoryId, String skuCode,
+                String name, String brandName, String grade, BigDecimal packSize, String packUnit,
+                BigDecimal measureValue, String measureUnit, String imageUrl,
+                String canonicalProductImageUrl, String description,
+                BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                BigDecimal weightGrams, String youtubeUrl, List<String> images,
+                String status, BigDecimal mrp, BigDecimal sellingPrice,
+                BigDecimal discountAmount, Integer discountPercent, BigDecimal gstRate,
+                String availability, BigDecimal availableQuantity,
+                Instant priceEffectiveFrom) {
+            this(id, supplierStoreId, canonicalProductId, canonicalProductName, categoryId,
+                    skuCode, name, brandName, grade, false, packSize, packUnit, measureValue,
+                    measureUnit, imageUrl, canonicalProductImageUrl, description, lengthCm,
+                    widthCm, heightCm, weightGrams, youtubeUrl, images, status,
+                    mrp, sellingPrice, discountAmount, discountPercent, gstRate, availability,
+                    availableQuantity, priceEffectiveFrom);
+        }
+
+        public SkuResponse(
+                Long id, Long supplierStoreId, Long canonicalProductId,
+                String canonicalProductName, Long categoryId, String skuCode,
                 String name, String brandName, BigDecimal packSize, String packUnit,
                 BigDecimal measureValue, String measureUnit, String imageUrl,
                 String canonicalProductImageUrl, String description,
@@ -302,7 +346,7 @@ public final class CatalogDtos {
                 String availability, BigDecimal availableQuantity,
                 Instant priceEffectiveFrom) {
             this(id, supplierStoreId, canonicalProductId, canonicalProductName, categoryId,
-                    skuCode, name, brandName, null, packSize, packUnit, measureValue,
+                    skuCode, name, brandName, null, false, packSize, packUnit, measureValue,
                     measureUnit, imageUrl, canonicalProductImageUrl, description, lengthCm,
                     widthCm, heightCm, weightGrams, youtubeUrl, images, status,
                     null, sellingPrice, null, null, gstRate, availability,
@@ -400,5 +444,51 @@ public final class CatalogDtos {
 
     /** One problem with one field of one row. Doc 40 requires this granularity. */
     public record RowError(String field, String code, String message) {
+    }
+
+    // ── Morning Mandi Fast Rate Sheet (60-second Repricing Grid) ────────
+
+    public record RateSheetRow(
+            Long skuId,
+            Long canonicalProductId,
+            String productName,
+            String skuName,
+            String brandName,
+            String grade,
+            boolean isCatchWeight,
+            BigDecimal packSize,
+            String packUnit,
+            BigDecimal mrp,
+            BigDecimal sellingPrice,
+            BigDecimal gstRate,
+            String availability,
+            BigDecimal availableQuantity,
+            Instant updatedAt) {
+    }
+
+    public record RateSheetResponse(
+            Long supplierStoreId,
+            List<RateSheetRow> rows) {
+    }
+
+    public record UpdateRateSheetItem(
+            @NotNull(message = "SKU ID is required") Long skuId,
+            @NotNull(message = "Selling price is required")
+            @DecimalMin(value = "0.0001", message = "Selling price must be positive")
+            BigDecimal sellingPrice,
+            BigDecimal mrp,
+            @Pattern(regexp = "AVAILABLE|OUT_OF_STOCK", message = "Invalid availability status")
+            String availability,
+            BigDecimal availableQuantity) {
+    }
+
+    public record UpdateRateSheetRequest(
+            @NotEmpty(message = "At least one row must be updated")
+            @Valid List<UpdateRateSheetItem> rows) {
+    }
+
+    public record UpdateRateSheetResponse(
+            int updatedCount,
+            List<RateSheetRow> rows) {
     }
 }

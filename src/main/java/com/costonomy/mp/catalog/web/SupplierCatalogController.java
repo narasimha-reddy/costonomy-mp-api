@@ -157,4 +157,23 @@ public class SupplierCatalogController {
             @PathVariable Long storeId) {
         return ApiResponse.ok(importService.history(ActorContext.requireUserId(), storeId));
     }
+
+    @GetMapping("/supplier-stores/{storeId}/rate-sheet")
+    @Operation(
+            summary = "Get daily morning rate sheet for fast repricing",
+            description = "Returns all catalog SKUs for the store formatted as a spreadsheet-like pricing grid.")
+    public ApiResponse<CatalogDtos.RateSheetResponse> getRateSheet(
+            @PathVariable Long storeId) {
+        return ApiResponse.ok(supplierCatalog.getRateSheet(ActorContext.requireUserId(), storeId));
+    }
+
+    @PostMapping("/supplier-stores/{storeId}/rate-sheet")
+    @Operation(
+            summary = "Batch reprice multiple SKUs in the morning rate sheet (60-second repricing)",
+            description = "Atomically updates selling prices, MRPs, and availability for multiple items in under a minute.")
+    public ApiResponse<CatalogDtos.UpdateRateSheetResponse> updateRateSheet(
+            @PathVariable Long storeId,
+            @Valid @RequestBody CatalogDtos.UpdateRateSheetRequest request) {
+        return ApiResponse.ok(supplierCatalog.updateRateSheet(ActorContext.requireUserId(), storeId, request));
+    }
 }
