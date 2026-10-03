@@ -47,17 +47,20 @@ class WalletStatementFilesTest {
         var lines = out.split("\r\n", -1);
         assertThat(out).endsWith("\r\n").doesNotContain("\n\n");
         assertThat(lines[0]).startsWith("Costonomy wallet statement");
-        assertThat(out).contains("Outlet,Paradise,,,,,\r\n")
+        assertThat(out).contains("Outlet,Paradise,,,,,,,,\r\n")
                 .contains("Period (IST),2026-09-01 to 2026-09-30")
                 .contains("Opening balance (INR),100.00")
                 .contains("Total added (INR),80.50")
                 .contains("Total spent (INR),30.00")
                 .contains("Closing balance (INR),150.50");
         // 30 Sep 19:00 UTC is 1 Oct 00:30 in India.
-        assertThat(out).contains("2026-10-01 00:30:00,Money added,,Credit,80.50,180.50,");
+        assertThat(out).contains("2026-10-01 00:30:00,Money added,,Credit,80.50,180.50,,,,\r\n");
+        // D-116: the bill's three columns come after the ledger's, which keep their places.
+        assertThat(out).contains("Date and time (IST),Description,Reference,Direction,Amount (INR),"
+                + "Balance after (INR),Note,Bill,Shop,Bill no.\r\n");
         for (String l : lines) {
             if (!l.isEmpty()) {
-                assertThat(l.chars().filter(c -> c == ',').count()).describedAs(l).isEqualTo(6);
+                assertThat(l.chars().filter(c -> c == ',').count()).describedAs(l).isEqualTo(9);
             }
         }
     }
@@ -161,7 +164,9 @@ class WalletStatementFilesTest {
         String text = pdfText(pdf);
 
         int pages = pageCount(pdf);
-        assertThat(pages).isBetween(6, 9);
+        // A4 landscape since D-116: 25 rows on page one, 32 on the others.
+        assertThat(pages).isEqualTo(10);
+        assertThat(text).contains("/MediaBox [0 0 842 595]");
         assertThat(text).contains("/Count " + pages);
         assertThat(count(text, "(Date and time) Tj")).isEqualTo(pages);
         assertThat(text).contains("Page 1 of " + pages).contains("Page " + pages + " of " + pages);
@@ -170,6 +175,34 @@ class WalletStatementFilesTest {
         assertThat(text).contains("(400.00) Tj");
         // Continuation pages say whose statement it is.
         assertThat(count(text, "Costonomy wallet statement - Paradise")).isEqualTo(pages - 1);
+    }
+
+    @Test
+    @DisplayName("D-116: the Bill, Shop and Bill no. columns, in the CSV (as text, neutralised) and the PDF")
+    void billColumns() {
+        var at = Instant.parse("2026-09-10T05:00:00Z");
+        var rows = List.of(
+                new WalletStatement.Line(at, "Paid a shop (QuickScan)", "", WalletDirection.DEBIT,
+                        new BigDecimal("10.00"), new BigDecimal("90.00"), "", "Reviewed", "Kosta Delights, Sea Food",
+                        "INV-7"),
+                new WalletStatement.Line(at, "Paid for an order", "CO-1", WalletDirection.DEBIT,
+                        new BigDecimal("20.00"), new BigDecimal("70.00"), "", "Pending", "", ""),
+                new WalletStatement.Line(at, "Paid a shop (QuickScan)", "", WalletDirection.DEBIT,
+                        new BigDecimal("5.00"), new BigDecimal("65.00"), "", "No bill needed", "", ""),
+                new WalletStatement.Line(at, "Paid a shop (QuickScan)", "", WalletDirection.DEBIT,
+                        new BigDecimal("1.00"), new BigDecimal("64.00"), "", "Added", "=evil()", "+1"),
+                line("2026-09-10T06:00:00Z", WalletDirection.CREDIT, "1.00", "65.00", "Money added", "", ""));
+        var out = csv(statement("Paradise", rows));
+        assertThat(out).contains(",Debit,10.00,90.00,,Reviewed,\"Kosta Delights, Sea Food\",INV-7\r\n")
+                .contains(",CO-1,Debit,20.00,70.00,,Pending,,\r\n")
+                .contains(",Debit,5.00,65.00,,No bill needed,,\r\n")
+                .contains(",Debit,1.00,64.00,,Added,'=evil(),'+1\r\n")
+                .contains("Money added,,Credit,1.00,65.00,,,,\r\n");
+
+        String pdf = pdfText(WalletStatementPdf.render(statement("Paradise", rows)));
+        assertThat(pdf).contains("(Bill) Tj").contains("(Shop) Tj").contains("(Bill no.) Tj")
+                .contains("(Reviewed) Tj").contains("(Kosta Delights, Sea Food) Tj").contains("(INV-7) Tj")
+                .contains("(Pending) Tj").contains("(No bill needed) Tj");
     }
 
     @Test

@@ -56,6 +56,9 @@ class WalletInvoiceIT extends AbstractIntegrationTest {
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private InvoiceLinkSigner signer;
+    @Autowired private javax.sql.DataSource dataSource;
+    @Autowired private org.springframework.transaction.PlatformTransactionManager txManager;
+    @Autowired private com.costonomy.mp.wallet.invoice.service.WalletInvoiceService invoiceService;
 
     private WalletTopUpSupport t;
     private Buyer buyer;
@@ -417,6 +420,198 @@ class WalletInvoiceIT extends AbstractIntegrationTest {
         // And the public image route does not serve bills.
         assertThat(mvc.perform(MockMvcRequestBuilders.get("/files/" + key)).andReturn().getResponse().getStatus())
                 .isEqualTo(404);
+    }
+
+    // ── 'No bill needed' (D-116) ─────────────────────────────────────────
+
+    private String waiverPath(long outletId, long entryId) {
+        return path(outletId, entryId) + "/waiver";
+    }
+
+    private int waiverRows(long entryId) {
+        return jdbc.queryForObject("select count(*) from wallet_entry_invoice_waiver where wallet_transaction_id = ?",
+                Integer.class, entryId);
+    }
+
+    private int waiverAudits(long entryId, String newState) {
+        return jdbc.queryForObject("select count(*) from audit_log where action = 'WALLET_INVOICE_WAIVER' "
+                + "and entity_id = ? and new_state = ?", Integer.class, entryId, newState);
+    }
+
+    private JsonNode detailOf(long entryId) throws Exception {
+        return t.call("GET", buyer.token(), "/api/v1/outlets/" + buyer.outletId() + "/wallet/transactions/" + entryId,
+                null, null).data();
+    }
+
+    @Test
+    @DisplayName("waiver: PUT marks 'No bill needed' (200, again 200, one row, audited); DELETE undoes it (204, again 204)")
+    void waiverSetAndUndo() throws Exception {
+        var set = call(mvc, json, "PUT", buyer.token(), waiverPath(buyer.outletId(), quickScanId));
+        assertThat(set.status()).describedAs(set.body().toString()).isEqualTo(200);
+        assertThat(set.data().get("waived").asBoolean()).isTrue();
+        assertThat(waiverRows(quickScanId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select waived_by from wallet_entry_invoice_waiver where wallet_transaction_id = ?",
+                Long.class, quickScanId)).isEqualTo(t.userId(buyer.token()));
+        assertThat(waiverAudits(quickScanId, "WAIVED")).isEqualTo(1);
+        var d = detailOf(quickScanId);
+        assertThat(d.get("billStatus").asText()).isEqualTo("NOT_REQUIRED");
+        assertThat(d.at("/actions/canWaiveBill").asBoolean()).isFalse();
+        assertThat(d.at("/actions/canUndoWaiver").asBoolean()).isTrue();
+        assertThat(d.at("/actions/canAddBill").asBoolean()).isTrue();
+
+        assertThat(call(mvc, json, "PUT", buyer.token(), waiverPath(buyer.outletId(), quickScanId)).status()).isEqualTo(200);
+        assertThat(waiverRows(quickScanId)).isEqualTo(1);
+        assertThat(waiverAudits(quickScanId, "WAIVED")).isEqualTo(1);
+
+        assertThat(call(mvc, json, "DELETE", buyer.token(), waiverPath(buyer.outletId(), quickScanId)).status()).isEqualTo(204);
+        assertThat(waiverRows(quickScanId)).isZero();
+        assertThat(waiverAudits(quickScanId, "CLEARED")).isEqualTo(1);
+        d = detailOf(quickScanId);
+        // L1: tracking is off in this class, so the payment is not PENDING and the details offer only "Add bill".
+        assertThat(d.get("billStatus").isNull()).isTrue();
+        assertThat(d.at("/actions/canWaiveBill").asBoolean()).isFalse();
+        assertThat(d.at("/actions/canUndoWaiver").asBoolean()).isFalse();
+        assertThat(call(mvc, json, "DELETE", buyer.token(), waiverPath(buyer.outletId(), quickScanId)).status()).isEqualTo(204);
+        assertThat(waiverAudits(quickScanId, "CLEARED")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("waiver: only an eligible payment (422 INVOICE_NOT_ALLOWED), only without a bill (409 INVOICE_EXISTS)")
+    void waiverRules() throws Exception {
+        var topUp = call(mvc, json, "PUT", buyer.token(), waiverPath(buyer.outletId(), topUpId));
+        assertThat(topUp.status()).isEqualTo(422);
+        assertThat(topUp.code()).isEqualTo("INVOICE_NOT_ALLOWED");
+        assertThat(topUp.body().at("/error/message").asText()).contains("No bill needed");
+
+        // A QuickScan payment whose money came back is not eligible.
+        long returned = extraEntry("15");
+        jdbc.update("update wallet_transaction set reference = ? where id = ?", "quickscan-w" + returned, returned);
+        seed.credit(AT, QUICKSCAN_RETURN, "15", "back");
+        jdbc.update("update wallet_transaction set reference = ? where id = ?", "quickscan-return-w" + returned, seed.lastId);
+        assertThat(call(mvc, json, "PUT", buyer.token(), waiverPath(buyer.outletId(), returned)).status()).isEqualTo(422);
+        assertThat(call(mvc, json, "PUT", buyer.token(), waiverPath(buyer.outletId(), seed.lastId)).status()).isEqualTo(422);
+
+        assertThat(up(buyer, buyer, quickScanId, jpegPart()).status()).isEqualTo(201);
+        var exists = call(mvc, json, "PUT", buyer.token(), waiverPath(buyer.outletId(), quickScanId));
+        assertThat(exists.status()).isEqualTo(409);
+        assertThat(exists.code()).isEqualTo("INVOICE_EXISTS");
+        assertThat(detailOf(quickScanId).at("/actions/canWaiveBill").asBoolean()).isFalse();
+        assertThat(jdbc.queryForObject("select count(*) from wallet_entry_invoice_waiver where outlet_id = ?",
+                Integer.class, buyer.outletId())).isZero();
+    }
+
+    @Test
+    @DisplayName("waiver: adding a bill clears 'No bill needed' in the same transaction, audited")
+    void uploadClearsWaiver() throws Exception {
+        assertThat(call(mvc, json, "PUT", buyer.token(), waiverPath(buyer.outletId(), quickScanId)).status()).isEqualTo(200);
+        assertThat(up(buyer, buyer, quickScanId, jpegPart()).status()).isEqualTo(201);
+        assertThat(waiverRows(quickScanId)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action = 'WALLET_INVOICE_WAIVER' "
+                + "and entity_id = ? and new_state = 'CLEARED' and reason = 'a bill was added'", Integer.class, quickScanId))
+                .isEqualTo(1);
+        var d = detailOf(quickScanId);
+        assertThat(d.get("billStatus").asText()).isIn("READING", "ADDED");
+        assertThat(d.at("/actions/canUndoWaiver").asBoolean()).isFalse();
+    }
+
+    private int billRows(long entryId) {
+        return jdbc.queryForObject("select count(*) from wallet_entry_invoice where wallet_transaction_id = ?",
+                Integer.class, entryId);
+    }
+
+    @Test
+    @DisplayName("M1: a bill committed while 'No bill needed' waits on the entry's lock: the waiver is 409 INVOICE_EXISTS, never a bill and a waiver")
+    void waiverWaitingBehindABill() throws Exception {
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(1);
+        try (var con = dataSource.getConnection()) {
+            con.setAutoCommit(false);
+            try {
+                // What upload's transaction does: the entry's lock first, then the bill.
+                try (var lock = con.prepareStatement("select id from wallet_transaction where id = ? for update")) {
+                    lock.setLong(1, quickScanId);
+                    lock.executeQuery().close();
+                }
+                try (var insert = con.prepareStatement("""
+                        insert into wallet_entry_invoice (wallet_transaction_id, outlet_id, status, next_try_at,
+                               created_at, updated_at, version)
+                        values (?, ?, 'READ', '2037-12-31 00:00:00', now(6), now(6), 0)
+                        """)) {
+                    insert.setLong(1, quickScanId);
+                    insert.setLong(2, buyer.outletId());
+                    insert.executeUpdate();
+                }
+                var waiting = pool.submit(() -> call(mvc, json, "PUT", buyer.token(), waiverPath(buyer.outletId(), quickScanId)));
+                Thread.sleep(1500);
+                assertThat(waiting.isDone()).describedAs("the waiver waits on the entry's lock").isFalse();
+                con.commit();
+                var reply = waiting.get(20, TimeUnit.SECONDS);
+                assertThat(reply.status()).describedAs(reply.body().toString()).isEqualTo(409);
+                assertThat(reply.code()).isEqualTo("INVOICE_EXISTS");
+            } finally {
+                con.rollback(); // nothing left to undo after the commit; undoes the lock if an assertion failed first
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(billRows(quickScanId)).isEqualTo(1);
+        assertThat(waiverRows(quickScanId)).isZero();
+        assertThat(detailOf(quickScanId).at("/actions/canUndoWaiver").asBoolean()).isFalse();
+    }
+
+    @Test
+    @DisplayName("M1: a bill uploaded while 'No bill needed' holds the entry's lock: the upload waits, then clears the waiver; never both")
+    void uploadWaitingBehindAWaiver() throws Exception {
+        long actor = t.userId(buyer.token());
+        var locked = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var held = pool.submit(() -> new org.springframework.transaction.support.TransactionTemplate(txManager).execute(s -> {
+                invoiceService.waive(buyer.outletId(), "L" + quickScanId, actor);
+                locked.countDown();
+                try {
+                    release.await(20, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return "committed";
+            }));
+            assertThat(locked.await(20, TimeUnit.SECONDS)).isTrue();
+            var uploading = pool.submit(() -> up(buyer, buyer, quickScanId, jpegPart()));
+            Thread.sleep(1500);
+            assertThat(uploading.isDone()).describedAs("the upload waits on the entry's lock").isFalse();
+            release.countDown();
+            assertThat(held.get(20, TimeUnit.SECONDS)).isEqualTo("committed");
+            var reply = uploading.get(20, TimeUnit.SECONDS);
+            assertThat(reply.status()).describedAs(reply.body().toString()).isEqualTo(201);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+        assertThat(billRows(quickScanId)).isEqualTo(1);
+        assertThat(waiverRows(quickScanId)).isZero();
+        assertThat(waiverAudits(quickScanId, "WAIVED")).isEqualTo(1);
+        assertThat(waiverAudits(quickScanId, "CLEARED")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("waiver: same doors as the bill: 404 for another outlet's or a missing entry, 401 without a token, 403 without QUICKSCAN_PAY")
+    void waiverAccess() throws Exception {
+        var other = t.newBuyer();
+        assertThat(call(mvc, json, "PUT", other.token(), waiverPath(other.outletId(), quickScanId)).status()).isEqualTo(404);
+        assertThat(call(mvc, json, "DELETE", other.token(), waiverPath(other.outletId(), quickScanId)).status()).isEqualTo(404);
+        assertThat(call(mvc, json, "PUT", other.token(), waiverPath(buyer.outletId(), quickScanId)).status()).isIn(403, 404);
+        assertThat(call(mvc, json, "PUT", buyer.token(), waiverPath(buyer.outletId(), 99999999L)).status()).isEqualTo(404);
+        assertThat(call(mvc, json, "PUT", null, waiverPath(buyer.outletId(), quickScanId)).status()).isEqualTo(401);
+        assertThat(call(mvc, json, "DELETE", null, waiverPath(buyer.outletId(), quickScanId)).status()).isEqualTo(401);
+
+        String staff = t.api().loginFresh();
+        t.grant(t.userId(staff), buyer.outletId(), "REST_RECEIVING_STAFF");
+        var forbidden = call(mvc, json, "PUT", staff, waiverPath(buyer.outletId(), quickScanId));
+        assertThat(forbidden.status()).isEqualTo(403);
+        assertThat(forbidden.code()).isEqualTo("FORBIDDEN");
+        assertThat(call(mvc, json, "DELETE", staff, waiverPath(buyer.outletId(), quickScanId)).status()).isEqualTo(403);
+        assertThat(waiverRows(quickScanId)).isZero();
     }
 
     private int fetch(String token) throws Exception {

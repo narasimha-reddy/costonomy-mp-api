@@ -38,6 +38,7 @@ public class WalletEntryDetailService {
     private final EntityManager em;
     private final WalletService wallets;
     private final com.costonomy.mp.wallet.invoice.service.WalletInvoiceService invoices;
+    private final com.costonomy.mp.wallet.invoice.service.BillStatuses billStatuses;
 
     @Transactional(readOnly = true)
     public WalletDtos.TransactionDetail detail(Long outletId, String entryKey) {
@@ -120,6 +121,14 @@ public class WalletEntryDetailService {
             }
         }
 
+        // D-116: the same rule as the History's chip, with 'No bill needed' as NOT_REQUIRED.
+        var bill = billStatuses.forEntries(wallet.getId(), List.of(entry.getId())).get(entry.getId());
+        var billStatus = bill == null ? null
+                : com.costonomy.mp.wallet.invoice.service.BillStatuses.resolve(bill, billStatuses.start());
+        // L1: only a payment that is asking for a bill offers 'No bill needed'; before the start it is just "Add bill".
+        boolean canWaiveBill = billStatus == com.costonomy.mp.wallet.invoice.domain.BillStatus.PENDING;
+        boolean canUndoWaiver = bill != null && bill.waived();
+
         return new WalletDtos.TransactionDetail("L" + entry.getId(), entry.getId(), String.valueOf(entry.getId()),
                 entry.getDirection(), kind.name(), entry.getAmount(), entry.getBalanceAfter(),
                 entry.getSupplierOrderId(), entry.getReason(),
@@ -127,8 +136,10 @@ public class WalletEntryDetailService {
                 kind == WalletEntryKind.WITHDRAWAL && refundStatus != null ? refundStatus.name() : null,
                 instrument, entry.getCreatedAt(), counterpartyName, counterpartyDetail, List.copyOf(refs),
                 new WalletDtos.Actions(canPayAgain,
-                        kind == WalletEntryKind.ORDER_PAYMENT || kind == WalletEntryKind.QUICKSCAN_PAYMENT, payeeVpa),
-                invoices.summaryFor(entry.getId()).orElse(null));
+                        kind == WalletEntryKind.ORDER_PAYMENT || kind == WalletEntryKind.QUICKSCAN_PAYMENT,
+                        canWaiveBill, canUndoWaiver, payeeVpa),
+                invoices.summaryFor(entry.getId()).orElse(null),
+                billStatus == null ? null : billStatus.name());
     }
 
     /** {@code first two characters of the handle, bullets, @bank}; never the whole handle. */

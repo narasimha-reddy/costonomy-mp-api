@@ -62,6 +62,7 @@ final class InvoiceTestSupport {
     static Reply call(MockMvc mvc, ObjectMapper json, String method, String token, String path) throws Exception {
         var request = switch (method) {
             case "DELETE" -> MockMvcRequestBuilders.delete(path);
+            case "PUT" -> MockMvcRequestBuilders.put(path);
             default -> MockMvcRequestBuilders.get(path);
         };
         if (token != null) {

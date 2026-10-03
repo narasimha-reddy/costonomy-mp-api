@@ -5235,3 +5235,101 @@ Integration: `WalletInvoiceRetryIT` (+ the H1 bill reaches READ with `INR`; an u
 attempts after exactly 5 calls; back-off 1 then 2 minutes; at most 5 extraction calls; refusals capped at 48),
 `WalletInvoiceReviewIT` (+ bill-level tax end to end, the lost-answer retry, two saves at once, view-only 403, ignored
 fields, malformed and empty bodies, history and audit), `WalletInvoiceHttpReaderIT` (+ outlet map).
+
+## D-116 — Bill status in the wallet History: one rule, a start date, 'No bill needed', a filter, counts and statements
+
+A kitchen must see at a glance which payments still need the shop's bill. The owner chose the words, the five values, the
+start date, the waiver with undo, a server-side filter, counts for a banner and the month sheet, and a Bill column in
+statements. V52 adds one table; nothing existing changes.
+
+1. **Which payments need a bill.** Only payments from the wallet of kinds `ORDER_PAYMENT` and `QUICKSCAN_PAYMENT` whose entry
+   status is COMPLETED. For these two kinds the History's status (`statusOf`) is always COMPLETED (only a withdrawal is ever
+   IN_PROGRESS or RETURNED, and a returned top-up is not a payment); the one paid entry that ended the other way is a QuickScan
+   payment whose payout failed and whose money came back, recognised by its `QUICKSCAN_RETURN` (reference
+   `quickscan-return-<id>` next to the payment's `quickscan-<id>`, a unique key): it is not eligible. Nor is an order payment
+   whose order was cancelled and paid back in full: an `ORDER_REFUND` with the same `supplier_order_id` on the same wallet
+   (written at most once per order by `WalletService.refundFor`; found with a `not exists` on `ix_wallet_txn_order`, not a
+   join, as (supplier_order_id, kind) has no unique key). A partial money-back (`DISPUTE_REFUND`) keeps the payment eligible:
+   the goods came, so the bill is still owed. Top-ups, refunds, withdrawals and their reversals, and returns never are.
+2. **One rule, written once** (`BillStatuses`). A bill that exists always shows its own status, whatever the date: `READING`,
+   `UNREADABLE`, and `READ` as `REVIEWED` once a review was saved (`reviewed_at`, written with `review_json`), else `ADDED`.
+   An `UNREADABLE` bill that a person then filled in by hand (a review saved) is `REVIEWED` too (owner's decision after the
+   review, M3; in `resolve`, the filter and the count alike, so the statement says Reviewed). A bill that exists wins over a
+   waiver row should both ever exist. Without a bill: 'No bill needed' is `NOT_REQUIRED`; an eligible payment created on or after the tracking start is `PENDING`;
+   anything else has none. The same rule is expressed as JPQL over a ledger row with three left joins on unique keys (bill,
+   waiver, QuickScan return) and one `exists` (the order's cancellation), so the list, its filter, the counts, the details and
+   the statement agree by construction.
+3. **The tracking start** (`INVOICE_TRACKING_START`, ISO date, from midnight Asia/Kolkata). Older payments would all say
+   pending on the first day; before the start they show nothing, and a bill can still be added from the details page
+   (`canAddBill` unchanged). Blank turns tracking off: nothing is PENDING anywhere, bills that exist still show. A value that
+   is not a date refuses to start the application.
+4. **The list.** Each item gains `bill`: null or `{"status": "PENDING|READING|ADDED|REVIEWED|UNREADABLE"}`; 'No bill needed'
+   shows null (no chip). The status is selected by the page's own query (no extra query at all, never one per row; a test
+   counts the statements of a 2-row and a 40-row page and requires them equal). The answer gains `billSummary`
+   `{pending, reading, unreadable}`, all months, whatever the filters, each equal to what its `bills=` filter returns (M2):
+   `pending` counts PENDING (eligible, on or after the start, no bill, not waived); `reading` and `unreadable` count every bill
+   of this wallet in that state (unreadable: not yet filled in by hand), whatever its payment's date or eligibility, waived or
+   not, because a bill that exists always shows. Each `monthTotals[]` item gains `billsPending` for its Asia/Kolkata month.
+   Both come from **one** grouped query (conditional sums, one per month asked for) over the rows that have a bill or can be
+   PENDING, never a database time-zone conversion. `billSummary` is sent on the first page only (no `cursor`); later pages
+   send it null and skip its work, keeping the month counts (L2). The app reads the banner from the first page only and maps
+   a missing or null `billSummary` to null, so later pages change nothing.
+5. **The filter.** `bills=` (comma list of the five values, any case; anything else, `NOT_REQUIRED` included, is a 400 with a
+   plain sentence) is a where-clause term of the page query, so it composes with `months`, `kinds`, `statuses` and the cursor
+   and pages exactly. A row without a bill status never matches (returned top-ups are skipped entirely). `monthTotals` stay the
+   ledger's, unfiltered, as D-108 says.
+6. **'No bill needed'.** `PUT .../wallet/transactions/{entryId}/invoice/waiver` answers 200 `{"waived": true}` (again 200 when
+   already set, nothing written); `DELETE` the same path answers 204 (also when nothing was set). Same doors as adding a bill:
+   `ORDER_VIEW` scope (another outlet's or a missing entry is 404) and `QUICKSCAN_PAY` (else 403). Only for an eligible payment
+   (422 `INVOICE_NOT_ALLOWED`) without a bill (409 `INVOICE_EXISTS`). A waiver is allowed before the tracking start too
+   (eligibility is the kind and status, not the date). Both are audited as `WALLET_INVOICE_WAIVER` on the wallet entry
+   (`WAIVED`, then `CLEARED`). Adding a bill removes the waiver in the bill's own transaction (audited, reason "a bill was
+   added"); waive and upload lock the entry's ledger row, so they cannot interleave. The row is deleted on undo; the audit log
+   keeps who and when. V52: `wallet_entry_invoice_waiver` (unique `wallet_transaction_id`, `outlet_id`, `waived_by`,
+   `waived_at`, `version`), V45 to V48 still reserved.
+   **The race (M1).** The database runs REPEATABLE READ and takes a transaction's snapshot at its first plain read. Waive used
+   to read the wallet and the entry before taking the lock, so a bill committed while it waited was invisible to it and both
+   rows could stay. Now the entry's lock (`select ... for update`, scoped to the outlet's wallet) is the **first** statement of
+   the waive (and undo) transaction, as it already was for upload's; the bill check reads after it. Whichever comes second
+   sees what the first committed: a waive behind an upload answers 409 `INVOICE_EXISTS`; an upload behind a waive removes the
+   waiver in its own transaction. Same lock, same order, so no deadlock. A unique-key failure on the waiver insert is taken as
+   success only when a waiver row is really there afterwards; anything else is rethrown (L4).
+7. **The details page** gains `billStatus` (the full rule, `NOT_REQUIRED` included; an eligible payment before the start is
+   null), `actions.canWaiveBill` (only when `billStatus` is PENDING: before the start the app offers just "Add bill", L1) and
+   `actions.canUndoWaiver` (waived). The waive endpoint itself still accepts any eligible payment without a bill. Every existing field stays.
+8. **Statements.** CSV and PDF gain `Bill` (Pending, Reading, Added, Reviewed, Unreadable, No bill needed, or blank), `Shop` and
+   `Bill no.` (the review's when saved and not blank, else as read), after the existing columns, which do not move and still
+   reconcile. One query for the period's bill columns, however many rows. The PDF is now A4 landscape to fit them.
+9. **The wallet's recent list** (`GET /outlets/{outletId}/wallet`, `recent[]`, the Wallet screen's 'Recent' card; `POST
+   .../wallet/top-ups/{topUpId}/confirm` answers the same wallet, built by the same code). Each entry gains the same `bill` as the History list item for that
+   entry: null or `{"status": ...}`, 'No bill needed' null. Read by `BillStatuses.forListOf` (the `forEntries` query, then
+   `forList`, the History's own rule) through `WalletHistoryService.billsOf`: one query for the whole list, never one per row.
+   These are the only wallet-entry lists the API returns: QuickScan's payment list and receipt return QuickScan payments, not
+   ledger entries, and carry no bill (the app shows a bill from the transaction details); the mock top-up answers an empty
+   `recent`.
+
+**After the independent review.** H1 (a cancelled order asked for a bill), M1 (the waive/upload race), M2 (counts that
+disagreed with their filters), M3 (a hand-filled unreadable bill, now REVIEWED), L1, L2 and L4 are fixed as described above.
+Left as it is: a sparse `bills=` filter walks the wallet's keyset until it finds a page (L3; fine at today's volumes), and a
+READING bill with no pages has no guard in the reader (L5; upload writes the bill and its pages together).
+
+**Tests.** `WalletBillStatusIT` (a seeded matrix: every kind, a returned QuickScan payment, a waiver, a bill in each status, a
+microsecond either side of the start, an IST month boundary, a second outlet; summary under every filter; month counts; tracking
+off; filter and composition and 400s; a filtered walk of more than two pages over shared instants; the statement count of a
+2-row and a 40-row page; details; statement columns, reconciliation and one query), `WalletInvoiceIT` (+ waiver set, again,
+undo, again; 422 and 409; a bill clears it; 404/401/403), `BillStatusesTest`, `WalletStatementFilesTest` (+ columns, landscape
+pagination), `WalletHistoryIT` (item shape). Mutations: computing the bill with one query per row fails `oneQueryPerPage`
+(13 statements became 51); dropping the start date from the SQL fails `summary`, `filter` and `monthTotals`; dropping it from the
+Java rule fails `BillStatusesTest.withoutBill`, `listStatuses`, `details` and `statementColumns`. Review fixes:
+`cancelledOrderNeedsNoBill` (H1: list, filter, counts, month, details, waive 422, statement; DISPUTE_REFUND stays PENDING; a
+bill on a cancelled payment still shows), `countsMatchFilters` (M2: `bills=UNREADABLE` returns 4, `unreadable` is 4; a bill
+next to a waiver counts and shows), `unreadableReviewedIsReviewed` and `WalletInvoiceReviewIT.unreadableFilledByHand` (M3,
+through the real review endpoint), `summaryOnFirstPageOnly` (L2), `WalletInvoiceIT.waiverWaitingBehindABill` and
+`uploadWaitingBehindAWaiver` (M1: a second connection or a waive holds the entry's lock; the other side is shown to be
+waiting, then ends with a bill and no waiver), `WalletInvoiceWaiveTest` (L4). Mutations: dropping the cancellation from the
+rule fails `cancelledOrderNeedsNoBill`; reading before locking in waive fails `waiverWaitingBehindABill` (200 and a waiver
+next to the bill). The recent list (9): `recentCarriesBill` (every status and null among the ten newest, each equal to the
+History's item for the same entry; a second outlet's own), `recentTrackingStart` (a microsecond either side of the start, a bill
+before it, a returned QuickScan payment, a cancelled order, a dispute; tracking off), `recentOneQuery` (equal statement counts
+for 2 and 10 entries). Mutations: one query per entry fails `recentOneQuery` (9 statements became 17); the full rule instead of
+the list's fails `recentCarriesBill` (a waived payment showed `NOT_REQUIRED`).

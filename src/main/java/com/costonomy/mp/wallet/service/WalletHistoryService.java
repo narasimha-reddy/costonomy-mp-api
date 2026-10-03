@@ -8,6 +8,8 @@ import com.costonomy.mp.wallet.domain.WalletEntryKind;
 import com.costonomy.mp.wallet.domain.WalletTopUp;
 import com.costonomy.mp.wallet.domain.WalletTopUpStatus;
 import com.costonomy.mp.wallet.domain.WalletTransaction;
+import com.costonomy.mp.wallet.invoice.domain.BillStatus;
+import com.costonomy.mp.wallet.invoice.service.BillStatuses;
 import com.costonomy.mp.wallet.web.dto.WalletDtos;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
@@ -61,6 +63,11 @@ import java.util.TreeSet;
  * <p><b>Totals are the ledger's, unfiltered by kind or status.</b> "Added" and "spent" for
  * a month are what the statement for that month would say, so the header and the
  * downloadable statement can never disagree because a filter was on.
+ *
+ * <p><b>Bills (D-116).</b> Each ledger row carries its bill status, read in the same query as the page (three left
+ * joins on unique keys, see {@link BillStatuses}), so a page costs no extra query per row; the {@code bills} filter is
+ * a where-clause term of that query, so paging stays exact. The banner's counts and each month's
+ * {@code billsPending} come from one more grouped query per request, unfiltered like the totals.
  */
 @Service
 @RequiredArgsConstructor
@@ -87,7 +94,8 @@ public class WalletHistoryService {
     public enum Status { COMPLETED, IN_PROGRESS, FAILED, RETURNED }
 
     /** A parsed request. Empty sets mean "no filter". */
-    public record Filter(List<YearMonth> months, Set<WalletEntryKind> kinds, Set<Status> statuses) {
+    public record Filter(List<YearMonth> months, Set<WalletEntryKind> kinds, Set<Status> statuses,
+                         Set<BillStatus> bills) {
     }
 
     private record Cursor(Instant at, int source, long id) {
@@ -98,10 +106,15 @@ public class WalletHistoryService {
 
     private final EntityManager em;
     private final WalletService wallets;
+    private final BillStatuses billStatuses;
 
     // ── Parsing: every bad value is a 400 that says which ────────────────
 
     public static Filter parseFilter(String months, String kinds, String statuses) {
+        return parseFilter(months, kinds, statuses, null);
+    }
+
+    public static Filter parseFilter(String months, String kinds, String statuses, String bills) {
         var parsedMonths = new TreeSet<YearMonth>(Comparator.reverseOrder());
         for (String token : split(months)) {
             try {
@@ -135,7 +148,22 @@ public class WalletHistoryService {
                 throw new BusinessException(ErrorCode.VALIDATION_ERROR, "'%s' is not a status.".formatted(token));
             }
         }
-        return new Filter(List.copyOf(parsedMonths), parsedKinds, parsedStatuses);
+        var parsedBills = EnumSet.noneOf(BillStatus.class);
+        for (String token : split(bills)) {
+            BillStatus bill = null;
+            try {
+                bill = BillStatus.valueOf(token.toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                // reported below
+            }
+            if (bill == null || !BillStatuses.FILTERABLE.contains(bill)) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "'%s' is not a bill status. Use PENDING, READING, ADDED, REVIEWED or UNREADABLE."
+                                .formatted(token));
+            }
+            parsedBills.add(bill);
+        }
+        return new Filter(List.copyOf(parsedMonths), parsedKinds, parsedStatuses, parsedBills);
     }
 
     public static int parseSize(Integer size) {
@@ -192,13 +220,30 @@ public class WalletHistoryService {
         } else {
             page.forEach(row -> monthsForTotals.add(YearMonth.from(row.at().atZone(ZONE))));
         }
+        // One grouped query for the banner and every month's pending bills, whatever the filters. L2: the app reads the
+        // banner from the first page only, so a later page (a cursor) gets billSummary null and only the month counts.
+        boolean firstPage = cursor == null;
+        var bills = billStatuses.summary(walletId, List.copyOf(monthsForTotals), firstPage);
         var totals = new ArrayList<WalletDtos.MonthTotal>();
         for (var month : monthsForTotals) {
-            totals.add(monthTotal(walletId, month));
+            totals.add(monthTotal(walletId, month, bills.pendingByMonth().getOrDefault(month, 0)));
         }
 
         return new WalletDtos.HistoryResponse(
-                page.stream().map(Row::item).toList(), totals, availableMonths(walletId, outletId), next);
+                page.stream().map(Row::item).toList(), totals, availableMonths(walletId, outletId), next,
+                firstPage ? new WalletDtos.BillSummary(bills.pending(), bills.reading(), bills.unreadable()) : null);
+    }
+
+    /**
+     * The {@code bill} the History list shows for each of these ledger entries of one wallet (D-116), for lists built
+     * elsewhere (the wallet's {@code recent[]}): the same rule ({@link BillStatuses#forList}) in one query for the whole
+     * list. An entry with no bill status is absent from the map.
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, WalletDtos.Bill> billsOf(Long walletId, java.util.Collection<Long> entryIds) {
+        var out = new HashMap<Long, WalletDtos.Bill>();
+        billStatuses.forListOf(walletId, entryIds).forEach((id, status) -> out.put(id, new WalletDtos.Bill(status.name())));
+        return out;
     }
 
     private static boolean ledgerWanted(Filter filter) {
@@ -211,6 +256,9 @@ public class WalletHistoryService {
     }
 
     private static boolean topUpsWanted(Filter filter) {
+        if (!filter.bills().isEmpty()) {
+            return false; // a returned top-up has no bill status, so a bill filter never matches one
+        }
         boolean kindOk = filter.kinds().isEmpty() || filter.kinds().contains(WalletEntryKind.TOP_UP);
         boolean statusOk = filter.statuses().isEmpty() || filter.statuses().contains(Status.RETURNED);
         return kindOk && statusOk;
@@ -219,10 +267,16 @@ public class WalletHistoryService {
     @SuppressWarnings("unchecked")
     private List<Row> ledgerRows(Long walletId, Long outletId, Filter filter, Cursor cursor, int limit) {
         var jpql = new StringBuilder("""
-                select t, r.status from WalletTransaction t
+                select t, r.status, %s from WalletTransaction t
                   left join Refund r on r.id = t.refundId
+                  %s
                  where t.walletId = :wallet
-                """);
+                """.formatted(BillStatuses.COLUMNS, BillStatuses.JOINS));
+        var billStart = billStatuses.start();
+        boolean billFiltered = !filter.bills().isEmpty();
+        if (billFiltered) {
+            jpql.append(" and ").append(BillStatuses.matching(filter.bills(), billStart.isPresent()));
+        }
         if (!filter.months().isEmpty()) {
             jpql.append(" and ").append(rangeClause("t", filter.months().size()));
         }
@@ -281,6 +335,9 @@ public class WalletHistoryService {
                 query.setParameter("cId", cursor.id());
             }
         }
+        if (billFiltered && BillStatuses.usesStart(filter.bills(), billStart.isPresent())) {
+            BillStatuses.bindStart(query, billStart.get());
+        }
         query.setMaxResults(limit);
         List<Object[]> found = query.getResultList();
 
@@ -322,11 +379,13 @@ public class WalletHistoryService {
                     // see above
                 }
             }
+            BillStatus bill = BillStatuses.forList(
+                    BillStatuses.facts(entry.getKind(), entry.getCreatedAt(), row, 2), billStart);
             var item = new WalletDtos.HistoryItem("L" + entry.getId(), entry.getId(), entry.getDirection(),
                     entry.getKind().name(), entry.getAmount(), entry.getBalanceAfter(),
                     entry.getSupplierOrderId(), entry.getReason(), status,
                     withdrawal && refundStatus != null ? refundStatus.name() : null,
-                    instrument, entry.getCreatedAt());
+                    instrument, entry.getCreatedAt(), bill == null ? null : new WalletDtos.Bill(bill.name()));
             out.add(new Row(entry.getCreatedAt(), LEDGER, entry.getId(), item));
         }
         return out;
@@ -375,7 +434,7 @@ public class WalletHistoryService {
             var item = new WalletDtos.HistoryItem("T" + topUp.getId(), topUp.getId(), WalletDirection.CREDIT,
                     WalletEntryKind.TOP_UP.name(), topUp.getAmount(), null, null,
                     "Payment returned to your card or bank", Status.RETURNED.name(), null,
-                    instrumentOf(topUp), topUp.getCreatedAt());
+                    instrumentOf(topUp), topUp.getCreatedAt(), null);
             out.add(new Row(topUp.getCreatedAt(), TOP_UP, topUp.getId(), item));
         }
         return out;
@@ -400,7 +459,7 @@ public class WalletHistoryService {
 
     // ── Month totals and the months there are ────────────────────────────
 
-    private WalletDtos.MonthTotal monthTotal(Long walletId, YearMonth month) {
+    private WalletDtos.MonthTotal monthTotal(Long walletId, YearMonth month, int billsPending) {
         BigDecimal added = BigDecimal.ZERO;
         BigDecimal spent = BigDecimal.ZERO;
         if (walletId != null) {
@@ -419,7 +478,7 @@ public class WalletHistoryService {
             added = new BigDecimal(result.get(0)[0].toString());
             spent = new BigDecimal(result.get(0)[1].toString());
         }
-        return new WalletDtos.MonthTotal(month.toString(), added, spent);
+        return new WalletDtos.MonthTotal(month.toString(), added, spent, billsPending);
     }
 
     /**

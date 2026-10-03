@@ -55,4 +55,8 @@ public final class InvoiceDtos {
     /** On the transaction page: enough to show a thumbnail and a line. */
     public record Summary(String status, String vendorName, BigDecimal total, String thumbnailUrl) {
     }
+
+    /** D-116: the answer to 'No bill needed'. */
+    public record Waiver(boolean waived) {
+    }
 }

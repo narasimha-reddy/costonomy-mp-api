@@ -27,7 +27,7 @@ public final class WalletStatementCsv {
 
     private static final DateTimeFormatter STAMP =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(StatementPeriod.ZONE);
-    private static final int COLUMNS = 7;
+    private static final int COLUMNS = 10;
 
     private WalletStatementCsv() {
     }
@@ -44,11 +44,14 @@ public final class WalletStatementCsv {
         line(out, text("Closing balance (INR)"), number(s.closingBalance()));
         line(out);
         line(out, text("Date and time (IST)"), text("Description"), text("Reference"), text("Direction"),
-                text("Amount (INR)"), text("Balance after (INR)"), text("Note"));
+                text("Amount (INR)"), text("Balance after (INR)"), text("Note"),
+                // D-116: after the ledger's columns, so the ones a spreadsheet already reads keep their places.
+                text("Bill"), text("Shop"), text("Bill no."));
         for (var row : s.lines()) {
             line(out, text(STAMP.format(row.at())), text(row.description()), text(row.reference()),
                     text(row.direction() == WalletDirection.CREDIT ? "Credit" : "Debit"),
-                    number(row.amount()), number(row.balanceAfter()), text(row.note()));
+                    number(row.amount()), number(row.balanceAfter()), text(row.note()),
+                    text(row.bill()), text(row.shop()), text(row.billNumber()));
         }
         return out.toString().getBytes(StandardCharsets.UTF_8);
     }
