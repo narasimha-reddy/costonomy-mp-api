@@ -185,6 +185,28 @@ public enum ErrorCode {
     IMPORT_VALIDATION_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
             "Some rows in that file couldn't be imported."),
 
+    // ── Wallet bills (D-113) ─────────────────────────────────────────────
+    INVOICE_EXISTS(HttpStatus.CONFLICT,
+            "This payment already has a bill. Remove it first to add another."),
+    INVOICE_NOT_FOUND(HttpStatus.NOT_FOUND,
+            "This payment has no bill."),
+    INVOICE_NOT_ALLOWED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "A bill can only be added to a payment made from your wallet."),
+    INVOICE_FILE_TYPE(HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+            "Please upload a JPEG, PNG or WebP photo, or a PDF."),
+    INVOICE_LIMIT_REACHED(HttpStatus.TOO_MANY_REQUESTS,
+            "You have added the most bills allowed for today. Please try again tomorrow."),
+    INVOICE_CHANGED(HttpStatus.CONFLICT,
+            "This bill was changed since you opened it. Reload it and try again."),
+    INVOICE_STILL_READING(HttpStatus.CONFLICT,
+            "This bill is still being read. Please try again in a moment."),
+    /** D-115: the same Idempotency-Key was sent again with a different review. */
+    IDEMPOTENCY_KEY_REUSED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "This save was already made with different details. Reload the bill and try again."),
+    /** D-115: the outlet has no cost-app outlet mapped, so the cost app's lists are not offered. */
+    INVOICE_LOOKUP_NOT_AVAILABLE(HttpStatus.FORBIDDEN,
+            "Supplier and SKU lists are not available for this outlet. You can still type a name."),
+
     // ── Unexpected (500) ─────────────────────────────────────────────────
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR,
             "Something went wrong on our side. Please try again."),

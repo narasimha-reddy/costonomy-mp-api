@@ -37,6 +37,7 @@ public class WalletEntryDetailService {
 
     private final EntityManager em;
     private final WalletService wallets;
+    private final com.costonomy.mp.wallet.invoice.service.WalletInvoiceService invoices;
 
     @Transactional(readOnly = true)
     public WalletDtos.TransactionDetail detail(Long outletId, String entryKey) {
@@ -125,7 +126,9 @@ public class WalletEntryDetailService {
                 WalletHistoryService.statusOf(kind, refundStatus).name(),
                 kind == WalletEntryKind.WITHDRAWAL && refundStatus != null ? refundStatus.name() : null,
                 instrument, entry.getCreatedAt(), counterpartyName, counterpartyDetail, List.copyOf(refs),
-                new WalletDtos.Actions(canPayAgain, payeeVpa));
+                new WalletDtos.Actions(canPayAgain,
+                        kind == WalletEntryKind.ORDER_PAYMENT || kind == WalletEntryKind.QUICKSCAN_PAYMENT, payeeVpa),
+                invoices.summaryFor(entry.getId()).orElse(null));
     }
 
     /** {@code first two characters of the handle, bullets, @bank}; never the whole handle. */
@@ -149,7 +152,7 @@ public class WalletEntryDetailService {
     }
 
     /** "184" or the list's "L184". A returned top-up ("T12") has no ledger entry and is not found. */
-    private static Long parse(String key) {
+    public static Long parse(String key) {
         String digits = key != null && key.startsWith("L") ? key.substring(1) : key;
         if (digits == null || !digits.matches("\\d{1,18}")) {
             throw notFound();
