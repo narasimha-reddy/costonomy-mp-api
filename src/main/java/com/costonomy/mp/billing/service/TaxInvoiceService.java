@@ -14,10 +14,13 @@ import com.costonomy.mp.billing.repository.TaxInvoiceRepository;
 import com.costonomy.mp.billing.web.dto.BillingDtos;
 import com.costonomy.mp.catalog.domain.CanonicalProduct;
 import com.costonomy.mp.catalog.repository.CanonicalProductRepository;
+import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
 import com.costonomy.mp.procurement.domain.SupplierOrderItem;
+import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
 import com.costonomy.mp.procurement.repository.SupplierOrderItemRepository;
 import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
 import lombok.RequiredArgsConstructor;
@@ -64,6 +67,14 @@ public class TaxInvoiceService {
         var existing = invoices.findBySupplierOrderId(supplierOrderId);
         if (existing.isPresent()) {
             return toInvoiceResponse(existing.get());
+        }
+
+        // Section 31 CGST Act: A tax invoice can only be issued upon/after supply or dispatch,
+        // never on unfunded DRAFT or pre-fulfillment unconfirmed states.
+        if (order.getStatus() == SupplierOrderStatus.DRAFT
+                || order.getStatus() == SupplierOrderStatus.CANCELLED) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Tax invoice cannot be generated for an order in status " + order.getStatus());
         }
 
         List<SupplierOrderItem> items = orderItems.findBySupplierOrderId(supplierOrderId);

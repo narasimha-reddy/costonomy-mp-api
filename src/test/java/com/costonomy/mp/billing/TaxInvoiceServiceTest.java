@@ -78,6 +78,7 @@ class TaxInvoiceServiceTest {
         order.setOrderNumber("ORD-101");
         order.setSupplierStoreId(10L);
         order.setOutletId(20L);
+        order.setStatus(com.costonomy.mp.procurement.domain.SupplierOrderStatus.DELIVERED);
         order.setDeliveryFee(new BigDecimal("50.00"));
 
         SupplierOrderItem item = new SupplierOrderItem();
@@ -168,5 +169,39 @@ class TaxInvoiceServiceTest {
         assertThat(res.items()).hasSize(1);
         assertThat(res.items().get(0).rejectedQuantity()).isEqualByComparingTo("2.00");
         assertThat(res.items().get(0).rejectionReason()).isEqualTo("SPOILED_PACK");
+    }
+
+    @Test
+    @DisplayName("generateOrGetInvoice rejects unauthorized user without ORDER_VIEW grant")
+    void generateInvoiceRejectsUnauthorizedUser() {
+        SupplierOrder order = new SupplierOrder();
+        order.setId(103L);
+        order.setSupplierStoreId(10L);
+        order.setOutletId(20L);
+        order.setStatus(com.costonomy.mp.procurement.domain.SupplierOrderStatus.DELIVERED);
+
+        when(orders.findById(103L)).thenReturn(Optional.of(order));
+        when(accessControl.has(eq(999L), any(), any(), any())).thenReturn(false);
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                com.costonomy.mp.common.error.NotFoundException.class,
+                () -> service.generateOrGetInvoice(999L, 103L));
+    }
+
+    @Test
+    @DisplayName("generateOrGetInvoice rejects invoice creation on DRAFT or CANCELLED order")
+    void generateInvoiceRejectsDraftOrCancelledOrder() {
+        SupplierOrder order = new SupplierOrder();
+        order.setId(104L);
+        order.setSupplierStoreId(10L);
+        order.setOutletId(20L);
+        order.setStatus(com.costonomy.mp.procurement.domain.SupplierOrderStatus.DRAFT);
+
+        when(orders.findById(104L)).thenReturn(Optional.of(order));
+        when(accessControl.has(eq(1L), any(), any(), any())).thenReturn(true);
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                com.costonomy.mp.common.error.BusinessException.class,
+                () -> service.generateOrGetInvoice(1L, 104L));
     }
 }
