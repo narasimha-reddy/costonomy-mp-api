@@ -56,6 +56,9 @@ public class SupplierSku extends BaseEntity {
     @Column(name = "pack_size", nullable = false, precision = 19, scale = 4)
     private BigDecimal packSize;
 
+    @Column(name = "hsn_code", length = 16)
+    private String hsnCode;
+
     @Column(name = "pack_unit", nullable = false, length = 32)
     private String packUnit;
 

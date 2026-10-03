@@ -47,7 +47,8 @@ public class SettlementDirectory {
         List<SettleableOrder> orders = new ArrayList<>();
         jdbc.query("""
                 select so.id, so.supplier_store_id, ss.supplier_organization_id,
-                       so.accepted_amount, so.delivery_fee, so.updated_at
+                       coalesce(so.final_payable_amount, so.accepted_amount - coalesce(so.doorstep_refund_amount, 0) - coalesce(so.weight_adjustment_amount, 0)),
+                       so.delivery_fee, so.updated_at
                   from supplier_order so
                   join supplier_store ss on ss.id = so.supplier_store_id
              left join commission_calculation c on c.supplier_order_id = so.id

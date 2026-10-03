@@ -47,6 +47,9 @@ public class Subscription extends BaseEntity {
     @Column(name = "delivery_mode", nullable = false, length = 32)
     private String deliveryMode = "SUPPLIER_DELIVERY";
 
+    @Column(name = "payment_method", nullable = false, length = 32)
+    private String paymentMethod = "WALLET";
+
     @Enumerated(EnumType.STRING)
     @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "status", nullable = false, length = 32)

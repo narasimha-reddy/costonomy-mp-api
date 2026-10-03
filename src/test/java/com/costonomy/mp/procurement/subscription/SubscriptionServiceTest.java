@@ -7,14 +7,16 @@ import com.costonomy.mp.catalog.domain.SupplierOffer;
 import com.costonomy.mp.catalog.repository.SupplierOfferRepository;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.credit.service.CreditAgreementService;
+import com.costonomy.mp.credit.service.CreditLedgerService;
 import com.costonomy.mp.delivery.slot.DeliverySlot;
 import com.costonomy.mp.delivery.slot.DeliverySlotRepository;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
-import com.costonomy.mp.procurement.domain.SupplierOrderItem;
 import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
 import com.costonomy.mp.procurement.repository.OrderNumberGenerator;
 import com.costonomy.mp.procurement.repository.SupplierOrderItemRepository;
 import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
+import com.costonomy.mp.wallet.service.WalletService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -26,6 +28,7 @@ import org.springframework.jdbc.core.ResultSetExtractor;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -67,13 +70,23 @@ class SubscriptionServiceTest {
     @Mock
     private JdbcTemplate jdbc;
 
+    @Mock
+    private WalletService walletService;
+
+    @Mock
+    private CreditAgreementService creditAgreements;
+
+    @Mock
+    private CreditLedgerService creditLedger;
+
     private SubscriptionService service;
 
     @BeforeEach
     void setUp() {
         service = new SubscriptionService(
                 subscriptions, skipDates, supplierOrders, supplierOrderItems,
-                supplierOffers, deliverySlots, orderNumbers, accessControl, auditService, jdbc);
+                supplierOffers, deliverySlots, orderNumbers, accessControl, auditService, jdbc,
+                walletService, creditAgreements, creditLedger);
     }
 
     @Test
@@ -83,7 +96,7 @@ class SubscriptionServiceTest {
 
         var req = new SubscriptionDtos.CreateSubscriptionRequest(
                 10L, 20L, new BigDecimal("10.00"), "LTR",
-                SubscriptionFrequency.DAILY, 5L, "SUPPLIER_DELIVERY",
+                SubscriptionFrequency.DAILY, 5L, "SUPPLIER_DELIVERY", "WALLET",
                 tomorrow, null, "Fresh Milk daily delivery"
         );
 
@@ -108,6 +121,7 @@ class SubscriptionServiceTest {
         assertThat(res.status()).isEqualTo(SubscriptionStatus.ACTIVE);
         assertThat(res.nextDeliveryDate()).isEqualTo(tomorrow);
         assertThat(res.quantity()).isEqualByComparingTo("10.00");
+        assertThat(res.paymentMethod()).isEqualTo("WALLET");
     }
 
     @Test
@@ -117,7 +131,7 @@ class SubscriptionServiceTest {
 
         var req = new SubscriptionDtos.CreateSubscriptionRequest(
                 10L, 20L, new BigDecimal("10.00"), "LTR",
-                SubscriptionFrequency.DAILY, 5L, "SUPPLIER_DELIVERY",
+                SubscriptionFrequency.DAILY, 5L, "SUPPLIER_DELIVERY", "WALLET",
                 yesterday, null, "Fresh Milk"
         );
 
@@ -136,6 +150,7 @@ class SubscriptionServiceTest {
         sub.setStatus(SubscriptionStatus.ACTIVE);
         sub.setStartDate(LocalDate.now(SubscriptionService.ZONE));
         sub.setFrequency(SubscriptionFrequency.DAILY);
+        sub.setPaymentMethod("WALLET");
 
         when(subscriptions.findById(501L)).thenReturn(Optional.of(sub));
         when(jdbc.queryForObject(eq("select name from outlet where id = ?"), eq(String.class), anyLong()))
@@ -151,8 +166,8 @@ class SubscriptionServiceTest {
     }
 
     @Test
-    @DisplayName("Generate daily orders creates orders for due active subscriptions")
-    void generateDailyOrders() {
+    @DisplayName("Generate daily orders gates confirmation on wallet funding")
+    void generateDailyOrdersWalletFunded() {
         LocalDate today = LocalDate.now(SubscriptionService.ZONE);
 
         Subscription sub = new Subscription();
@@ -168,6 +183,7 @@ class SubscriptionServiceTest {
         sub.setStartDate(today.minusDays(5));
         sub.setPreferredSlotId(3L);
         sub.setDeliveryMode("SUPPLIER_DELIVERY");
+        sub.setPaymentMethod("WALLET");
 
         when(subscriptions.findBySupplierStoreIdAndStatus(10L, SubscriptionStatus.ACTIVE))
                 .thenReturn(List.of(sub));
@@ -187,9 +203,14 @@ class SubscriptionServiceTest {
 
         when(supplierOrders.save(any(SupplierOrder.class))).thenAnswer(inv -> {
             SupplierOrder o = inv.getArgument(0);
-            o.setId(901L);
+            if (o.getId() == null) {
+                o.setId(901L);
+            }
             return o;
         });
+
+        // Wallet debit succeeds
+        when(walletService.debitFor(eq(2L), any(), any())).thenReturn(true);
 
         var res = service.generateDailyOrders(1L, 10L, today);
 
@@ -197,11 +218,61 @@ class SubscriptionServiceTest {
         assertThat(res.ordersGenerated()).isEqualTo(1);
         assertThat(res.orderIds()).contains(901L);
 
-        verify(supplierOrders).save(argThat(o ->
+        verify(supplierOrders, atLeastOnce()).save(argThat(o ->
                 o.isSubscriptionOrder() &&
                 o.getDeliverySlotId().equals(3L) &&
                 o.getStatus() == SupplierOrderStatus.CONFIRMED &&
+                "COMPLETED".equals(o.getPaymentStatus()) &&
                 o.getScheduledDeliveryDate().equals(today)
         ));
+    }
+
+    @Test
+    @DisplayName("Generate daily orders leaves order DRAFT if wallet insufficient balance")
+    void generateDailyOrdersWalletUnfunded() {
+        LocalDate today = LocalDate.now(SubscriptionService.ZONE);
+
+        Subscription sub = new Subscription();
+        sub.setId(502L);
+        sub.setOutletId(2L);
+        sub.setSupplierStoreId(10L);
+        sub.setCanonicalProductId(100L);
+        sub.setSupplierSkuId(20L);
+        sub.setQuantity(new BigDecimal("5.00"));
+        sub.setUnit("KG");
+        sub.setFrequency(SubscriptionFrequency.DAILY);
+        sub.setStatus(SubscriptionStatus.ACTIVE);
+        sub.setStartDate(today.minusDays(5));
+        sub.setPreferredSlotId(3L);
+        sub.setDeliveryMode("SUPPLIER_DELIVERY");
+        sub.setPaymentMethod("WALLET");
+
+        when(subscriptions.findBySupplierStoreIdAndStatus(10L, SubscriptionStatus.ACTIVE))
+                .thenReturn(List.of(sub));
+        when(skipDates.existsBySubscriptionIdAndSkipDate(502L, today)).thenReturn(false);
+        when(jdbc.queryForObject(anyString(), eq(Integer.class), eq(502L), any())).thenReturn(0);
+
+        SupplierOffer offer = new SupplierOffer();
+        offer.setSellingPrice(new BigDecimal("120.00"));
+        offer.setGstRate(new BigDecimal("5.00"));
+        when(supplierOffers.findBySupplierSkuIdAndStatus(20L, "ACTIVE")).thenReturn(Optional.of(offer));
+        when(orderNumbers.next()).thenReturn("MP-261002-000101");
+
+        when(supplierOrders.save(any(SupplierOrder.class))).thenAnswer(inv -> {
+            SupplierOrder o = inv.getArgument(0);
+            if (o.getId() == null) {
+                o.setId(902L);
+            }
+            return o;
+        });
+
+        // Wallet debit fails (insufficient funds)
+        when(walletService.debitFor(eq(2L), any(), any())).thenReturn(false);
+
+        var res = service.generateDailyOrders(1L, 10L, today);
+
+        // Not confirmed!
+        assertThat(res.ordersGenerated()).isEqualTo(0);
+        assertThat(res.orderIds()).isEmpty();
     }
 }

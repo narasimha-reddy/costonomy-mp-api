@@ -45,6 +45,9 @@ public class CanonicalProduct extends BaseEntity {
     @Column(name = "base_pack_size", precision = 19, scale = 4)
     private BigDecimal basePackSize;
 
+    @Column(name = "hsn_code", length = 16)
+    private String hsnCode;
+
     /** Platform-owned imagery (doc 01 §7), so comparison is not a parade of mismatched photos. */
     @Column(name = "image_url", length = 1000)
     private String imageUrl;

@@ -58,6 +58,7 @@ public class ReceivingService {
     private final AuditService auditService;
     private final OutboxService outbox;
     private final WalletService walletService;
+    private final com.costonomy.mp.billing.service.TaxInvoiceService taxInvoiceService;
 
     @Transactional
     public TrustDtos.ReceivingResponse receive(Long actorId, Long supplierOrderId,
@@ -199,11 +200,12 @@ public class ReceivingService {
         receiving.setHasDiscrepancy(discrepancy);
         receivings.save(receiving);
 
-        // Process instant doorstep refund & credit note if items were rejected
+        // Process instant doorstep refund & statutory credit note if items were rejected
         String creditNoteNumber = null;
         if (totalRefundAmount.compareTo(BigDecimal.ZERO) > 0) {
-            creditNoteNumber = "CN-" + order.orderNumber() + "-01";
             directory.updateOrderFinancialReconciliation(supplierOrderId, totalRefundAmount);
+            var creditNote = taxInvoiceService.generateCreditNoteForRejection(supplierOrderId, "DOORSTEP_REJECTION");
+            creditNoteNumber = creditNote != null ? creditNote.creditNoteNumber() : ("CN-" + order.orderNumber() + "-01");
             walletService.recordAdjustment(order.outletId(), supplierOrderId, WalletDirection.CREDIT,
                     totalRefundAmount, "Doorstep rejection refund for " + order.orderNumber() + " (" + creditNoteNumber + ")");
         }

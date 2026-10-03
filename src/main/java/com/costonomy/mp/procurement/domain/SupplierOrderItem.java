@@ -104,6 +104,9 @@ public class SupplierOrderItem extends BaseEntity {
     @Column(name = "unit", nullable = false, length = 32)
     private String unit;
 
+    @Column(name = "hsn_code", length = 16)
+    private String hsnCode;
+
     @Column(name = "unit_price_snapshot", nullable = false, precision = 19, scale = 4)
     private BigDecimal unitPriceSnapshot;
 

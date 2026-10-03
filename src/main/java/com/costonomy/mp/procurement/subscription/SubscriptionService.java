@@ -50,6 +50,9 @@ public class SubscriptionService {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final JdbcTemplate jdbc;
+    private final com.costonomy.mp.wallet.service.WalletService walletService;
+    private final com.costonomy.mp.credit.service.CreditAgreementService creditAgreements;
+    private final com.costonomy.mp.credit.service.CreditLedgerService creditLedger;
 
     @Transactional
     public SubscriptionDtos.SubscriptionResponse createSubscription(
@@ -87,6 +90,7 @@ public class SubscriptionService {
         sub.setFrequency(request.frequency());
         sub.setPreferredSlotId(request.preferredSlotId());
         sub.setDeliveryMode(request.deliveryMode() == null ? "SUPPLIER_DELIVERY" : request.deliveryMode());
+        sub.setPaymentMethod(request.paymentMethod() != null ? request.paymentMethod().toUpperCase() : "WALLET");
         sub.setStatus(SubscriptionStatus.ACTIVE);
         sub.setStartDate(request.startDate());
         sub.setEndDate(request.endDate());
@@ -367,12 +371,14 @@ public class SubscriptionService {
             BigDecimal lineGst = Pricing.lineGst(lineValue, gstRate);
             BigDecimal totalAmount = Pricing.lineTotal(lineValue, lineGst);
 
+            String paymentMethod = sub.getPaymentMethod() != null ? sub.getPaymentMethod().toUpperCase() : "WALLET";
+
             SupplierOrder order = new SupplierOrder();
             order.setSupplierStoreId(supplierStoreId);
             order.setOutletId(sub.getOutletId());
             order.setOrderNumber(orderNumbers.next());
-            order.setStatus(SupplierOrderStatus.CONFIRMED);
-            order.setPaymentMethod("CREDIT");
+            order.setStatus(SupplierOrderStatus.DRAFT);
+            order.setPaymentMethod(paymentMethod);
             order.setPaymentStatus("PENDING");
             order.setSubtotal(lineValue);
             order.setGstAmount(lineGst);
@@ -404,7 +410,40 @@ public class SubscriptionService {
             item.setStatus(OrderItemStatus.ACCEPTED);
             supplierOrderItems.save(item);
 
-            generatedOrderIds.add(order.getId());
+            boolean funded = false;
+            if ("WALLET".equals(paymentMethod)) {
+                boolean debited = walletService.debitFor(sub.getOutletId(), order.getId(), totalAmount);
+                if (debited) {
+                    order.setStatus(SupplierOrderStatus.CONFIRMED);
+                    order.setPaymentStatus("COMPLETED");
+                    supplierOrders.save(order);
+                    funded = true;
+                } else {
+                    log.warn("Subscription {} order {} could not be confirmed: insufficient wallet balance for outlet {}",
+                            sub.getId(), order.getId(), sub.getOutletId());
+                }
+            } else if ("CREDIT".equals(paymentMethod)) {
+                var agreement = creditAgreements.fundingAgreement(sub.getOutletId(), supplierStoreId);
+                if (agreement != null) {
+                    var reservation = creditLedger.reserve(agreement.getId(), order.getId(), null, totalAmount);
+                    if (reservation.getStatus() == com.costonomy.mp.credit.domain.CreditReservationStatus.RESERVED) {
+                        order.setStatus(SupplierOrderStatus.CONFIRMED);
+                        order.setPaymentStatus("PENDING");
+                        supplierOrders.save(order);
+                        funded = true;
+                    } else {
+                        log.warn("Subscription {} order {} credit reservation failed: {}",
+                                sub.getId(), order.getId(), reservation.getFailureReason());
+                    }
+                } else {
+                    log.warn("Subscription {} order {} has no active credit agreement with store {}",
+                            sub.getId(), order.getId(), supplierStoreId);
+                }
+            }
+
+            if (funded) {
+                generatedOrderIds.add(order.getId());
+            }
 
             // Advance subscription's next delivery date
             Set<LocalDate> skipped = skipDates.findBySubscriptionId(sub.getId()).stream()
@@ -532,6 +571,7 @@ public class SubscriptionService {
                 sub.getPreferredSlotId(),
                 slotName,
                 sub.getDeliveryMode(),
+                sub.getPaymentMethod() != null ? sub.getPaymentMethod() : "WALLET",
                 sub.getStatus(),
                 sub.getStartDate(),
                 sub.getEndDate(),

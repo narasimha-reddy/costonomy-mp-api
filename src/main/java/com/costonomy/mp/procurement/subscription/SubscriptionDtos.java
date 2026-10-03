@@ -31,6 +31,7 @@ public final class SubscriptionDtos {
             Long preferredSlotId,
             String preferredSlotName,
             String deliveryMode,
+            String paymentMethod,
             SubscriptionStatus status,
             LocalDate startDate,
             LocalDate endDate,
@@ -47,6 +48,7 @@ public final class SubscriptionDtos {
             @NotNull SubscriptionFrequency frequency,
             Long preferredSlotId,
             String deliveryMode,
+            String paymentMethod,
             @NotNull LocalDate startDate,
             LocalDate endDate,
             @Size(max = 500) String notes) {

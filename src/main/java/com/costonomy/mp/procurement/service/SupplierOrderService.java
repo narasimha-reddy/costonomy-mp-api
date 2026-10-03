@@ -168,7 +168,7 @@ public class SupplierOrderService {
         items.forEach(i -> itemsById.put(i.getId(), i));
 
         Instant now = Instant.now();
-        BigDecimal totalWeightDeltaRefund = BigDecimal.ZERO;
+        BigDecimal totalOrderWeightRefund = BigDecimal.ZERO;
 
         for (ProcurementDtos.RecordDispatchWeightItem entry : request.weights()) {
             SupplierOrderItem item = itemsById.get(entry.supplierOrderItemId());
@@ -183,26 +183,57 @@ public class SupplierOrderService {
                         "Dispatched weight must be greater than zero.");
             }
 
-            // Guardrail 3: Server-side financial calculation for catch-weight
-            BigDecimal originalLineTotal = item.getLineTotal();
-            BigDecimal newLineValue = Pricing.lineItemValue(item.getUnitPriceSnapshot(), dispatched);
+            // Guardrail 3: Server-side financial calculation with immutable baseline
+            BigDecimal baselineQty = item.getAcceptedQuantity() != null ? item.getAcceptedQuantity()
+                    : (item.getRequestedQuantity() != null ? item.getRequestedQuantity() : BigDecimal.ONE);
+            BigDecimal baselineLineValue = Pricing.lineItemValue(item.getUnitPriceSnapshot(), baselineQty);
+            BigDecimal baselineLineGst = Pricing.lineGst(baselineLineValue, item.getGstRateSnapshot());
+            BigDecimal baselineLineTotal = Pricing.lineTotal(baselineLineValue, baselineLineGst);
+
+            // Industry standard: ±10% tolerance band for catch-weight perishables
+            BigDecimal maxBillableWeight = baselineQty.multiply(new BigDecimal("1.10"));
+            BigDecimal billableWeight = dispatched;
+            if (billableWeight.compareTo(maxBillableWeight) > 0) {
+                // Excess beyond +10% tolerance cannot be billed
+                billableWeight = maxBillableWeight;
+            }
+
+            // Anti-platform absorption: overweight cannot be billed to platform
+            if (billableWeight.compareTo(baselineQty) > 0) {
+                BigDecimal candidateLineValue = Pricing.lineItemValue(item.getUnitPriceSnapshot(), billableWeight);
+                BigDecimal candidateLineGst = Pricing.lineGst(candidateLineValue, item.getGstRateSnapshot());
+                BigDecimal candidateLineTotal = Pricing.lineTotal(candidateLineValue, candidateLineGst);
+                BigDecimal surcharge = candidateLineTotal.subtract(baselineLineTotal);
+
+                boolean funded = false;
+                if ("WALLET".equalsIgnoreCase(order.getPaymentMethod())) {
+                    BigDecimal walletBal = walletService.balanceOf(order.getOutletId());
+                    if (walletBal.compareTo(surcharge) >= 0) {
+                        funded = true;
+                    }
+                }
+                if (!funded) {
+                    // Pre-paid or unfunded: clamp billable weight to committed baseline (platform NEVER absorbs)
+                    billableWeight = baselineQty;
+                }
+            }
+
+            BigDecimal newLineValue = Pricing.lineItemValue(item.getUnitPriceSnapshot(), billableWeight);
             BigDecimal newLineGst = Pricing.lineGst(newLineValue, item.getGstRateSnapshot());
             BigDecimal newLineTotal = Pricing.lineTotal(newLineValue, newLineGst);
 
-            // delta = original - new (positive = refund to customer)
-            BigDecimal deltaAmount = originalLineTotal.subtract(newLineTotal);
+            // Delta refund against immutable baseline (positive = refund to buyer, negative = surcharge)
+            BigDecimal deltaRefund = baselineLineTotal.subtract(newLineTotal);
 
             item.setDispatchedWeight(dispatched);
             item.setWeighedAt(now);
-            item.setWeightDeltaAmount(deltaAmount);
+            item.setWeightDeltaAmount(deltaRefund);
             item.setLineItemValue(newLineValue);
             item.setLineGst(newLineGst);
             item.setLineTotal(newLineTotal);
             orderItems.save(item);
 
-            if (deltaAmount.compareTo(BigDecimal.ZERO) > 0) {
-                totalWeightDeltaRefund = totalWeightDeltaRefund.add(deltaAmount);
-            }
+            totalOrderWeightRefund = totalOrderWeightRefund.add(deltaRefund);
         }
 
         // Recalculate order subtotal and totals
@@ -213,35 +244,46 @@ public class SupplierOrderService {
         BigDecimal newGst = allItems.stream()
                 .map(SupplierOrderItem::getLineGst)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal newItemsTotal = allItems.stream()
-                .map(SupplierOrderItem::getLineTotal)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal finalTotal = newItemsTotal.add(order.getDeliveryFee());
+
+        // Previous weight adjustment recorded on this order
+        BigDecimal previousRefund = order.getWeightAdjustmentAmount() != null
+                ? order.getWeightAdjustmentAmount() : BigDecimal.ZERO;
+        BigDecimal netAdjustmentToApply = totalOrderWeightRefund.subtract(previousRefund);
 
         order.setSubtotal(Pricing.money(newSubtotal));
         order.setGstAmount(Pricing.money(newGst));
-        order.setAcceptedAmount(Pricing.money(finalTotal));
-        order.setTotalAmount(Pricing.money(finalTotal));
-        order.setWeightAdjustmentAmount(Pricing.money(totalWeightDeltaRefund));
+        order.setWeightAdjustmentAmount(Pricing.money(totalOrderWeightRefund));
+
+        BigDecimal doorstepRefund = order.getDoorstepRefundAmount() != null
+                ? order.getDoorstepRefundAmount() : BigDecimal.ZERO;
+        BigDecimal netDeliveredPayable = order.getAcceptedAmount()
+                .subtract(totalOrderWeightRefund)
+                .subtract(doorstepRefund)
+                .max(BigDecimal.ZERO);
+        order.setFinalPayableAmount(Pricing.money(netDeliveredPayable));
         orders.save(order);
 
-        // Instant refund reconciliation via wallet
-        if (totalWeightDeltaRefund.compareTo(BigDecimal.ZERO) > 0) {
+        // Idempotent delta adjustment via wallet
+        if (netAdjustmentToApply.compareTo(BigDecimal.ZERO) > 0) {
             walletService.recordAdjustment(order.getOutletId(), order.getId(),
-                    WalletDirection.CREDIT, totalWeightDeltaRefund,
+                    WalletDirection.CREDIT, netAdjustmentToApply,
                     "Catch-weight variance refund for order " + order.getOrderNumber());
+        } else if (netAdjustmentToApply.compareTo(BigDecimal.ZERO) < 0) {
+            walletService.recordAdjustment(order.getOutletId(), order.getId(),
+                    WalletDirection.DEBIT, netAdjustmentToApply.abs(),
+                    "Catch-weight adjustment correction for order " + order.getOrderNumber());
         }
 
         auditService.record(actorId, null, "ORDER_WEIGHTS_RECORDED", "SUPPLIER_ORDER",
                 order.getId(), order.getStatus().name(), order.getStatus().name(),
-                "Catch-weight adjusted by " + totalWeightDeltaRefund.toPlainString(), "API");
+                "Catch-weight adjusted by net " + netAdjustmentToApply.toPlainString(), "API");
 
         outbox.publish("CatchWeightReconciled", "SUPPLIER_ORDER", order.getId(),
                 Map.of("outletId", order.getOutletId(),
                         "supplierStoreId", order.getSupplierStoreId(),
                         "orderNumber", order.getOrderNumber(),
-                        "weightAdjustmentAmount", totalWeightDeltaRefund.toPlainString(),
-                        "finalAmount", finalTotal.toPlainString()),
+                        "weightAdjustmentAmount", totalOrderWeightRefund.toPlainString(),
+                        "finalAmount", netDeliveredPayable.toPlainString()),
                 actorId, now);
 
         return mapper.toResponse(order);

@@ -115,7 +115,7 @@ public class TrustDirectory {
         jdbc.update("""
                 update supplier_order
                    set doorstep_refund_amount = ?,
-                       final_payable_amount = accepted_amount - ?
+                       final_payable_amount = accepted_amount - coalesce(weight_adjustment_amount, 0) - ?
                  where id = ?
                 """, doorstepRefundAmount, doorstepRefundAmount, supplierOrderId);
     }
@@ -134,7 +134,9 @@ public class TrustDirectory {
     public boolean completeOrder(Long supplierOrderId, SupplierOrderStatus from) {
         return jdbc.update("""
                 update supplier_order
-                   set status = ?, version = version + 1, updated_at = now(6)
+                   set status = ?,
+                       final_payable_amount = coalesce(final_payable_amount, accepted_amount - coalesce(weight_adjustment_amount, 0) - coalesce(doorstep_refund_amount, 0)),
+                       version = version + 1, updated_at = now(6)
                  where id = ? and status = ?
                 """, SupplierOrderStatus.COMPLETED.name(), supplierOrderId, from.name()) == 1;
     }
