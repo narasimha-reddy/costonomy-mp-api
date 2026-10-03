@@ -123,6 +123,7 @@ public final class CatalogDtos {
             @Size(max = 200) String brandName,
             @Size(max = 100) String grade,
             Boolean isCatchWeight,
+            Boolean requiresColdChain,
             @NotNull(message = "Enter the pack size")
             @DecimalMin(value = "0.0001", message = "Pack size must be greater than zero")
             BigDecimal packSize,
@@ -177,7 +178,7 @@ public final class CatalogDtos {
                 BigDecimal weightGrams, String youtubeUrl, List<String> images,
                 BigDecimal sellingPrice, BigDecimal gstRate, String availability,
                 BigDecimal availableQuantity) {
-            this(canonicalProductId, skuCode, name, brandName, grade, false, packSize, packUnit,
+            this(canonicalProductId, skuCode, name, brandName, grade, false, false, packSize, packUnit,
                     measureValue, measureUnit, mrp, imageUrl, description, lengthCm,
                     widthCm, heightCm, weightGrams, youtubeUrl, images, sellingPrice,
                     gstRate, availability, availableQuantity);
@@ -191,7 +192,7 @@ public final class CatalogDtos {
                 BigDecimal weightGrams, String youtubeUrl, List<String> images,
                 BigDecimal sellingPrice, BigDecimal gstRate, String availability,
                 BigDecimal availableQuantity) {
-            this(canonicalProductId, skuCode, name, brandName, null, false, packSize, packUnit,
+            this(canonicalProductId, skuCode, name, brandName, null, false, false, packSize, packUnit,
                     measureValue, measureUnit, null, imageUrl, description, lengthCm,
                     widthCm, heightCm, weightGrams, youtubeUrl, images, sellingPrice,
                     gstRate, availability, availableQuantity);
@@ -210,6 +211,7 @@ public final class CatalogDtos {
             @Size(max = 200) String brandName,
             @Size(max = 100) String grade,
             Boolean isCatchWeight,
+            Boolean requiresColdChain,
             @DecimalMin(value = "0.0001") BigDecimal packSize,
             @Size(max = 32) String packUnit,
             @DecimalMin(value = "0.0001") BigDecimal measureValue,
@@ -248,7 +250,7 @@ public final class CatalogDtos {
                 BigDecimal weightGrams, String youtubeUrl, List<String> images,
                 String status, BigDecimal sellingPrice, BigDecimal gstRate,
                 String availability, BigDecimal availableQuantity) {
-            this(canonicalProductId, skuCode, name, brandName, grade, null, packSize, packUnit,
+            this(canonicalProductId, skuCode, name, brandName, grade, null, null, packSize, packUnit,
                     measureValue, measureUnit, mrp, imageUrl, description, lengthCm,
                     widthCm, heightCm, weightGrams, youtubeUrl, images, status,
                     sellingPrice, gstRate, availability, availableQuantity);
@@ -262,7 +264,7 @@ public final class CatalogDtos {
                 BigDecimal weightGrams, String youtubeUrl, List<String> images,
                 String status, BigDecimal sellingPrice, BigDecimal gstRate,
                 String availability, BigDecimal availableQuantity) {
-            this(canonicalProductId, skuCode, name, brandName, null, null, packSize, packUnit,
+            this(canonicalProductId, skuCode, name, brandName, null, null, null, packSize, packUnit,
                     measureValue, measureUnit, null, imageUrl, description, lengthCm,
                     widthCm, heightCm, weightGrams, youtubeUrl, images, status,
                     sellingPrice, gstRate, availability, availableQuantity);
@@ -280,6 +282,7 @@ public final class CatalogDtos {
             String brandName,
             String grade,
             boolean isCatchWeight,
+            boolean requiresColdChain,
             BigDecimal packSize,
             String packUnit,
             /** What is inside one pack, or null when the pack unit already says. */
@@ -327,7 +330,7 @@ public final class CatalogDtos {
                 String availability, BigDecimal availableQuantity,
                 Instant priceEffectiveFrom) {
             this(id, supplierStoreId, canonicalProductId, canonicalProductName, categoryId,
-                    skuCode, name, brandName, grade, false, packSize, packUnit, measureValue,
+                    skuCode, name, brandName, grade, false, false, packSize, packUnit, measureValue,
                     measureUnit, imageUrl, canonicalProductImageUrl, description, lengthCm,
                     widthCm, heightCm, weightGrams, youtubeUrl, images, status,
                     mrp, sellingPrice, discountAmount, discountPercent, gstRate, availability,
@@ -346,7 +349,7 @@ public final class CatalogDtos {
                 String availability, BigDecimal availableQuantity,
                 Instant priceEffectiveFrom) {
             this(id, supplierStoreId, canonicalProductId, canonicalProductName, categoryId,
-                    skuCode, name, brandName, null, false, packSize, packUnit, measureValue,
+                    skuCode, name, brandName, null, false, false, packSize, packUnit, measureValue,
                     measureUnit, imageUrl, canonicalProductImageUrl, description, lengthCm,
                     widthCm, heightCm, weightGrams, youtubeUrl, images, status,
                     null, sellingPrice, null, null, gstRate, availability,
@@ -456,6 +459,7 @@ public final class CatalogDtos {
             String brandName,
             String grade,
             boolean isCatchWeight,
+            boolean requiresColdChain,
             BigDecimal packSize,
             String packUnit,
             BigDecimal mrp,
@@ -464,6 +468,16 @@ public final class CatalogDtos {
             String availability,
             BigDecimal availableQuantity,
             Instant updatedAt) {
+
+        public RateSheetRow(
+                Long skuId, Long canonicalProductId, String productName, String skuName,
+                String brandName, String grade, boolean isCatchWeight, BigDecimal packSize,
+                String packUnit, BigDecimal mrp, BigDecimal sellingPrice, BigDecimal gstRate,
+                String availability, BigDecimal availableQuantity, Instant updatedAt) {
+            this(skuId, canonicalProductId, productName, skuName, brandName, grade,
+                    isCatchWeight, false, packSize, packUnit, mrp, sellingPrice, gstRate,
+                    availability, availableQuantity, updatedAt);
+        }
     }
 
     public record RateSheetResponse(

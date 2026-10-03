@@ -61,7 +61,8 @@ public class DeliveryQuotingService {
         var weightKg = delivery.getWeightKg() != null ? delivery.getWeightKg()
                 : (weightGrams != null ? weightGrams.divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP) : null);
         var vehicleType = delivery.getVehicleType() != null ? delivery.getVehicleType()
-                : VehicleType.fromWeight(weightKg);
+                : VehicleType.fromWeight(weightKg, delivery.isRequiresColdChain());
+
 
         Double distanceKm = Serviceability.distanceKm(
                 delivery.getPickupLatitude(), delivery.getPickupLongitude(),
@@ -122,9 +123,14 @@ public class DeliveryQuotingService {
                         quote.setVehicleType(answer.vehicleType());
                     }
 
-                    candidates.add(new DeliverySelection.Candidate(
-                            available.record().getCode(), answer.amount(), answer.etaMinutes(),
-                            available.record().getPriority()));
+                    if (delivery.isRequiresColdChain() && quote.getVehicleType() == VehicleType.TWO_WHEELER) {
+                        quote.setStatus("UNSERVICEABLE");
+                        quote.setFailureReason("Cold-chain consignment requires enclosed/insulated vehicle; 2-wheeler courier disallowed");
+                    } else {
+                        candidates.add(new DeliverySelection.Candidate(
+                                available.record().getCode(), answer.amount(), answer.etaMinutes(),
+                                available.record().getPriority()));
+                    }
                 }
             } catch (DeliveryProviderException ex) {
                 // Doc 06 §7: try an alternative. Recorded so the fallback is

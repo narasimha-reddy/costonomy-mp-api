@@ -39,4 +39,17 @@ class VehicleTypeTest {
         assertThat(VehicleType.fromWeight(BigDecimal.valueOf(100.1))).isEqualTo(VehicleType.FOUR_WHEELER_TRUCK);
         assertThat(VehicleType.fromWeight(BigDecimal.valueOf(500))).isEqualTo(VehicleType.FOUR_WHEELER_TRUCK);
     }
+
+    @Test
+    @DisplayName("cold chain requires at least 3-wheeler even for light loads")
+    void coldChainGating() {
+        assertThat(VehicleType.fromWeight(BigDecimal.valueOf(2), true)).isEqualTo(VehicleType.THREE_WHEELER);
+        assertThat(VehicleType.fromWeight(BigDecimal.valueOf(15), true)).isEqualTo(VehicleType.THREE_WHEELER);
+        assertThat(VehicleType.fromWeight(BigDecimal.valueOf(150), true)).isEqualTo(VehicleType.FOUR_WHEELER_TRUCK);
+
+        assertThat(VehicleType.TWO_WHEELER.canCarryColdChain()).isFalse();
+        assertThat(VehicleType.THREE_WHEELER.canCarryColdChain()).isTrue();
+        assertThat(VehicleType.FOUR_WHEELER_TRUCK.canCarryColdChain()).isTrue();
+    }
 }
+

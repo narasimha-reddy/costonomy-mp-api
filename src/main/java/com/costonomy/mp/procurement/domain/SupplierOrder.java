@@ -114,6 +114,12 @@ public class SupplierOrder extends BaseEntity {
     @Column(name = "final_payable_amount", precision = 19, scale = 4)
     private BigDecimal finalPayableAmount;
 
+    /**
+     * Whether this order contains temperature-sensitive cold-chain items.
+     */
+    @Column(name = "has_cold_chain_items", nullable = false)
+    private boolean hasColdChainItems = false;
+
     @Column(name = "payment_method", nullable = false, length = 32)
     private String paymentMethod = "PREPAID";
 

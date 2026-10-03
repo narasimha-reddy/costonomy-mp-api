@@ -107,6 +107,12 @@ public class SupplierOrderItem extends BaseEntity {
     @Column(name = "hsn_code", length = 16)
     private String hsnCode;
 
+    /**
+     * Whether this line item is perishable and requires cold chain transport.
+     */
+    @Column(name = "requires_cold_chain", nullable = false)
+    private boolean requiresColdChain = false;
+
     @Column(name = "unit_price_snapshot", nullable = false, precision = 19, scale = 4)
     private BigDecimal unitPriceSnapshot;
 

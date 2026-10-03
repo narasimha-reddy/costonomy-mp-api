@@ -426,7 +426,8 @@ public class SupplierOrderService {
                 order.getStatus(), order.getAcceptanceDeadline(), order.getResponseSlaSeconds(),
                 remaining, order.getCreatedAt(),
                 order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
-                order.getAcceptedAmount(), order.getPaymentMethod(), full.items());
+                order.getAcceptedAmount(), order.getPaymentMethod(),
+                order.isHasColdChainItems(), full.items());
     }
 
     @Transactional(readOnly = true)

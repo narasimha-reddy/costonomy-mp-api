@@ -306,6 +306,7 @@ public class IntentOrderCreator {
                     intent.getOutletId(), intent.getSupplierStoreId(), order.getId(), now);
         }
 
+        boolean orderRequiresColdChain = false;
         for (PlannedLine line : plan.lines()) {
             if (line.quantity().signum() == 0) {
                 continue;
@@ -329,7 +330,17 @@ public class IntentOrderCreator {
             item.setLineGst(line.lineGst());
             item.setLineTotal(line.lineTotal());
             item.setStatus(OrderItemStatus.ACCEPTED);
+            boolean isColdChain = deliveryPolicies.skuRequiresColdChain(line.item().getSupplierSkuId());
+            item.setRequiresColdChain(isColdChain);
+            if (isColdChain) {
+                orderRequiresColdChain = true;
+            }
             supplierOrderItems.save(item);
+        }
+
+        if (orderRequiresColdChain) {
+            order.setHasColdChainItems(true);
+            supplierOrders.saveAndFlush(order);
         }
 
         var link = new IntentOrderLink();

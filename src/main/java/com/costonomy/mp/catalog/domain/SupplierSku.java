@@ -53,6 +53,12 @@ public class SupplierSku extends BaseEntity {
     @Column(name = "is_catch_weight", nullable = false)
     private boolean isCatchWeight = false;
 
+    /**
+     * Whether this SKU requires temperature-controlled cold chain handling (refrigerated/insulated carrier).
+     */
+    @Column(name = "requires_cold_chain", nullable = false)
+    private boolean requiresColdChain = false;
+
     @Column(name = "pack_size", nullable = false, precision = 19, scale = 4)
     private BigDecimal packSize;
 

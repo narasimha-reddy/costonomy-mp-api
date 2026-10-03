@@ -104,7 +104,8 @@ public class DeliveryFeeQuoteService {
         quote.setDropLongitude(drop.longitude());
         quote.setDistanceKm(BigDecimal.valueOf(distanceKm).setScale(4, RoundingMode.HALF_UP));
         quote.setWeightGrams(weight.grams());
-        quote.setVehicleType(vehicleFor(weight.grams()));
+        boolean coldChain = intentId != null && directory.intentRequiresColdChain(intentId);
+        quote.setVehicleType(vehicleFor(weight.grams(), coldChain));
         quote.setExpiresAt(Instant.now().plus(Duration.ofSeconds(
                 config.getInt("delivery.quoteTtlSeconds", 900))));
 
@@ -196,8 +197,14 @@ public class DeliveryFeeQuoteService {
      * Which vehicle this needs. Internal — it sets the platform's cost, not the
      * restaurant's price, and a kitchen has no use for the answer.
      */
-    private String vehicleFor(BigDecimal weightGrams) {
+    private String vehicleFor(BigDecimal weightGrams, boolean coldChain) {
         BigDecimal kg = weightGrams.divide(BigDecimal.valueOf(1000), 4, RoundingMode.HALF_UP);
+        if (coldChain) {
+            if (kg.compareTo(config.getDecimal("delivery.threeWheelerMaxKg", BigDecimal.valueOf(150))) <= 0) {
+                return "THREE_WHEELER";
+            }
+            return "TRUCK";
+        }
         if (kg.compareTo(config.getDecimal("delivery.bikeMaxKg", BigDecimal.valueOf(20))) <= 0) {
             return "BIKE";
         }

@@ -166,4 +166,46 @@ class DeliveryQuotingServiceTest {
         record.setPriority(priority);
         return record;
     }
+
+    @Test
+    @DisplayName("Cold-chain delivery rejects 2-wheeler quotes and selects insulated vehicle")
+    void gather_coldChainDelivery_rejectsTwoWheelerQuote() {
+        var delivery = buildDelivery(12.9716, 77.5946, 12.9352, 77.6245);
+        delivery.setRequiresColdChain(true);
+
+        var bikeProvider = provider(1L, "SHADOWFAX_BIKE", 30);
+        var truckProvider = provider(2L, "PORTER_3W", 20);
+
+        var bikeAdapter = mock(DeliveryProvider.class);
+        var truckAdapter = mock(DeliveryProvider.class);
+
+        when(bikeAdapter.quote(any())).thenReturn(new DeliveryProvider.Quote(
+                "q-bike", true, new BigDecimal("40.00"), "INR", 20, 5.0,
+                Instant.now().plusSeconds(600), null, VehicleType.TWO_WHEELER
+        ));
+
+        when(truckAdapter.quote(any())).thenReturn(new DeliveryProvider.Quote(
+                "q-truck", true, new BigDecimal("120.00"), "INR", 35, 5.0,
+                Instant.now().plusSeconds(600), null, VehicleType.THREE_WHEELER
+        ));
+
+        when(registry.enabled()).thenReturn(List.of(
+                new DeliveryProviderRegistry.Available(bikeProvider, bikeAdapter),
+                new DeliveryProviderRegistry.Available(truckProvider, truckAdapter)
+        ));
+
+        var outcome = service.gather(delivery, BigDecimal.valueOf(2000), BigDecimal.valueOf(5000), 45, List.of());
+
+        assertThat(outcome.anyServiceable()).isTrue();
+        assertThat(outcome.selected()).isNotNull();
+        // The cheaper 2-wheeler is rejected due to cold chain requirement, 3-wheeler is selected
+        assertThat(outcome.selected().getProviderCode()).isEqualTo("PORTER_3W");
+        assertThat(outcome.selected().getVehicleType()).isEqualTo(VehicleType.THREE_WHEELER);
+
+        var bikeQuote = outcome.all().stream()
+                .filter(q -> "SHADOWFAX_BIKE".equals(q.getProviderCode()))
+                .findFirst().orElseThrow();
+        assertThat(bikeQuote.getStatus()).isEqualTo("UNSERVICEABLE");
+        assertThat(bikeQuote.getFailureReason()).contains("Cold-chain consignment requires enclosed/insulated vehicle");
+    }
 }

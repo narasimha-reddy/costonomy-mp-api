@@ -319,6 +319,122 @@ public class TaxInvoiceService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public String generateTallyXml(Long actorId, Long supplierOrderId) {
+        BillingDtos.TaxInvoiceResponse invoice = getInvoiceForOrder(actorId, supplierOrderId);
+        String dateStr = invoice.issuedAt().toString().substring(0, 10).replace("-", "");
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        sb.append("<ENVELOPE>\n");
+        sb.append("  <HEADER>\n");
+        sb.append("    <TALLYREQUEST>Import Data</TALLYREQUEST>\n");
+        sb.append("  </HEADER>\n");
+        sb.append("  <BODY>\n");
+        sb.append("    <IMPORTDATA>\n");
+        sb.append("      <REQUESTDESC>\n");
+        sb.append("        <REPORTNAME>Vouchers</REPORTNAME>\n");
+        sb.append("      </REQUESTDESC>\n");
+        sb.append("      <REQUESTDATA>\n");
+        sb.append("        <TALLYMESSAGE xmlns:UDF=\"TallyUDF\">\n");
+        sb.append("          <VOUCHER VCHTYPE=\"Sales\" ACTION=\"Create\">\n");
+        sb.append("            <DATE>").append(dateStr).append("</DATE>\n");
+        sb.append("            <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>\n");
+        sb.append("            <VOUCHERNUMBER>").append(escapeXml(invoice.invoiceNumber())).append("</VOUCHERNUMBER>\n");
+        sb.append("            <PARTYLEDGERNAME>").append(escapeXml(invoice.buyerName())).append("</PARTYLEDGERNAME>\n");
+        sb.append("            <PARTYNAME>").append(escapeXml(invoice.buyerName())).append("</PARTYNAME>\n");
+        sb.append("            <BASICBUYERNAME>").append(escapeXml(invoice.buyerName())).append("</BASICBUYERNAME>\n");
+        sb.append("            <PLACEOFSUPPLY>").append(escapeXml(invoice.placeOfSupply() != null ? invoice.placeOfSupply() : "")).append("</PLACEOFSUPPLY>\n");
+
+        sb.append("            <ALLLEDGERENTRIES.LIST>\n");
+        sb.append("              <LEDGERNAME>").append(escapeXml(invoice.buyerName())).append("</LEDGERNAME>\n");
+        sb.append("              <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>\n");
+        sb.append("              <AMOUNT>-").append(invoice.totalAmount().toPlainString()).append("</AMOUNT>\n");
+        sb.append("            </ALLLEDGERENTRIES.LIST>\n");
+
+        sb.append("            <ALLLEDGERENTRIES.LIST>\n");
+        sb.append("              <LEDGERNAME>Sales Account</LEDGERNAME>\n");
+        sb.append("              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>\n");
+        sb.append("              <AMOUNT>").append(invoice.taxableAmount().toPlainString()).append("</AMOUNT>\n");
+        sb.append("            </ALLLEDGERENTRIES.LIST>\n");
+
+        if (invoice.cgstAmount().compareTo(BigDecimal.ZERO) > 0) {
+            sb.append("            <ALLLEDGERENTRIES.LIST>\n");
+            sb.append("              <LEDGERNAME>CGST Output</LEDGERNAME>\n");
+            sb.append("              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>\n");
+            sb.append("              <AMOUNT>").append(invoice.cgstAmount().toPlainString()).append("</AMOUNT>\n");
+            sb.append("            </ALLLEDGERENTRIES.LIST>\n");
+        }
+        if (invoice.sgstAmount().compareTo(BigDecimal.ZERO) > 0) {
+            sb.append("            <ALLLEDGERENTRIES.LIST>\n");
+            sb.append("              <LEDGERNAME>SGST Output</LEDGERNAME>\n");
+            sb.append("              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>\n");
+            sb.append("              <AMOUNT>").append(invoice.sgstAmount().toPlainString()).append("</AMOUNT>\n");
+            sb.append("            </ALLLEDGERENTRIES.LIST>\n");
+        }
+        if (invoice.igstAmount().compareTo(BigDecimal.ZERO) > 0) {
+            sb.append("            <ALLLEDGERENTRIES.LIST>\n");
+            sb.append("              <LEDGERNAME>IGST Output</LEDGERNAME>\n");
+            sb.append("              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>\n");
+            sb.append("              <AMOUNT>").append(invoice.igstAmount().toPlainString()).append("</AMOUNT>\n");
+            sb.append("            </ALLLEDGERENTRIES.LIST>\n");
+        }
+        if (invoice.deliveryFee().compareTo(BigDecimal.ZERO) > 0) {
+            sb.append("            <ALLLEDGERENTRIES.LIST>\n");
+            sb.append("              <LEDGERNAME>Freight & Carriage</LEDGERNAME>\n");
+            sb.append("              <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>\n");
+            sb.append("              <AMOUNT>").append(invoice.deliveryFee().toPlainString()).append("</AMOUNT>\n");
+            sb.append("            </ALLLEDGERENTRIES.LIST>\n");
+        }
+
+        sb.append("          </VOUCHER>\n");
+        sb.append("        </TALLYMESSAGE>\n");
+        sb.append("      </REQUESTDATA>\n");
+        sb.append("    </IMPORTDATA>\n");
+        sb.append("  </BODY>\n");
+        sb.append("</ENVELOPE>\n");
+        return sb.toString();
+    }
+
+    @Transactional(readOnly = true)
+    public String generateGstr1Csv(Long actorId, Long supplierOrderId) {
+        BillingDtos.TaxInvoiceResponse invoice = getInvoiceForOrder(actorId, supplierOrderId);
+        java.time.format.DateTimeFormatter dtf = java.time.format.DateTimeFormatter.ofPattern("dd-MMM-yyyy", java.util.Locale.ENGLISH);
+        String invDate = java.time.LocalDate.ofInstant(invoice.issuedAt(), java.time.ZoneId.systemDefault()).format(dtf);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("GSTIN/UIN of Recipient,Receiver Name,Invoice Number,Invoice date,Invoice Value,Place Of Supply,Reverse Charge,Applicable % of Tax Rate,Invoice Type,E-Commerce GSTIN,Rate,Taxable Value,Cess Amount\n");
+
+        for (BillingDtos.TaxInvoiceItemResponse item : invoice.items()) {
+            sb.append("\"").append(invoice.buyerGstin() != null ? invoice.buyerGstin() : "").append("\",");
+            sb.append("\"").append(escapeCsv(invoice.buyerName())).append("\",");
+            sb.append("\"").append(escapeCsv(invoice.invoiceNumber())).append("\",");
+            sb.append("\"").append(invDate).append("\",");
+            sb.append(invoice.totalAmount().toPlainString()).append(",");
+            sb.append("\"").append(invoice.placeOfSupply() != null ? invoice.placeOfSupply() : "").append("\",");
+            sb.append("\"N\",,"); // Reverse Charge, Applicable %
+            sb.append("\"Regular\",,"); // Invoice Type, E-Commerce GSTIN
+            sb.append(item.gstRate().toPlainString()).append(",");
+            sb.append(item.taxableValue().toPlainString()).append(",");
+            sb.append("0.00\n");
+        }
+        return sb.toString();
+    }
+
+    private static String escapeXml(String text) {
+        if (text == null) return "";
+        return text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&apos;");
+    }
+
+    private static String escapeCsv(String text) {
+        if (text == null) return "";
+        return text.replace("\"", "\"\"");
+    }
+
     // ── Internal Helpers ──────────────────────────────────────────────────
 
     private void requireAccess(Long actorId, SupplierOrder order) {

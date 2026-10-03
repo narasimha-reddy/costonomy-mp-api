@@ -92,6 +92,7 @@ public class SupplierCatalogService {
         sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
         sku.setGrade(blankToNull(request.grade()));
         sku.setCatchWeight(Boolean.TRUE.equals(request.isCatchWeight()));
+        sku.setRequiresColdChain(Boolean.TRUE.equals(request.requiresColdChain()));
         sku.setPackSize(request.packSize());
 
         var pack = Unit.parse(request.packUnit(), "Pack unit");
@@ -146,6 +147,7 @@ public class SupplierCatalogService {
         if (request.brandName() != null) sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
         if (request.grade() != null) sku.setGrade(blankToNull(request.grade()));
         if (request.isCatchWeight() != null) sku.setCatchWeight(request.isCatchWeight());
+        if (request.requiresColdChain() != null) sku.setRequiresColdChain(request.requiresColdChain());
         if (request.packSize() != null) sku.setPackSize(request.packSize());
         // The pack unit and its measure are validated together even when only one
         // of them was sent: changing KG to PKT without saying what is in the
@@ -536,6 +538,7 @@ public class SupplierCatalogService {
                 sku.getId(), sku.getSupplierStoreId(), sku.getCanonicalProductId(), productName,
                 categoryId, sku.getSkuCode(), sku.getName(), brandName, sku.getGrade(),
                 sku.isCatchWeight(),
+                sku.isRequiresColdChain(),
                 sku.getPackSize(), sku.getPackUnit(),
                 sku.getMeasureValue(), sku.getMeasureUnit(),
                 sku.getImageUrl(), productImage,
@@ -664,6 +667,7 @@ public class SupplierCatalogService {
                             sku.getBrandId() != null ? brandMap.get(sku.getBrandId()) : null,
                             sku.getGrade(),
                             sku.isCatchWeight(),
+                            sku.isRequiresColdChain(),
                             sku.getPackSize(),
                             sku.getPackUnit(),
                             mrp,
@@ -699,7 +703,7 @@ public class SupplierCatalogService {
 
             CatalogDtos.UpdateSkuRequest updateReq = new CatalogDtos.UpdateSkuRequest(
                     sku.getCanonicalProductId(), sku.getSkuCode(), sku.getName(),
-                    null, sku.getGrade(), sku.isCatchWeight(), sku.getPackSize(), sku.getPackUnit(),
+                    null, sku.getGrade(), sku.isCatchWeight(), sku.isRequiresColdChain(), sku.getPackSize(), sku.getPackUnit(),
                     sku.getMeasureValue(), sku.getMeasureUnit(), item.mrp() != null ? item.mrp() : sku.getMrp(),
                     sku.getImageUrl(), sku.getDescription(), sku.getLengthCm(), sku.getWidthCm(),
                     sku.getHeightCm(), sku.getWeightGrams(), sku.getYoutubeUrl(), List.of(),

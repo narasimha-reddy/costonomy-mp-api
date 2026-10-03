@@ -289,6 +289,7 @@ public final class ProcurementDtos {
             LocalDate scheduledDeliveryDate,
             boolean isSubscriptionOrder,
             Long subscriptionId,
+            boolean hasColdChainItems,
             /**
              * Whose decision ended it, on a cancelled order. Null otherwise.
              *
@@ -418,6 +419,7 @@ public final class ProcurementDtos {
              */
             BigDecimal acceptedAmount,
             String paymentMethod,
+            boolean hasColdChainItems,
             List<SupplierOrderItemResponse> items) {
     }
 
@@ -480,6 +482,7 @@ public final class ProcurementDtos {
             BigDecimal doorstepRejectedQty,
             String doorstepRejectionReason,
             BigDecimal doorstepRefundAmount,
+            boolean requiresColdChain,
             String unit,
             BigDecimal unitPrice,
             /** The same price with its GST added. See {@code Pricing.inclusiveOfGst}. */

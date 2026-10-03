@@ -115,7 +115,8 @@ public class DeliveryService {
         delivery.setDropContactPhone(drop.contactPhone());
         delivery.setWeightKg(order.estimatedWeightKg());
         delivery.setVolumeCbm(order.estimatedVolumeCbm());
-        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg()));
+        delivery.setRequiresColdChain(order.requiresColdChain());
+        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg(), order.requiresColdChain()));
         delivery.setRequestedAt(Instant.now());
         deliveries.save(delivery);
 
@@ -200,7 +201,8 @@ public class DeliveryService {
         delivery.setDropContactPhone(drop.contactPhone());
         delivery.setWeightKg(order.estimatedWeightKg());
         delivery.setVolumeCbm(order.estimatedVolumeCbm());
-        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg()));
+        delivery.setRequiresColdChain(order.requiresColdChain());
+        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg(), order.requiresColdChain()));
         delivery.setRequestedAt(Instant.now());
         deliveries.save(delivery);
 

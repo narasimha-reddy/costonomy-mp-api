@@ -30,21 +30,51 @@ public class DeliveryDirectory {
             BigDecimal deliveryFee,
             String deliveryMode,
             BigDecimal estimatedWeightKg,
-            BigDecimal estimatedVolumeCbm) {
+            BigDecimal estimatedVolumeCbm,
+            boolean requiresColdChain) {
+
+        public OrderInfo(Long orderId, String orderNumber, String status, Long outletId,
+                         Long supplierStoreId, BigDecimal deliveryFee, String deliveryMode,
+                         BigDecimal estimatedWeightKg, BigDecimal estimatedVolumeCbm) {
+            this(orderId, orderNumber, status, outletId, supplierStoreId, deliveryFee, deliveryMode,
+                 estimatedWeightKg, estimatedVolumeCbm, false);
+        }
     }
 
     public OrderInfo order(Long supplierOrderId) {
         var rows = jdbc.query("""
                 select id, order_number, status, outlet_id, supplier_store_id,
-                       delivery_fee, delivery_mode
+                       delivery_fee, delivery_mode, coalesce(has_cold_chain_items, 0)
                   from supplier_order where id = ?
                 """,
                 (rs, row) -> new OrderInfo(rs.getLong(1), rs.getString(2), rs.getString(3),
                         rs.getLong(4), rs.getLong(5), rs.getBigDecimal(6), rs.getString(7),
-                        calculateWeightKg(rs.getLong(1)), null),
+                        calculateWeightKg(rs.getLong(1)), null, rs.getBoolean(8)),
                 supplierOrderId);
         return rows.isEmpty() ? null : rows.get(0);
     }
+
+    public boolean intentRequiresColdChain(Long intentId) {
+        Integer count = jdbc.queryForObject("""
+                select count(*)
+                  from intent_item i
+                  join supplier_sku s on s.id = i.supplier_sku_id
+                 where i.intent_id = ? and s.requires_cold_chain = 1
+                """, Integer.class, intentId);
+        return count != null && count > 0;
+    }
+
+    public boolean skuRequiresColdChain(Long skuId) {
+        if (skuId == null) {
+            return false;
+        }
+        var list = jdbc.queryForList("""
+                select requires_cold_chain from supplier_sku where id = ?
+                """, Boolean.class, skuId);
+        return !list.isEmpty() && Boolean.TRUE.equals(list.get(0));
+    }
+
+
 
     /**
      * Compute total payload weight in KG by summing line item pack quantities multiplied
