@@ -28,5 +28,7 @@ ALTER TABLE supplier_delivery_policy
     ADD COLUMN min_order_value DECIMAL(19,4) NOT NULL DEFAULT 0.0000 AFTER own_delivery_fee,
     ADD COLUMN free_delivery_threshold DECIMAL(19,4) NULL AFTER min_order_value;
 
+CREATE INDEX ix_wallet_txn_supplier_order ON wallet_transaction (supplier_order_id);
+
 ALTER TABLE wallet_transaction
     DROP INDEX uk_wallet_txn_order_debit;
