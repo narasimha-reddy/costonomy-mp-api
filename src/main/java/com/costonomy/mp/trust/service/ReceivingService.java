@@ -5,6 +5,8 @@ import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.procurement.domain.DeliveryMode;
+import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.common.outbox.OutboxService;
@@ -72,9 +74,20 @@ public class ReceivingService {
             return toResponse(existing, order);
         }
 
-        if (!"DELIVERED".equals(order.status())) {
+        // Where a receivable order may be, and it depends on how it travelled.
+        // D-091: a PICKUP order is never DELIVERED -- nothing delivered it -- so
+        // the restaurant receives it straight off READY_FOR_PICKUP when they
+        // collect. Routing pickups through receiving rather than a single
+        // "collected" button is what lets a pickup record a shortfall at all.
+        var receivableFrom = order.deliveryMode() == DeliveryMode.PICKUP
+                ? SupplierOrderStatus.READY_FOR_PICKUP
+                : SupplierOrderStatus.DELIVERED;
+
+        if (!receivableFrom.name().equals(order.status())) {
             throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
-                    "This order hasn't been delivered yet.");
+                    order.deliveryMode() == DeliveryMode.PICKUP
+                            ? "This order isn't ready to collect yet."
+                            : "This order hasn't been delivered yet.");
         }
 
         var lines = directory.linesOf(supplierOrderId);
@@ -165,12 +178,14 @@ public class ReceivingService {
         receiving.setHasDiscrepancy(discrepancy);
         receivings.save(receiving);
 
-        // DELIVERED → COMPLETED. The order is finished because the restaurant says
-        // the goods are in, which is the only party that can know.
-        directory.completeOrder(supplierOrderId);
+        // → COMPLETED. The order is finished because the restaurant says the goods
+        // are in, which is the only party that can know — whether they were
+        // carried to the door or fetched from the counter.
+        directory.completeOrder(supplierOrderId, receivableFrom);
 
         auditService.record(actorId, null, "ORDER_RECEIVED", "SUPPLIER_ORDER",
-                supplierOrderId, "DELIVERED", "COMPLETED",
+                supplierOrderId, receivableFrom.name(),
+                SupplierOrderStatus.COMPLETED.name(),
                 discrepancy ? "Received with discrepancies" : "Received in full", "API");
 
         outbox.publish("ReceivingCompleted", "SUPPLIER_ORDER", supplierOrderId,

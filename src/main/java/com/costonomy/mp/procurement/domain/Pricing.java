@@ -50,6 +50,25 @@ public final class Pricing {
         return lineItemValue.add(lineGst).setScale(MONEY_SCALE, RoundingMode.HALF_UP);
     }
 
+    /**
+     * A unit price with its GST added.
+     *
+     * <p>What a buyer actually pays per unit, which is the figure to put in front
+     * of somebody comparing two suppliers — one quoting exclusive and the other
+     * inclusive is the classic way to make the dearer offer look cheaper.
+     *
+     * <p>Built from {@link #lineGst} on a single unit rather than by multiplying
+     * by {@code 1 + rate/100}, so the rounding matches the line totals exactly.
+     * The other way is off by a paisa often enough to be noticed on an invoice.
+     */
+    public static BigDecimal inclusiveOfGst(BigDecimal unitPrice, BigDecimal gstRatePercent) {
+        if (unitPrice == null || gstRatePercent == null) {
+            return null;
+        }
+        BigDecimal unit = money(unitPrice);
+        return unit.add(lineGst(unit, gstRatePercent)).setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+    }
+
     /** Normalise any money figure to the scale everything else uses. */
     public static BigDecimal money(BigDecimal value) {
         return value == null

@@ -7,6 +7,7 @@ import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
 import com.costonomy.mp.support.TestCheckout;
+import com.costonomy.mp.support.TestOrder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,11 +50,13 @@ class SettlementFlowIT extends AbstractIntegrationTest {
 
     private ApiClient api;
     private TestCheckout checkout;
+    private TestOrder orders;
 
     @BeforeEach
     void setUp() {
         api = new ApiClient(mvc, json);
         checkout = new TestCheckout(paymentProvider, api);
+        orders = new TestOrder(mvc, json, api);
     }
 
     private record Buyer(String token, long outletId) {
@@ -96,7 +99,8 @@ class SettlementFlowIT extends AbstractIntegrationTest {
         String token = api.loginFresh();
         JsonNode created = api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", "ABC Foods Pvt Ltd", "displayName", "ABC Foods",
-                "firstStore", Map.of("name", "ABC store", "addressLine1", "Road No 36",
+                "contactName", "Ops Desk", "contactPhone", "+919876500000",
+                "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", "name", "ABC store", "addressLine1", "Road No 36",
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
         long supplierId = created.get("id").asLong();
@@ -141,28 +145,26 @@ class SettlementFlowIT extends AbstractIntegrationTest {
                 "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
                 Long.class, skuId);
 
-        long procurementId = api.post(buyer.token(),
-                "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                Map.of("supplierOfferId", offerId, "quantity", quantity)).at("/data/id").asLong();
-        api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                Map.of("acceptPriceChanges", false));
+        // Through the request. D-091 removed the cart, and with it the order
+        // acceptance this fixture used to perform -- the supplier commits when
+        // they answer, and the order is theirs to work on from the moment it is
+        // paid for.
+        //
+        // SUPPLIER_DELIVERY because this store carries its own, which is what
+        // lets the seller report the dispatch below. Under COSTONOMY_DELIVERY
+        // that is a courier's to report and the supplier is refused (§23A.38) --
+        // a rule the order's mode now decides rather than the store's policy.
+        var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                skuId, quantity, quantity, "SUPPLIER_DELIVERY", null, null);
+        checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
 
-        String body = mvc.perform(MockMvcRequestBuilders
-                        .post("/api/v1/procurements/" + procurementId + "/submit")
-                        .header("Authorization", "Bearer " + buyer.token())
-                        .header("Idempotency-Key", UUID.randomUUID().toString())
-                        .contentType(MediaType.APPLICATION_JSON))
-                .andReturn().getResponse().getContentAsString();
-        JsonNode submitted = json.readTree(body);
-        checkout.payAll(buyer.token(), submitted);
-
-        long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
-        supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/accept");
-        // The capture is what reconciliation checks the settlement against.
-        paymentJobs.capturePending();
+        long orderId = placed.orderId();
 
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/preparing");
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/ready");
+        // The capture is what reconciliation checks the settlement against, and
+        // since D-103 it follows "ready" rather than the payment.
+        paymentJobs.capturePending();
 
         long deliveryId = json.readTree(mvc.perform(MockMvcRequestBuilders
                         .post("/api/v1/supplier-orders/" + orderId + "/delivery")
@@ -202,8 +204,14 @@ class SettlementFlowIT extends AbstractIntegrationTest {
                     (scope_type, scope_id, rate_percent, config_version, description,
                      effective_from, status, created_at, updated_at, version)
                 values ('SUPPLIER', ?, ?, 1, 'Negotiated for this test',
-                        now(6), 'ACTIVE', now(6), now(6), 0)
+                        now(6) - interval 1 minute, 'ACTIVE', now(6), now(6), 0)
                 """, supplierId, new BigDecimal(ratePercent));
+        // A minute back, not now(6): that is the database's clock, and the
+        // calculation reads the application's. Where the two differ — MySQL in a
+        // Docker VM runs about 0.2s ahead of the host on macOS — a rate stamped
+        // "now" was not yet effective when settlement ran a moment later, and the
+        // negotiated supplier was charged the default rate. Still set before the
+        // run, which is all the test means.
     }
 
     /** Generate over a window wide enough to include everything this test made. */
@@ -255,38 +263,23 @@ class SettlementFlowIT extends AbstractIntegrationTest {
                     Map.of("canonicalProductId", productId, "skuCode", "P-" + productId,
                             "name", "Paneer", "packSize", 1, "packUnit", "KG",
                             "sellingPrice", "400", "gstRate", "0")).at("/data/id").asLong();
-            long offerId = jdbc.queryForObject(
-                    "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
-                    Long.class, skuId);
-            long procurementId = api.post(buyer.token(),
-                    "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                    Map.of("supplierOfferId", offerId, "quantity", 10)).at("/data/id").asLong();
-            api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                    Map.of("acceptPriceChanges", false));
-            JsonNode submitted = json.readTree(mvc.perform(MockMvcRequestBuilders
-                            .post("/api/v1/procurements/" + procurementId + "/submit")
-                            .header("Authorization", "Bearer " + buyer.token())
-                            .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON))
-                    .andReturn().getResponse().getContentAsString());
-            checkout.payAll(buyer.token(), submitted);
+            // Ten asked for, six offered. D-091 moved the partial to the request:
+            // the supplier says what they can supply, the restaurant orders that,
+            // and the order is created for six rather than being an order for ten
+            // that was later cut down. The commission base is the same either
+            // way, which is what this asserts -- only the route changed.
+            var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                    skuId, 10, 6, "SUPPLIER_DELIVERY", null, null);
+            checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
 
-            long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
+            long orderId = placed.orderId();
             long itemId = jdbc.queryForObject(
                     "select id from supplier_order_item where supplier_order_id = ?",
                     Long.class, orderId);
-
-            mvc.perform(MockMvcRequestBuilders
-                    .post("/api/v1/supplier-orders/" + orderId + "/partial-accept")
-                    .header("Authorization", "Bearer " + seller.token())
-                    .header("Idempotency-Key", UUID.randomUUID().toString())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(json.writeValueAsString(Map.of("items", List.of(Map.of(
-                            "supplierOrderItemId", itemId, "acceptedQuantity", 6))))));
-            paymentJobs.capturePending();
-
             supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/preparing");
             supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/ready");
+            // Taken at "ready" since D-103.
+            paymentJobs.capturePending();
             long deliveryId = json.readTree(mvc.perform(MockMvcRequestBuilders
                             .post("/api/v1/supplier-orders/" + orderId + "/delivery")
                             .header("Authorization", "Bearer " + seller.token())

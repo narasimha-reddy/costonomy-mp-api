@@ -113,6 +113,48 @@ public class AdminModerationService {
         return rows.get(0);
     }
 
+    // ── Payments ─────────────────────────────────────────────────────────
+
+    /**
+     * Put a cancelled order's payment, stopped for a person, back in the cancellation
+     * job's hands (D-109, F2).
+     *
+     * <p>Moves no money and decides nothing: the job asks Razorpay again on its next run and
+     * does whatever the provider's answer allows, with every check it always makes. What this
+     * removes is the one thing only a person could: the flag that keeps the job away. So it is
+     * gated on the reconcile permission, and the reason is required and audited.
+     *
+     * <p>Conditional in one statement, so two operators clearing at once cannot both succeed
+     * and only a payment that is actually waiting can be touched.
+     */
+    @Transactional
+    public void clearPaymentReview(Long actorId, Long paymentId, String reason) {
+        accessControl.require(actorId, Permissions.PAYMENT_RECONCILE, ScopeType.PLATFORM, null);
+
+        var rows = jdbc.queryForList("select review_reason from payment where id = ?", String.class, paymentId);
+        if (rows.isEmpty()) {
+            throw new NotFoundException("Payment", paymentId);
+        }
+        int applied = jdbc.update("""
+                update payment
+                   set review_required_at = null, review_reason = null,
+                       version = version + 1, updated_at = now(6)
+                 where id = ? and status = 'CANCEL_PENDING' and review_required_at is not null
+                """, paymentId);
+        if (applied == 0) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "This payment isn't waiting for a person.");
+        }
+
+        // What the person checked comes first: the audit column is 500 characters, and the
+        // stored reason it replaces can be 200 of them.
+        String detail = "Checked: " + reason + ". Was: " + rows.get(0);
+        auditService.record(actorId, null, "PAYMENT_REVIEW_CLEARED", "PAYMENT", paymentId,
+                "CANCEL_PENDING", "CANCEL_PENDING",
+                detail.length() <= 500 ? detail : detail.substring(0, 500), "ADMIN");
+        log.warn("Payment {} review cleared by operator {}: {}", paymentId, actorId, reason);
+    }
+
     // ── Catalog ──────────────────────────────────────────────────────────
 
     /**
@@ -258,6 +300,75 @@ public class AdminModerationService {
 
         auditService.record(actorId, null, "SUPPLIER_STORE_SLA_CHANGED", "SUPPLIER_STORE",
                 storeId, String.valueOf(rows.get(0)), String.valueOf(seconds), reason, "ADMIN");
+    }
+
+    /**
+     * Turn direct ordering on or off for a store, on their behalf.
+     *
+     * <p><b>Operations changes what is possible, not what a party decided</b>
+     * (D-048), and this is squarely the first: it opens or closes a route into
+     * the store, and leaves every order and request already in flight exactly
+     * where it is. A restaurant partway through a request to this store still
+     * has that request.
+     *
+     * <p>Needs a reason, like every other mutation here. "Wholesaler asked on
+     * the phone" is the kind of thing that has to survive in the record, because
+     * from the supplier's side this looks like a setting they never touched.
+     */
+    @Transactional
+    public void setDirectOrders(Long actorId, Long storeId, boolean enabled, String reason) {
+        accessControl.require(actorId, Permissions.CATALOG_MODERATE, ScopeType.PLATFORM, null);
+
+        var rows = jdbc.queryForList(
+                "select direct_orders_enabled from supplier_store where id = ?",
+                Boolean.class, storeId);
+        if (rows.isEmpty()) {
+            throw new NotFoundException("SupplierStore", storeId);
+        }
+
+        jdbc.update("""
+                update supplier_store
+                   set direct_orders_enabled = ?, version = version + 1, updated_at = now(6)
+                 where id = ?
+                """, enabled, storeId);
+
+        auditService.record(actorId, null, "SUPPLIER_STORE_DIRECT_ORDERS_CHANGED",
+                "SUPPLIER_STORE", storeId,
+                String.valueOf(rows.get(0)), String.valueOf(enabled), reason, "ADMIN");
+    }
+
+    /**
+     * Turn chat on or off for one outlet or one store. D-095.
+     *
+     * <p>**Changes what is possible, not what a party decided** (D-048): new
+     * messages stop, and every message already sent stays readable to both
+     * sides. What a supplier agreed to in writing is exactly the thing somebody
+     * needs after support has been called, and deleting the record would be the
+     * platform editing a conversation it was not part of.
+     */
+    @Transactional
+    public void setChatEnabled(Long actorId, String table, Long id,
+                               boolean enabled, String reason) {
+
+        accessControl.require(actorId, Permissions.CATALOG_MODERATE, ScopeType.PLATFORM, null);
+
+        // The table name is not caller-supplied — the two controller methods
+        // pass a literal each. Interpolating one that was would be an injection.
+        String entity = "outlet".equals(table) ? "OUTLET" : "SUPPLIER_STORE";
+        var rows = jdbc.queryForList(
+                "select chat_enabled from %s where id = ?".formatted(table), Boolean.class, id);
+        if (rows.isEmpty()) {
+            throw new NotFoundException(entity, id);
+        }
+
+        jdbc.update("""
+                update %s
+                   set chat_enabled = ?, version = version + 1, updated_at = now(6)
+                 where id = ?
+                """.formatted(table), enabled, id);
+
+        auditService.record(actorId, null, "CHAT_ENABLED_CHANGED", entity, id,
+                String.valueOf(rows.get(0)), String.valueOf(enabled), reason, "ADMIN");
     }
 
     // ── Disputes ─────────────────────────────────────────────────────────

@@ -167,12 +167,32 @@ public class RecommendationService {
         Map<Long, SupplierOffer> offerById = new HashMap<>();
         purchasable.forEach(offer -> offerById.put(offer.getId(), offer));
 
+        /*
+         * One card per supplier — their best pack. D-096.
+         *
+         * A supplier may now list several packs of the same product, and every
+         * one of them scoring into this list turns a comparison of suppliers
+         * into a comparison of one supplier's shelf: a deep range fills the
+         * screen and pushes the others below the fold, on a screen whose entire
+         * job is to put them side by side.
+         *
+         * The ranking still decides which pack wins, so this keeps whichever
+         * the scorer put first. The rest are reachable from that pack's detail
+         * page, which says how many there are.
+         */
+        var seen = new HashSet<Long>();
+        var packsPerStore = new HashMap<Long, Integer>();
+        ranked.forEach(scored -> packsPerStore.merge(scored.supplierStoreId(), 1, Integer::sum));
+
         var results = ranked.stream()
+                .filter(scored -> seen.add(scored.supplierStoreId()))
                 .map(scored -> toResponse(scored, offerById.get(scored.offerId()),
                         skuById.get(scored.supplierSkuId()),
                         stores.get(scored.supplierStoreId()), brandNames, quantity,
                         product.getImageUrl(), performance.get(scored.supplierStoreId()),
-                        product.getBaseUnit()))
+                        product.getBaseUnit(),
+                        // What this card is standing in front of.
+                        packsPerStore.getOrDefault(scored.supplierStoreId(), 1) - 1))
                 .toList();
 
         return new DiscoveryDtos.ProductRecommendation(
@@ -210,7 +230,8 @@ public class RecommendationService {
     private DiscoveryDtos.RecommendedOffer toResponse(
             ScoredOffer scored, SupplierOffer offer, SupplierSku sku,
             DiscoveryDirectory.StoreInfo store, Map<Long, String> brandNames, BigDecimal quantity,
-            String canonicalImageUrl, SupplierPerformance storePerformance, String baseUnit) {
+            String canonicalImageUrl, SupplierPerformance storePerformance, String baseUnit,
+            int otherPackCount) {
 
         BigDecimal itemTotal = offer.getSellingPrice().multiply(quantity);
         BigDecimal gstAmount = itemTotal.multiply(offer.getGstRate())
@@ -237,7 +258,8 @@ public class RecommendationService {
                 storePerformance == null ? 0 : storePerformance.ratingCount(),
                 packInclusiveOfGst(offer),
                 pricePerBaseUnit(packInclusiveOfGst(offer), sku.getPackSize(),
-                        sku.getPackUnit(), baseUnit));
+                        sku.getPackUnit(), baseUnit),
+                otherPackCount);
     }
 
     /**

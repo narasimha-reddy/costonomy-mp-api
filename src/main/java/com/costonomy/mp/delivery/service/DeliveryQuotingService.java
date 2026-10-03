@@ -50,14 +50,20 @@ public class DeliveryQuotingService {
      *                              that just cancelled (doc 06 §7)
      */
     @Transactional
-    public Outcome gather(Delivery delivery, BigDecimal orderValue,
+    public Outcome gather(Delivery delivery, BigDecimal orderValue, BigDecimal weightGrams,
                           Integer requiredEtaMinutes, List<String> excludedProviderCodes) {
+
+        var weightKg = delivery.getWeightKg() != null ? delivery.getWeightKg()
+                : (weightGrams != null ? weightGrams.divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP) : null);
+        var vehicleType = delivery.getVehicleType() != null ? delivery.getVehicleType()
+                : VehicleType.fromWeight(weightKg);
 
         var request = new DeliveryProvider.QuoteRequest(
                 delivery.getSupplierOrderId(),
                 delivery.getPickupLatitude(), delivery.getPickupLongitude(),
                 delivery.getDropLatitude(), delivery.getDropLongitude(),
-                orderValue, requiredEtaMinutes);
+                orderValue, weightGrams, requiredEtaMinutes,
+                weightKg, delivery.getVolumeCbm(), vehicleType);
 
         List<DeliveryQuote> recorded = new ArrayList<>();
         List<DeliverySelection.Candidate> candidates = new ArrayList<>();
@@ -71,6 +77,7 @@ public class DeliveryQuotingService {
             quote.setDeliveryId(delivery.getId());
             quote.setDeliveryProviderId(available.record().getId());
             quote.setProviderCode(available.record().getCode());
+            quote.setVehicleType(vehicleType);
 
             try {
                 var answer = available.adapter().quote(request);
@@ -88,6 +95,9 @@ public class DeliveryQuotingService {
                                     .setScale(4, RoundingMode.HALF_UP));
                     quote.setProviderQuoteId(answer.providerQuoteId());
                     quote.setExpiresAt(answer.expiresAt());
+                    if (answer.vehicleType() != null) {
+                        quote.setVehicleType(answer.vehicleType());
+                    }
 
                     candidates.add(new DeliverySelection.Candidate(
                             available.record().getCode(), answer.amount(), answer.etaMinutes(),

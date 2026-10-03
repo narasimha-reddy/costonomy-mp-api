@@ -275,6 +275,12 @@ public class CatalogImportService {
                                 parseDecimal(raw.get("measureValue")),
                                 raw.get("measureUnit"),
                                 raw.get("imageUrl"),
+                                // D-096's detail fields are not in the import
+                                // sheet: a bulk price list is not where somebody
+                                // writes a product description, and sending
+                                // nulls leaves whatever is already there alone.
+                                null, null, null, null, null, null, null,
+                                // status: unchanged by an import.
                                 null,
                                 parseDecimal(raw.get("sellingPrice")),
                                 parseDecimal(raw.get("gstRate")),
@@ -293,6 +299,9 @@ public class CatalogImportService {
                                 parseDecimal(raw.get("measureValue")),
                                 raw.get("measureUnit"),
                                 raw.get("imageUrl"),
+                                // As above: the import carries commercial
+                                // fields, not the detail page's.
+                                null, null, null, null, null, null, null,
                                 parseDecimal(raw.get("sellingPrice")),
                                 parseDecimal(raw.get("gstRate")),
                                 normalizeAvailability(raw.get("availability")),

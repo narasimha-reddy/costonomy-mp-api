@@ -29,7 +29,6 @@ API = os.environ.get("API", "http://localhost:7070") + "/costonomy-mp-api/api/v1
 MYSQL_CONTAINER = os.environ.get("MYSQL_CONTAINER", "jobs-mysql")
 MYSQL_DB = os.environ.get("MYSQL_DATABASE", "costonomy_mp")
 OTP = os.environ.get("OTP", "123456")
-RESPONSE_SLA_SECONDS = int(os.environ.get("RESPONSE_SLA_SECONDS", "1800"))
 
 
 class ApiError(Exception):
@@ -196,20 +195,24 @@ def seed_supplier(spec):
     created = call("/suppliers", {
         "legalName": spec["name"] + " Pvt Ltd",
         "displayName": spec["name"],
+        # D-097: a supplier and each of its stores carry their own contact, and
+        # both are required on create. The store's is the number a restaurant
+        # rings about a delivery, so it is the store's own, not the head office's.
+        "contactName": spec["name"] + " Desk",
+        "contactPhone": spec["phone"],
         "firstStore": {
             "name": spec["name"] + " — " + spec["store"],
+            "contactName": spec["store"] + " Desk",
+            "contactPhone": spec["phone"],
             "addressLine1": spec["store"] + " Main Road",
             "city": "Bengaluru",
             "state": "Karnataka",
             "pincode": "560071",
             "latitude": spec["lat"],
             "longitude": spec["lng"],
-            # The platform default is 60 seconds, which is right in production and
-            # useless on a laptop: an order placed while you switch accounts to the
-            # supplier app has already expired by the time you get there. This is a
-            # real per-store setting (doc 13), not a test hook, so raising it locally
-            # changes nothing about how the deadline is enforced — only how long it is.
-            "responseSlaSeconds": RESPONSE_SLA_SECONDS,
+            # No response window here: 2769c9f took it off the store and D-091
+            # put the supplier's clock on the request, so CreateStoreRequest
+            # refuses the field outright.
         },
     }, token=token)
 
@@ -322,8 +325,9 @@ def seed_credit_request(token, outlet_id, supplier_term):
     """
     # Searched by name rather than listed: supplier search is search, and there
     # is no endpoint that lists the suppliers serving an outlet.
+    # A page now, not a list: {"suppliers": [...], "beyondRadius": n}.
     stores = call("/search/suppliers?q=%s&outletId=%d"
-                  % (urllib.parse.quote(supplier_term), outlet_id), token=token)
+                  % (urllib.parse.quote(supplier_term), outlet_id), token=token)["suppliers"]
     target = stores[0] if stores else None
     if target is None:
         print("  no serviceable supplier to request credit from")

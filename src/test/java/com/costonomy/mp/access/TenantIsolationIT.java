@@ -54,7 +54,8 @@ class TenantIsolationIT extends AbstractIntegrationTest {
         return api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", name + " Pvt Ltd",
                 "displayName", name,
-                "firstStore", Map.of(
+                "contactName", "Ops Desk", "contactPhone", "+919876500000",
+                "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", 
                         "name", name + " — Jubilee Hills",
                         "addressLine1", "Road No 36",
                         "city", "Hyderabad",
@@ -242,7 +243,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             long storeOne = supplier.get("stores").get(0).get("id").asLong();
 
             long storeTwo = api.post(owner, "/api/v1/suppliers/" + supplierId + "/stores",
-                    Map.of("name", "Secunderabad depot",
+                    Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", "name", "Secunderabad depot",
                             "addressLine1", "SP Road",
                             "city", "Hyderabad",
                             "state", "Telangana")).at("/data/id").asLong();

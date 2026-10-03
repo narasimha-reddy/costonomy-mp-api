@@ -41,6 +41,8 @@ public class DeliveryBookingService {
     private final DeliveryProviderRegistry registry;
     private final DeliveryTimeline timeline;
     private final AuditService auditService;
+    private final DeliveryLedgerRepository ledger;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     /**
      * Book the cheapest courier that will take it.
@@ -77,8 +79,12 @@ public class DeliveryBookingService {
                 delivery.setCurrency(booking.currency());
                 delivery.setEtaMinutes(booking.etaMinutes());
                 delivery.setEstimatedArrivalAt(booking.estimatedArrivalAt());
+                if (booking.trackingUrl() != null) {
+                    delivery.setTrackingUrl(booking.trackingUrl());
+                }
                 delivery.setStatus(DeliveryStatus.PROVIDER_SELECTED);
                 delivery.setBookedAt(Instant.now());
+                delivery.setAssignmentDeadline(Instant.now().plus(java.time.Duration.ofMinutes(3)));
                 // Cleared, because this attempt is not the failed one. A stale
                 // failure left on the row would show a restaurant an error about a
                 // courier who is no longer involved.
@@ -86,9 +92,23 @@ public class DeliveryBookingService {
                 delivery.setFailureReason(null);
                 deliveries.save(delivery);
 
+                eventPublisher.publishEvent(new com.costonomy.mp.delivery.domain.DeliveryBookedEvent(
+                        delivery.getId(), delivery.getAssignmentDeadline()));
+
                 attempt.setOutcome("BOOKED");
                 attempt.setProviderDeliveryId(booking.providerDeliveryId());
                 attempts.save(attempt);
+
+                // Record into central delivery financial ledger
+                var ledgerEntry = new DeliveryLedgerEntry();
+                ledgerEntry.setDeliveryId(delivery.getId());
+                ledgerEntry.setProviderCode(quote.getProviderCode());
+                ledgerEntry.setProviderDeliveryId(booking.providerDeliveryId());
+                ledgerEntry.setEntryType("BOOKED");
+                ledgerEntry.setAmount(booking.amount());
+                ledgerEntry.setCurrency(booking.currency());
+                ledgerEntry.setDescription("Consignment booked with %s (Attempt %d)".formatted(quote.getProviderCode(), attemptNumber));
+                ledger.save(ledgerEntry);
 
                 // No provider name in the description. Doc 06 §10: the restaurant
                 // sees their delivery, not our supply chain.
@@ -143,6 +163,10 @@ public class DeliveryBookingService {
     }
 
     private DeliveryProvider.BookingRequest bookingRequest(Delivery delivery, DeliveryQuote quote) {
+        var vehicleType = quote.getVehicleType() != null ? quote.getVehicleType()
+                : delivery.getVehicleType() != null ? delivery.getVehicleType()
+                : VehicleType.fromWeight(delivery.getWeightKg());
+
         return new DeliveryProvider.BookingRequest(
                 delivery.getSupplierOrderId(), quote.getProviderQuoteId(),
                 delivery.getPickupAddress(), delivery.getPickupLatitude(),
@@ -152,7 +176,8 @@ public class DeliveryBookingService {
                 delivery.getDropLongitude(), delivery.getDropContactName(),
                 delivery.getDropContactPhone(),
                 // Ours, so a retried booking cannot produce two couriers at one door.
-                "mp-delivery-%d-%d".formatted(delivery.getId(), delivery.getAttemptCount() + 1));
+                "mp-delivery-%d-%d".formatted(delivery.getId(), delivery.getAttemptCount() + 1),
+                delivery.getWeightKg(), delivery.getVolumeCbm(), vehicleType);
     }
 
     private boolean fail(Delivery delivery, DeliveryStatus status, String code, String reason) {

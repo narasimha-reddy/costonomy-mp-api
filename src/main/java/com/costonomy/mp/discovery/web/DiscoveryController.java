@@ -1,12 +1,19 @@
 package com.costonomy.mp.discovery.web;
 
+import com.costonomy.mp.access.domain.Permissions;
+import com.costonomy.mp.access.domain.ScopeType;
+import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.common.api.ApiResponse;
+import com.costonomy.mp.discovery.service.PopularSupplierService;
 import com.costonomy.mp.discovery.service.RecommendationService;
 import com.costonomy.mp.discovery.service.SearchService;
+import com.costonomy.mp.discovery.service.SkuDetailService;
 import com.costonomy.mp.discovery.service.StorefrontService;
+import com.costonomy.mp.discovery.service.SupplierStorefrontService;
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import com.costonomy.mp.identity.security.ActorContext;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -26,6 +33,10 @@ public class DiscoveryController {
     private final RecommendationService recommendations;
     private final SearchService search;
     private final StorefrontService storefront;
+    private final PopularSupplierService popular;
+    private final SupplierStorefrontService storefronts;
+    private final SkuDetailService skuDetails;
+    private final AccessControlService accessControl;
 
     @GetMapping("/search/suggestions")
     @Operation(
@@ -86,6 +97,59 @@ public class DiscoveryController {
         return ApiResponse.ok(storefront.searchSkus(query, outletId, limit));
     }
 
+    @GetMapping("/supplier-skus/{skuId}")
+    @Operation(
+            summary = "One pack, in full",
+            description = """
+                    The page a kitchen decides on, as opposed to compares on: what the
+                    pack is, what it measures, the gallery, a video if the supplier gave
+                    one, and what other kitchens made of it.
+
+                    Price, GST and availability are the live offer — the same figures the
+                    shelf row shows, because a detail page that priced a SKU differently
+                    from the row that led to it would be the worst possible place to
+                    disagree.
+
+                    `outletId` is optional and only supplies distance and an ETA.
+                    `otherPacks` is the rest of this store's range for the same product,
+                    which the comparison does not show: it ranks one pack per supplier.
+                    """)
+    public ApiResponse<DiscoveryDtos.SkuDetail> sku(
+            @PathVariable Long skuId,
+            @RequestParam(required = false) Long outletId) {
+        return ApiResponse.ok(skuDetails.detail(skuId, outletId));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/storefront")
+    @Operation(
+            summary = "The head of one supplier's shelf",
+            description = """
+                    Who this branch is, how far and how long, what other kitchens rated
+                    them, the supplier's other branches, and what credit this supplier has
+                    extended **this outlet**.
+
+                    `outletId` is optional, and is what makes the response private: with
+                    one, the caller must be scoped to that outlet, because credit terms
+                    are the outlet's business. Without one there is no credit, no distance
+                    and no ETA — only the branch and its rating.
+
+                    `credit` is null when this supplier has extended this outlet nothing,
+                    which covers both "never asked" and "was turned down"; the app offers
+                    to ask in either case. `available` is computed here and must never be
+                    derived by the client (§23A.24) — it nets off reservations against
+                    orders already in flight.
+
+                    `etaMinutes` is preparation plus travel, the same estimate the product
+                    comparison ranks on. Null rather than guessed when either end has no
+                    coordinates.
+                    """)
+    public ApiResponse<DiscoveryDtos.StorefrontHeader> storefront(
+            @PathVariable Long storeId,
+            @RequestParam(required = false) Long outletId) {
+        return ApiResponse.ok(storefronts.header(
+                ActorContext.requireUserId(), storeId, outletId));
+    }
+
     @GetMapping("/supplier-stores/{storeId}/catalog")
     @Operation(
             summary = "What one supplier store sells",
@@ -133,5 +197,40 @@ public class DiscoveryController {
             @RequestParam(required = false) BigDecimal quantity) {
         return ApiResponse.ok(recommendations.recommendForProduct(
                 ActorContext.requireUserId(), id, outletId, quantity));
+    }
+
+    @GetMapping("/outlets/{outletId}/suppliers/popular")
+    @Operation(
+            summary = "Suppliers worth putting in front of this kitchen",
+            description = """
+                    Each supplier comes with the **categories they actually stock**,
+                    counted from purchasable offers rather than from anything they wrote
+                    about themselves. "Dairy, Vegetables, Staples" is what decides whether
+                    a store is worth opening; a name and a distance are not.
+
+                    **"Popular" is a placeholder.** Ranking by orders placed, fill rate or
+                    repeat business is a decision nobody has made yet, so this returns the
+                    nearest active suppliers who list something — true, and the floor any
+                    real ranking has to clear. Named for what it is meant to become so the
+                    caller does not have to change when it does.
+
+                    `categoryId` narrows it to suppliers stocking that aisle. Filtered in
+                    SQL rather than over the returned `categories`, which is capped at six
+                    for display — a browse page that quietly omits a supplier who stocks
+                    the aisle is worse than no browse page.
+                    """)
+    public ApiResponse<List<DiscoveryDtos.PopularSupplier>> popularSuppliers(
+            @PathVariable Long outletId,
+            @Parameter(description = "How many to return. Defaults to 10.")
+            @RequestParam(required = false) Integer limit,
+            @Parameter(description = "Only suppliers stocking this aisle.")
+            @RequestParam(required = false) Long categoryId) {
+
+        Long actorId = ActorContext.requireUserId();
+        accessControl.requireScoped(actorId, Permissions.ORDER_VIEW,
+                ScopeType.OUTLET, outletId, "Outlet");
+
+        return ApiResponse.ok(
+                popular.forOutlet(outletId, limit == null ? 10 : limit, categoryId));
     }
 }

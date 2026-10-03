@@ -2,7 +2,7 @@ package com.costonomy.mp.procurement.service;
 
 import com.costonomy.mp.catalog.repository.CanonicalProductRepository;
 import com.costonomy.mp.common.domain.Serviceability;
-import com.costonomy.mp.catalog.repository.SupplierSkuRepository;
+import com.costonomy.mp.catalog.service.SkuDirectory;
 import com.costonomy.mp.procurement.domain.Procurement;
 import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
@@ -34,9 +34,10 @@ public class SupplierOrderMapper {
 
     private final SupplierOrderRepository supplierOrders;
     private final SupplierOrderItemRepository supplierOrderItems;
-    private final SupplierSkuRepository skus;
+    private final SkuDirectory skuDirectory;
     private final CanonicalProductRepository products;
     private final ProcurementDirectory directory;
+    private final OrderFunding funding;
 
     public ProcurementDtos.SupplierOrderResponse toResponse(SupplierOrder order) {
         var items = supplierOrderItems.findBySupplierOrderId(order.getId());
@@ -54,10 +55,13 @@ public class SupplierOrderMapper {
                     productImages.put(product.getId(), product.getImageUrl());
                 });
 
-        Map<Long, String> skuNames = new HashMap<>();
-        skus.findAllById(items.stream().map(SupplierOrderItem::getSupplierSkuId).toList())
-                .forEach(sku -> skuNames.put(sku.getId(), sku.getName()));
+        // The same descriptor the request screens use, so a pack reads
+        // identically whether somebody is looking at the request or the order
+        // that came out of it.
+        var descriptors = skuDirectory.describe(
+                items.stream().map(SupplierOrderItem::getSupplierSkuId).toList());
 
+        var cancelRefund = funding.cancelRefund(order).orElse(null);
         return new ProcurementDtos.SupplierOrderResponse(
                 order.getId(), order.getOrderNumber(), order.getSupplierStoreId(),
                 store == null ? null : store.supplierName(),
@@ -72,17 +76,27 @@ public class SupplierOrderMapper {
                 order.getCreatedAt(),
                 order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
                 order.getAcceptedAmount(), acceptedSubtotal(items), acceptedGst(items),
-                order.getPaymentMethod(), order.getPaymentStatus(),
+                // Live, from the funding method: the stored copy is written once,
+                // at release, and goes stale the moment the money moves again.
+                order.getPaymentMethod(), funding.paymentState(order),
+                funding.paymentInstrument(order),
+                order.getDeliveryMode(), order.getDeliveryFee(),
+                order.getCancelledBy(), order.getCancellationReason(),
+                cancelRefund == null ? null : cancelRefund.amount(),
+                cancelRefund == null ? null : cancelRefund.completedAt(),
                 items.stream()
                         .map(item -> new ProcurementDtos.SupplierOrderItemResponse(
                                 item.getId(), item.getCanonicalProductId(),
+                                item.getSupplierSkuId(),
                                 productNames.get(item.getCanonicalProductId()),
                                 productImages.get(item.getCanonicalProductId()),
-                                skuNames.get(item.getSupplierSkuId()),
+                                descriptors.get(item.getSupplierSkuId()),
                                 item.getRequestedQuantity(), item.getAcceptedQuantity(),
                                 item.getUnit(), item.getUnitPriceSnapshot(),
+                                Pricing.inclusiveOfGst(item.getUnitPriceSnapshot(),
+                                        item.getGstRateSnapshot()),
                                 item.getGstRateSnapshot(), item.getLineTotal(),
-                                acceptedLineTotal(item), item.getStatus()))
+                                acceptedLineTotal(item), item.getStatus().name()))
                         .toList());
     }
 

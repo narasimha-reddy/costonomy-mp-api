@@ -49,7 +49,11 @@ public class OrderReleaseService {
      */
     @Transactional
     public boolean releaseIfFunded(Long supplierOrderId) {
-        var order = orders.findById(supplierOrderId).orElse(null);
+        // Locked, so "only one release happens" holds when two routes fire at the
+        // same moment, not only when they arrive in turn. Unlocked, a confirm and
+        // a webhook both read DRAFT and both released; one lost on the version
+        // check and threw — a 500 for the customer if it was the confirm (D-099).
+        var order = orders.lockById(supplierOrderId).orElse(null);
         if (order == null || order.getStatus() != SupplierOrderStatus.DRAFT) {
             return false;
         }
@@ -58,26 +62,71 @@ public class OrderReleaseService {
         }
 
         Instant now = Instant.now();
-        order.setStatus(SupplierOrderStatus.PENDING_ACCEPTANCE);
-        // The clock starts now, not at submission.
-        order.setAcceptanceDeadline(now.plusSeconds(order.getResponseSlaSeconds()));
-        order.setPaymentStatus("AUTHORIZED");
+
+        // Where it goes depends on whether anyone still has to agree to it, and
+        // that is a fact about the order rather than about who is calling.
+        //
+        // It has to be read off the order, not passed in. Release is triggered
+        // from wherever funding lands first — the confirm call, a provider
+        // webhook, or the reconciliation sweep — and none of those know or should
+        // know how the order was built. An earlier version took the target as an
+        // argument and the webhook path quietly kept the old default, so an
+        // already-accepted order was sent back to the supplier to accept again.
+        //
+        // A null procurement means it came from an intent (V23), where the
+        // supplier committed to these quantities at these prices before any money
+        // moved. There is nothing left to accept, so no countdown starts — one
+        // against an order nobody needs to answer would expire an agreed order.
+        // D-091 finished the job: there is no second acceptance at all now, so a
+        // funded order is confirmed whatever created it, and no acceptance clock
+        // starts. One against an order nobody needs to answer would expire an
+        // order both sides had already agreed to and been paid for.
+        SupplierOrderStatus target = SupplierOrderStatus.CONFIRMED;
+
+        order.setStatus(target);
+        order.setAcceptanceDeadline(null);
+        // In the funding method's words — "AUTHORIZED" for a held card, "PAID" for a
+        // wallet, "ON_CREDIT" for credit. It used to write "AUTHORIZED" for all three.
+        // Responses read the live value (OrderFunding.paymentState); this copy is
+        // for the reports that read the column.
+        order.setPaymentStatus(funding.paymentState(order));
         orders.save(order);
 
+        // The supplier's commitment is now an order. For credit this draws the
+        // accepted value (D-091). Prepaid money is no longer taken here: since
+        // D-103 it stays held until the supplier marks the order ready, so a
+        // cancellation before then drops the hold instead of refunding a charge.
+        //
+        // Doc 01 §14 is unchanged: only the accepted commercial value is taken,
+        // and under this flow the accepted amount is known at creation because
+        // the order was built from what the supplier offered.
+        funding.onOrderAccepted(order.getId(), order.getAcceptedAmount());
+
         auditService.record(null, null, "SUPPLIER_ORDER_RELEASED", "SUPPLIER_ORDER",
-                order.getId(), SupplierOrderStatus.DRAFT.name(),
-                SupplierOrderStatus.PENDING_ACCEPTANCE.name(),
+                order.getId(), SupplierOrderStatus.DRAFT.name(), target.name(),
                 "Payment secured", "SYSTEM");
 
-        outbox.publish("SupplierOrderReleased", "SUPPLIER_ORDER", order.getId(),
-                Map.of("orderNumber", order.getOrderNumber(),
-                        "supplierStoreId", order.getSupplierStoreId(),
-                        "outletId", order.getOutletId(),
-                        "acceptanceDeadline", order.getAcceptanceDeadline().toString()),
-                null, now);
+        var payload = new java.util.HashMap<String, Object>();
+        payload.put("orderNumber", order.getOrderNumber());
+        payload.put("supplierStoreId", order.getSupplierStoreId());
+        payload.put("outletId", order.getOutletId());
+        if (order.getAcceptanceDeadline() != null) {
+            payload.put("acceptanceDeadline", order.getAcceptanceDeadline().toString());
+        }
+        // Two events, because the supplier is being told two different things.
+        // "Released" has always meant "this needs your answer, and the clock has
+        // started". An order built from an accepted request needs no answer --
+        // notifying it as one told a supplier to go and accept an order they had
+        // already agreed to, with a countdown that does not exist.
+        // One event now: every released order is confirmed. "Released" used to
+        // mean "this needs your answer, and the clock has started", which after
+        // D-091 is never true.
+        outbox.publish("SupplierOrderConfirmed",
+                "SUPPLIER_ORDER", order.getId(), payload, null, now);
 
-        log.info("Released order {} to supplier {} — deadline {}",
-                order.getOrderNumber(), order.getSupplierStoreId(), order.getAcceptanceDeadline());
+        log.info("Released order {} to supplier {} as {} — deadline {}",
+                order.getOrderNumber(), order.getSupplierStoreId(), target,
+                order.getAcceptanceDeadline());
         return true;
     }
 

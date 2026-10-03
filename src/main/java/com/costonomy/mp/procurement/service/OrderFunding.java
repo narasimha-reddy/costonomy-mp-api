@@ -73,6 +73,51 @@ public class OrderFunding {
         forOrder(supplierOrderId).onOrderAccepted(supplierOrderId, acceptedAmount);
     }
 
+    public void onOrderDispatched(Long supplierOrderId, BigDecimal amount) {
+        forOrder(supplierOrderId).onOrderDispatched(supplierOrderId, amount);
+    }
+
+    public boolean canTakeFunds(Long supplierOrderId) {
+        return forOrder(supplierOrderId).canTakeFunds(supplierOrderId);
+    }
+
+    public java.util.Optional<OrderFundingPort.FundingIntent> openIntent(Long supplierOrderId) {
+        return forOrder(supplierOrderId).openIntent(supplierOrderId);
+    }
+
+    public BigDecimal refundableToWallet(Long supplierOrderId) {
+        return forOrder(supplierOrderId).refundableToWallet(supplierOrderId);
+    }
+
+    public Long refundToWallet(Long supplierOrderId, BigDecimal amount, String key,
+                               Long actorId, String note) {
+        return forOrder(supplierOrderId).refundToWallet(supplierOrderId, amount, key, actorId, note);
+    }
+
+    /**
+     * The order's payment status as its funding method sees it now, or the stored
+     * value when the method has no answer (or is not one this build knows).
+     */
+    public String paymentState(SupplierOrder order) {
+        var port = byMethod.get(order.getPaymentMethod());
+        if (port == null) {
+            return order.getPaymentStatus();
+        }
+        return port.paymentState(order.getId()).orElse(order.getPaymentStatus());
+    }
+
+    /** How the order was paid for, for wording, or null when the method has no answer (D-109). */
+    public String paymentInstrument(SupplierOrder order) {
+        var port = byMethod.get(order.getPaymentMethod());
+        return port == null ? null : port.paymentInstrument(order.getId()).orElse(null);
+    }
+
+    /** The refund of a cancelled order's debited money, if one was raised; see {@link OrderFundingPort#cancelRefund}. */
+    public java.util.Optional<OrderFundingPort.CancelRefund> cancelRefund(SupplierOrder order) {
+        var port = byMethod.get(order.getPaymentMethod());
+        return port == null ? java.util.Optional.empty() : port.cancelRefund(order.getId());
+    }
+
     public void onOrderUnfulfilled(Long supplierOrderId, String reason) {
         forOrder(supplierOrderId).onOrderUnfulfilled(supplierOrderId, reason);
     }

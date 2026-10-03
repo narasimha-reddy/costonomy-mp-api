@@ -107,7 +107,7 @@ public class OperationsDashboardService {
                     where status = 'FAILED'
                       and created_at >= date_sub(utc_timestamp(6), interval ? day))       as failed,
                   (select count(*) from payment
-                    where status in ('CREATED','CAPTURE_PENDING'))                        as pending,
+                    where status in ('CREATED','CAPTURE_PENDING','CANCEL_PENDING'))       as pending,
                   (select coalesce(sum(captured_amount), 0) from payment
                     where captured_at >= date_sub(utc_timestamp(6), interval ? day))      as value
                 """, window, window);

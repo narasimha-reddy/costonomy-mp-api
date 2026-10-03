@@ -173,6 +173,14 @@ class MigrationIT extends AbstractIntegrationTest {
                         "delivery_provider_attempt",
                         "delivery_event",
                         "delivery_location",
+                        // The one-to-one boundary between a request and the order
+                        // it became. Written once, at the moment the order is
+                        // created, and never again: an updated_at here would mean
+                        // a request could be re-pointed at a different order, and
+                        // uk_intent_order_link_intent exists precisely so it
+                        // cannot. Which request produced which order is a fact
+                        // about the past.
+                        "intent_order_link",
                         // Realtime's projection and its handshake tickets. Both are
                         // written once and read by cursor; a row that changed after
                         // the fact would change what a client already replayed.
@@ -189,15 +197,21 @@ class MigrationIT extends AbstractIntegrationTest {
                         // that could be edited would be a metric that could be
                         // rewritten after the fact.
                         "analytics_event",
+                        // A page of a wallet bill (D-113): written once with the bill, removed with it
+                        // (ON DELETE CASCADE), never edited. A different file would be a different page.
+                        "wallet_entry_invoice_page",
                         // A correction to a payout is a record of what was agreed.
                         // Editing one would rewrite what a supplier was paid.
                         "settlement_adjustment",
                         // Reference data that is added or removed, never edited.
                         "canonical_product_alias",
-                        // Pure join tables.
+                        // Pure join tables and links.
                         "role_permission",
                         "restaurant_user_outlet",
                         "supplier_user_store",
+                        "delivery_ledger",
+                        "delivery_provider_stats",
+                        "delivery_provider_metrics",
                         // Owned by ShedLock; its columns are fixed by the library.
                         "shedlock");
     }

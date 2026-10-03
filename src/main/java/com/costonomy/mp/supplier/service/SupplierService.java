@@ -201,11 +201,37 @@ public class SupplierService {
         if (request.pincode() != null) store.setPincode(request.pincode());
         if (request.latitude() != null) store.setLatitude(request.latitude());
         if (request.longitude() != null) store.setLongitude(request.longitude());
-        if (request.contactName() != null) store.setContactName(request.contactName());
-        if (request.contactPhone() != null) store.setContactPhone(request.contactPhone());
+        // Present-and-blank is refused rather than stored. D-097 makes a store
+        // contact required, and an empty string saved over a real one is how a
+        // required field quietly becomes absent again.
+        if (request.contactName() != null) {
+            if (request.contactName().isBlank()) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "Enter a contact name for this store.");
+            }
+            store.setContactName(request.contactName().trim());
+        }
+        if (request.contactPhone() != null) {
+            if (request.contactPhone().isBlank()) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "Enter a contact number for this store.");
+            }
+            store.setContactPhone(request.contactPhone().trim());
+        }
         applyHours(store, request.operatingHours());
         if (request.preparationMinutes() != null) {
             store.setPreparationMinutes(request.preparationMinutes());
+        }
+        // Audited on its own line rather than folded into the store update,
+        // because it changes what restaurants are allowed to do to this store
+        // and "who turned this on" is the first question after a bad order.
+        if (request.directOrdersEnabled() != null
+                && request.directOrdersEnabled() != store.isDirectOrdersEnabled()) {
+            auditService.record(actorId, null, "SUPPLIER_STORE_DIRECT_ORDERS_CHANGED",
+                    "SUPPLIER_STORE", storeId,
+                    String.valueOf(store.isDirectOrdersEnabled()),
+                    String.valueOf(request.directOrdersEnabled()), null, "API");
+            store.setDirectOrdersEnabled(request.directOrdersEnabled());
         }
         // ACTIVE ⇄ OFFLINE only. SUSPENDED is an operations decision and is not
         // reachable by a supplier editing their own store — the DTO's @Pattern
@@ -465,7 +491,10 @@ public class SupplierService {
 
         return new SupplierDtos.SupplierResponse(
                 organization.getId(), organization.getLegalName(), organization.getDisplayName(),
-                organization.getGstin(), organization.getLifecycleStatus(),
+                organization.getGstin(),
+                organization.getContactName(), organization.getContactPhone(),
+                organization.getContactEmail(),
+                organization.getLifecycleStatus(),
                 organization.getVerificationStatus(), organization.canTradeNow(),
                 organizationStores.stream().map(SupplierService::toStoreResponse).toList());
     }
@@ -483,7 +512,8 @@ public class SupplierService {
                         hours.opensAt().toString(),
                         hours.closesAt().toString()),
                 store.getResponseSlaSeconds(),
-                store.getPreparationMinutes(), store.getStatus());
+                store.getPreparationMinutes(),
+                store.isDirectOrdersEnabled(), store.getStatus());
     }
 
     /**

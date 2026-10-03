@@ -1,6 +1,7 @@
 package com.costonomy.mp.discovery.service;
 
 import com.costonomy.mp.common.domain.Serviceability;
+import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -277,7 +278,9 @@ public class StorefrontService {
                           BigDecimal gstRate, String availability, BigDecimal availableQuantity,
                           String skuImageUrl, String canonicalImageUrl,
                           Long canonicalProductId, String canonicalProductName,
-                          Long storeId, String supplierName, String storeName) {
+                          Long storeId, String supplierName, String storeName,
+                          Long categoryId, String categoryName,
+                          BigDecimal measureValue, String measureUnit) {
     }
 
     private List<SkuRow> fetchSkuRows(String extraWhere, List<Object> args, Integer limit) {
@@ -290,13 +293,16 @@ public class StorefrontService {
                        f.availability, f.available_quantity,
                        k.image_url, cp.image_url,
                        cp.id, cp.name,
-                       s.id, o.display_name, s.name
+                       s.id, o.display_name, s.name,
+                       cp.category_id, pc.name,
+                       k.measure_value, k.measure_unit
                   from supplier_offer f
                   join supplier_sku k on k.id = f.supplier_sku_id
                   join canonical_product cp on cp.id = k.canonical_product_id
                   join supplier_store s on s.id = f.supplier_store_id
                   join supplier_organization o on o.id = s.supplier_organization_id
                   left join brand b on b.id = k.brand_id
+                  left join product_category pc on pc.id = cp.category_id
                  where f.status = 'ACTIVE'
                    and k.status = 'ACTIVE'
                    and s.status = 'ACTIVE'
@@ -313,7 +319,9 @@ public class StorefrontService {
                             rs.getBigDecimal(8), rs.getString(9), rs.getBigDecimal(10),
                             rs.getString(11), rs.getString(12),
                             rs.getLong(13), rs.getString(14),
-                            rs.getLong(15), rs.getString(16), rs.getString(17)));
+                            rs.getLong(15), rs.getString(16), rs.getString(17),
+                            (Long) rs.getObject(18), rs.getString(19),
+                            rs.getBigDecimal(20), rs.getString(21)));
                 },
                 args.toArray());
         return rows;
@@ -370,7 +378,9 @@ public class StorefrontService {
                     store == null ? null : store.opensAt(),
                     store == null ? null : store.preparationMinutes(),
                     metrics == null ? null : metrics.averageRating().orElse(null),
-                    metrics == null ? 0 : metrics.ratingCount()), distance));
+                    metrics == null ? 0 : metrics.ratingCount(),
+                    row.categoryId(), row.categoryName(),
+                    row.measureValue(), row.measureUnit()), distance));
         }
 
         // Cheapest first is the SQL order and the useful one for a buyer. Distance

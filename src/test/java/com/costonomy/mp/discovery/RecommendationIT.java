@@ -75,7 +75,8 @@ class RecommendationIT extends AbstractIntegrationTest {
         JsonNode created = api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", name + " Pvt Ltd",
                 "displayName", name,
-                "firstStore", Map.of(
+                "contactName", "Ops Desk", "contactPhone", "+919876500000",
+                "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", 
                         "name", name + " store",
                         "addressLine1", "Road No 36",
                         "city", "Hyderabad",

@@ -5,6 +5,7 @@ import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.catalog.domain.SupplierOffer;
 import com.costonomy.mp.catalog.domain.SupplierSku;
+import com.costonomy.mp.catalog.domain.SupplierSkuImage;
 import com.costonomy.mp.catalog.domain.Unit;
 import com.costonomy.mp.catalog.repository.*;
 import com.costonomy.mp.catalog.web.dto.CatalogDtos;
@@ -43,6 +44,7 @@ public class SupplierCatalogService {
 
     private final SupplierSkuRepository skus;
     private final SupplierOfferRepository offers;
+    private final SupplierSkuImageRepository skuImages;
     private final CanonicalProductRepository products;
     private final CatalogQueryService catalogQuery;
     private final CatalogDirectory directory;
@@ -91,6 +93,8 @@ public class SupplierCatalogService {
         applyMeasure(sku, pack, request.measureValue(), request.measureUnit(), true);
 
         sku.setImageUrl(blankToNull(request.imageUrl()));
+        applyDetail(sku, request.description(), request.lengthCm(), request.widthCm(),
+                request.heightCm(), request.weightGrams(), request.youtubeUrl());
 
         try {
             skus.saveAndFlush(sku);
@@ -103,6 +107,8 @@ public class SupplierCatalogService {
         openOffer(sku, request.sellingPrice(), request.gstRate(),
                 request.availability() == null ? SupplierOffer.Availability.AVAILABLE : request.availability(),
                 request.availableQuantity(), actorId);
+
+        applyImages(sku.getId(), request.images());
 
         auditService.record(actorId, null, "SKU_CREATED", "SUPPLIER_SKU",
                 sku.getId(), null, "ACTIVE", null, "API");
@@ -153,6 +159,8 @@ public class SupplierCatalogService {
         // the field is present-but-empty, and every client falling back with
         // `sku.imageUrl ?? canonical` would render nothing at all.
         if (request.imageUrl() != null) sku.setImageUrl(blankToNull(request.imageUrl()));
+        applyDetail(sku, request.description(), request.lengthCm(), request.widthCm(),
+                request.heightCm(), request.weightGrams(), request.youtubeUrl());
         if (request.status() != null) sku.setStatus(request.status());
 
         try {
@@ -164,6 +172,8 @@ public class SupplierCatalogService {
         // A commercial change supersedes; an identity-only change leaves the
         // current offer alone, so renaming a SKU does not create a spurious price
         // history entry.
+        applyImages(sku.getId(), request.images());
+
         if (request.sellingPrice() != null || request.gstRate() != null
                 || request.availability() != null || request.availableQuantity() != null) {
             supersedeOffer(sku, request, actorId);
@@ -268,6 +278,55 @@ public class SupplierCatalogService {
         return offers.save(offer);
     }
 
+    /**
+     * The optional detail fields. D-096.
+     *
+     * <p>Null means "not sent" and is left alone; blank means "take it down"
+     * and stores as absent — the same rule `imageUrl` follows, and for the same
+     * reason: a field stored as an empty string is present-but-empty, and every
+     * client checking `?? fallback` renders nothing.
+     */
+    private void applyDetail(SupplierSku sku, String description,
+                             BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                             BigDecimal weightGrams, String youtubeUrl) {
+        if (description != null) sku.setDescription(blankToNull(description));
+        if (lengthCm != null) sku.setLengthCm(zeroToNull(lengthCm));
+        if (widthCm != null) sku.setWidthCm(zeroToNull(widthCm));
+        if (heightCm != null) sku.setHeightCm(zeroToNull(heightCm));
+        if (weightGrams != null) sku.setWeightGrams(zeroToNull(weightGrams));
+        if (youtubeUrl != null) sku.setYoutubeUrl(blankToNull(youtubeUrl));
+    }
+
+    /**
+     * Replace the gallery with what was sent.
+     *
+     * <p>Whole rather than incremental: reordering four pictures is one
+     * decision, and four calls for it leave the gallery half-applied when one
+     * fails. Null means the caller did not mention images and the gallery
+     * stands; an empty list means they removed them all.
+     */
+    private void applyImages(Long skuId, List<String> images) {
+        if (images == null) {
+            return;
+        }
+        skuImages.deleteBySupplierSkuId(skuId);
+        int position = 0;
+        for (String url : images) {
+            if (url == null || url.isBlank()) {
+                continue;
+            }
+            var image = new SupplierSkuImage();
+            image.setSupplierSkuId(skuId);
+            image.setUrl(url.trim());
+            image.setPosition(position++);
+            skuImages.save(image);
+        }
+    }
+
+    private static BigDecimal zeroToNull(BigDecimal value) {
+        return value == null || value.signum() <= 0 ? null : value;
+    }
+
     // ── internals ────────────────────────────────────────────────────────
 
     CatalogDtos.SkuResponse toResponse(SupplierSku sku) {
@@ -286,6 +345,11 @@ public class SupplierCatalogService {
                 sku.getPackSize(), sku.getPackUnit(),
                 sku.getMeasureValue(), sku.getMeasureUnit(),
                 sku.getImageUrl(), productImage,
+                sku.getDescription(),
+                sku.getLengthCm(), sku.getWidthCm(), sku.getHeightCm(), sku.getWeightGrams(),
+                sku.getYoutubeUrl(),
+                skuImages.findBySupplierSkuIdOrderByPositionAscIdAsc(sku.getId()).stream()
+                        .map(SupplierSkuImage::getUrl).toList(),
                 sku.getStatus(),
                 offer.map(SupplierOffer::getSellingPrice).orElse(null),
                 offer.map(SupplierOffer::getGstRate).orElse(null),

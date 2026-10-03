@@ -67,6 +67,25 @@ public enum ErrorCode {
     IDEMPOTENT_REQUEST_IN_PROGRESS(HttpStatus.CONFLICT,
             "That request is still being processed."),
 
+    // ── Requests (409) ───────────────────────────────────────────────────
+    //
+    // Its own code rather than SUPPLIER_ORDER_EXPIRED, which is what it would
+    // otherwise be borrowing. A client matching on codes to decide what to show
+    // would tell a supplier their *order* expired when what lapsed was a request
+    // they had not answered yet — and D-018 exists to stop exactly that kind of
+    // accurate-but-useless report.
+    INTENT_EXPIRED(HttpStatus.CONFLICT,
+            "This request can no longer be answered."),
+    /**
+     * The request moved while somebody was reading it.
+     *
+     * <p>Its own code rather than CONCURRENT_MODIFICATION, which is what D-018
+     * calls accurate and useless: this one tells the supplier what to do about
+     * it, which is to look again.
+     */
+    INTENT_CHANGED(HttpStatus.CONFLICT,
+            "This request changed while you were reading it."),
+
     // ── Supplier orders (409, 422) ───────────────────────────────────────
     SUPPLIER_ORDER_EXPIRED(HttpStatus.CONFLICT,
             "This order can no longer be accepted."),
@@ -106,8 +125,49 @@ public enum ErrorCode {
             "This payment has already moved on."),
     REFUND_ALREADY_REQUESTED(HttpStatus.CONFLICT,
             "A refund has already been requested for this."),
+    /**
+     * A top-up's payment has not been captured yet (D-107). Not a failure: the
+     * money is safe and a background job credits it as soon as it clears, so the
+     * client should say "processing" and look at the top-up again, not retry
+     * the payment.
+     */
+    TOP_UP_PROCESSING(HttpStatus.CONFLICT,
+            "Your payment is still being processed. It will be added to your wallet as soon as it clears."),
+    /**
+     * Adding this money would take the wallet past what it may hold, or past the
+     * month's top-up limit (D-107). At order time it is a refusal; at credit time
+     * it means the payment was captured and is being returned.
+     */
+    WALLET_LIMIT_EXCEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That would take your wallet over its limit."),
+    /**
+     * A wallet statement for the period would run to more rows than a file can
+     * reasonably hold (D-108). The customer's fix is a shorter period.
+     */
+    STATEMENT_TOO_LARGE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That period has too many entries for one statement. Please choose a shorter period."),
     WEBHOOK_SIGNATURE_INVALID(HttpStatus.BAD_REQUEST,
             "Invalid webhook signature."),
+    /**
+     * More was asked to go back to the card or bank than can. The details carry
+     * {@code withdrawableNow} (what can go back right now, and so what to offer instead),
+     * {@code blocked} (wallet money whose original payment can no longer be refunded) and
+     * {@code unavailable} (money that could not be checked with the provider just now) (D-110).
+     */
+    WITHDRAWAL_EXCEEDS_REFUNDABLE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That much can't go back to your card or bank right now."),
+    /** Operations acted on a refund without a fresh read of the provider's refunds behind it (D-110). */
+    REFUND_VERIFICATION_REQUIRED(HttpStatus.CONFLICT,
+            "Check this refund against the payment provider first."),
+    /** A money-moving operations action above the threshold needs a second person (D-110). */
+    SECOND_APPROVER_REQUIRED(HttpStatus.CONFLICT,
+            "This needs a second person to approve it."),
+    /** What operations said about the provider's records is not what the provider's records show (D-110). */
+    REFUND_VERIFICATION_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "The payment provider's records don't match."),
+    /** Refunds are failing for a reason on our side (D-110); nothing is lost and the wallet is untouched. */
+    WITHDRAWALS_PAUSED(HttpStatus.SERVICE_UNAVAILABLE,
+            "Withdrawals are paused for a short while. Your money is safe in your wallet."),
 
     // ── Delivery (422) ───────────────────────────────────────────────────
     DELIVERY_UNAVAILABLE(HttpStatus.UNPROCESSABLE_ENTITY,
@@ -124,6 +184,28 @@ public enum ErrorCode {
     // ── Catalog import (422) ─────────────────────────────────────────────
     IMPORT_VALIDATION_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
             "Some rows in that file couldn't be imported."),
+
+    // ── Wallet bills (D-113) ─────────────────────────────────────────────
+    INVOICE_EXISTS(HttpStatus.CONFLICT,
+            "This payment already has a bill. Remove it first to add another."),
+    INVOICE_NOT_FOUND(HttpStatus.NOT_FOUND,
+            "This payment has no bill."),
+    INVOICE_NOT_ALLOWED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "A bill can only be added to a payment made from your wallet."),
+    INVOICE_FILE_TYPE(HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+            "Please upload a JPEG, PNG or WebP photo, or a PDF."),
+    INVOICE_LIMIT_REACHED(HttpStatus.TOO_MANY_REQUESTS,
+            "You have added the most bills allowed for today. Please try again tomorrow."),
+    INVOICE_CHANGED(HttpStatus.CONFLICT,
+            "This bill was changed since you opened it. Reload it and try again."),
+    INVOICE_STILL_READING(HttpStatus.CONFLICT,
+            "This bill is still being read. Please try again in a moment."),
+    /** D-115: the same Idempotency-Key was sent again with a different review. */
+    IDEMPOTENCY_KEY_REUSED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "This save was already made with different details. Reload the bill and try again."),
+    /** D-115: the outlet has no cost-app outlet mapped, so the cost app's lists are not offered. */
+    INVOICE_LOOKUP_NOT_AVAILABLE(HttpStatus.FORBIDDEN,
+            "Supplier and SKU lists are not available for this outlet. You can still type a name."),
 
     // ── Unexpected (500) ─────────────────────────────────────────────────
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR,

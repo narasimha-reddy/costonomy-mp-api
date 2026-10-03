@@ -159,10 +159,17 @@ public class DeliveryEventService {
         delivery.setLastProviderUpdateAt(Instant.now());
 
         switch (target) {
-            case DRIVER_ASSIGNED -> delivery.setAssignedAt(Instant.now());
+            case DRIVER_ASSIGNED -> {
+                delivery.setAssignedAt(Instant.now());
+                delivery.setAssignmentDeadline(null);
+            }
             case PICKED_UP -> delivery.setPickedUpAt(Instant.now());
-            case DELIVERED -> delivery.setDeliveredAt(Instant.now());
+            case DELIVERED -> {
+                delivery.setDeliveredAt(Instant.now());
+                delivery.setAssignmentDeadline(null);
+            }
             case DRIVER_CANCELLED, PICKUP_FAILED, DELIVERY_FAILED -> {
+                delivery.setAssignmentDeadline(null);
                 delivery.setFailureCode(target.name());
                 delivery.setFailureReason(event.description());
                 // The driver is gone with the job; keeping their name would show a

@@ -87,6 +87,9 @@ public abstract class AbstractIntegrationTest {
         registry.add("spring.datasource.url", MYSQL::getJdbcUrl);
         registry.add("spring.datasource.username", MYSQL::getUsername);
         registry.add("spring.datasource.password", MYSQL::getPassword);
+        // D-116: lets a test count the statements one request prepares (CountingStatementInspector).
+        registry.add("spring.jpa.properties.hibernate.session_factory.statement_inspector",
+                CountingStatementInspector.class::getName);
         // Flyway builds the schema; Hibernate then validates its entities against
         // it. A mismatch fails the test run, which is how entity/migration drift
         // gets caught before a deploy does.

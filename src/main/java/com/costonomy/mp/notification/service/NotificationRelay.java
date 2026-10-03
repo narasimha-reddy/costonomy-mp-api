@@ -56,8 +56,7 @@ public class NotificationRelay {
 
     @EventListener
     public void onDomainEvent(OutboxPublisher.DomainEventEnvelope envelope) {
-        var rules = NotificationRules.forEvent(envelope.eventType());
-        if (rules.isEmpty()) {
+        if (NotificationRules.forEvent(envelope.eventType()).isEmpty()) {
             // Most domain events are nobody's inbox item. A location update arrives
             // every few seconds and belongs on a map; pushing it would be the
             // fastest way to get notifications turned off entirely.
@@ -73,6 +72,9 @@ public class NotificationRelay {
         }
 
         var fields = flatten(payload);
+        // Wording that depends on how the event happened (D-109). Names the variant,
+        // never the text: the templates stay in NotificationRules.
+        var rules = NotificationRules.forEvent(envelope.eventType(), fields.get("notificationVariant"));
 
         for (NotificationRule rule : rules) {
             Long scopeId = scopeId(rule, payload);

@@ -188,56 +188,77 @@ class StorefrontIT extends AbstractIntegrationTest {
         @DisplayName("lists who delivers here with no search term at all")
         void listsWithoutATerm() throws Exception {
             var outlet = newOutlet();
-            newStore("ABC Foods", NEARBY_LAT, NEARBY_LON);
-            newStore("Chennai Foods", FAR_LAT, FAR_LON);
+            // Named to sort first. The directory takes the first 100 suppliers by
+            // name before it sorts by distance (StorefrontService, "limit 100"), and
+            // the suite shares one database — so a store named later in the
+            // alphabet falls off the page once enough other tests have run, and a
+            // doesNotContain below would then pass without checking anything.
+            // That cap is a product question, recorded in D-101; this keeps the
+            // test about what it is about.
+            String run = "000 " + System.nanoTime();
+            newStore(run + " ABC Foods", NEARBY_LAT, NEARBY_LON);
+            newStore(run + " Chennai Foods", FAR_LAT, FAR_LON);
 
             var page = directory(outlet, "");
             var names = page.get("suppliers").findValuesAsText("supplierName");
 
-            assertThat(names).contains("ABC Foods");
+            assertThat(names).contains(run + " ABC Foods");
             // Five hundred kilometres away is not a supplier of yours.
-            assertThat(names).doesNotContain("Chennai Foods");
+            assertThat(names).doesNotContain(run + " Chennai Foods");
         }
 
         @Test
         @DisplayName("nearest first")
         void sortsByDistance() throws Exception {
             var outlet = newOutlet();
-            newStore("Far Foods", NEARBY_LAT, NEARBY_LON);
-            newStore("Next Door", HYD_LAT, HYD_LON);
+            // Searched for by a unique name, for the reason in listsWithoutATerm.
+            String run = "R" + System.nanoTime();
+            newStore("Far Foods " + run, NEARBY_LAT, NEARBY_LON);
+            newStore("Next Door " + run, HYD_LAT, HYD_LON);
 
-            var names = directory(outlet, "").get("suppliers").findValuesAsText("supplierName");
-            assertThat(names.indexOf("Next Door")).isLessThan(names.indexOf("Far Foods"));
+            var names = directory(outlet, "&q=" + run).get("suppliers").findValuesAsText("supplierName");
+            assertThat(names).contains("Next Door " + run, "Far Foods " + run);
+            assertThat(names.indexOf("Next Door " + run)).isLessThan(names.indexOf("Far Foods " + run));
         }
 
         @Test
         @DisplayName("a store's own declared radius decides, not a fixed number")
         void respectsTheStoresOwnRadius() throws Exception {
             var outlet = newOutlet();
-            var store = newStore("Short Reach", NEARBY_LAT, NEARBY_LON);
+            String run = "R" + System.nanoTime();
+            var store = newStore("Short Reach " + run, NEARBY_LAT, NEARBY_LON);
+            newStore("Long Reach " + run, NEARBY_LAT, NEARBY_LON);
 
             // Seven kilometres away, and they have said they deliver one.
             jdbc.update("insert into supplier_delivery_policy "
                     + "(supplier_store_id, max_delivery_radius_km) values (?, ?)",
                     store.storeId(), 1.0);
 
-            assertThat(directory(outlet, "").get("suppliers").findValuesAsText("supplierName"))
-                    .doesNotContain("Short Reach");
+            // The control is what makes the absence mean something: it is in the
+            // same place with no limit, so if it is listed, the search reached here.
+            assertThat(directory(outlet, "&q=" + run).get("suppliers").findValuesAsText("supplierName"))
+                    .contains("Long Reach " + run)
+                    .doesNotContain("Short Reach " + run);
         }
 
         @Test
         @DisplayName("a radius narrows the list and says what it left out")
         void radiusCountsWhatItExcluded() throws Exception {
             var outlet = newOutlet();
-            newStore("Next Door", HYD_LAT, HYD_LON);
-            newStore("Across Town", NEARBY_LAT, NEARBY_LON);
+            // Named uniquely and searched for by that name: the suite shares one
+            // database, and a list of every supplier near Hyderabad is a list of
+            // whatever other test classes created there — enough of them pushed
+            // Next Door off the page and failed this for a reason it isn't about.
+            String run = "R" + System.nanoTime();
+            newStore("Next Door " + run, HYD_LAT, HYD_LON);
+            newStore("Across Town " + run, NEARBY_LAT, NEARBY_LON);
 
             // Across Town is about 7 km away; 2 km keeps only the near one, and the
             // other is counted rather than silently dropped.
-            var page = directory(outlet, "&radiusKm=2");
+            var page = directory(outlet, "&radiusKm=2&q=" + run);
             assertThat(page.get("suppliers").findValuesAsText("supplierName"))
-                    .contains("Next Door")
-                    .doesNotContain("Across Town");
+                    .contains("Next Door " + run)
+                    .doesNotContain("Across Town " + run);
             assertThat(page.get("beyondRadius").asInt()).isGreaterThanOrEqualTo(1);
         }
 
@@ -455,7 +476,8 @@ class StorefrontIT extends AbstractIntegrationTest {
         JsonNode created = api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", name + " Pvt Ltd",
                 "displayName", name,
-                "firstStore", Map.of(
+                "contactName", "Ops Desk", "contactPhone", "+919876500000",
+                "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", 
                         "name", name + " store",
                         "addressLine1", "Road No 36",
                         "city", "Hyderabad",

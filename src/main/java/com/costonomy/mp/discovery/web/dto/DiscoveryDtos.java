@@ -4,6 +4,7 @@ import com.costonomy.mp.discovery.domain.ExplanationCode;
 import com.costonomy.mp.procurement.domain.Pricing;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -85,7 +86,16 @@ public final class DiscoveryDtos {
              * price "per PKT" where the product is sold per KG says nothing, and a
              * number that says nothing is worse on a comparison screen than a gap.
              */
-            BigDecimal pricePerBaseUnit) {
+            BigDecimal pricePerBaseUnit,
+            /**
+             * How many other packs of this product the same store lists. D-096.
+             *
+             * <p>The comparison ranks one card per supplier — their best pack —
+             * because every pack competing turns a comparison of suppliers into a
+             * comparison of one supplier's shelf. This is what the card says
+             * instead, and the rest are on that pack's detail page.
+             */
+            int otherPackCount) {
     }
 
     /**
@@ -178,6 +188,217 @@ public final class DiscoveryDtos {
             String opensAt,
             Integer preparationMinutes,
             BigDecimal averageRating,
-            int ratingCount) {
+            int ratingCount,
+            /**
+             * What aisle this belongs in, for a storefront that groups by it.
+             *
+             * <p>From the canonical product, not the supplier's listing: two
+             * suppliers' paneer has to land in the same tab or the tabs sort by
+             * whoever typed what.
+             */
+            Long categoryId,
+            String categoryName,
+            /** The amount inside one pack, where a pack has one. */
+            BigDecimal measureValue,
+            String measureUnit) {
+    }
+
+    /**
+     * A supplier worth putting in front of a kitchen, and what they stock.
+     *
+     * <p>The categories are the point. "Metro Fresh Supplies, 5 km away" says
+     * nothing about whether they are worth opening; "Dairy, Vegetables, Staples"
+     * is the whole decision, and it is a fact about their catalogue rather than
+     * anything they wrote about themselves.
+     */
+    public record PopularSupplier(
+            Long supplierStoreId,
+            String supplierName,
+            String storeName,
+            String locality,
+            String city,
+            BigDecimal distanceKm,
+            BigDecimal averageRating,
+            int ratingCount,
+            /** How much they list, purchasable today. */
+            int skuCount,
+            boolean openNow,
+            /** Orders can be placed here without sending a request first. D-094. */
+            boolean directOrdersEnabled,
+            List<SupplierCategory> categories) {
+    }
+
+    /**
+     * The head of one supplier's shelf, for the restaurant standing in front of it.
+     *
+     * <p>Everything a kitchen needs before deciding to shop here, in one request:
+     * who they are, whether this is even the right branch, how long it is likely
+     * to take, what other kitchens thought, and — the one that decides whether
+     * they can buy at all — whether this supplier has extended them credit.
+     *
+     * <p>Separate from the catalog rows because it is a different question with a
+     * different lifetime. The rows change when a price does; this changes when an
+     * agreement is approved or a branch opens.
+     */
+    public record StorefrontHeader(
+            Long supplierStoreId,
+            /** The branch. This is the title — it is where the goods come from. */
+            String storeName,
+            /** The organisation behind it, shown beneath the branch. */
+            String supplierName,
+            String city,
+            BigDecimal distanceKm,
+            boolean openNow,
+            String opensAt,
+            /**
+             * Preparation plus travel, in minutes. Null when either end has no
+             * coordinates — absent rather than guessed, because a delivery time
+             * invented from a pincode is the kind of number people plan around.
+             */
+            Integer etaMinutes,
+            /** Null when nobody has rated this store. Never zero standing in for that. */
+            BigDecimal averageRating,
+            int ratingCount,
+            int skuCount,
+            /**
+             * Orders can be placed here without sending a request first. D-094.
+             *
+             * <p>A store that keeps stock has already answered the question the
+             * request exists to ask, so the kitchen can go straight to an order.
+             */
+            boolean directOrdersEnabled,
+            /** Null when this supplier has extended this outlet no credit. */
+            StoreCredit credit,
+            /**
+             * This supplier's other branches, nearest first.
+             *
+             * <p>A supplier with two branches is two shelves, two distances and
+             * two sets of prices, and a kitchen that arrived at the far one has
+             * no way to discover the near one from inside the catalog.
+             */
+            List<SiblingStore> otherStores) {
+    }
+
+    /**
+     * What this supplier has extended this outlet.
+     *
+     * <p>Every figure is the server's. {@code available} in particular is never
+     * derived by a client (§23A.24) — what is left to spend depends on
+     * reservations against orders in flight, which the app cannot see.
+     *
+     * <p>No {@code due} or {@code overdue}: those are an invoice question, and
+     * answering it here would put a second implementation of the ageing rules
+     * next to the one on the credit screen. A shelf header says what is left to
+     * spend; what is owed is the credit screen's subject.
+     */
+    public record StoreCredit(
+            Long agreementId,
+            String status,
+            BigDecimal approvedLimit,
+            BigDecimal utilized,
+            BigDecimal reserved,
+            BigDecimal available,
+            Integer creditPeriodDays,
+            /** Whether an order can actually be funded on it right now. */
+            boolean canFund) {
+    }
+
+    /** Another branch of the same supplier. */
+    public record SiblingStore(
+            Long supplierStoreId,
+            String storeName,
+            String city,
+            BigDecimal distanceKm,
+            boolean openNow) {
+    }
+
+    /**
+     * One pack, in full — the page a kitchen decides on. D-096.
+     *
+     * <p>Everything the shelf row shows, plus what it leaves out: what the pack
+     * actually is, what it measures, what it looks like from more than one
+     * angle, and what other kitchens made of it.
+     *
+     * <p>The commercial half is the same shape the shelf uses, deliberately: a
+     * detail page that priced a SKU differently from the row that led to it
+     * would be the worst possible place to disagree.
+     */
+    public record SkuDetail(
+            Long supplierSkuId,
+            Long offerId,
+            String skuName,
+            String brandName,
+            BigDecimal packSize,
+            String packUnit,
+            BigDecimal measureValue,
+            String measureUnit,
+            BigDecimal sellingPrice,
+            BigDecimal gstRate,
+            BigDecimal unitPriceInclusiveGst,
+            String availability,
+            BigDecimal availableQuantity,
+            /** The thumbnail, then the gallery. Never empty when either exists. */
+            String imageUrl,
+            List<String> images,
+            String youtubeUrl,
+            String description,
+            BigDecimal lengthCm,
+            BigDecimal widthCm,
+            BigDecimal heightCm,
+            BigDecimal weightGrams,
+            Long canonicalProductId,
+            String canonicalProductName,
+            Long categoryId,
+            String categoryName,
+            Long supplierStoreId,
+            String storeName,
+            String supplierName,
+            BigDecimal distanceKm,
+            boolean openNow,
+            String opensAt,
+            Integer etaMinutes,
+            /** This store's rating, which is about the store, not this pack. */
+            BigDecimal storeRating,
+            int storeRatingCount,
+            /** This pack's own rating. Null when nobody has reviewed it. */
+            BigDecimal averageRating,
+            int reviewCount,
+            List<SkuReviewResponse> reviews,
+            /**
+             * Other packs of the same product from this same store.
+             *
+             * <p>A supplier listing a 200g tub and a 5kg block has listed two
+             * things a kitchen might want, and the comparison only shows their
+             * best one — this is where the rest of them are.
+             */
+            List<SkuSibling> otherPacks) {
+    }
+
+    /** One kitchen's verdict on a pack. */
+    public record SkuReviewResponse(
+            Long id,
+            Integer rating,
+            String comment,
+            /** Who, at outlet granularity. A person's name is not the point. */
+            String outletName,
+            Instant createdAt) {
+    }
+
+    /** Another pack of the same product from the same store. */
+    public record SkuSibling(
+            Long supplierSkuId,
+            String skuName,
+            BigDecimal packSize,
+            String packUnit,
+            BigDecimal sellingPrice,
+            String imageUrl,
+            String availability) {
+    }
+
+    /** One aisle a supplier stocks, and how deep it goes. */
+    public record SupplierCategory(
+            Long categoryId,
+            String name,
+            int skuCount) {
     }
 }

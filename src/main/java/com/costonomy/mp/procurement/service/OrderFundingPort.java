@@ -75,6 +75,100 @@ public interface OrderFundingPort {
     void onOrderUnfulfilled(Long supplierOrderId, String reason);
 
     /**
+     * The goods are about to leave: take the money now (D-103).
+     *
+     * <p>Prepaid money is held from confirmation and taken only when the supplier
+     * marks the order ready — the point after which it can no longer be
+     * cancelled — so a cancellation before it drops a hold rather than refunding
+     * a charge. Default no-op: credit draws at confirmation (onOrderAccepted).
+     */
+    default void onOrderDispatched(Long supplierOrderId, BigDecimal amount) {
+    }
+
+    /**
+     * Whether the money behind this order can still be taken (D-103). False once
+     * a held payment is too close to its provider's hold expiry: an order must
+     * not be handed over against money that will lapse back to the customer.
+     */
+    default boolean canTakeFunds(Long supplierOrderId) {
+        return true;
+    }
+
+    /**
+     * The intent a client can still pay this order against, if any (D-102).
+     *
+     * <p>A read: it never creates a provider order. Empty for a funding method with
+     * no client step (credit, wallet), or once the payment is funded or ended.
+     */
+    default java.util.Optional<FundingIntent> openIntent(Long supplierOrderId) {
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * How much of this order's money can still be given back to the restaurant's
+     * wallet (D-104). Zero by default: a credit order's money never passed
+     * through Mandi, and a refund on it is a credit note between the two parties.
+     */
+    default BigDecimal refundableToWallet(Long supplierOrderId) {
+        return BigDecimal.ZERO;
+    }
+
+    /**
+     * Give part of this order's money back to the outlet's wallet, once per key
+     * (D-104). The caller has already charged it to the supplier.
+     *
+     * @return the refund behind the credit, where the funding method has one
+     */
+    default Long refundToWallet(Long supplierOrderId, BigDecimal amount, String key,
+                                Long actorId, String note) {
+        throw new com.costonomy.mp.common.error.BusinessException(
+                com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR,
+                "Refunds on this order are settled with the supplier directly.");
+    }
+
+    /**
+     * Where this order's money stands now, in the funding method's own words —
+     * the value an order shows as its payment status.
+     *
+     * <p>Read live. {@code supplier_order.payment_status} is a copy written once,
+     * at release, as "AUTHORIZED" whatever the method: a wallet order read
+     * "Authorized" when its money was already paid, and a card order still said so
+     * after the money was taken, refunded or released. Empty means no answer, and
+     * the stored value stands.
+     */
+    default java.util.Optional<String> paymentState(Long supplierOrderId) {
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * How the order was paid for, as the provider names it — {@code card},
+     * {@code upi}, {@code netbanking}, {@code wallet}… — for wording only (D-109):
+     * whether "you were not charged" is true depends on it, because a card is
+     * only held and a UPI payment is debited. Empty when the method has no such
+     * thing (credit, the wallet) or has not been read yet.
+     */
+    default java.util.Optional<String> paymentInstrument(Long supplierOrderId) {
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * The refund that sends a cancelled order's debited money back to where it came
+     * from (D-109), for the apps to say how much is coming and when it landed. Empty
+     * for an order that was not cancelled, whose money was only a held card (nothing
+     * to refund), or whose refund has not been raised yet.
+     */
+    default java.util.Optional<CancelRefund> cancelRefund(Long supplierOrderId) {
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * @param amount      what is being refunded
+     * @param completedAt when the refund completed, or null while it is still on its way
+     */
+    record CancelRefund(BigDecimal amount, java.time.Instant completedAt) {
+    }
+
+    /**
      * What the client needs to pay for one order.
      *
      * @param providerOrderId the intent to open a checkout against

@@ -1,6 +1,8 @@
 package com.costonomy.mp.payment.provider;
 
 import java.math.BigDecimal;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Takes and returns money. Doc 02 §2, doc 21.
@@ -51,6 +53,20 @@ public interface PaymentProvider {
     ProviderPayment fetchPayment(String providerPaymentId);
 
     /**
+     * The payment that completed an intent, if the customer completed it.
+     *
+     * <p>The recovery path when we never learned the payment id at all: the
+     * customer paid and the client died before calling confirm, and the webhook
+     * was lost. All we hold then is the intent, so we ask by that.
+     *
+     * <p>Returns only a payment holding or having taken money. A declined attempt
+     * is not an answer — the customer can try again against the same intent, and
+     * treating their first decline as the outcome would abandon an order they
+     * then paid for.
+     */
+    Optional<ProviderPayment> findPaymentForOrder(String providerOrderId);
+
+    /**
      * Take an authorised amount, up to what was authorised.
      *
      * <p>Doc 01 §14: only the accepted commercial value is captured, so this is
@@ -67,8 +83,44 @@ public interface PaymentProvider {
      */
     ProviderPayment release(String providerPaymentId, String idempotencyKey);
 
-    /** Return money already captured. */
-    ProviderRefund refund(String providerPaymentId, BigDecimal amount, String idempotencyKey);
+    /**
+     * Return money already captured.
+     *
+     * <p>{@code options} rides along so a refund can be found again by our own
+     * reference if its answer is lost, and so a cancellation can ask for speed
+     * (D-109). It never changes what is refunded.
+     */
+    ProviderRefund refund(String providerPaymentId, BigDecimal amount, String idempotencyKey,
+                          RefundOptions options);
+
+    /**
+     * Read one payment in full, straight from the provider (D-109).
+     *
+     * <p>What a decision about money rests on when our record may be stale or
+     * missing a fact: what method paid, whether the money was taken, how much has
+     * gone back. One read, no side effect.
+     */
+    ProviderPaymentFacts inspect(String providerPaymentId);
+
+    /**
+     * Every refund the provider holds against one payment, ours and anyone else's (D-110).
+     *
+     * <p>The one read that can prove a refund was <em>not</em> made, which is what any decision
+     * to put money back, or to send a refund a second time, rests on. Matching is by the
+     * {@code receipt} we send, not by amount and time. A payment the provider does not know
+     * throws a not-found, which means nothing of ours can exist there. Complete: it follows
+     * the provider's paging, or throws rather than return part of the list, since a partial
+     * list is exactly what would make "none of ours" a lie.
+     */
+    java.util.List<ProviderRefundEntry> listRefunds(String providerPaymentId);
+
+    /**
+     * Where a refund we sent now stands.
+     *
+     * <p>A provider can accept a refund and finish it later — Razorpay answers
+     * {@code pending} — so the first answer is not always the last (D-101).
+     */
+    ProviderRefund fetchRefund(String providerRefundId);
 
     /**
      * Verify a webhook came from the provider. Doc 09 §5.
@@ -78,32 +130,182 @@ public interface PaymentProvider {
      */
     boolean verifySignature(String rawBody, String signatureHeader);
 
-    /** What the provider was asked to hold. */
+    /**
+     * Verify the signature a client's checkout hands back after paying (D-107).
+     *
+     * <p>Not the webhook signature: that is over a request body with the webhook
+     * secret, this is over {@code orderId|paymentId} with the API secret, and the
+     * two must never be accepted for one another. It proves the payment id came
+     * out of a checkout opened against {@code providerOrderId}, which is one more
+     * reason to believe the id — the fetch that follows is still what decides
+     * whether money was taken.
+     */
+    boolean verifyCheckoutSignature(String providerOrderId, String providerPaymentId, String signature);
+
+    /**
+     * What the provider was asked to hold.
+     *
+     * @param holdMinutes how long the provider is to hold the authorisation for capture
+     *                    before it returns it, or null for the provider's own configured
+     *                    default. Chosen by the caller, so that what is stored on the
+     *                    payment is what was sent (D-109). Ignored for an auto-capture
+     * @param autoCapture take the money the moment the customer pays, instead of
+     *                    holding it for a later {@link #capture} (D-107). False
+     *                    for an order, which is held until it is ready (D-103);
+     *                    true for a wallet top-up, where there is nothing to wait
+     *                    for and a hold would lapse into money we never got.
+     */
     record AuthorizationRequest(
             String referenceId,
             BigDecimal amount,
             String currency,
             String description,
-            String idempotencyKey) {
+            String idempotencyKey,
+            Integer holdMinutes,
+            boolean autoCapture) {
+
+        /** A held authorisation with the provider's default hold, which is what every order uses. */
+        public AuthorizationRequest(String referenceId, BigDecimal amount, String currency,
+                                    String description, String idempotencyKey) {
+            this(referenceId, amount, currency, description, idempotencyKey, null, false);
+        }
+
+        /** An authorisation captured on payment (a top-up), or a held one with the default hold. */
+        public AuthorizationRequest(String referenceId, BigDecimal amount, String currency,
+                                    String description, String idempotencyKey, boolean autoCapture) {
+            this(referenceId, amount, currency, description, idempotencyKey, null, autoCapture);
+        }
+
+        /** A held authorisation with a chosen hold. */
+        public AuthorizationRequest(String referenceId, BigDecimal amount, String currency,
+                                    String description, String idempotencyKey, Integer holdMinutes) {
+            this(referenceId, amount, currency, description, idempotencyKey, holdMinutes, false);
+        }
     }
 
-    /** What the client needs to open the provider's checkout. */
+    /**
+     * What the client needs to open the provider's checkout.
+     *
+     * @param holdMinutes the hold the provider was told to apply, in minutes, or null when
+     *                    the provider applies none of its own
+     */
     record AuthorizationIntent(
             String providerOrderId,
             BigDecimal amount,
             String currency,
             /** Publishable key or equivalent. Never a secret — doc 09 §4. */
-            String publicKey) {
+            String publicKey,
+            Integer holdMinutes) {
+
+        /** An intent with no hold recorded. */
+        public AuthorizationIntent(String providerOrderId, BigDecimal amount, String currency,
+                                   String publicKey) {
+            this(providerOrderId, amount, currency, publicKey, null);
+        }
     }
 
     /** The provider's view of a payment. Authoritative over ours. */
     record ProviderPayment(
             String providerPaymentId,
+            /**
+             * The intent this payment completed. What ties a payment id a client
+             * hands us to the payment it claims to complete — without it, any
+             * authorised payment id would fund any order.
+             */
+            String providerOrderId,
             ProviderPaymentStatus status,
             BigDecimal authorizedAmount,
             BigDecimal capturedAmount,
             String failureCode,
-            String failureReason) {
+            String failureReason,
+            /**
+             * How the customer paid, normalised and lower-case: {@code card}, {@code upi},
+             * {@code netbanking}, {@code wallet} or {@code emi}; null when the provider
+             * did not say. Shown on the wallet history as where a top-up came from (D-108).
+             */
+            String method,
+            /**
+             * The one safe identifying detail of that method: a card's last four digits,
+             * or a provider wallet's name. Null for UPI and netbanking. Never a full card
+             * number, a UPI address or a bank account, which are not needed and not ours to keep.
+             */
+            String methodDetail) {
+
+        /** A payment whose method is unknown: everything an order needs, nothing more. */
+        public ProviderPayment(String providerPaymentId, String providerOrderId,
+                               ProviderPaymentStatus status, BigDecimal authorizedAmount,
+                               BigDecimal capturedAmount, String failureCode, String failureReason) {
+            this(providerPaymentId, providerOrderId, status, authorizedAmount, capturedAmount,
+                    failureCode, failureReason, null, null);
+        }
+    }
+
+    /**
+     * Everything the provider says about one payment, read fresh (D-109).
+     *
+     * <p>A separate record from {@link ProviderPayment}, which is what state
+     * changes are applied from and stays as narrow as it was. This is for a
+     * decision that has to be made on the provider's own answer — what a
+     * cancelled order's payment actually is, and what it cost — and it carries
+     * what that decision needs: whether the money was taken, how much has gone
+     * back, and the fee.
+     *
+     * @param status         the provider's status, normalised. {@code REFUNDED} whether or
+     *                       not the money was ever captured: {@code captured} says which
+     * @param captured       whether the money was ever taken. False for a hold that was
+     *                       returned unused
+     * @param amount         what was authorised, in rupees
+     * @param amountRefunded what has gone back to the payer, in rupees
+     * @param fee            the gateway's fee in rupees, which already includes its tax;
+     *                       null until captured
+     * @param createdAt      when the provider created the payment
+     */
+    record ProviderPaymentFacts(
+            String providerPaymentId,
+            String providerOrderId,
+            ProviderPaymentStatus status,
+            boolean captured,
+            BigDecimal amount,
+            BigDecimal amountRefunded,
+            String method,
+            String methodDetail,
+            BigDecimal fee,
+            java.time.Instant createdAt) {
+    }
+
+    /**
+     * What a refund carries beyond its amount (D-109): how to find it again at the
+     * provider, and how fast to send it.
+     *
+     * @param receipt our reference, at most 40 characters: what a later check
+     *                matches the provider's refund against
+     * @param notes   ours ids, so the provider's dashboard reads without our database
+     * @param speed   {@code normal} (the default) or {@code optimum}, which sends an
+     *                instant refund where it can and costs Costonomy a per-refund fee
+     */
+    record RefundOptions(String receipt, Map<String, String> notes, String speed) {
+
+        /** No receipt, notes or speed: the provider's defaults. */
+        public static RefundOptions none() {
+            return new RefundOptions(null, Map.of(), null);
+        }
+    }
+
+    /**
+     * One refund as the provider lists it (D-110).
+     *
+     * @param receipt        the receipt we sent ({@code mandi-refund-{id}}), or null for a refund
+     *                       that is not ours or was made before we sent one
+     * @param mandiRefundId  {@code notes.mandi_refund_id}, or null
+     * @param createdAt      when the provider made it, or null if not said
+     */
+    record ProviderRefundEntry(
+            String providerRefundId,
+            BigDecimal amount,
+            ProviderRefundStatus status,
+            String receipt,
+            String mandiRefundId,
+            java.time.Instant createdAt) {
     }
 
     record ProviderRefund(
@@ -114,12 +316,21 @@ public interface PaymentProvider {
             String failureReason) {
     }
 
+    /** Longest and shortest hold, in minutes, a provider lets an authorisation last (Razorpay's documented range). */
+    int MIN_HOLD_MINUTES = 12;
+    int MAX_HOLD_MINUTES = 7200;
+
     /** Normalised across providers, so the domain never sees a provider's vocabulary. */
     enum ProviderPaymentStatus {
         CREATED,
         AUTHORIZED,
         CAPTURED,
         FAILED,
+        /**
+         * The hold was returned to the payer unused: an authorisation the provider
+         * gave back itself when it was not captured in time. Not {@link #REFUNDED},
+         * which is money that was taken and has been given back (D-109).
+         */
         RELEASED,
         REFUNDED,
     }

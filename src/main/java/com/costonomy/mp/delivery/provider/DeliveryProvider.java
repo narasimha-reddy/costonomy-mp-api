@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery.provider;
 
+import com.costonomy.mp.delivery.domain.VehicleType;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -61,14 +63,55 @@ public interface DeliveryProvider {
     // ── our types, never theirs ──────────────────────────────────────────
 
     record QuoteRequest(
+            /**
+             * Null when quoting before the order exists.
+             *
+             * <p>D-091 quotes the fee at order creation, so the restaurant knows
+             * what it is paying before it pays — and at that moment there is no
+             * order to name.
+             */
             Long supplierOrderId,
             BigDecimal pickupLatitude,
             BigDecimal pickupLongitude,
             BigDecimal dropLatitude,
             BigDecimal dropLongitude,
             BigDecimal orderValue,
+            /**
+             * What the consignment weighs. Decides the vehicle, and with it the
+             * price — a provider cannot quote a hundred kilos onto a bike.
+             */
+            BigDecimal weightGrams,
             /** What the order needs, for a provider that can offer a faster tier. */
-            Integer requiredEtaMinutes) {
+            Integer requiredEtaMinutes,
+            BigDecimal weightKg,
+            BigDecimal volumeCbm,
+            VehicleType vehicleType) {
+
+        public QuoteRequest(Long supplierOrderId, BigDecimal pickupLatitude, BigDecimal pickupLongitude,
+                            BigDecimal dropLatitude, BigDecimal dropLongitude, BigDecimal orderValue,
+                            Integer requiredEtaMinutes) {
+            this(supplierOrderId, pickupLatitude, pickupLongitude, dropLatitude, dropLongitude,
+                    orderValue, null, requiredEtaMinutes, null, null, VehicleType.TWO_WHEELER);
+        }
+
+        public QuoteRequest(Long supplierOrderId, BigDecimal pickupLatitude, BigDecimal pickupLongitude,
+                            BigDecimal dropLatitude, BigDecimal dropLongitude, BigDecimal orderValue,
+                            BigDecimal weightGrams, Integer requiredEtaMinutes) {
+            this(supplierOrderId, pickupLatitude, pickupLongitude, dropLatitude, dropLongitude,
+                    orderValue, weightGrams, requiredEtaMinutes,
+                    weightGrams != null ? weightGrams.divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP) : null,
+                    null,
+                    VehicleType.fromWeight(weightGrams != null ? weightGrams.divide(BigDecimal.valueOf(1000), 4, java.math.RoundingMode.HALF_UP) : null));
+        }
+
+        public QuoteRequest(Long supplierOrderId, BigDecimal pickupLatitude, BigDecimal pickupLongitude,
+                            BigDecimal dropLatitude, BigDecimal dropLongitude, BigDecimal orderValue,
+                            Integer requiredEtaMinutes, BigDecimal weightKg, BigDecimal volumeCbm, VehicleType vehicleType) {
+            this(supplierOrderId, pickupLatitude, pickupLongitude, dropLatitude, dropLongitude,
+                    orderValue,
+                    weightKg != null ? weightKg.multiply(BigDecimal.valueOf(1000)) : null,
+                    requiredEtaMinutes, weightKg, volumeCbm, vehicleType);
+        }
     }
 
     /**
@@ -83,10 +126,18 @@ public interface DeliveryProvider {
             Integer etaMinutes,
             Double distanceKm,
             Instant expiresAt,
-            String declineReason) {
+            String declineReason,
+            VehicleType vehicleType) {
+
+        public Quote(String providerQuoteId, boolean serviceable, BigDecimal amount,
+                     String currency, Integer etaMinutes, Double distanceKm,
+                     Instant expiresAt, String declineReason) {
+            this(providerQuoteId, serviceable, amount, currency, etaMinutes, distanceKm,
+                    expiresAt, declineReason, null);
+        }
 
         public static Quote unserviceable(String reason) {
-            return new Quote(null, false, null, "INR", null, null, null, reason);
+            return new Quote(null, false, null, "INR", null, null, null, reason, null);
         }
     }
 
@@ -104,7 +155,20 @@ public interface DeliveryProvider {
             String dropContactName,
             String dropContactPhone,
             /** Ours, so a retried booking cannot produce two couriers. */
-            String idempotencyKey) {
+            String idempotencyKey,
+            BigDecimal weightKg,
+            BigDecimal volumeCbm,
+            VehicleType vehicleType) {
+
+        public BookingRequest(Long supplierOrderId, String providerQuoteId, String pickupAddress,
+                              BigDecimal pickupLatitude, BigDecimal pickupLongitude, String pickupContactName,
+                              String pickupContactPhone, String dropAddress, BigDecimal dropLatitude,
+                              BigDecimal dropLongitude, String dropContactName, String dropContactPhone,
+                              String idempotencyKey) {
+            this(supplierOrderId, providerQuoteId, pickupAddress, pickupLatitude, pickupLongitude,
+                    pickupContactName, pickupContactPhone, dropAddress, dropLatitude, dropLongitude,
+                    dropContactName, dropContactPhone, idempotencyKey, null, null, VehicleType.TWO_WHEELER);
+        }
     }
 
     record Booking(
@@ -112,7 +176,13 @@ public interface DeliveryProvider {
             BigDecimal amount,
             String currency,
             Integer etaMinutes,
-            Instant estimatedArrivalAt) {
+            Instant estimatedArrivalAt,
+            String trackingUrl) {
+
+        public Booking(String providerDeliveryId, BigDecimal amount, String currency,
+                       Integer etaMinutes, Instant estimatedArrivalAt) {
+            this(providerDeliveryId, amount, currency, etaMinutes, estimatedArrivalAt, null);
+        }
     }
 
     /** Provider-reported state, already mapped onto our vocabulary. */

@@ -120,8 +120,14 @@ class NotificationRulesTest {
                     .distinct()
                     .toList();
 
+            // The two Intent events are the successors of the two order ones,
+            // not additions to them: under D-088 a supplier answers a request
+            // rather than an order, so "they said no" and "they never answered"
+            // now happen one step earlier. Both still cost the kitchen its day,
+            // which is the test this list has always applied.
             assertThat(smsEvents).containsExactlyInAnyOrder(
                     "SupplierOrderRejected", "SupplierOrderExpired",
+                    "IntentDeclined", "IntentExpired",
                     "PaymentFailed", "CreditOverdue");
         }
 
@@ -188,6 +194,77 @@ class NotificationRulesTest {
             // Different wording, because it means different things to each: one
             // needs to re-source, the other has lost the order.
             assertThat(expired.get(0).body()).isNotEqualTo(expired.get(1).body());
+        }
+    }
+
+    @Nested
+    @DisplayName("refund wording (D-109)")
+    class RefundWording {
+
+        private static final Map<String, String> FIELDS = Map.of(
+                "amount", "₹4,000.00", "orderNumber", "MP-7");
+
+        private String render(String variant) {
+            var rules = NotificationRules.forEvent("RefundCompleted", variant);
+            assertThat(rules).hasSize(1);
+            return rules.get(0).render(FIELDS);
+        }
+
+        @Test
+        @DisplayName("a refund to the wallet says it was added to the wallet")
+        void walletRefund() {
+            assertThat(render("WALLET")).isEqualTo("₹4,000.00 has been added to your wallet.");
+        }
+
+        @Test
+        @DisplayName("a cancellation refund says it went back to the account the payer paid from, for that order")
+        void cancellationToSource() {
+            assertThat(render("CANCELLATION_TO_SOURCE")).isEqualTo(
+                    "₹4,000.00 for order MP-7 has been refunded to the account you paid from.");
+        }
+
+        @Test
+        @DisplayName("no variant, or one nobody wrote wording for, keeps the plain wording: a variant never loses a notification")
+        void otherwiseTheEventsOwnWording() {
+            assertThat(render(null)).isEqualTo("₹4,000.00 has been refunded.");
+            assertThat(render("")).isEqualTo("₹4,000.00 has been refunded.");
+            assertThat(render("SOMETHING_NEW")).isEqualTo("₹4,000.00 has been refunded.");
+        }
+
+        @Test
+        @DisplayName("a dispute refund to the wallet, and each part of a withdrawal, send no RefundCompleted of their own")
+        void refundsAnnouncedElsewhereSendNothing() {
+            // The dispute's own DisputeRefundApproved already told the restaurant; a withdrawal
+            // part would only link an unrelated old order. Suppressed, not reworded.
+            assertThat(NotificationRules.forEvent("RefundCompleted", "DISPUTE")).isEmpty();
+            assertThat(NotificationRules.forEvent("RefundCompleted", "WITHDRAWAL")).isEmpty();
+            // And the plain event still has its rule, so nothing else is lost.
+            assertThat(NotificationRules.forEvent("RefundCompleted", null)).hasSize(1);
+            assertThat(NotificationRules.forEvent("RefundCompleted")).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("an instant refund's start message does not promise working days")
+        void instantRefundStartedHasNoDayCount() {
+            var normal = NotificationRules.forEvent("RefundRequested", null).get(0).render(FIELDS);
+            var instant = NotificationRules.forEvent("RefundRequested", "INSTANT").get(0).render(FIELDS);
+            assertThat(normal).contains("(5–7 working days)");
+            assertThat(instant).isEqualTo("Refund started: ₹4,000.00 for order MP-7 is on its way back "
+                    + "to the account you paid from.");
+            assertThat(NotificationRules.forEvent("RefundRequested", "INSTANT").get(0).targetIdField())
+                    .isEqualTo("supplierOrderId");
+        }
+
+        @Test
+        @DisplayName("a cancellation's refund is announced when it starts, to the restaurant, opening the order")
+        void refundRequested() {
+            var rules = NotificationRules.forEvent("RefundRequested");
+            assertThat(rules).hasSize(1);
+            var rule = rules.get(0);
+            assertThat(rule.audience()).isEqualTo(NotificationRule.Audience.OUTLET);
+            assertThat(rule.render(FIELDS)).isEqualTo("Refund started: ₹4,000.00 for order MP-7 is on its way back "
+                    + "to the account you paid from (5–7 working days).");
+            assertThat(rule.targetIdField()).isEqualTo("supplierOrderId");
         }
     }
 

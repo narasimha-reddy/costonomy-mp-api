@@ -1,6 +1,7 @@
 package com.costonomy.mp.delivery.service;
 
 import com.costonomy.mp.delivery.domain.Delivery;
+import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,18 +33,29 @@ public class DeliveryOrderBridge {
     @Transactional
     public void onDeliveryStatus(Delivery delivery, DeliveryStatus status) {
         switch (status) {
-            case PICKED_UP -> advance(delivery, "READY_FOR_PICKUP", "OUT_FOR_DELIVERY");
-            case DELIVERED -> advance(delivery, "OUT_FOR_DELIVERY", "DELIVERED");
+            case PICKED_UP -> advance(delivery,
+                    SupplierOrderStatus.READY_FOR_PICKUP, SupplierOrderStatus.OUT_FOR_DELIVERY);
+            case DELIVERED -> advance(delivery,
+                    SupplierOrderStatus.OUT_FOR_DELIVERY, SupplierOrderStatus.DELIVERED);
             default -> { }
         }
     }
 
-    private void advance(Delivery delivery, String from, String to) {
+    /**
+     * Compare-and-set, named by the enum rather than by a literal.
+     *
+     * <p>The guard is the {@code where} clause and not
+     * {@code canTransitionTo} — deliberately, because this runs on a provider's
+     * webhook and a replayed event must be a no-op rather than an exception. What
+     * the constants buy is that renaming a status breaks the build here instead of
+     * silently stranding every delivery at pickup.
+     */
+    private void advance(Delivery delivery, SupplierOrderStatus from, SupplierOrderStatus to) {
         int applied = jdbc.update("""
                 update supplier_order
                    set status = ?, version = version + 1, updated_at = now(6)
                  where id = ? and status = ?
-                """, to, delivery.getSupplierOrderId(), from);
+                """, to.name(), delivery.getSupplierOrderId(), from.name());
 
         if (applied == 0) {
             // Normal on a duplicate or replayed event: the order is already there.

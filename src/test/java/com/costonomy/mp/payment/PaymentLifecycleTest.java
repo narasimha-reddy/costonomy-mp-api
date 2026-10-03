@@ -91,6 +91,47 @@ class PaymentLifecycleTest {
     }
 
     @Nested
+    @DisplayName("a cancelled order's debited payment (D-109)")
+    class CancelPending {
+
+        @Test
+        @DisplayName("CANCEL_PENDING can only become CAPTURED, RELEASED or FAILED")
+        void cancelPendingTransitions() {
+            assertThat(CANCEL_PENDING.allowedTransitions()).containsExactlyInAnyOrder(CAPTURED, RELEASED, FAILED);
+            for (var other : PaymentStatus.values()) {
+                if (other != CAPTURED && other != RELEASED && other != FAILED) {
+                    assertThat(CANCEL_PENDING.canTransitionTo(other)).describedAs("to " + other).isFalse();
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("it is neither secured nor holding: nothing may release the order or take the money for it")
+        void cancelPendingIsNotFundsSecuredNorHolding() {
+            assertThat(CANCEL_PENDING.fundsSecured()).isFalse();
+            assertThat(CANCEL_PENDING.isHoldingFunds()).isFalse();
+            assertThat(CANCEL_PENDING.isSettled()).isFalse();
+        }
+
+        @Test
+        @DisplayName("an authorised payment may go to CANCEL_PENDING, and nothing else may")
+        void authorizedMayGoToCancelPending() {
+            assertThat(AUTHORIZED.canTransitionTo(CANCEL_PENDING)).isTrue();
+            for (var other : PaymentStatus.values()) {
+                if (other != AUTHORIZED) {
+                    assertThat(other.canTransitionTo(CANCEL_PENDING)).describedAs("from " + other).isFalse();
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("FAILED stays terminal: late money reopens it through an explicit move, not a transition")
+        void failedStaysTerminal() {
+            assertThat(FAILED.allowedTransitions()).isEmpty();
+        }
+    }
+
+    @Nested
     @DisplayName("refund")
     class Refunds {
 
@@ -112,6 +153,37 @@ class PaymentLifecycleTest {
         @DisplayName("a refund cannot skip straight to completed")
         void cannotSkipProcessing() {
             assertThat(RefundStatus.REQUESTED.canTransitionTo(RefundStatus.COMPLETED)).isFalse();
+        }
+
+        @Test
+        @DisplayName("D-110: REJECTED is reached only from PROCESSING and leaves only through a verification")
+        void rejectedTransitions() {
+            for (var from : RefundStatus.values()) {
+                assertThat(from.canTransitionTo(RefundStatus.REJECTED))
+                        .describedAs("%s → REJECTED", from).isEqualTo(from == RefundStatus.PROCESSING);
+            }
+            assertThat(RefundStatus.REJECTED.allowedTransitions()).containsExactlyInAnyOrder(
+                    RefundStatus.REVERSED, RefundStatus.PROCESSING, RefundStatus.COMPLETED, RefundStatus.NEEDS_REVIEW,
+                    RefundStatus.REQUESTED);
+            // Back to being sent only when the provider's own answers contradict its refusal (an unknown payment it
+            // plainly knows): the send is then preceded by a look at its list, as any send after the first is.
+            assertThat(RefundStatus.REJECTED.canTransitionTo(RefundStatus.FAILED)).isFalse();
+        }
+
+        @Test
+        @DisplayName("D-110: REVERSED is terminal, and reached only from a verification (REJECTED) or a person (NEEDS_REVIEW)")
+        void reversedIsTerminal() {
+            assertThat(RefundStatus.REVERSED.allowedTransitions()).isEmpty();
+            for (var from : RefundStatus.values()) {
+                assertThat(from.canTransitionTo(RefundStatus.REVERSED))
+                        .describedAs("%s → REVERSED", from)
+                        .isEqualTo(from == RefundStatus.REJECTED || from == RefundStatus.NEEDS_REVIEW);
+            }
+            // Money once sent to a payer can never be put back in a wallet.
+            assertThat(RefundStatus.COMPLETED.canTransitionTo(RefundStatus.REVERSED)).isFalse();
+            assertThat(RefundStatus.PROCESSING.canTransitionTo(RefundStatus.REVERSED)).isFalse();
+            assertThat(RefundStatus.FAILED.canTransitionTo(RefundStatus.REVERSED)).isFalse();
+            assertThat(RefundStatus.REQUESTED.canTransitionTo(RefundStatus.REVERSED)).isFalse();
         }
     }
 }

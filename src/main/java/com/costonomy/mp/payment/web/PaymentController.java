@@ -4,23 +4,19 @@ import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.common.api.ApiResponse;
+import com.costonomy.mp.common.logging.TraceScope;
 import com.costonomy.mp.identity.security.ActorContext;
-import com.costonomy.mp.payment.domain.RefundReason;
 import com.costonomy.mp.payment.repository.PaymentTransactionRepository;
 import com.costonomy.mp.payment.repository.RefundRepository;
 import com.costonomy.mp.payment.service.PaymentService;
-import com.costonomy.mp.payment.service.RefundService;
 import com.costonomy.mp.payment.web.dto.PaymentDtos;
-import com.costonomy.mp.common.error.BusinessException;
-import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.procurement.service.OrderReleaseService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -29,16 +25,17 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/v1")
 @RequiredArgsConstructor
+@Slf4j
 @SecurityRequirement(name = "bearerAuth")
 @Tag(name = "Payments")
 public class PaymentController {
 
     private final PaymentService paymentService;
-    private final RefundService refundService;
     private final OrderReleaseService orderRelease;
     private final PaymentTransactionRepository transactions;
     private final RefundRepository refunds;
     private final AccessControlService accessControl;
+    private final com.costonomy.mp.payment.provider.PaymentProvider provider;
 
     @GetMapping("/payments/{id}")
     @Operation(summary = "Get a payment and its movements")
@@ -47,6 +44,37 @@ public class PaymentController {
         accessControl.requireScoped(ActorContext.requireUserId(), Permissions.ORDER_VIEW,
                 ScopeType.OUTLET, payment.getOutletId(), "Payment");
         return ApiResponse.ok(toResponse(payment));
+    }
+
+    @GetMapping("/supplier-orders/{orderId}/payment-intent")
+    @Operation(
+            summary = "The order's payment, to pay or to check",
+            description = """
+                    What the pay screen needs, from the server rather than from what the
+                    screen happened to keep: the provider order to open checkout against,
+                    whether it can still be paid, and whether it already is. A read — it
+                    never creates a provider order, so asking twice cannot charge twice.
+
+                    Lets a restaurant pay an order after a refresh, after a long bank or
+                    UPI flow, or from the order itself (D-102).
+                    """)
+    public ApiResponse<PaymentDtos.PaymentIntentResponse> intentForOrder(@PathVariable Long orderId) {
+        var payment = paymentService.loadForOrder(orderId);
+        accessControl.requireScoped(ActorContext.requireUserId(), Permissions.PAYMENT_CREATE,
+                ScopeType.OUTLET, payment.getOutletId(), "Payment");
+
+        // Not once the order was cancelled: money that reached a cancelled order is captured only
+        // to be sent back, at Costonomy's cost (the gateway keeps its fee), so a pay screen, an
+        // older app or a deep link must not be offered a checkout for it, nor the key to open one (N3).
+        boolean payable = payment.getStatus() == com.costonomy.mp.payment.domain.PaymentStatus.CREATED
+                && payment.getProviderOrderId() != null
+                && payment.getCancelRequestedAt() == null;
+        return ApiResponse.ok(new PaymentDtos.PaymentIntentResponse(
+                payment.getId(), payment.getSupplierOrderId(), payment.getProvider(),
+                payment.getProviderOrderId(), payment.getAuthorizedAmount(), payment.getCurrency(),
+                payable ? publicKey(payment.getProvider()) : null,
+                payment.getStatus(), payment.fundsSecuredForOrder(), payable,
+                payment.getFailureReason()));
     }
 
     @PostMapping("/payments/{id}/confirm")
@@ -72,53 +100,23 @@ public class PaymentController {
         accessControl.requireScoped(ActorContext.requireUserId(), Permissions.PAYMENT_CREATE,
                 ScopeType.OUTLET, payment.getOutletId(), "Payment");
 
-        var confirmed = paymentService.confirm(id, request.providerPaymentId());
+        // After the access check, so an id a caller may not see is never logged
+        // as theirs. The claimed provider id goes in as sent — it is the thing
+        // being checked (D-100).
+        try (var trace = TraceScope.of("payment", id, "order", payment.getSupplierOrderId(),
+                "rzp_order", payment.getProviderOrderId(), "rzp_payment", request.providerPaymentId())) {
+            log.info("Payment {} confirm requested", id);
 
-        if (confirmed.getStatus().fundsSecured()) {
-            orderRelease.releaseIfFunded(confirmed.getSupplierOrderId());
-        } else if (confirmed.getStatus() == com.costonomy.mp.payment.domain.PaymentStatus.FAILED) {
-            orderRelease.abandonUnfunded(confirmed.getSupplierOrderId(),
-                    "Payment failed: " + String.valueOf(confirmed.getFailureCode()));
+            var confirmed = paymentService.confirm(id, request.providerPaymentId());
+
+            // The same rule as the webhook and the sweep: release, end, or (money that
+            // reached a cancelled order) end the draft too. This call had no answer for
+            // that last case, and a draft it left open could be released against money
+            // being sent back (F1).
+            com.costonomy.mp.payment.service.PaymentFollowUp.apply(orderRelease, confirmed);
+
+            return ApiResponse.ok(toResponse(paymentService.load(id)));
         }
-
-        return ApiResponse.ok(toResponse(paymentService.load(id)));
-    }
-
-    @PostMapping("/payments/{id}/refund")
-    @Operation(
-            summary = "Request a refund",
-            description = """
-                    Returns money that was captured. Money merely held is released instead,
-                    automatically, when a supplier rejects or times out — that is not a
-                    refund and does not appear as one.
-
-                    Requires an `Idempotency-Key`: a duplicate refund is money leaving
-                    twice, and a repeated request returns the original rather than issuing
-                    another.
-
-                    Reasons: SUPPLIER_REJECTION, PARTIAL_ACCEPTANCE, CANCELLATION,
-                    DELIVERY_FAILURE, DISPUTE_RESOLVED, DUPLICATE_PAYMENT,
-                    PROVIDER_REVERSAL.
-                    """)
-    public ApiResponse<PaymentDtos.RefundResponse> refund(
-            @PathVariable Long id,
-            @Valid @RequestBody PaymentDtos.RequestRefundRequest request,
-            @Parameter(description = "Client-generated key, required for this operation")
-            @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey) {
-
-        var payment = paymentService.load(id);
-        accessControl.requireScoped(ActorContext.requireUserId(), Permissions.PAYMENT_CREATE,
-                ScopeType.OUTLET, payment.getOutletId(), "Payment");
-
-        if (!RefundReason.isValid(request.reason())) {
-            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "Choose one of the listed refund reasons.");
-        }
-
-        var refund = refundService.request(ActorContext.requireUserId(), id, request.amount(),
-                RefundReason.valueOf(request.reason()), request.note(), idempotencyKey);
-
-        return ApiResponse.ok(toResponse(refund));
     }
 
     @GetMapping("/payments/{id}/refunds")
@@ -132,6 +130,11 @@ public class PaymentController {
                 .map(PaymentController::toResponse).toList());
     }
 
+    /** The publishable key, from the adapter — never a property someone could put a secret in. */
+    private String publicKey(String providerName) {
+        return provider.name().equals(providerName) ? provider.createAuthorizationPublicKey() : null;
+    }
+
     private PaymentDtos.PaymentResponse toResponse(
             com.costonomy.mp.payment.domain.Payment payment) {
 
@@ -141,7 +144,7 @@ public class PaymentController {
                 payment.getAuthorizedAmount(), payment.getCapturedAmount(),
                 payment.getRefundedAmount(), payment.getReleasedAmount(),
                 payment.getCurrency(), payment.getFailureCode(), payment.getFailureReason(),
-                payment.getStatus().fundsSecured(),
+                payment.fundsSecuredForOrder(),
                 payment.getAuthorizedAt(), payment.getCapturedAt(),
                 transactions.findByPaymentIdOrderByCreatedAtAsc(payment.getId()).stream()
                         .map(transaction -> new PaymentDtos.TransactionResponse(
@@ -156,7 +159,8 @@ public class PaymentController {
 
         return new PaymentDtos.RefundResponse(
                 refund.getId(), refund.getPaymentId(), refund.getAmount(),
-                refund.getReason().name(), refund.getStatus(), refund.getFailureReason(),
+                refund.getReason().name(), refund.getDestination().name(),
+                refund.getStatus(), refund.getFailureReason(),
                 refund.getCompletedAt(), refund.getCreatedAt());
     }
 }

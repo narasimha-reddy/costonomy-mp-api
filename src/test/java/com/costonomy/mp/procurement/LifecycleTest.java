@@ -1,5 +1,6 @@
 package com.costonomy.mp.procurement;
 
+import com.costonomy.mp.procurement.domain.DeliveryMode;
 import com.costonomy.mp.procurement.domain.ProcurementStatus;
 import com.costonomy.mp.procurement.domain.RequirementStatus;
 import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
@@ -90,63 +91,76 @@ class LifecycleTest {
     class SupplierOrders {
 
         @Test
-        @DisplayName("rejection and expiry are both reachable and distinct")
-        void rejectionAndExpiryAreSeparate() {
-            // Doc 01 §12 rule 11. A supplier declining is a decision; not answering
-            // is a failure to respond. They feed different performance signals and
-            // a restaurant reads them differently.
-            assertThat(PENDING_ACCEPTANCE.canTransitionTo(REJECTED)).isTrue();
-            assertThat(PENDING_ACCEPTANCE.canTransitionTo(EXPIRED)).isTrue();
-            assertThat(REJECTED).isNotEqualTo(EXPIRED);
+        @DisplayName("a funded order is confirmed — it is never pending an acceptance")
+        void noSecondAcceptance() {
+            // D-091. The supplier committed on the request and the restaurant paid
+            // against that commitment, so there is nothing left to accept. DRAFT's
+            // only forward step is CONFIRMED.
+            assertThat(DRAFT.allowedTransitions(DeliveryMode.PICKUP))
+                    .containsExactlyInAnyOrder(CONFIRMED, CANCELLED);
         }
 
         @Test
-        @DisplayName("both acceptance and expiry are legal from pending — the race is real")
-        void theRaceIsReal() {
-            // Nothing in the enum prevents both happening; optimistic locking on
-            // the aggregate is what makes exactly one win (doc 03 §5, doc 10 §2).
-            assertThat(PENDING_ACCEPTANCE.allowedTransitions())
-                    .contains(CONFIRMED, PARTIALLY_ACCEPTED, EXPIRED);
+        @DisplayName("where an order goes after ready depends on who is carrying it")
+        void theModeDecidesTheTail() {
+            // The reason allowedTransitions takes a mode at all. Encoding both as
+            // unconditionally legal would let a pickup be marked out for delivery.
+            assertThat(READY_FOR_PICKUP.allowedTransitions(DeliveryMode.PICKUP))
+                    .containsExactly(COMPLETED);
+            assertThat(READY_FOR_PICKUP.allowedTransitions(DeliveryMode.SUPPLIER_DELIVERY))
+                    .containsExactly(OUT_FOR_DELIVERY);
+            assertThat(READY_FOR_PICKUP.allowedTransitions(DeliveryMode.COSTONOMY_DELIVERY))
+                    .containsExactly(OUT_FOR_DELIVERY);
         }
 
         @Test
-        @DisplayName("partial acceptance is a first-class outcome")
-        void partialIsFirstClass() {
-            assertThat(PARTIALLY_ACCEPTED.isAccepted()).isTrue();
-            assertThat(PARTIALLY_ACCEPTED.canTransitionTo(PREPARING)).isTrue();
-        }
-
-        @Test
-        @DisplayName("an expired order cannot then be accepted")
-        void expiredCannotBeAccepted() {
-            // Doc 01 §12 and guardrail: a supplier cannot accept an expired order.
-            assertThat(EXPIRED.canTransitionTo(CONFIRMED)).isFalse();
-            assertThat(EXPIRED.allowedTransitions()).isEmpty();
+        @DisplayName("a collected order never passes through delivered")
+        void pickupSkipsDelivered() {
+            // Nothing delivered it, so DELIVERED would describe something that did
+            // not happen.
+            assertThat(READY_FOR_PICKUP.canTransitionTo(DELIVERED, DeliveryMode.PICKUP))
+                    .isFalse();
+            assertThat(READY_FOR_PICKUP.canTransitionTo(
+                    OUT_FOR_DELIVERY, DeliveryMode.PICKUP)).isFalse();
         }
 
         @Test
         @DisplayName("nothing can be cancelled once it is out for delivery")
         void noCancellationAfterPickup() {
             // Doc 01 §13: once goods have left, the path is return or dispute.
-            assertThat(READY_FOR_PICKUP.canTransitionTo(CANCELLED)).isFalse();
-            assertThat(OUT_FOR_DELIVERY.canTransitionTo(CANCELLED)).isFalse();
+            for (DeliveryMode mode : DeliveryMode.values()) {
+                assertThat(READY_FOR_PICKUP.canTransitionTo(CANCELLED, mode)).isFalse();
+                assertThat(OUT_FOR_DELIVERY.canTransitionTo(CANCELLED, mode)).isFalse();
+            }
         }
 
         @Test
-        @DisplayName("an unfulfilled order is one nobody committed to")
-        void unfulfilledMeansNoCommitment() {
-            assertThat(REJECTED.isUnfulfilled()).isTrue();
-            assertThat(EXPIRED.isUnfulfilled()).isTrue();
+        @DisplayName("cancellation is the only unfulfilled ending left")
+        void unfulfilledMeansCancelled() {
+            // REJECTED and EXPIRED are gone with the acceptance that produced them.
+            // A supplier who cannot fulfil cancels, and CancelledBy records that it
+            // was them.
             assertThat(CANCELLED.isUnfulfilled()).isTrue();
             assertThat(CONFIRMED.isUnfulfilled()).isFalse();
-            assertThat(PARTIALLY_ACCEPTED.isUnfulfilled()).isFalse();
+            assertThat(COMPLETED.isUnfulfilled()).isFalse();
         }
 
         @Test
         @DisplayName("the delivery path runs forward only")
         void deliveryPathIsForwardOnly() {
-            assertThat(DELIVERED.canTransitionTo(OUT_FOR_DELIVERY)).isFalse();
-            assertThat(COMPLETED.allowedTransitions()).isEmpty();
+            for (DeliveryMode mode : DeliveryMode.values()) {
+                assertThat(DELIVERED.canTransitionTo(OUT_FOR_DELIVERY, mode)).isFalse();
+                assertThat(COMPLETED.allowedTransitions(mode)).isEmpty();
+                assertThat(CANCELLED.allowedTransitions(mode)).isEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("both endings are terminal whoever carried the goods")
+        void terminalityDoesNotDependOnTheMode() {
+            assertThat(COMPLETED.isTerminal()).isTrue();
+            assertThat(CANCELLED.isTerminal()).isTrue();
+            assertThat(CONFIRMED.isTerminal()).isFalse();
         }
     }
 }
