@@ -104,7 +104,10 @@ class TaxInvoiceServiceTest {
             return t;
         });
 
-        var res = service.generateOrGetInvoice(101L);
+        when(accessControl.has(eq(1L), eq(com.costonomy.mp.access.domain.Permissions.ORDER_VIEW), any(), any()))
+                .thenReturn(true);
+
+        var res = service.generateOrGetInvoice(1L, 101L);
 
         assertThat(res.id()).isEqualTo(501L);
         assertThat(res.invoiceNumber()).startsWith("INV-");

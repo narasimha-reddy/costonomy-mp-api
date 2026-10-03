@@ -113,6 +113,7 @@ public class SupplierOrderMapper {
                                 item.getDoorstepAcceptedQty(), item.getDoorstepRejectedQty(),
                                 item.getDoorstepRejectionReason(), item.getDoorstepRefundAmount(),
                                 item.isRequiresColdChain(),
+                                item.isCatchWeight(),
                                 item.getUnit(), item.getUnitPriceSnapshot(),
                                 Pricing.inclusiveOfGst(item.getUnitPriceSnapshot(),
                                         item.getGstRateSnapshot()),

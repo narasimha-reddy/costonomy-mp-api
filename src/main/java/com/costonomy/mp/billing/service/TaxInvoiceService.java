@@ -54,14 +54,17 @@ public class TaxInvoiceService {
      * Generate or return existing statutory Tax Invoice for an order.
      */
     @Transactional
-    public BillingDtos.TaxInvoiceResponse generateOrGetInvoice(Long supplierOrderId) {
+    public BillingDtos.TaxInvoiceResponse generateOrGetInvoice(Long actorId, Long supplierOrderId) {
+        SupplierOrder order = orders.findById(supplierOrderId)
+                .orElseThrow(() -> new NotFoundException("SupplierOrder", supplierOrderId));
+        if (actorId != null) {
+            requireAccess(actorId, order);
+        }
+
         var existing = invoices.findBySupplierOrderId(supplierOrderId);
         if (existing.isPresent()) {
             return toInvoiceResponse(existing.get());
         }
-
-        SupplierOrder order = orders.findById(supplierOrderId)
-                .orElseThrow(() -> new NotFoundException("SupplierOrder", supplierOrderId));
 
         List<SupplierOrderItem> items = orderItems.findBySupplierOrderId(supplierOrderId);
 

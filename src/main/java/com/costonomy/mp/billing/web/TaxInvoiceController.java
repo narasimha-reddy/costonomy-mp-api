@@ -32,7 +32,7 @@ public class TaxInvoiceController {
     @Operation(summary = "Generate statutory Tax Invoice for an order")
     public ApiResponse<BillingDtos.TaxInvoiceResponse> generateTaxInvoice(
             @PathVariable Long orderId) {
-        return ApiResponse.ok(invoiceService.generateOrGetInvoice(orderId));
+        return ApiResponse.ok(invoiceService.generateOrGetInvoice(ActorContext.requireUserId(), orderId));
     }
 
     @GetMapping({"/supplier-orders/{orderId}/credit-notes", "/orders/{orderId}/credit-notes"})

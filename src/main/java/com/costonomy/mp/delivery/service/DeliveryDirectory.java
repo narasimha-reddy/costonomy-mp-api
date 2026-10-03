@@ -74,6 +74,16 @@ public class DeliveryDirectory {
         return !list.isEmpty() && Boolean.TRUE.equals(list.get(0));
     }
 
+    public boolean skuIsCatchWeight(Long skuId) {
+        if (skuId == null) {
+            return false;
+        }
+        var list = jdbc.queryForList("""
+                select is_catch_weight from supplier_sku where id = ?
+                """, Boolean.class, skuId);
+        return !list.isEmpty() && Boolean.TRUE.equals(list.get(0));
+    }
+
 
 
     /**

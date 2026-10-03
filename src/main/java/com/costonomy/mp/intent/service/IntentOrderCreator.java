@@ -335,6 +335,7 @@ public class IntentOrderCreator {
             if (isColdChain) {
                 orderRequiresColdChain = true;
             }
+            item.setCatchWeight(deliveryPolicies.skuIsCatchWeight(line.item().getSupplierSkuId()));
             supplierOrderItems.save(item);
         }
 

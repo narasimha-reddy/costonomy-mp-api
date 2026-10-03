@@ -113,6 +113,12 @@ public class SupplierOrderItem extends BaseEntity {
     @Column(name = "requires_cold_chain", nullable = false)
     private boolean requiresColdChain = false;
 
+    /**
+     * Whether this line item is sold on a catch-weight basis (natural pack variance).
+     */
+    @Column(name = "is_catch_weight", nullable = false)
+    private boolean isCatchWeight = false;
+
     @Column(name = "unit_price_snapshot", nullable = false, precision = 19, scale = 4)
     private BigDecimal unitPriceSnapshot;
 

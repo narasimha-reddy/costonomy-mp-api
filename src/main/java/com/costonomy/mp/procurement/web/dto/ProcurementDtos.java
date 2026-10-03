@@ -483,6 +483,7 @@ public final class ProcurementDtos {
             String doorstepRejectionReason,
             BigDecimal doorstepRefundAmount,
             boolean requiresColdChain,
+            boolean isCatchWeight,
             String unit,
             BigDecimal unitPrice,
             /** The same price with its GST added. See {@code Pricing.inclusiveOfGst}. */
