@@ -203,6 +203,50 @@ class RecommendationIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("an item fulfilled by multiple brands displays all options with lowest priced first")
+        void displaysMultiBrandOptionsLowestPricedFirst() throws Exception {
+            long paneer = freshProduct("paneer");
+            var outlet = newOutlet();
+            var store = newStore("ABC Foods", NEARBY_LAT, NEARBY_LON);
+
+            jdbc.update("insert into brand (name, normalized_name) values ('Nandini', 'nandini') on duplicate key update name=name");
+            long brandNandini = jdbc.queryForObject("select id from brand where normalized_name = 'nandini'", Long.class);
+
+            jdbc.update("insert into brand (name, normalized_name) values ('Amul', 'amul') on duplicate key update name=name");
+            long brandAmul = jdbc.queryForObject("select id from brand where normalized_name = 'amul'", Long.class);
+
+            jdbc.update("insert into brand (name, normalized_name) values ('Milky Mist', 'milky mist') on duplicate key update name=name");
+            long brandMilky = jdbc.queryForObject("select id from brand where normalized_name = 'milky mist'", Long.class);
+
+            long skuAmul = stock(store, paneer, "AMUL-PNR", "410");
+            jdbc.update("update supplier_sku set brand_id = ?, name = 'Amul Paneer' where id = ?", brandAmul, skuAmul);
+
+            long skuNandini = stock(store, paneer, "NAN-PNR", "380");
+            jdbc.update("update supplier_sku set brand_id = ?, name = 'Nandini Paneer' where id = ?", brandNandini, skuNandini);
+
+            long skuMilky = stock(store, paneer, "MILKY-PNR", "430");
+            jdbc.update("update supplier_sku set brand_id = ?, name = 'Milky Mist Paneer' where id = ?", brandMilky, skuMilky);
+
+            var result = recommend(outlet, paneer, 5);
+            var offers = result.get("offers");
+            assertThat(offers).hasSize(1);
+
+            var offer = offers.get(0);
+            var brandOptions = offer.get("brandOptions");
+            assertThat(brandOptions).hasSize(3);
+
+            // Lowest priced one first: Nandini (380) < Amul (410) < Milky Mist (430)
+            assertThat(brandOptions.get(0).get("brandName").asText()).isEqualTo("Nandini");
+            assertThat(brandOptions.get(0).get("sellingPrice").asDouble()).isEqualTo(380.0);
+
+            assertThat(brandOptions.get(1).get("brandName").asText()).isEqualTo("Amul");
+            assertThat(brandOptions.get(1).get("sellingPrice").asDouble()).isEqualTo(410.0);
+
+            assertThat(brandOptions.get(2).get("brandName").asText()).isEqualTo("Milky Mist");
+            assertThat(brandOptions.get(2).get("sellingPrice").asDouble()).isEqualTo(430.0);
+        }
+
+        @Test
         @DisplayName("a superseded offer is excluded and only the current price is used")
         void supersededOfferExcluded() throws Exception {
             long sugar = freshProduct("sugar");

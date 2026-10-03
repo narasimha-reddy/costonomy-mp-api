@@ -4,6 +4,19 @@ All notable changes to the Costonomy MP (Mandi) Delivery & Logistics Platform ac
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [feat/item-multi-brand-options] - Multi-Brand Fulfillment Options with Lowest Price First
+### Added
+- **Multi-Brand Fulfillment Model (`DiscoveryDtos.BrandOption`)**:
+  - Added `BrandOption` record capturing `supplierSkuId`, `offerId`, `skuName`, `brandName`, `packSize`, `packUnit`, `sellingPrice`, `gstRate`, `unitPriceInclusiveGst`, `imageUrl`, `availability`, `availableQuantity`, `measureValue`, `measureUnit`.
+  - Added `List<BrandOption> brandOptions` to `RecommendedOffer`, `StorefrontSku`, and `SkuDetail` with backward-compatible overloaded constructors.
+  - Enriched `SkuSibling` with `brandName`, `gstRate`, `unitPriceInclusiveGst`, and `offerId`.
+- **Recommendation & Storefront Multi-Brand Sorting**:
+  - `RecommendationService`: Aggregates all purchasable brand options per supplier store for each canonical product, sorted in ascending order of `sellingPrice` (lowest priced one first).
+  - `StorefrontService`: Pre-aggregates active brand options per `(supplierStoreId, canonicalProductId)` and sorts them with lowest priced one first.
+  - `SkuDetailService`: Enriched `siblings` and added `brandOptions(sku)` sorted with lowest priced one first.
+- **Tests**:
+  - `RecommendationIT#displaysMultiBrandOptionsLowestPricedFirst`: Verifies multi-brand option aggregation and lowest-price-first ordering.
+
 ## [feat/supplier-buyer-slots-subscriptions] - Delivery Slots, Subscriptions & Logistics Gating
 ### Added
 - **Logistics Dispatch Gating**: Strict enforcement in `DeliveryService.autoDispatch` so that third-party courier dispatch (`quoteAndBook`) triggers *only* when `COSTONOMY` delivery mode is selected. `PICKUP` orders are skipped cleanly without driver assignment or courier auction. `SUPPLIER_OWN` orders assign the store contact directly as driver without booking third-party couriers.

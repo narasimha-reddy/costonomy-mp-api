@@ -167,6 +167,41 @@ public class RecommendationService {
         Map<Long, SupplierOffer> offerById = new HashMap<>();
         purchasable.forEach(offer -> offerById.put(offer.getId(), offer));
 
+        Map<Long, List<DiscoveryDtos.BrandOption>> brandOptionsByStore = new HashMap<>();
+        for (SupplierOffer offer : purchasable) {
+            SupplierSku sku = skuById.get(offer.getSupplierSkuId());
+            if (sku == null || !"ACTIVE".equals(sku.getStatus())) {
+                continue;
+            }
+            var store = stores.get(offer.getSupplierStoreId());
+            if (store == null || !store.tradeable()) {
+                continue;
+            }
+            brandOptionsByStore.computeIfAbsent(offer.getSupplierStoreId(), k -> new ArrayList<>())
+                    .add(new DiscoveryDtos.BrandOption(
+                            sku.getId(),
+                            offer.getId(),
+                            sku.getName(),
+                            sku.getBrandId() == null ? null : brandNames.get(sku.getBrandId()),
+                            sku.getPackSize(),
+                            sku.getPackUnit(),
+                            offer.getSellingPrice(),
+                            offer.getGstRate(),
+                            packInclusiveOfGst(offer),
+                            blankToNull(sku.getImageUrl()) != null ? sku.getImageUrl() : blankToNull(product.getImageUrl()),
+                            offer.getAvailability(),
+                            offer.getAvailableQuantity(),
+                            sku.getMeasureValue(),
+                            sku.getMeasureUnit()
+                    ));
+        }
+
+        // Lowest priced brand option first
+        for (List<DiscoveryDtos.BrandOption> options : brandOptionsByStore.values()) {
+            options.sort(Comparator.comparing(DiscoveryDtos.BrandOption::sellingPrice,
+                    Comparator.nullsLast(Comparator.naturalOrder())));
+        }
+
         /*
          * One card per supplier — their best pack. D-096.
          *
@@ -192,7 +227,8 @@ public class RecommendationService {
                         product.getImageUrl(), performance.get(scored.supplierStoreId()),
                         product.getBaseUnit(),
                         // What this card is standing in front of.
-                        packsPerStore.getOrDefault(scored.supplierStoreId(), 1) - 1))
+                        packsPerStore.getOrDefault(scored.supplierStoreId(), 1) - 1,
+                        brandOptionsByStore.getOrDefault(scored.supplierStoreId(), List.of())))
                 .toList();
 
         return new DiscoveryDtos.ProductRecommendation(
@@ -231,7 +267,7 @@ public class RecommendationService {
             ScoredOffer scored, SupplierOffer offer, SupplierSku sku,
             DiscoveryDirectory.StoreInfo store, Map<Long, String> brandNames, BigDecimal quantity,
             String canonicalImageUrl, SupplierPerformance storePerformance, String baseUnit,
-            int otherPackCount) {
+            int otherPackCount, List<DiscoveryDtos.BrandOption> brandOptions) {
 
         BigDecimal itemTotal = offer.getSellingPrice().multiply(quantity);
         BigDecimal gstAmount = itemTotal.multiply(offer.getGstRate())
@@ -259,7 +295,8 @@ public class RecommendationService {
                 packInclusiveOfGst(offer),
                 pricePerBaseUnit(packInclusiveOfGst(offer), sku.getPackSize(),
                         sku.getPackUnit(), baseUnit),
-                otherPackCount);
+                otherPackCount,
+                brandOptions);
     }
 
     /**

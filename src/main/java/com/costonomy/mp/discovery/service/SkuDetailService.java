@@ -118,7 +118,8 @@ public class SkuDetailService {
                 metrics == null ? 0 : metrics.ratingCount(),
                 average(published), published.size(),
                 published.stream().limit(REVIEWS).map(this::toResponse).toList(),
-                siblings(sku));
+                siblings(sku),
+                brandOptions(sku, product == null ? null : product.getImageUrl()));
     }
 
     /**
@@ -132,20 +133,80 @@ public class SkuDetailService {
     private List<DiscoveryDtos.SkuSibling> siblings(SupplierSku sku) {
         return jdbc.query("""
                 select k.id, k.name, k.pack_size, k.pack_unit,
-                       f.selling_price, k.image_url, f.availability
+                       f.selling_price, k.image_url, f.availability,
+                       b.name as brand_name, f.gst_rate, f.id as offer_id
                   from supplier_sku k
                   left join supplier_offer f
                          on f.supplier_sku_id = k.id and f.status = 'ACTIVE'
+                  left join brand b
+                         on b.id = k.brand_id
                  where k.supplier_store_id = ?
                    and k.canonical_product_id = ?
                    and k.id <> ?
                    and k.status = 'ACTIVE'
-                 order by f.selling_price
+                 order by f.selling_price asc
                 """,
-                (rs, i) -> new DiscoveryDtos.SkuSibling(
-                        rs.getLong(1), rs.getString(2), rs.getBigDecimal(3), rs.getString(4),
-                        rs.getBigDecimal(5), rs.getString(6), rs.getString(7)),
+                (rs, i) -> {
+                    BigDecimal price = rs.getBigDecimal(5);
+                    BigDecimal gst = rs.getBigDecimal(9);
+                    BigDecimal incl = price != null ? inclusivePrice(price, gst) : null;
+                    return new DiscoveryDtos.SkuSibling(
+                            rs.getLong(1), rs.getString(2), rs.getBigDecimal(3), rs.getString(4),
+                            price, rs.getString(6), rs.getString(7),
+                            rs.getString(8), gst, incl, (Long) rs.getObject(10));
+                },
                 sku.getSupplierStoreId(), sku.getCanonicalProductId(), sku.getId());
+    }
+
+    /**
+     * All brand options from this supplier for this item, sorted with lowest priced first.
+     */
+    private List<DiscoveryDtos.BrandOption> brandOptions(SupplierSku sku, String canonicalImageUrl) {
+        return jdbc.query("""
+                select k.id, f.id, k.name, b.name,
+                       k.pack_size, k.pack_unit, f.selling_price, f.gst_rate,
+                       k.image_url, f.availability, f.available_quantity,
+                       k.measure_value, k.measure_unit
+                  from supplier_sku k
+                  left join supplier_offer f
+                         on f.supplier_sku_id = k.id and f.status = 'ACTIVE'
+                  left join brand b
+                         on b.id = k.brand_id
+                 where k.supplier_store_id = ?
+                   and k.canonical_product_id = ?
+                   and k.status = 'ACTIVE'
+                 order by f.selling_price asc
+                """,
+                (rs, i) -> {
+                    BigDecimal price = rs.getBigDecimal(7);
+                    BigDecimal gst = rs.getBigDecimal(8);
+                    BigDecimal incl = price != null ? inclusivePrice(price, gst) : null;
+                    String skuImg = rs.getString(9);
+                    String img = (skuImg != null && !skuImg.isBlank()) ? skuImg : canonicalImageUrl;
+                    return new DiscoveryDtos.BrandOption(
+                            rs.getLong(1),
+                            (Long) rs.getObject(2),
+                            rs.getString(3),
+                            rs.getString(4),
+                            rs.getBigDecimal(5),
+                            rs.getString(6),
+                            price,
+                            gst,
+                            incl,
+                            img,
+                            rs.getString(10),
+                            rs.getBigDecimal(11),
+                            rs.getBigDecimal(12),
+                            rs.getString(13)
+                    );
+                },
+                sku.getSupplierStoreId(), sku.getCanonicalProductId());
+    }
+
+    private static BigDecimal inclusivePrice(BigDecimal sellingPrice, BigDecimal gstRate) {
+        BigDecimal rate = gstRate == null ? BigDecimal.ZERO : gstRate;
+        BigDecimal value = Pricing.lineItemValue(sellingPrice, BigDecimal.ONE);
+        return Pricing.lineTotal(value, Pricing.lineGst(value, rate));
     }
 
     private String categoryName(Long categoryId) {

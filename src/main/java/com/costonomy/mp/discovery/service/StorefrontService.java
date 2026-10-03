@@ -11,7 +11,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * What a restaurant can actually buy, and from whom.
@@ -347,6 +349,37 @@ public class StorefrontService {
         var ratings = performance.forStores(storeIds);
         var outlet = outletId == null ? null : directory.outlet(outletId).orElse(null);
 
+        Map<String, List<DiscoveryDtos.BrandOption>> brandOptionsByStoreProduct = new HashMap<>();
+        for (SkuRow row : rows) {
+            String key = row.storeId() + ":" + row.canonicalProductId();
+            BigDecimal incl = row.sellingPrice() != null
+                    ? packInclusiveOfGst(row.sellingPrice(), row.gstRate()) : null;
+            brandOptionsByStoreProduct.computeIfAbsent(key, k -> new ArrayList<>())
+                    .add(new DiscoveryDtos.BrandOption(
+                            row.skuId(),
+                            row.offerId(),
+                            row.skuName(),
+                            row.brandName(),
+                            row.packSize(),
+                            row.packUnit(),
+                            row.sellingPrice(),
+                            row.gstRate(),
+                            incl,
+                            blankToNull(row.skuImageUrl()) != null
+                                    ? row.skuImageUrl() : blankToNull(row.canonicalImageUrl()),
+                            row.availability(),
+                            row.availableQuantity(),
+                            row.measureValue(),
+                            row.measureUnit()
+                    ));
+        }
+
+        // Lowest priced brand option first
+        for (List<DiscoveryDtos.BrandOption> options : brandOptionsByStoreProduct.values()) {
+            options.sort(Comparator.comparing(DiscoveryDtos.BrandOption::sellingPrice,
+                    Comparator.nullsLast(Comparator.naturalOrder())));
+        }
+
         record Sized(DiscoveryDtos.StorefrontSku sku, Double distance) {
         }
 
@@ -362,6 +395,9 @@ public class StorefrontService {
             }
 
             var metrics = ratings.get(row.storeId());
+            String key = row.storeId() + ":" + row.canonicalProductId();
+            List<DiscoveryDtos.BrandOption> brandOptions = brandOptionsByStoreProduct.getOrDefault(key, List.of());
+
             out.add(new Sized(new DiscoveryDtos.StorefrontSku(
                     row.offerId(), row.skuId(), row.skuName(), row.brandName(),
                     row.packSize(), row.packUnit(), row.sellingPrice(), row.gstRate(),
@@ -380,7 +416,8 @@ public class StorefrontService {
                     metrics == null ? null : metrics.averageRating().orElse(null),
                     metrics == null ? 0 : metrics.ratingCount(),
                     row.categoryId(), row.categoryName(),
-                    row.measureValue(), row.measureUnit()), distance));
+                    row.measureValue(), row.measureUnit(),
+                    brandOptions), distance));
         }
 
         // Cheapest first is the SQL order and the useful one for a buyer. Distance
@@ -400,6 +437,15 @@ public class StorefrontService {
         BigDecimal radius = store.maxDeliveryRadiusKm() == null
                 ? DEFAULT_RADIUS_KM : store.maxDeliveryRadiusKm();
         return BigDecimal.valueOf(distanceKm).compareTo(radius) <= 0;
+    }
+
+    private static BigDecimal packInclusiveOfGst(BigDecimal sellingPrice, BigDecimal gstRate) {
+        if (sellingPrice == null) {
+            return null;
+        }
+        BigDecimal rate = gstRate == null ? BigDecimal.ZERO : gstRate;
+        BigDecimal value = Pricing.lineItemValue(sellingPrice, BigDecimal.ONE);
+        return Pricing.lineTotal(value, Pricing.lineGst(value, rate));
     }
 
     private static String blankToNull(String value) {
