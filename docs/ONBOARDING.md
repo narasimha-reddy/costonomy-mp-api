@@ -341,10 +341,9 @@ These are live questions, not omissions. Do not close one silently.
 5. **OPEN-005 in `DECISIONS.md`** — the delivery fee is never charged to the
    restaurant, because it is only known after the payment is authorised. Read it
    before touching the payment flow.
-6. **Order creation still calls Razorpay inside its transaction.**
-   `IntentOrderCreator.create` keeps the order and its payment atomic, so the
-   provider call holds a connection there — the one place D-099 left alone.
-   Changing it changes the order flow.
+6. **Resolved (D-136): Razorpay inside the order transaction.** Order creation records the payment;
+   the checkout opens after commit. A gateway failure leaves an unpaid draft (422, "Nothing was
+   charged"), a retry opens it, and the sweep ends a payment never set up after 30 minutes.
 7. **Resolved (D-135): a simultaneous duplicate order.** `IntentOrderCreator.create` locks the
    intent first, so the second creation waits for the first and gets its order back; a deadlock that
    still happens answers 409, not 500. `IntentFlowIT$Concurrency` races five times and asserts both

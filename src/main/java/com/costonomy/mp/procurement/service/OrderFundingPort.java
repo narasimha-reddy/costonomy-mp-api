@@ -50,6 +50,20 @@ public interface OrderFundingPort {
     List<FundingIntent> arrangeFunding(List<SupplierOrder> orders);
 
     /**
+     * Whatever the client still has to complete for an order whose funding was arranged, made ready now, after the
+     * order has committed (D-136). For a card payment that opens the provider's checkout, a network call, which is why
+     * it is separate from {@link #arrangeFunding} (it runs inside the order's transaction and must not make one).
+     * Must not be called from inside a transaction. The default is the open intent as it stands: wallet and credit have
+     * nothing to open.
+     *
+     * @throws com.costonomy.mp.common.error.BusinessException {@code PAYMENT_FAILED} when the provider could not be
+     *         reached: nothing was charged, and calling again retries
+     */
+    default java.util.Optional<FundingIntent> prepareCheckout(Long supplierOrderId) {
+        return openIntent(supplierOrderId);
+    }
+
+    /**
      * Whether this method could fund an order between an outlet and a supplier store at all, before any
      * order exists (a standing arrangement such as a subscription is refused up front rather than
      * failing every morning). Wallet and card have nothing to check ahead of an amount; credit needs an

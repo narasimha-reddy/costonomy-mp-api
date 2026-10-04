@@ -61,14 +61,17 @@ public class PaymentService {
     // ── Creation ─────────────────────────────────────────────────────────
 
     /**
-     * Create a payment intent for an order.
+     * Record the payment an order will be paid with. Writes the row and nothing else: no provider call.
      *
-     * <p>Idempotent by construction: {@code uk_payment_order} means one payment per
-     * order, so a resubmission returns the existing intent rather than creating a
-     * second authorisation against the same order (doc 10 §2).
+     * <p>Joins the order's transaction. The provider call used to be made here, inside it, so a connection (and the
+     * intent row's lock) were held across a network round trip to Razorpay, and a provider failure rolled the whole
+     * order back (D-136). Opening the provider's checkout is {@link #openCheckout}, run after the order commits.
+     *
+     * <p>Idempotent by construction: {@code uk_payment_order} means one payment per order, so a resubmission returns
+     * the existing row rather than creating a second one (doc 10 §2).
      */
     @Transactional
-    public Payment createForOrder(Long supplierOrderId, Long procurementId, Long outletId,
+    public Payment recordForOrder(Long supplierOrderId, Long procurementId, Long outletId,
                                   BigDecimal amount, String paymentMethod) {
 
         var existing = payments.findBySupplierOrderId(supplierOrderId);
@@ -85,35 +88,62 @@ public class PaymentService {
         payment.setAuthorizedAmount(amount);
         payment.setStatus(PaymentStatus.CREATED);
         payments.saveAndFlush(payment);
+        return payment;
+    }
 
-        try {
-            // The hold is chosen here, once, and stored with the payment: the provider
-            // fixes an order's expiry when the order is made, so what the guard on
-            // "ready" measures against later must be this figure, not whatever the
-            // setting says by then (D-109).
-            int holdMinutes = (int) holdPolicy.holdLimit().toMinutes();
-            var intent = provider.createAuthorization(new PaymentProvider.AuthorizationRequest(
-                    "order-" + supplierOrderId, amount, "INR",
-                    "Mandi order " + supplierOrderId,
-                    // Derived from the order, not random: a retry of the same
-                    // submission reaches the same intent on the provider's side.
-                    "auth-order-" + supplierOrderId, holdMinutes));
-
-            payment.setProviderOrderId(intent.providerOrderId());
-            payment.setHoldMinutes(intent.holdMinutes() != null ? intent.holdMinutes() : holdMinutes);
-            payments.save(payment);
-            log.info("Payment {} created for {} {} with provider order {}, held {} minutes",
-                    payment.getId(), amount.toPlainString(), "INR", intent.providerOrderId(),
-                    payment.getHoldMinutes());
-
-        } catch (PaymentProviderException ex) {
-            // The order cannot be funded, so it must not reach the supplier.
-            fail(payment, ex.providerCode(), ex.getMessage());
-            throw new BusinessException(ErrorCode.PAYMENT_FAILED,
-                    "We couldn't set up payment for this order. Please try again.");
+    /**
+     * Open the provider's checkout for a payment that has none yet, outside any transaction (D-136).
+     *
+     * <p>Deliberately not {@code @Transactional}, and it must not be called from inside a transaction: the provider
+     * call is a network round trip and holds nothing. The result is written with one conditional update, so two
+     * callers racing to open the same checkout cannot overwrite each other: the first to write wins, the second finds
+     * the checkout already there and keeps it. The provider is given a key derived from the order, so both reach the
+     * same provider order anyway; if they did not, the one that lost is an unused provider order nobody was shown,
+     * which is harmless and logged.
+     *
+     * <p>A provider failure leaves the payment CREATED and the order a DRAFT, so the supplier still sees nothing
+     * (guardrail 16), and answers {@code PAYMENT_FAILED}: nothing was charged, and a retry opens the checkout. A
+     * payment whose checkout is never opened is ended by the reconciliation sweep.
+     *
+     * @return the payment as it now stands, with its provider order id if there is one
+     */
+    public Payment openCheckout(Long paymentId) {
+        var current = payments.findById(paymentId)
+                .orElseThrow(() -> new NotFoundException("Payment", paymentId));
+        if (current.getStatus() != PaymentStatus.CREATED
+                || current.getProviderOrderId() != null
+                || current.getCancelRequestedAt() != null) {
+            return current;
         }
 
-        return payment;
+        int holdMinutes = (int) holdPolicy.holdLimit().toMinutes();
+        PaymentProvider.AuthorizationIntent intent;
+        try {
+            // The hold is chosen here, once, and stored with the payment: the provider fixes an order's expiry when the
+            // order is made, so what the guard on "ready" measures against later must be this figure, not whatever the
+            // setting says by then (D-109).
+            intent = provider.createAuthorization(new PaymentProvider.AuthorizationRequest(
+                    "order-" + current.getSupplierOrderId(), current.getAuthorizedAmount(), "INR",
+                    "Mandi order " + current.getSupplierOrderId(),
+                    // Derived from the order, not random: a retry of the same submission reaches the same intent on the
+                    // provider's side.
+                    "auth-order-" + current.getSupplierOrderId(), holdMinutes));
+        } catch (PaymentProviderException ex) {
+            log.warn("Payment {} checkout could not be opened ({}): {}", paymentId, ex.providerCode(), ex.getMessage());
+            throw new BusinessException(ErrorCode.PAYMENT_FAILED, "Nothing was charged. Try again.");
+        }
+
+        int written = payments.openCheckoutIfUnopened(paymentId, intent.providerOrderId(),
+                intent.holdMinutes() != null ? intent.holdMinutes() : holdMinutes);
+        if (written == 0) {
+            log.warn("Payment {} already had its checkout (or is no longer CREATED); provider order {} was not used",
+                    paymentId, intent.providerOrderId());
+        } else {
+            log.info("Payment {} checkout opened with provider order {}, held {} minutes", paymentId,
+                    intent.providerOrderId(), intent.holdMinutes() != null ? intent.holdMinutes() : holdMinutes);
+        }
+        // The update cleared the persistence context, so this reads what is in the database now.
+        return payments.findById(paymentId).orElseThrow(() -> new NotFoundException("Payment", paymentId));
     }
 
     // ── Authorization ────────────────────────────────────────────────────

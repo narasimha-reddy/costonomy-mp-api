@@ -56,7 +56,8 @@ public class OrderFundingAdapter implements OrderFundingPort {
         for (SupplierOrder order : orders) {
             Payment payment;
             try (var trace = TraceScope.of("order", order.getId(), "order_number", order.getOrderNumber())) {
-                payment = paymentService.createForOrder(
+                // The row only: the provider's checkout is opened after the order commits (prepareCheckout, D-136).
+                payment = paymentService.recordForOrder(
                         order.getId(), order.getProcurementId(), order.getOutletId(),
                         order.getTotalAmount(), order.getPaymentMethod());
             }
@@ -70,6 +71,20 @@ public class OrderFundingAdapter implements OrderFundingPort {
         }
 
         return intents;
+    }
+
+    /**
+     * Opens the provider's checkout for this order's payment, after the order has committed (D-136). Not
+     * transactional: it makes a network call to the provider.
+     */
+    @Override
+    public java.util.Optional<FundingIntent> prepareCheckout(Long supplierOrderId) {
+        var payment = payments.findBySupplierOrderId(supplierOrderId).orElse(null);
+        if (payment == null) {
+            return java.util.Optional.empty();
+        }
+        paymentService.openCheckout(payment.getId());
+        return openIntent(supplierOrderId);
     }
 
     @Override

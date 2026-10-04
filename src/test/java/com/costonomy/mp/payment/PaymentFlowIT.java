@@ -1159,6 +1159,103 @@ class PaymentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("an order's checkout is opened with no transaction open, and the payment has its provider order (D-136)")
+        void orderCreationOpensTheCheckoutOutsideTheTransaction() throws Exception {
+            doAnswer(call -> { recordTransactionState("createAuthorization"); return call.callRealMethod(); })
+                    .when(mockProvider).createAuthorization(any());
+
+            var submitted = submit("400", 1);
+
+            // The call holds no connection (it used to run inside the order's transaction, across a round trip to the
+            // provider), and it happened once, and the payment has what it returned.
+            assertThat(openDuring).isEmpty();
+            verify(mockProvider, times(1)).createAuthorization(any());
+            assertThat(jdbc.queryForObject("select provider_order_id from payment where id = ?",
+                    String.class, submitted.paymentId())).isEqualTo(submitted.providerOrderId()).isNotBlank();
+        }
+
+        @Test
+        @DisplayName("a provider failure while opening the checkout leaves an unpaid draft the supplier cannot see; a retry opens it (D-136)")
+        void providerFailureLeavesADraftAndARetryOpensTheCheckout() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("ABC Foods");
+            long productId = TestCatalog.freshProduct(jdbc, "paneer");
+            long skuId = api.post(seller.token(), "/api/v1/supplier-stores/" + seller.storeId() + "/skus",
+                    Map.of("canonicalProductId", productId, "skuCode", "PNR-" + productId, "name", "Paneer",
+                            "packSize", 1, "packUnit", "KG", "sellingPrice", "400", "gstRate", "0")).at("/data/id").asLong();
+            long intentId = orders.answeredIntent(buyer.token(), buyer.outletId(), seller.token(), skuId, 1);
+            doThrow(new com.costonomy.mp.payment.provider.PaymentProviderException("down", true, "GATEWAY_TIMEOUT"))
+                    .doCallRealMethod().when(mockProvider).createAuthorization(any());
+
+            var failed = orders.createOrderRaw(buyer.token(), intentId, UUID.randomUUID().toString(),
+                    Map.of("deliveryMode", "PICKUP"));
+
+            assertThat(failed.getStatus()).isEqualTo(422);
+            assertThat(json.readTree(failed.getContentAsString()).at("/error/code").asText()).isEqualTo("PAYMENT_FAILED");
+            assertThat(json.readTree(failed.getContentAsString()).at("/error/message").asText()).contains("Nothing was charged");
+            // The order exists and is unpaid, hidden from the supplier; the payment is waiting for its checkout.
+            var order = jdbc.queryForMap("""
+                    select o.id, o.status from supplier_order o join intent_order_link l on l.supplier_order_id = o.id
+                     where l.intent_id = ?""", intentId);
+            long orderId = ((Number) order.get("id")).longValue();
+            assertThat(order.get("status")).isEqualTo("DRAFT");
+            var payment = jdbc.queryForMap("select status, provider_order_id from payment where supplier_order_id = ?", orderId);
+            assertThat(payment.get("status")).isEqualTo("CREATED");
+            assertThat(payment.get("provider_order_id")).isNull();
+            assertThat(jdbc.queryForObject("""
+                    select count(*) from outbox_event where aggregate_type = 'SUPPLIER_ORDER' and aggregate_id = ?
+                       and event_type in ('SupplierOrderConfirmed', 'SupplierOrderReleased')""",
+                    Integer.class, orderId)).isZero();
+
+            // The app drops its key after a 4xx and tries again; the order exists, so the retry opens the checkout.
+            var retried = orders.createOrderRaw(buyer.token(), intentId, UUID.randomUUID().toString(),
+                    Map.of("deliveryMode", "PICKUP"));
+
+            assertThat(retried.getStatus()).isEqualTo(200);
+            var body = json.readTree(retried.getContentAsString()).at("/data");
+            assertThat(body.at("/supplierOrderId").asLong()).isEqualTo(orderId);
+            assertThat(body.at("/payment/providerOrderId").asText()).isNotBlank();
+            assertThat(jdbc.queryForObject("select provider_order_id from payment where supplier_order_id = ?",
+                    String.class, orderId)).isEqualTo(body.at("/payment/providerOrderId").asText());
+            assertThat(jdbc.queryForObject("""
+                    select count(*) from supplier_order o join intent_order_link l on l.supplier_order_id = o.id
+                     where l.intent_id = ?""", Integer.class, intentId)).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a payment whose checkout was never opened is ended by the sweep, and its unseen order abandoned (D-136)")
+        void sweepEndsAPaymentWhoseCheckoutWasNeverOpened() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("ABC Foods");
+            long productId = TestCatalog.freshProduct(jdbc, "paneer");
+            long skuId = api.post(seller.token(), "/api/v1/supplier-stores/" + seller.storeId() + "/skus",
+                    Map.of("canonicalProductId", productId, "skuCode", "PNR-" + productId, "name", "Paneer",
+                            "packSize", 1, "packUnit", "KG", "sellingPrice", "400", "gstRate", "0")).at("/data/id").asLong();
+            long intentId = orders.answeredIntent(buyer.token(), buyer.outletId(), seller.token(), skuId, 1);
+            doThrow(new com.costonomy.mp.payment.provider.PaymentProviderException("down", true, "GATEWAY_TIMEOUT"))
+                    .when(mockProvider).createAuthorization(any());
+            orders.createOrderRaw(buyer.token(), intentId, UUID.randomUUID().toString(), Map.of("deliveryMode", "PICKUP"));
+            long orderId = jdbc.queryForObject("select supplier_order_id from intent_order_link where intent_id = ?",
+                    Long.class, intentId);
+            long paymentId = jdbc.queryForObject("select id from payment where supplier_order_id = ?", Long.class, orderId);
+
+            // Fresh, it is left alone: the app is about to retry.
+            paymentJobs.reconcileStale();
+            assertThat(jdbc.queryForObject("select status from payment where id = ?", String.class, paymentId))
+                    .isEqualTo("CREATED");
+
+            // Aged past the grace, with nothing at the provider to ask about.
+            jdbc.update("update payment set created_at = date_sub(utc_timestamp(6), interval 2 hour), "
+                    + "updated_at = date_sub(utc_timestamp(6), interval 2 hour) where id = ?", paymentId);
+            paymentJobs.reconcileStale();
+
+            assertThat(jdbc.queryForObject("select status from payment where id = ?", String.class, paymentId))
+                    .isEqualTo("FAILED");
+            assertThat(jdbc.queryForObject("select status from supplier_order where id = ?", String.class, orderId))
+                    .isEqualTo("CANCELLED");
+        }
+
+        @Test
         @DisplayName("a refund left PROCESSING by a crash is resent once, with its own key")
         void stuckRefundIsResent() throws Exception {
             var submitted = submit("400", 1);

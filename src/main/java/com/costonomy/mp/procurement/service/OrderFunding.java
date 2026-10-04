@@ -100,6 +100,11 @@ public class OrderFunding {
         return forOrder(supplierOrderId).openIntent(supplierOrderId);
     }
 
+    /** What the client still has to complete, ready now that the order has committed (D-136). Not in a transaction. */
+    public java.util.Optional<OrderFundingPort.FundingIntent> prepareCheckout(Long supplierOrderId) {
+        return forOrder(supplierOrderId).prepareCheckout(supplierOrderId);
+    }
+
     public BigDecimal refundableToWallet(Long supplierOrderId) {
         return forOrder(supplierOrderId).refundableToWallet(supplierOrderId);
     }

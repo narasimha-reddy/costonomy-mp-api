@@ -22,6 +22,7 @@ public class IntentOrderService {
 
     private final IntentOrderCreator creator;
     private final IdempotencyService idempotency;
+    private final com.costonomy.mp.procurement.service.OrderFunding funding;
 
     /** What ordering this right now would cost. Changes nothing. */
     public IntentDtos.OrderPreviewResponse preview(
@@ -72,9 +73,36 @@ public class IntentOrderService {
                     .toList());
         }
 
-        return idempotency.execute(actorId, "intent.createOrder", idempotencyKey,
+        var response = idempotency.execute(actorId, "intent.createOrder", idempotencyKey,
                 fingerprint, IntentDtos.CreateOrderResponse.class,
                 () -> creator.create(actorId, intentId, request));
+        return withCheckout(response);
+    }
+
+    /**
+     * The checkout the client has to complete, opened now that the order has committed (D-136).
+     *
+     * <p>Opening it used to happen inside the order's transaction, holding a connection across a call to the payment
+     * provider and rolling the whole order back if the provider failed. It happens here instead, for a fresh creation
+     * and for a replay alike, so the stored idempotent response never has to carry a checkout and a replay always gets
+     * a live one. If the provider cannot be reached, the order stays an unpaid DRAFT the supplier cannot see, the caller
+     * is told nothing was charged (422), and trying again (a new key, or this one) lands here and opens it.
+     */
+    private IntentDtos.CreateOrderResponse withCheckout(IntentDtos.CreateOrderResponse response) {
+        if (!"PREPAID".equals(response.paymentMethod())
+                || (response.payment() != null && response.payment().providerOrderId() != null)) {
+            return response;
+        }
+        var opened = funding.prepareCheckout(response.supplierOrderId());
+        if (opened.isEmpty()) {
+            return response;
+        }
+        var checkout = opened.get();
+        return new IntentDtos.CreateOrderResponse(
+                response.intentId(), response.supplierOrderId(), response.orderNumber(), response.totalAmount(),
+                response.paymentMethod(), response.paymentStatus(),
+                new IntentDtos.PaymentIntent(checkout.supplierOrderId(), checkout.paymentId(), checkout.provider(),
+                        checkout.providerOrderId(), checkout.amount(), checkout.currency(), checkout.publicKey()));
     }
 
     /**

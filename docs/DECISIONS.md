@@ -3625,10 +3625,8 @@ bypass the proxy. A refund is claimed as PROCESSING and committed before the
 call; one left there by a process that died mid-call is resent after five
 minutes, which the per-refund provider key makes safe.
 
-*Not changed:* order creation still calls the provider inside
-`IntentOrderCreator.create`, because that transaction keeps the order and its
-payment atomic. Moving the call out changes the order flow and is for its owner
-to decide.
+*Not changed (superseded by D-136):* order creation still called the provider inside
+`IntentOrderCreator.create`; D-136 moves the call out.
 
 **A retryable capture failure stranded the payment.** It returned the payment to
 AUTHORIZED "so the job tries again", but the capture job reads only
@@ -5898,3 +5896,12 @@ Verified before changing: `IntentOrderCreator.create` checked for an existing li
 3. **The idempotency fingerprint now includes the delivery mode, quote reference, slot and scheduled date.** The same key with a different delivery used to return the first order silently; it is now `IDEMPOTENCY_KEY_REUSE`.
 4. **Tests:** `duplicateOrderCreation` races five times with different keys and asserts both callers succeed with the same order id, and one order, one link, one payment and an ORDERED intent. Mutation-checked: without the lock round 1 fails. `keyReusedWithADifferentDeliveryIsRefused` is mutation-checked against the fingerprint.
 
+## D-136 — The Razorpay checkout is opened after the order commits
+
+Verified before changing: `IntentOrderCreator.create` called the provider while the order transaction held its connection and locks, so a slow gateway stalled the pool, and a provider failure rolled the whole order back.
+
+1. **Order creation records the payment only.** `PaymentService.recordForOrder` writes a CREATED payment inside the order transaction (no provider call). The order and its payment stay atomic.
+2. **The checkout opens after commit.** `IntentOrderService.create` (no transaction) calls `OrderFunding.prepareCheckout`, which calls `PaymentService.openCheckout`: the provider call runs with no transaction, then a conditional bulk update (`openCheckoutIfUnopened`, only while CREATED and with no provider order id) stores the provider order id. A concurrent opener cannot overwrite it.
+3. **A provider failure leaves an unpaid draft.** The caller gets 422 `PAYMENT_FAILED` "Nothing was charged. Try again."; the order and its CREATED payment remain. Retrying the same order request returns the existing order (D-102) and opens the checkout. No new pay-screen endpoint.
+4. **The sweep ends orphans.** `PaymentJobs.reconcileStale` expires a CREATED payment with no provider ids older than 30 minutes and abandons the unfunded order ("Payment was never set up").
+5. **Tests** (`PaymentFlowIT$Hardening`): the provider is not called inside the order transaction; a failure leaves a draft and a retry opens it; the sweep ends a never-opened payment. Each mutation-checked (call back inside the transaction; sweep disabled; failure marking the payment FAILED).
