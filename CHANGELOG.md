@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [phase4/cold-chain] - Cold chain and delivery safety (D-134)
+
+### Fixed
+- Cold chain, catch-weight and HSN are stamped on order lines from one place, so no order path can forget or recompute them. A product's own cold-chain flag now counts: a chilled product's SKU is chilled.
+- A chilled order is carried only by a carrier with recorded, evidenced capability. A quote that states no vehicle, or a vehicle the carrier is not verified for, is unserviceable; the requested vehicle is no longer inherited, and "a three-wheeler is insulated" is no longer assumed.
+- The checkout delivery fee for chilled goods no longer falls back to the rate card: with no verified carrier it is refused (422) before any quote, order or money exists. A fee quoted for ordinary goods can't be spent once the SKU is declared chilled. A chilled dispatch with no carrier fails as `NO_COLD_CHAIN_CARRIER` with nothing booked.
+- A supplier's cold-chain and catch-weight settings are no longer edited in place: each change supersedes the last with a reason and an audit row, and orders already placed keep what they were placed with.
+- The waterfall's audit row is no longer lost when a reassignment fails.
+
+### Added
+- V71 (`supplier_sku_handling_declaration`, `delivery_provider_cold_chain_capability`, `delivery_fee_quote.cold_chain`), `PUT /supplier-skus/{id}/handling`, `OrderLineStamper`, `ColdChainCarrierGate`. Only the two mock providers are seeded as capable (local and test use); with no real carrier verified, chilled goods go by pickup or supplier delivery.
+
+---
+
 ## [phase3/tax-invoices] - Tax invoices and credit notes without invented data (D-133)
 
 ### Fixed

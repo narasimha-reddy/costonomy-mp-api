@@ -78,9 +78,15 @@ public class SkuHandlingService {
      */
     @Transactional
     public SupplierSku declare(Long actorId, Long skuId, Boolean coldChain, Boolean catchWeight, String reason) {
-        var found = skus.findById(skuId).orElseThrow(() -> new NotFoundException("SupplierSku", skuId));
+        // The store is read without loading the SKU: an entity loaded before the lock would be handed back stale by the
+        // locking query, and the second of two simultaneous declarations would fail on its version.
+        Long storeId = jdbc.query("select supplier_store_id from supplier_sku where id = ?",
+                rs -> rs.next() ? rs.getLong(1) : null, skuId);
+        if (storeId == null) {
+            throw new NotFoundException("SupplierSku", skuId);
+        }
         accessControl.requireScoped(actorId, Permissions.CATALOG_EDIT, ScopeType.SUPPLIER_STORE,
-                found.getSupplierStoreId(), "SupplierSku");
+                storeId, "SupplierSku");
 
         // SKU first, then the declaration: the lock order used everywhere.
         var sku = skus.lockById(skuId).orElseThrow(() -> new NotFoundException("SupplierSku", skuId));
@@ -100,7 +106,7 @@ public class SkuHandlingService {
         Map<String, Object> before = state(sku.isRequiresColdChain(), sku.isCatchWeight());
         Map<String, Object> after = state(newCold, newCatch);
 
-        var current = declarations.findBySupplierSkuIdAndEffectiveToIsNull(skuId).orElse(null);
+        var current = declarations.lockCurrent(skuId).orElse(null);
         Instant now = Instant.now();
         if (current != null) {
             current.setEffectiveTo(now);
