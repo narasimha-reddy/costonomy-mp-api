@@ -10,6 +10,8 @@ import java.util.Optional;
 @Repository
 public interface CreditNoteRepository extends JpaRepository<CreditNote, Long> {
     List<CreditNote> findBySupplierOrderIdOrderByIdAsc(Long supplierOrderId);
+
+    boolean existsBySupplierOrderIdAndReasonCode(Long supplierOrderId, String reasonCode);
     Optional<CreditNote> findByCreditNoteNumber(String creditNoteNumber);
     List<CreditNote> findBySupplierStoreIdOrderByIssuedAtDesc(Long supplierStoreId);
     List<CreditNote> findByOutletIdOrderByIssuedAtDesc(Long outletId);

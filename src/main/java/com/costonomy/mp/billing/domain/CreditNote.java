@@ -25,8 +25,14 @@ import java.time.Instant;
 @NoArgsConstructor
 public class CreditNote extends BaseEntity {
 
-    @Column(name = "credit_note_number", nullable = false, unique = true, length = 64)
+    @Column(name = "credit_note_number", nullable = false, length = 16)
     private String creditNoteNumber;
+
+    @Column(name = "fiscal_year", nullable = false)
+    private Integer fiscalYear;
+
+    @Column(name = "sequence_value", nullable = false)
+    private Long sequenceValue;
 
     @Column(name = "tax_invoice_id")
     private Long taxInvoiceId;
@@ -52,7 +58,7 @@ public class CreditNote extends BaseEntity {
     @Column(name = "supplier_name", nullable = false)
     private String supplierName;
 
-    @Column(name = "supplier_gstin", length = 32)
+    @Column(name = "supplier_gstin", nullable = false, length = 15)
     private String supplierGstin;
 
     @Column(name = "buyer_name", nullable = false)
@@ -62,7 +68,7 @@ public class CreditNote extends BaseEntity {
     private String buyerGstin;
 
     @Column(name = "reason_code", nullable = false, length = 64)
-    private String reasonCode = "DOORSTEP_REJECTION";
+    private String reasonCode;
 
     @Column(name = "is_inter_state", nullable = false)
     private boolean isInterState = false;

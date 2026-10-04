@@ -74,6 +74,22 @@ public class DeliveryDirectory {
         return !list.isEmpty() && Boolean.TRUE.equals(list.get(0));
     }
 
+    /**
+     * The HSN code the order line should carry: the SKU's own, else its product's, else null. Never defaulted: a
+     * line with none is refused when its tax invoice is requested, not given somebody else's code.
+     */
+    public String skuHsnCode(Long skuId) {
+        if (skuId == null) {
+            return null;
+        }
+        var list = jdbc.queryForList("""
+                select coalesce(nullif(trim(s.hsn_code), ''), nullif(trim(p.hsn_code), ''))
+                  from supplier_sku s left join canonical_product p on p.id = s.canonical_product_id
+                 where s.id = ?
+                """, String.class, skuId);
+        return list.isEmpty() ? null : list.get(0);
+    }
+
     public boolean skuIsCatchWeight(Long skuId) {
         if (skuId == null) {
             return false;

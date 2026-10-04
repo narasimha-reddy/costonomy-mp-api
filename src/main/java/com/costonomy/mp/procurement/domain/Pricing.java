@@ -115,4 +115,33 @@ public final class Pricing {
         }
         return a.compareTo(b) != 0;
     }
+
+    /** The taxable value, GST and total of a rejected part of a line. */
+    public record Rejection(BigDecimal taxable, BigDecimal gst, BigDecimal total) {
+    }
+
+    /**
+     * What rejecting {@code rejectedQuantity} of a line takes off, from the line's stored figures. The whole line is
+     * exactly what it was billed at, so rounding can never refund a paisa more than was charged; a part is priced at
+     * the line's unit price and rate and never exceeds the line. Receiving (the refund) and billing (the credit note)
+     * both use this, so the two cannot differ by a paisa.
+     */
+    public static Rejection rejection(BigDecimal lineItemValue, BigDecimal lineGst, BigDecimal lineTotal,
+                                      BigDecimal suppliedQuantity, BigDecimal rejectedQuantity,
+                                      BigDecimal unitPrice, BigDecimal gstRatePercent) {
+        if (rejectedQuantity.compareTo(suppliedQuantity) == 0 && lineTotal != null) {
+            return new Rejection(lineItemValue, lineGst, lineTotal);
+        }
+        BigDecimal price = unitPrice == null ? BigDecimal.ZERO : unitPrice;
+        BigDecimal rate = gstRatePercent == null ? BigDecimal.ZERO : gstRatePercent;
+        BigDecimal value = lineItemValue(price, rejectedQuantity);
+        BigDecimal gst = lineGst(value, rate);
+        BigDecimal total = lineTotal(value, gst);
+        if (lineTotal != null && total.compareTo(lineTotal) > 0) {
+            total = lineTotal;
+            gst = gst.min(lineGst == null ? gst : lineGst);
+            value = total.subtract(gst);
+        }
+        return new Rejection(value, gst, total);
+    }
 }

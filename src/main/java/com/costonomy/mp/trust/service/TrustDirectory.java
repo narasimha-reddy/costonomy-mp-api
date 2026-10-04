@@ -77,7 +77,10 @@ public class TrustDirectory {
             BigDecimal lineTotal,
             boolean catchWeight,
             /** What a weighed catch-weight line is billed for; null until weighed. */
-            BigDecimal billableQuantity) {
+            BigDecimal billableQuantity,
+            /** The line's stored taxable value and GST (D-128), the base of a rejection's refund. */
+            BigDecimal lineItemValue,
+            BigDecimal lineGst) {
 
         /**
          * What the restaurant must account for at the door: the billed weight on a weighed catch-weight
@@ -98,7 +101,8 @@ public class TrustDirectory {
                 select i.id, p.name, i.requested_quantity, i.accepted_quantity, i.unit,
                        i.unit_price_snapshot, i.gst_rate_snapshot,
                        i.doorstep_refund_amount, i.doorstep_rejection_reason,
-                       i.line_total, i.is_catch_weight, i.billable_quantity
+                       i.line_total, i.is_catch_weight, i.billable_quantity,
+                       i.line_item_value, i.line_gst
                   from supplier_order_item i
                   join canonical_product p on p.id = i.canonical_product_id
                  where i.supplier_order_id = ? order by i.id
@@ -108,7 +112,8 @@ public class TrustDirectory {
                             rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getString(5),
                             rs.getBigDecimal(6), rs.getBigDecimal(7),
                             rs.getBigDecimal(8), rs.getString(9),
-                            rs.getBigDecimal(10), rs.getBoolean(11), rs.getBigDecimal(12)));
+                            rs.getBigDecimal(10), rs.getBoolean(11), rs.getBigDecimal(12),
+                            rs.getBigDecimal(13), rs.getBigDecimal(14)));
                 },
                 supplierOrderId);
         return lines;

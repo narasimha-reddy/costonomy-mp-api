@@ -338,6 +338,7 @@ public class IntentOrderCreator {
                 orderRequiresColdChain = true;
             }
             item.setCatchWeight(deliveryPolicies.skuIsCatchWeight(line.item().getSupplierSkuId()));
+            item.setHsnCode(deliveryPolicies.skuHsnCode(line.item().getSupplierSkuId()));
             supplierOrderItems.save(item);
         }
 

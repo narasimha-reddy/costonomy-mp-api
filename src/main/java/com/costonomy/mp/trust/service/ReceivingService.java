@@ -57,7 +57,6 @@ public class ReceivingService {
     private final AuditService auditService;
     private final OutboxService outbox;
     private final OrderAdjustmentService adjustments;
-    private final com.costonomy.mp.billing.service.TaxInvoiceService taxInvoiceService;
 
     @Transactional
     public TrustDtos.ReceivingResponse receive(Long actorId, Long supplierOrderId,
@@ -184,20 +183,10 @@ public class ReceivingService {
             BigDecimal rejectedQty = answer.damagedQuantity().add(answer.missingQuantity());
             BigDecimal lineRefund = BigDecimal.ZERO;
             if (rejectedQty.compareTo(BigDecimal.ZERO) > 0) {
-                if (rejectedQty.compareTo(accepted) == 0 && line.lineTotal() != null) {
-                    // The whole line: exactly what it was billed at, so rounding can never refund a paisa
-                    // more than was charged.
-                    lineRefund = line.lineTotal();
-                } else {
-                    BigDecimal unitPrice = line.unitPrice() != null ? line.unitPrice() : BigDecimal.ZERO;
-                    BigDecimal gstRate = line.gstRate() != null ? line.gstRate() : BigDecimal.ZERO;
-                    BigDecimal val = Pricing.lineItemValue(unitPrice, rejectedQty);
-                    BigDecimal gst = Pricing.lineGst(val, gstRate);
-                    lineRefund = Pricing.lineTotal(val, gst);
-                    if (line.lineTotal() != null) {
-                        lineRefund = lineRefund.min(line.lineTotal());
-                    }
-                }
+                // The same arithmetic the credit note uses (Pricing.rejection): the whole line is exactly what it was
+                // billed at, so rounding can never refund a paisa more than was charged.
+                lineRefund = Pricing.rejection(line.lineItemValue(), line.lineGst(), line.lineTotal(), accepted,
+                        rejectedQty, line.unitPrice(), line.gstRate()).total();
                 totalRefundAmount = totalRefundAmount.add(lineRefund);
             }
             String rejectionReason = answer.rejectionReason() != null ? answer.rejectionReason()
@@ -218,15 +207,13 @@ public class ReceivingService {
         // payable (D-128). It goes back by the funding method the order was paid with, through the one port,
         // never straight into the wallet: card money returns as a withdrawable refund, wallet money to the
         // wallet, and a credit order's invoice comes down.
-        String creditNoteNumber = null;
+        // The credit note is not made here: billing can never fail a check-in. It is issued after this commits, from
+        // the ReceivingCompleted event (or when the order's invoice is generated), and linked to the invoice then.
         if (totalRefundAmount.compareTo(BigDecimal.ZERO) > 0) {
-            var creditNote = taxInvoiceService.generateCreditNoteForRejection(supplierOrderId, "DOORSTEP_REJECTION");
-            creditNoteNumber = creditNote != null ? creditNote.creditNoteNumber() : null;
             // Recorded as an adjustment row, with the money returned by the order's funding method (D-129). On a
             // card whose capture has not finished the refund waits for it and the check-in still completes.
             adjustments.recordDoorstepRejection(supplierOrderId, totalRefundAmount, actorId,
-                    "Doorstep rejection for " + order.orderNumber()
-                            + (creditNoteNumber == null ? "" : " (" + creditNoteNumber + ")"));
+                    "Doorstep rejection for " + order.orderNumber());
         }
 
         // → COMPLETED. The order is finished because the restaurant says the goods

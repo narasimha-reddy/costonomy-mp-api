@@ -148,6 +148,7 @@ public class SubscriptionOrderGenerator {
         boolean coldChain = deliveryPolicies.skuRequiresColdChain(sub.getSupplierSkuId());
         item.setRequiresColdChain(coldChain);
         item.setCatchWeight(deliveryPolicies.skuIsCatchWeight(sub.getSupplierSkuId()));
+        item.setHsnCode(deliveryPolicies.skuHsnCode(sub.getSupplierSkuId()));
         supplierOrderItems.save(item);
         if (coldChain) {
             order.setHasColdChainItems(true);

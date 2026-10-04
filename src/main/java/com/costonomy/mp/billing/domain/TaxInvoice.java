@@ -24,8 +24,15 @@ import java.time.Instant;
 @NoArgsConstructor
 public class TaxInvoice extends BaseEntity {
 
-    @Column(name = "invoice_number", nullable = false, unique = true, length = 64)
+    @Column(name = "invoice_number", nullable = false, length = 16)
     private String invoiceNumber;
+
+    /** The financial year's starting calendar year (2026 for April 2026 to March 2027). */
+    @Column(name = "fiscal_year", nullable = false)
+    private Integer fiscalYear;
+
+    @Column(name = "sequence_value", nullable = false)
+    private Long sequenceValue;
 
     @Column(name = "supplier_order_id", nullable = false)
     private Long supplierOrderId;
@@ -45,13 +52,13 @@ public class TaxInvoice extends BaseEntity {
     @Column(name = "supplier_name", nullable = false)
     private String supplierName;
 
-    @Column(name = "supplier_gstin", length = 32)
+    @Column(name = "supplier_gstin", nullable = false, length = 15)
     private String supplierGstin;
 
-    @Column(name = "supplier_address", columnDefinition = "text")
+    @Column(name = "supplier_address", nullable = false, columnDefinition = "text")
     private String supplierAddress;
 
-    @Column(name = "supplier_state_code", length = 8)
+    @Column(name = "supplier_state_code", nullable = false, length = 2)
     private String supplierStateCode;
 
     @Column(name = "buyer_name", nullable = false)
@@ -60,13 +67,13 @@ public class TaxInvoice extends BaseEntity {
     @Column(name = "buyer_gstin", length = 32)
     private String buyerGstin;
 
-    @Column(name = "buyer_address", columnDefinition = "text")
+    @Column(name = "buyer_address", nullable = false, columnDefinition = "text")
     private String buyerAddress;
 
-    @Column(name = "buyer_state_code", length = 8)
+    @Column(name = "buyer_state_code", nullable = false, length = 2)
     private String buyerStateCode;
 
-    @Column(name = "place_of_supply", length = 64)
+    @Column(name = "place_of_supply", nullable = false, length = 64)
     private String placeOfSupply;
 
     @Column(name = "is_inter_state", nullable = false)

@@ -44,22 +44,24 @@ public class TaxInvoiceController {
 
     @GetMapping(value = {"/supplier-orders/{orderId}/tax-invoice/tally-xml", "/orders/{orderId}/tax-invoice/tally-xml"},
             produces = "application/xml")
-    @Operation(summary = "Export statutory invoice as Tally ERP XML Voucher")
+    @Operation(summary = "Export statutory invoice as Tally ERP XML Voucher (unverified draft)")
     public org.springframework.http.ResponseEntity<String> getTallyXml(
             @PathVariable Long orderId) {
         String xml = invoiceService.generateTallyXml(ActorContext.requireUserId(), orderId);
         return org.springframework.http.ResponseEntity.ok()
+                .header("X-Export-Status", "UNVERIFIED-DRAFT")
                 .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"invoice-" + orderId + "-tally.xml\"")
                 .body(xml);
     }
 
     @GetMapping(value = {"/supplier-orders/{orderId}/tax-invoice/gstr1-csv", "/orders/{orderId}/tax-invoice/gstr1-csv"},
             produces = "text/csv")
-    @Operation(summary = "Export statutory invoice as GSTN GSTR-1 B2B CSV")
+    @Operation(summary = "Export statutory invoice as GSTR-1 CSV (unverified draft)")
     public org.springframework.http.ResponseEntity<String> getGstr1Csv(
             @PathVariable Long orderId) {
         String csv = invoiceService.generateGstr1Csv(ActorContext.requireUserId(), orderId);
         return org.springframework.http.ResponseEntity.ok()
+                .header("X-Export-Status", "UNVERIFIED-DRAFT")
                 .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"invoice-" + orderId + "-gstr1.csv\"")
                 .body(csv);
     }

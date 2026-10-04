@@ -30,7 +30,7 @@ public class TaxInvoiceItem extends BaseEntity {
     private String productName;
 
     @Column(name = "hsn_code", nullable = false, length = 16)
-    private String hsnCode = "9968";
+    private String hsnCode;
 
     @Column(name = "quantity", nullable = false, precision = 19, scale = 4)
     private BigDecimal quantity;
