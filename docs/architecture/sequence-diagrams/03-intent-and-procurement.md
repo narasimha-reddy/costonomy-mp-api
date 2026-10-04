@@ -165,3 +165,110 @@ sequenceDiagram
     SOT-->>SOC: CancelledOrderResponseDto
     SOC-->>Supplier: 200 OK
 ```
+
+---
+
+## 6. `POST /api/v1/supplier-orders/{id}/weights` (Catch-Weight Packing & Re-Weighing)
+**Description**: Supplier weighs perishable catch-weight items at packing/dispatch; applies ±10% tolerance band, executes atomic wallet delta adjustments, and updates statutory payable baselines without platform absorption.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Supplier as Supplier Warehouse / Dispatcher
+    participant SOC as SupplierOrderController
+    participant SOS as SupplierOrderService
+    participant WS as WalletService
+    participant AS as AuditService
+    participant OB as OutboxService
+    participant DB as MySQL (supplier_order, supplier_order_item, wallet)
+
+    Supplier->>SOC: POST /api/v1/supplier-orders/{id}/weights (weights: [{supplierOrderItemId, weight}])
+    SOC->>SOS: recordDispatchWeights(actorId, id, request)
+    SOS->>DB: SELECT * FROM supplier_order WHERE id = id FOR UPDATE
+    
+    loop For each catch-weight item
+        SOS->>SOS: Apply ±10% tolerance band (maxBillableWeight = baseline * 1.10)
+        alt Overweight > Baseline
+            SOS->>WS: balanceOf(outletId)
+            alt Wallet balance insufficient for overweight surcharge
+                SOS->>SOS: Clamp billableWeight to committed baseline (Anti-Platform Absorption)
+            end
+        end
+        SOS->>DB: UPDATE supplier_order_item SET dispatched_weight, weight_delta_amount, line_total
+    end
+    
+    SOS->>DB: Recalculate subtotal, gst_amount, final_payable_amount
+    
+    alt Net Adjustment > 0 (Under-weight refund to buyer)
+        SOS->>WS: recordAdjustment(outletId, orderId, CREDIT, refundAmount, reason)
+        WS->>DB: UPDATE wallet SET balance = balance + refundAmount
+        WS->>DB: INSERT INTO wallet_transaction (direction=CREDIT, kind=ORDER_ADJUSTMENT)
+    else Net Adjustment < 0 (Over-weight surcharge debit)
+        SOS->>WS: recordAdjustment(outletId, orderId, DEBIT, surchargeAmount, reason)
+        alt Debit Fails (Balance Insufficient)
+            WS-->>SOS: false (debit unsuccessful)
+            SOS-->>SOC: 400 Bad Request (Insufficient wallet balance for overweight)
+            SOC-->>Supplier: Error response (Transaction Rolled Back)
+        else Debit Succeeded
+            WS->>DB: UPDATE wallet SET balance = balance - surchargeAmount
+            WS->>DB: INSERT INTO wallet_transaction (direction=DEBIT, kind=ORDER_ADJUSTMENT)
+        end
+    end
+    
+    SOS->>AS: record("ORDER_WEIGHTS_RECORDED")
+    SOS->>OB: publish("CatchWeightReconciled")
+    SOS-->>SOC: SupplierOrderResponse
+    SOC-->>Supplier: 200 OK (Weights Recorded & Financials Reconciled)
+```
+
+---
+
+## 7. `POST /api/v1/supplier-stores/{storeId}/subscriptions/generate-orders` (Daily Automated Replenishment)
+**Description**: Daily cron or store trigger that evaluates active subscriptions due for fulfillment, performs atomic wallet debiting or credit reservation, and advances due dates only upon confirmed funding.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor System as Cron Job / Store Ops
+    participant SC as SubscriptionController
+    participant SS as SubscriptionService
+    participant WS as WalletService
+    participant CLS as CreditLedgerService
+    participant OB as OutboxService
+    participant DB as MySQL (subscription, supplier_order, wallet, credit)
+
+    System->>SC: POST /api/v1/supplier-stores/{storeId}/subscriptions/generate-orders (targetDate)
+    SC->>SS: generateDailyOrders(actorId, storeId, targetDate)
+    SS->>DB: SELECT * FROM subscription WHERE supplier_store_id = storeId AND status = 'ACTIVE'
+    
+    loop For each due subscription
+        SS->>DB: Check existing order for date (idempotency guard)
+        SS->>DB: INSERT INTO supplier_order (status=DRAFT, is_subscription_order=true)
+        SS->>DB: INSERT INTO supplier_order_item (...)
+        
+        alt PaymentMethod == WALLET
+            SS->>WS: debitFor(outletId, orderId, totalAmount)
+            alt Wallet Debited Successfully
+                WS->>DB: UPDATE wallet SET balance = balance - totalAmount
+                SS->>DB: UPDATE supplier_order SET status = CONFIRMED, payment_status = COMPLETED
+                SS->>DB: Advance subscription next_delivery_date
+            else Insufficient Wallet Balance
+                WS-->>SS: false
+                SS->>DB: Keep order in DRAFT (unfunded)
+                SS->>OB: publish("SubscriptionFundingFailed", payload)
+                Note over SS,DB: next_delivery_date is NOT advanced (kept for retry)
+            end
+        else PaymentMethod == CREDIT
+            SS->>CLS: reserve(agreementId, orderId, null, totalAmount)
+            alt Credit Reserved
+                SS->>DB: UPDATE supplier_order SET status = CONFIRMED, payment_status = PENDING
+                SS->>DB: Advance subscription next_delivery_date
+            else Credit Limit Exceeded
+                SS->>OB: publish("SubscriptionFundingFailed", payload)
+            end
+        end
+    end
+    
+    SS-->>SC: GenerateOrdersResponse(generatedOrderIds)
+    SC-->>System: 200 OK
+```

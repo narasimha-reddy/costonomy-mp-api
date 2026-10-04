@@ -4,31 +4,47 @@ This document details the exact runtime request/response sequence diagrams for a
 
 ---
 
-## 1. `POST /api/v1/supplier-orders/{orderId}/receive` (Receiving Check-In)
-**Description**: Restaurant kitchen receives order goods, checks quantity and packaging quality, and records discrepancy items.
+## 1. `POST /api/v1/supplier-orders/{orderId}/receive` (Receiving Check-In & Doorstep Escrow)
+**Description**: Restaurant kitchen receives order goods at the door, records accepted vs rejected quantities per line item with rejection reasons, generates instant wallet refunds for rejected goods, issues statutory GST Credit Notes (Section 34 CGST Act), and reconciles final payable amounts.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Kitchen as Restaurant Staff
+    actor Kitchen as Restaurant Staff / Chef
     participant TC as TrustController
     participant RS as ReceivingService
-    participant DB as PostgreSQL (receiving, receiving_item)
+    participant TD as TrustDirectory
+    participant TIS as TaxInvoiceService
+    participant WS as WalletService
+    participant AS as AuditService
+    participant OB as OutboxService
+    participant DB as MySQL (receiving, supplier_order, credit_note, wallet)
 
-    Kitchen->>TC: POST /api/v1/supplier-orders/{orderId}/receive (acceptedQty, rejectedQty, notes)
-    TC->>RS: recordReceiving(orderId, receivingDto, principal)
-    RS->>DB: SELECT * FROM supplier_order WHERE id = orderId
-    RS->>DB: INSERT INTO receiving (order_id, status=COMPLETED, received_by=userId)
-    loop For each line item
-        RS->>DB: INSERT INTO receiving_item (receiving_id, sku_id, received_qty, rejected_qty, reason)
+    Kitchen->>TC: POST /api/v1/supplier-orders/{orderId}/receive (answers: [{orderItemId, receivedQty, rejectedQty, reason}])
+    TC->>RS: receive(actorId, orderId, request)
+    RS->>TD: order(orderId)
+    
+    loop For each item answer
+        RS->>TD: recordDoorstepReconciliation(item, receivedQty, rejectedQty, reason, lineRefund)
+        TD->>DB: UPDATE supplier_order_item SET doorstep_accepted_qty, doorstep_rejected_qty, doorstep_refund_amount
     end
-    alt Any items rejected
-        RS->>DB: UPDATE supplier_order SET status = PARTIALLY_RECEIVED
-    else All items accepted
-        RS->>DB: UPDATE supplier_order SET status = RECEIVED
+    
+    alt totalRefundAmount > 0 (Items Rejected at Doorstep)
+        RS->>TD: updateOrderFinancialReconciliation(orderId, totalRefundAmount)
+        TD->>DB: UPDATE supplier_order SET doorstep_refund_amount, final_payable_amount
+        RS->>TIS: generateCreditNoteForRejection(orderId, "DOORSTEP_REJECTION")
+        TIS->>DB: INSERT INTO credit_note (supplier_order_id, credit_note_number, taxable_amount, gst_amount)
+        RS->>WS: recordAdjustment(outletId, orderId, CREDIT, totalRefundAmount, "Doorstep rejection refund")
+        WS->>DB: UPDATE wallet SET balance = balance + totalRefundAmount
+        WS->>DB: INSERT INTO wallet_transaction (direction=CREDIT, kind=ORDER_ADJUSTMENT)
     end
-    RS-->>TC: ReceivingSummaryDto
-    TC-->>Kitchen: 201 Created
+    
+    RS->>TD: completeOrder(orderId)
+    TD->>DB: UPDATE supplier_order SET status = COMPLETED, final_payable_amount = reconciled
+    RS->>AS: record("ORDER_RECEIVED", status=COMPLETED)
+    RS->>OB: publish("ReceivingCompleted", {instantRefundAmount, hasDiscrepancy})
+    RS-->>TC: ReceivingResponse(totalAccepted, totalRejected, creditNoteNumber)
+    TC-->>Kitchen: 200 OK
 ```
 
 ---
