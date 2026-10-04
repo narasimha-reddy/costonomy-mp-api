@@ -476,7 +476,10 @@ public final class ProcurementDtos {
             BigDecimal acceptedQuantity,
             BigDecimal fulfilledQuantity,
             BigDecimal dispatchedWeight,
+            /** What the buyer is billed for on a weighed line: the reading, capped at what was accepted (D-124). */
+            BigDecimal billableQuantity,
             Instant weighedAt,
+            /** Positive: the buyer pays this much less than the agreed line because it weighed less. */
             BigDecimal weightDeltaAmount,
             BigDecimal doorstepAcceptedQty,
             BigDecimal doorstepRejectedQty,

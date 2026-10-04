@@ -96,7 +96,7 @@ public class SettlementDirectory {
     public java.util.Optional<OrderFigures> orderFigures(Long supplierOrderId) {
         var rows = jdbc.query("""
                 select so.id, so.supplier_store_id, ss.supplier_organization_id,
-                       so.accepted_amount, so.delivery_fee, so.updated_at, so.status
+                       coalesce(so.final_payable_amount, so.accepted_amount), so.delivery_fee, so.updated_at, so.status
                   from supplier_order so
                   join supplier_store ss on ss.id = so.supplier_store_id
                  where so.id = ?

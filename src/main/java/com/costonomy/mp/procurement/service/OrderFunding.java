@@ -73,8 +73,14 @@ public class OrderFunding {
         forOrder(supplierOrderId).onOrderAccepted(supplierOrderId, acceptedAmount);
     }
 
-    public void onOrderDispatched(Long supplierOrderId, BigDecimal amount) {
-        forOrder(supplierOrderId).onOrderDispatched(supplierOrderId, amount);
+    public void onOrderDispatched(Long supplierOrderId, BigDecimal finalPayable) {
+        forOrder(supplierOrderId).onOrderDispatched(supplierOrderId, finalPayable);
+    }
+
+    /** A reduction after dispatch, routed to whatever funds the order (D-124). */
+    public void reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
+                                    String key, Long actorId, String reason) {
+        forOrder(supplierOrderId).reduceAfterDispatch(supplierOrderId, amount, newFinalPayable, key, actorId, reason);
     }
 
     public boolean canTakeFunds(Long supplierOrderId) {

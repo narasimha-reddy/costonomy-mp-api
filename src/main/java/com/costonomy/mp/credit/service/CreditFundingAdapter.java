@@ -114,4 +114,18 @@ public class CreditFundingAdapter implements OrderFundingPort {
     public void onOrderUnfulfilled(Long supplierOrderId, String reason) {
         ledger.release(supplierOrderId, reason);
     }
+
+    /** Credit draws the accepted value at acceptance; at ready it comes down to the final payable (D-124). */
+    @Override
+    @Transactional
+    public void onOrderDispatched(Long supplierOrderId, BigDecimal finalPayable) {
+        ledger.reduceDrawnTo(supplierOrderId, finalPayable, "Order weighed lighter than ordered: invoice reduced");
+    }
+
+    @Override
+    @Transactional
+    public void reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
+                                    String key, Long actorId, String reason) {
+        ledger.reduceDrawnTo(supplierOrderId, newFinalPayable, reason);
+    }
 }

@@ -5412,3 +5412,54 @@ Xpressbees is gated by:
    - Buyers can subscribe to SKUs with frequencies (`DAILY`, `WEEKDAYS`, `ALTERNATE_DAYS`, `WEEKLY`), preferred delivery slots, skip dates, pause, resume, and cancellation.
    - Suppliers receive an operational Daily Manifest aggregating bulk SKU packing volumes and scheduled dispatches grouped by time slot.
    - Daily replenishment orders are generated deterministically and idempotently via `generateDailyOrders`.
+
+---
+
+## D-124 — Catch-weight settles at dispatch; weighing moves no money
+**2026-10-04 · Settled** — also records the catch-weight and doorstep parts of V59, V62 and V63. Billing (V60) and cold chain (V61) still have no record.
+
+### What was wrong
+Weighing could happen before or after a card was captured, and it moved wallet money immediately. That produced money that nobody had paid or been owed:
+- **Duplicate lines** in one request each added their own delta, so 50 copies of a near-zero reading credited the wallet about fifty lines' worth.
+- **A partial re-weigh** summed only the lines in the request but applied the result as the whole order's, so re-weighing one line took back another line's refund.
+- **Weigh then cancel** released the card hold in full and left the wallet credit in place, so the platform paid the difference.
+- **An over-weight debit that could not be covered** was logged and skipped after the order's figures were saved, so the supplier was paid for money never collected.
+- **Receiving checked against the ordered quantity**, so at 9.6 kg the buyer had to enter 0.4 kg as missing and was refunded for it a second time.
+- **Doorstep refunds always went to the wallet**, whatever paid for the order, turning card money into a closed balance and leaving a credit invoice at its full amount.
+
+### Decision
+**Weigh before ready; settle once, at ready; money only ever moves down afterwards.**
+
+1. **Weighing** (`SupplierOrderService.recordDispatchWeights`) is allowed only in CONFIRMED and PREPARING, locks the order first, and refuses a repeated line in one request. It moves no money: it fixes each line's billed quantity, and recomputes the order's subtotal, GST, weight adjustment and final payable from **all** lines, so a partial re-weigh cannot corrupt the total. The line must be flagged catch-weight and sold in a mass unit (GM, KG, OZ, LB); the reading is taken in the line's own unit.
+2. **Billed quantity** is `min(reading, accepted)` (`CatchWeight`, the only place the rule lives). Overweight within the band is the supplier's giveaway: billing it would need money beyond a card's authorisation, and the price the restaurant saw was one number. A reading below **-20%** or above **+10%** of accepted is refused as a probable scale error (`costonomy.mp.catch-weight.max-under-percent` / `max-over-percent`). A scale reads to the gram: at most three decimals. All money goes through `Pricing`.
+3. **Ready requires every catch-weight line to be weighed.** Otherwise an unweighed line is billed at the ordered quantity on nobody's measurement.
+4. **Settlement at ready** goes through the one funding port: `OrderFundingPort.onOrderDispatched(orderId, finalPayable)`, with the order locked.
+   - Card: captures `min(finalPayable, authorised)`; the rest of the hold is released, never refunded.
+   - Wallet: the wallet paid the accepted total up front; the difference comes back as one `ORDER_ADJUSTMENT` credit, reference `order-settle-{orderId}`, so a repeat credits nothing.
+   - Credit: the invoice and the amount drawn come down to the final payable (`CreditInvoiceService.reduceTo`, state-based and so idempotent), recorded as a credit `ADJUSTMENT`. It never takes an invoice below what has already been repaid.
+5. **After ready, money only goes down**, through `OrderFundingPort.reduceAfterDispatch` (a doorstep rejection). Card: a refund of the captured payment to the wallet, kind `REFUND` and withdrawable (D-104), reason `DOORSTEP_REJECTION`. Wallet: an `ORDER_ADJUSTMENT` credit. Credit: the invoice comes down. The supplier bears it through `final_payable`; Costonomy never funds a refund.
+6. **Receiving** checks received + damaged + missing against the **billed** quantity on a weighed catch-weight line (`TrustDirectory.OrderLine.receivableQuantity`), and against the accepted quantity otherwise. The accepted quantity on the order is untouched. A whole-line rejection refunds the line's stored total exactly; a partial one is priced through `Pricing` and capped at it. The refund goes through the funding port, never straight into the wallet. No credit-note number is invented: the response carries the number actually issued, or none.
+7. **Guards where the figures are written.** `supplier_order.final_payable_amount` has a CHECK `>= 0` (V63) and the doorstep update refuses to take it below zero; `CommissionService` throws on a negative base instead of clamping it to zero, which would have paid the supplier nothing and quietly made the platform whole.
+8. **Settlement figures:** `SettlementDirectory.orderFigures` now uses `coalesce(final_payable_amount, accepted_amount)`, so dispute-refund coverage is computed on what the supplier is actually owed.
+
+### Who pays what
+Rs 100/kg, 5% GST, 10 kg accepted (Rs 1,050).
+
+| Scale reading | Billed | Final payable | Card (held 1,050) | Wallet (paid 1,050) | Credit (invoice 1,050) | Supplier paid on |
+|---|---|---|---|---|---|---|
+| 9.6 kg | 9.6 | 1,008 | capture 1,008; 42 released, never charged | +42 credited | invoice and draw 1,008 | 1,008 |
+| 10.0 kg | 10.0 | 1,050 | capture 1,050 | nothing | 1,050 | 1,050 |
+| 10.4 kg | 10.0 | 1,050 | capture 1,050 | nothing | 1,050 | 1,050 (supplier gives 0.4 kg away) |
+| 12 kg or 7.9 kg | refused | unchanged | | | | |
+
+After ready, 0.1 kg of the 9.6 kg found missing at the door: Rs 10.50 less (10.00 + 0.50 GST), final 997.50, by each method as in point 5.
+
+### Removed
+`WalletService.recordAdjustment` and its debit path, the only code that took wallet money because of a weighing. Over-weight is never billed to anyone.
+
+### Not changed here (open)
+- **Order adjustment record and per-method reconciliation.** A card order's capture still reads as a mismatch against settlement where wallet or credit movements are involved, and `SettlementService.approve` does not require a clean reconciliation. Next slice.
+- **A doorstep rejection on a pickup order whose capture is still pending** is refused with a retryable conflict (the refund service needs a captured payment); nothing is written.
+- **Subscriptions, tax invoices, and the mobile app** are separate follow-ups. Subscription order lines do not yet carry the catch-weight flag at creation (V63 backfills existing ones).
+- **Orders weighed under the old code and not yet ready** already carry a wallet adjustment and would also get a reduced capture. Before deploying, check `select supplier_order_id, direction, sum(amount) from wallet_transaction where kind = 'ORDER_ADJUSTMENT' group by 1, 2` against orders not yet COMPLETED or CANCELLED.
+- A legacy `ORDER_ADJUSTMENT` debit (the old over-weight surcharge) now raises what the wallet can give back for that order, and a credit lowers it; both are counted by direction.

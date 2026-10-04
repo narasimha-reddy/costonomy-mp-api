@@ -75,14 +75,38 @@ public interface OrderFundingPort {
     void onOrderUnfulfilled(Long supplierOrderId, String reason);
 
     /**
-     * The goods are about to leave: take the money now (D-103).
+     * The goods are about to leave: settle the order's money to what it finally comes to (D-103, D-124).
      *
-     * <p>Prepaid money is held from confirmation and taken only when the supplier
-     * marks the order ready — the point after which it can no longer be
-     * cancelled — so a cancellation before it drops a hold rather than refunding
-     * a charge. Default no-op: credit draws at confirmation (onOrderAccepted).
+     * <p>{@code finalPayable} is the accepted amount less any catch-weight shortfall. Called exactly once in
+     * effect, with the order locked, and idempotent: a repeat finds the money already settled.
+     * <ul>
+     *   <li><b>Card:</b> prepaid money is held from confirmation and taken here, at most what was
+     *       authorised, so the shortfall is released and never refunded.</li>
+     *   <li><b>Wallet:</b> the wallet paid the accepted total up front; the difference comes back as one
+     *       credit.</li>
+     *   <li><b>Credit:</b> the drawn amount and the invoice come down to {@code finalPayable}.</li>
+     * </ul>
+     * From here the money only moves down ({@link #reduceAfterDispatch}); weighing never touches it.
      */
-    default void onOrderDispatched(Long supplierOrderId, BigDecimal amount) {
+    default void onOrderDispatched(Long supplierOrderId, BigDecimal finalPayable) {
+    }
+
+    /**
+     * Reduce what the restaurant pays after the goods left, once per key (D-124): a doorstep rejection. The
+     * supplier bears it, through the order's final payable, and Costonomy never funds it.
+     *
+     * <p>Down only. Card: a refund of the captured payment to the wallet, withdrawable (D-104). Wallet: a
+     * credit back. Credit: the invoice and the drawn amount come down.
+     *
+     * @param amount          how much less the restaurant pays
+     * @param newFinalPayable what the order now comes to in total, for a method that tracks a figure
+     * @param key             makes a repeat a no-op
+     */
+    default void reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
+                                     String key, Long actorId, String reason) {
+        throw new com.costonomy.mp.common.error.BusinessException(
+                com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR,
+                "This order's payment can't be adjusted after dispatch.");
     }
 
     /**

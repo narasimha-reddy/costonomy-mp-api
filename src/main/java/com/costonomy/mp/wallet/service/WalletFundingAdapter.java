@@ -89,6 +89,20 @@ public class WalletFundingAdapter implements OrderFundingPort {
         wallets.refundFor(supplierOrderId, reason);
     }
 
+    /** The wallet paid the accepted total up front; what a weighing took off it comes back now (D-124). */
+    @Override
+    @Transactional
+    public void onOrderDispatched(Long supplierOrderId, BigDecimal finalPayable) {
+        wallets.settleOrder(supplierOrderId, finalPayable);
+    }
+
+    @Override
+    @Transactional
+    public void reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
+                                    String key, Long actorId, String reason) {
+        wallets.creditOrderAdjustment(supplierOrderId, amount, key, reason);
+    }
+
     @Override
     public java.util.Optional<String> paymentState(Long supplierOrderId) {
         return wallets.paymentState(supplierOrderId);

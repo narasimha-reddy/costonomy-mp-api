@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [fix/d124-catchweight-settle-at-dispatch] - Catch-weight settles at dispatch (D-124)
+
+### Fixed
+- Weighing no longer moves money. A duplicated line, a partial re-weigh, weigh-then-cancel and an uncovered over-weight debit could each create money or leave the platform paying; none is possible now.
+- Receiving checks against the billed weight on a weighed catch-weight line, so a shortfall is no longer refunded twice.
+- Doorstep rejections go back through the order's funding method (card refund to the wallet, wallet credit, or a lower credit invoice) and no longer always become a closed wallet balance.
+- Settlement and dispute-refund coverage use the final payable. Commission throws on a negative base instead of clamping it.
+- Over-weight within the band is billed at the ordered quantity; readings outside -20% / +10% are refused.
+
+### Added
+- `CatchWeight` and `CatchWeightPolicy` (`costonomy.mp.catch-weight.*`), V63 (`billable_quantity`, final payable CHECK), `OrderFundingPort.reduceAfterDispatch`, credit invoice reduction, and `billableQuantity` on the order item response.
+- Ready now requires every catch-weight line to be weighed.
+
+### Removed
+- `WalletService.recordAdjustment` and its debit path.
+
+### Tests
+- `CatchWeightTest` (11) and `CatchWeightSettlementIT` (20), mutation-checked.
+
+---
+
 ## [Architecture & Security Audit]
 
 ### [Security Audit Report] - 2026-10-02
