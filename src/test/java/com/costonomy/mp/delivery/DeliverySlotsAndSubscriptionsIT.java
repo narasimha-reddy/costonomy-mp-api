@@ -29,6 +29,7 @@ class DeliverySlotsAndSubscriptionsIT extends AbstractIntegrationTest {
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private com.costonomy.mp.procurement.subscription.SubscriptionGenerationService generation;
 
     private ApiClient api;
 
@@ -63,6 +64,11 @@ class DeliverySlotsAndSubscriptionsIT extends AbstractIntegrationTest {
         jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', verification_status = 'VERIFIED' where id = ?",
                 supplierRes.get("id").asLong());
         TestCatalog.tradesAroundTheClock(jdbc, supplierRes.get("id").asLong());
+        jdbc.update("""
+                insert into supplier_delivery_policy (supplier_store_id, own_delivery_enabled,
+                    costonomy_delivery_enabled, own_delivery_fee, created_at, updated_at, version)
+                values (?, 1, 1, 0, now(6), now(6), 0)
+                """, supplierRes.get("stores").get(0).get("id").asLong());
 
         // 2. Supplier creates delivery slot
         JsonNode slotCreated = api.post(sellerToken, "/api/v1/supplier-stores/" + storeId + "/delivery-slots", Map.of(
@@ -132,10 +138,11 @@ class DeliverySlotsAndSubscriptionsIT extends AbstractIntegrationTest {
         // only when it can be funded (guardrail 16).
         api.post(buyerToken, "/api/v1/outlets/" + outletId + "/wallet/top-up", Map.of("amount", "1000.00"));
 
-        // 7. Supplier triggers daily replenishment order generation for tomorrow
-        JsonNode genRes = api.post(sellerToken, "/api/v1/supplier-stores/" + storeId + "/subscriptions/generate-orders?date=" + tomorrow, Map.of());
-        assertThat(genRes.at("/data/ordersGenerated").asInt()).isEqualTo(1);
-        long orderId = genRes.at("/data/orderIds/0").asLong();
+        // 7. The scheduler's generation for tomorrow (there is no supplier endpoint that triggers it any more)
+        generation.runFor(tomorrow);
+        long orderId = jdbc.queryForObject(
+                "select id from supplier_order where subscription_id = ? and scheduled_delivery_date = ?",
+                Long.class, subId, java.sql.Date.valueOf(tomorrow));
         // 10 LTR at Rs 60 + 5% GST = Rs 630, taken from the wallet, and the order confirmed behind it.
         assertThat(jdbc.queryForObject("select status from supplier_order where id = ?", String.class, orderId))
                 .isEqualTo("CONFIRMED");
@@ -149,5 +156,8 @@ class DeliverySlotsAndSubscriptionsIT extends AbstractIntegrationTest {
         assertThat(orderRes.at("/data/deliverySlotId").asLong()).isEqualTo(preferredSlotId);
         assertThat(orderRes.at("/data/deliverySlotName").asText()).isEqualTo(slotName);
         assertThat(orderRes.at("/data/scheduledDeliveryDate").asText()).isEqualTo(tomorrow.toString());
+        // The line's unit is the SKU's own, not the one the client sent.
+        assertThat(jdbc.queryForObject("select unit from supplier_order_item where supplier_order_id = ?",
+                String.class, orderId)).isEqualTo("LTR");
     }
 }
