@@ -62,7 +62,9 @@ public final class WalletDtos {
              * sent and the money is back in the wallet). Null for every other kind.
              */
             String refundStatus,
-            Instant at) {
+            Instant at,
+            /** The bill status, exactly as the History list shows it for this entry (D-116): null or {@link Bill}. */
+            Bill bill) {
     }
 
     /**
@@ -86,11 +88,82 @@ public final class WalletDtos {
             String refundStatus,
             /** "Card •1007", "UPI", "Netbanking"; null when unknown or not a top-up. */
             String instrument,
-            Instant at) {
+            Instant at,
+            /**
+             * The bill on a payment that needs one (D-116), or null: no bill applies, the payment is before the
+             * tracking start, or it was marked 'No bill needed'.
+             */
+            Bill bill) {
     }
 
-    /** What a month's ledger added and spent, in rupees. Ledger only: a returned top-up is neither. */
-    public record MonthTotal(String month, BigDecimal added, BigDecimal spent) {
+    /** PENDING, READING, ADDED, REVIEWED or UNREADABLE (D-116). */
+    public record Bill(String status) {
+    }
+
+    /**
+     * The History banner's counts (D-116): payments since the tracking start that need a bill (PENDING), and every
+     * bill on the wallet being read, or not read and not yet filled in by hand. All months, whatever the filters; each
+     * count equals what its {@code bills=} filter returns; 'No bill needed' is not counted, and a bill wins over it.
+     */
+    public record BillSummary(int pending, int reading, int unreadable) {
+    }
+
+    /**
+     * One wallet entry in full, for the transaction-details page. Carries every field the list
+     * item does ({@link HistoryItem}) plus who the other side was and what we hold to prove it.
+     */
+    public record TransactionDetail(
+            String key,
+            Long id,
+            /** Our own transaction id: the ledger entry id as a plain decimal string, e.g. "184". */
+            String transactionId,
+            WalletDirection direction,
+            String kind,
+            BigDecimal amount,
+            BigDecimal balanceAfter,
+            Long supplierOrderId,
+            String reason,
+            String status,
+            String refundStatus,
+            String instrument,
+            Instant at,
+            /** Who was paid or who paid; null when we do not know. */
+            String counterpartyName,
+            /** A QuickScan payee's masked VPA, an order number, or null. Never a full VPA. */
+            String counterpartyDetail,
+            /** Real identifiers we hold, in display order. Our own transaction id is not repeated here. */
+            List<Reference> references,
+            Actions actions,
+            /** The shop's bill on this payment, or null (D-113). */
+            com.costonomy.mp.wallet.invoice.web.InvoiceDtos.Summary invoice,
+            /**
+             * D-116: PENDING, READING, ADDED, REVIEWED, UNREADABLE, NOT_REQUIRED ('No bill needed') or null, by the
+             * History's rules (a payment before the tracking start without a bill is null).
+             */
+            String billStatus) {
+    }
+
+    public record Reference(String label, String value, boolean copyable) {
+    }
+
+    public record Actions(
+            boolean canPayAgain,
+            /** A bill can be attached: an order payment or a QuickScan payment (D-113). */
+            boolean canAddBill,
+            /** D-116: 'No bill needed' can be set: an eligible payment with no bill, not already marked. */
+            boolean canWaiveBill,
+            /** D-116: 'No bill needed' is set and can be undone. */
+            boolean canUndoWaiver,
+            /** The full VPA, present only when {@code canPayAgain}: the caller's own past payment. */
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+            String payeeVpa) {
+    }
+
+    /**
+     * What a month's ledger added and spent, in rupees. Ledger only: a returned top-up is neither. {@code billsPending}:
+     * the month's payments with bill status PENDING (D-116), whatever the filters.
+     */
+    public record MonthTotal(String month, BigDecimal added, BigDecimal spent, int billsPending) {
     }
 
     public record HistoryResponse(
@@ -99,7 +172,9 @@ public final class WalletDtos {
             /** Every Asia/Kolkata month with any history for this outlet, newest first, filters ignored. */
             List<String> availableMonths,
             /** Pass back as {@code cursor} for the next page; null on the last one. */
-            String nextCursor) {
+            String nextCursor,
+            /** D-116: the banner's counts, all months, filters ignored. Null on later pages (a cursor was sent). */
+            BillSummary billSummary) {
     }
 
     /** Send wallet money back to the card or bank it came from (D-104). */

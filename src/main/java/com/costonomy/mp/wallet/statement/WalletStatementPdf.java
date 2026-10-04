@@ -23,7 +23,7 @@ import java.util.Locale;
  * repository, the build runs offline, and adding a dependency that cannot be resolved would
  * break every build but the author's. A statement is plain text in a table, which PDF can do
  * with a page tree, one built-in font and a text stream, so this writes exactly that and
- * nothing else: A4, Helvetica and Helvetica-Bold (standard fonts, nothing to embed), the
+ * nothing else: A4 landscape (D-116: room for the Bill, Shop and Bill no. columns), Helvetica and Helvetica-Bold (standard fonts, nothing to embed), the
  * table header repeated on every page, and "Page n of m".
  *
  * <p><b>The rupee sign.</b> The standard fonts have no glyph for it, so amounts are shown
@@ -45,19 +45,24 @@ public final class WalletStatementPdf {
     private static final DateTimeFormatter DAY =
             DateTimeFormatter.ofPattern("dd MMM yyyy", Locale.ENGLISH);
 
-    private static final double PAGE_W = 595;
-    private static final double PAGE_H = 842;
+    private static final double PAGE_W = 842;
+    private static final double PAGE_H = 595;
     private static final double MARGIN = 40;
     private static final double ROW_H = 14;
     private static final double FONT = 8;
 
     // Column left edges; the two amount columns are right-aligned to their right edges.
     private static final double X_DATE = MARGIN;
-    private static final double X_DESC = 128;
-    private static final double X_REF = 268;
-    private static final double X_DIR = 340;
-    private static final double R_AMOUNT = 465;
-    private static final double R_BALANCE = PAGE_W - MARGIN;
+    private static final double X_DESC = 112;
+    private static final double X_REF = 245;
+    private static final double X_DIR = 318;
+    private static final double R_AMOUNT = 420;
+    private static final double R_BALANCE = 500;
+    // D-116: the bill, after the ledger's columns.
+    private static final double X_BILL = 512;
+    private static final double X_SHOP = 580;
+    private static final double X_BILL_NO = 712;
+    private static final double R_PAGE = PAGE_W - MARGIN;
 
     private WalletStatementPdf() {
     }
@@ -112,11 +117,14 @@ public final class WalletStatementPdf {
                 page.text(false, FONT, X_DIR, y, row.direction() == WalletDirection.CREDIT ? "Credit" : "Debit");
                 page.rightText(false, FONT, R_AMOUNT, y, plain(row.amount()));
                 page.rightText(false, FONT, R_BALANCE, y, plain(row.balanceAfter()));
+                page.text(false, FONT, X_BILL, y, fit(row.bill(), X_SHOP - X_BILL - 6));
+                page.text(false, FONT, X_SHOP, y, fit(row.shop(), X_BILL_NO - X_SHOP - 6));
+                page.text(false, FONT, X_BILL_NO, y, fit(row.billNumber(), R_PAGE - X_BILL_NO));
             }
         } while (next < rows.size());
 
         for (int i = 0; i < pages.size(); i++) {
-            pages.get(i).rightText(false, 8, R_BALANCE, MARGIN - 12,
+            pages.get(i).rightText(false, 8, R_PAGE, MARGIN - 12,
                     "Page %d of %d".formatted(i + 1, pages.size()));
             pages.get(i).text(false, 7, MARGIN, MARGIN - 12, "Amounts in Indian rupees (Rs.). Times are IST.");
         }
@@ -155,6 +163,9 @@ public final class WalletStatementPdf {
         page.text(true, FONT, X_DIR, y, "Direction");
         page.rightText(true, FONT, R_AMOUNT, y, "Amount (Rs.)");
         page.rightText(true, FONT, R_BALANCE, y, "Balance (Rs.)");
+        page.text(true, FONT, X_BILL, y, "Bill");
+        page.text(true, FONT, X_SHOP, y, "Shop");
+        page.text(true, FONT, X_BILL_NO, y, "Bill no.");
         page.rule(y - 4);
         return y - 4;
     }
@@ -282,7 +293,7 @@ public final class WalletStatementPdf {
         objects.add(ascii("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"));
         for (int i = 0; i < pages.size(); i++) {
             int content = firstPage + 2 * i + 1;
-            objects.add(ascii("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+            objects.add(ascii("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] "
                     + "/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents " + content + " 0 R >>"));
             byte[] body = pages.get(i).stream.toString().getBytes(StandardCharsets.ISO_8859_1);
             var stream = new ByteArrayOutputStream();

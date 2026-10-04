@@ -485,7 +485,10 @@ class WalletHistoryIT extends AbstractIntegrationTest {
             var item = ok(buyer, "").get("items").get(0);
 
             assertThat(item.fieldNames()).toIterable().containsExactlyInAnyOrder("key", "id", "direction", "kind",
-                    "amount", "balanceAfter", "supplierOrderId", "reason", "status", "refundStatus", "instrument", "at");
+                    "amount", "balanceAfter", "supplierOrderId", "reason", "status", "refundStatus", "instrument", "at",
+                    "bill");
+            // D-116: present and null while bill tracking is off (the tests' default).
+            assertThat(item.get("bill").isNull()).isTrue();
             assertThat(item.get("id").asLong()).isEqualTo(seed.lastId);
             assertThat(item.get("direction").asText()).isEqualTo("DEBIT");
             assertThat(item.get("kind").asText()).isEqualTo("ORDER_PAYMENT");

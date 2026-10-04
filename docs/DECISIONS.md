@@ -5412,3 +5412,343 @@ Xpressbees is gated by:
    - Buyers can subscribe to SKUs with frequencies (`DAILY`, `WEEKDAYS`, `ALTERNATE_DAYS`, `WEEKLY`), preferred delivery slots, skip dates, pause, resume, and cancellation.
    - Suppliers receive an operational Daily Manifest aggregating bulk SKU packing volumes and scheduled dispatches grouped by time slot.
    - Daily replenishment orders are generated deterministically and idempotently via `generateDailyOrders`.
+---
+
+## D-112 — One wallet entry in full: `GET /outlets/{outletId}/wallet/transactions/{entryId}`
+
+The transaction-details page (money received or paid, with a receipt to share) needs one entry explained, not a list row.
+Read-only: no schema change, no migration, no change to the history list.
+
+1. **Our transaction id is the ledger entry id**, a plain decimal string (`"184"`). `entryId` in the path accepts that or
+   the list's `key` (`L184`). A returned top-up (`T12`) never touched the ledger, has no transaction id, and is a 404.
+2. **Same door as the history.** `ORDER_VIEW` on the outlet; the entry is looked up in the outlet's own wallet, so another
+   outlet's entry, a missing one and a malformed id are all `404`, never `403`. The status uses the list's rule
+   (`WalletHistoryService.statusOf`), so list and detail cannot disagree.
+3. **Counterparty by kind.** QuickScan payment/return: payee name and the VPA masked to the first two characters of the
+   handle, bullets, and the `@bank` (`sr••••@okhdfc`). Order payment/refund/dispute refund: the supplier shop and the order
+   number. Top-up: the instrument in the history's form (`Card •1111`, `UPI`). Withdrawal and its reversal, refund: the
+   statement's plain words.
+4. **References are only what we hold.** Order number, QuickScan payment id, Razorpay payment id (top-up, or an order paid
+   through Razorpay, or the card payment a withdrawal refunds), our refund id and the provider's refund id once sent, and a
+   payout id only when it is a real provider id (a mock's is not shown). **No UTR or bank reference is stored anywhere**, so
+   none is returned. Our own transaction id is not repeated in `references`. No keys, signatures or full card/UPI data.
+5. **The full VPA leaves only as `actions.payeeVpa`**, and only when `actions.canPayAgain`: a QuickScan payment (not a
+   return) whose payee VPA still passes QuickScan's own validation. It is the caller's own past payment; the app needs it to
+   prefill a new one. Everywhere else the VPA is masked.
+
+**Tests.** `WalletTransactionDetailIT` (every kind from seeded rows, masking, pay-again, tenancy, 401, 404s) and
+`WalletEntryDetailMaskTest`.
+
+
+## D-113 — The shop's bill on a wallet payment: private pages, read by the cost app we already have
+
+A restaurant that paid from the wallet can keep the shop's bill with that payment: 1 to 5 photo or PDF pages, and what
+was read from them, next to what the wallet paid. `POST|GET|DELETE /outlets/{outletId}/wallet/transactions/{entryId}/invoice`.
+
+1. **Only payments made from the wallet take a bill**: `ORDER_PAYMENT` and `QUICKSCAN_PAYMENT`. Any other kind is a 422 with a
+   plain sentence. One bill per entry (a unique key, and a 409 `INVOICE_EXISTS` before it is ever hit). Same door as the
+   transaction details: `ORDER_VIEW` on the outlet, the entry looked up in the outlet's own wallet, so another outlet's entry
+   is a 404, never a 403.
+2. **We reuse the cost app's extraction, and keep no prompt.** `HttpInvoiceReader` calls the existing
+   `POST {base}/item-purchase/invoice/extract?pageName=WalletBill&outlet=..&userId=..` with a bearer token and one multipart
+   `file` part per page. The reading logic stays in one place; if it is improved there, we gain it. Nothing in this repository
+   describes how to read a bill.
+3. **Only plain fields cross over** (widened on purpose by D-114: the SKU and supplier matches, as id and name only). The cost app's answer carries its own item master (`sku`), supplier records, user ids and
+   names and costs, for its own outlet. None of that is ours and none of it may reach our database or our API. The reader maps
+   into a small dedicated type (`CostAppInvoice`) that declares only the plain fields; Jackson ignores everything else, so it is
+   never parsed into a value we could store. Adding a field there is a decision about what we keep. The first entry in the
+   answer without an `error` is taken; if every entry has one, or the array is empty, there is no reading (the attempt failed,
+   it is not a reading of nothing). Every string is capped at 500 characters and items at 100: it is text from someone's paper.
+4. **Private storage, separate from public images.** `FileStorage` is for public images (permanent URLs, year-long cache), so bills
+   get their own `InvoiceStorage`: local disk for development (`var/invoices`, ignored by git) and S3 for production
+   (server-side encryption AES256 on every put, no ACL, credentials from the default chain, never properties). Keys are
+   `invoices/<outletId>/<yyyy-MM>/<uuid>-p<page>.<ext>`: never the customer's file name. A file is judged by its first bytes
+   (JPEG, PNG, WebP, PDF), never by its name or declared type; each is at most 5 MB. The request ceiling was raised from 6 MB to
+   26 MB so five such files fit; every file is still checked against 5 MB.
+5. **Pages are reached by short-lived links only.** S3: a presigned GET for 5 minutes. Local: a signed token route
+   (`/invoice-files/{token}`; token = outlet, page id and expiry under an HMAC) that checks signature, expiry and that the page
+   belongs to the outlet in the token. It takes a page id, never a storage key. The response never contains a key, bucket,
+   token or provider data.
+6. **Reading never blocks the upload.** The upload commits with status `READING` and returns 201; the reading runs afterwards on
+   a small bounded executor. A failure (reader down, slow, or no bill found) keeps `READING` and counts an attempt; a job
+   (every 2 minutes, ShedLock) retries bills not tried for a minute, up to 5 attempts, then `UNREADABLE` with "We could not read
+   this bill. You can still view the photo." The pages are never touched by any of this. No database transaction is held while
+   the reader runs.
+7. **The check is the point.** `check.paid` is what the wallet paid, `check.billTotal` what was read; `matches` is true when they
+   differ by at most 0.50 rupee, and null while there is no bill total. `difference` is bill total minus paid.
+8. **A cap per outlet per day** (default 20 bills, Asia/Kolkata day) returns 429 with a plain sentence. It counts bills that
+   exist: a bill removed and added again is not counted twice, so the cap limits what is held per day, not total uploads.
+9. **Production guard.** `ProductionProviderGuard` refuses to start a production profile on LOCAL bill storage or the FAKE reader.
+   Both are the defaults, so a deploy that forgets them is refused rather than quietly run on them.
+10. **Migration V49.** V45 to V48 are reserved for the renumbering of the payments migrations, so this is `V49__wallet_entry_invoice.sql`
+    (two new tables, nothing existing changes). Adding the transaction-details `invoice` and `actions.canAddBill` needs no schema change.
+11. **Not done: duplicate detection.** A bill whose file hash already exists on another entry of the same outlet is stored like any
+    other. The hash is kept per page, so it can be added later with an index on it.
+
+**Static token.** The reader's bearer token is a setting read on every call, so it can be replaced at runtime later. For now it is
+one static token; a production service account is still to be arranged.
+
+**Tests.** `WalletInvoiceIT`, `WalletInvoiceRetryIT`, `WalletInvoiceHttpReaderIT` (against a local stub of the cost app that returns
+`sku`, `supplier` and user data and asserts none of it is stored or returned), unit tests for the byte check, key layout, link
+signing, mapping and caps, the check, the S3 adapter (mock client, offline presigner) and the production guard.
+
+## D-114 — Reviewing the bill: a service sign-in to the cost app, its matches kept, the user's version saved here
+
+The mobile app gets a copy of the cost app's "Upload Invoice" review screen for the bill on a wallet payment: the user
+checks and edits the supplier, invoice number, payment status, invoice and stock-in dates, the lines (each matched to a
+cost-app SKU, with its price per unit and a price-deviation warning) and delivery. The owner authorised calling the
+**production** cost API from our server for the extraction and for read-only lookups. **No writes to the cost system**
+are authorised: "Create Supplier", "Create SKU" and saving the review only record the user's choice on our bill row.
+
+1. **A service sign-in replaces the static token** (`CostApiSession`). The cost app issues 15-minute access tokens:
+   `POST /auth/login {username, password, provider:"local"}` answers `{accessToken, refreshToken, tokenType, expiresIn, user}`;
+   `POST /auth/refresh {refreshToken}` answers `{accessToken, tokenType, expiresIn}` (a new access token only, so the refresh
+   token we hold is kept). We sign in lazily, keep the token in memory with its expiry (`expiresIn`, else the JWT `exp` read
+   without verifying it, else 15 minutes) and renew it 60 s before it expires. A 401 on any call: refresh and retry once, then
+   sign in afresh and retry once, then give up. One sign-in at a time (a lock; the others wait and reuse its token). A refused
+   or failed sign-in is not repeated for 30 s: callers in that window are told "unavailable" without the cost app being asked.
+   Tokens and the password are never logged, never in an exception message, never in an answer; `toString` masks them. The
+   static `token` setting stays as an override for quick tests (read per call, never renewed, a 401 with it is final).
+   Settings: `INVOICE_READER_USERNAME`, `INVOICE_READER_PASSWORD` (a private env file, never committed), `INVOICE_READER_USER_ID`
+   and `INVOICE_READER_OUTLET` (the cost-app ids of that account, sent with every extraction and lookup).
+2. **An unavailable cost app is not the bill's fault.** A reading that fails because the sign-in is refused, backing off, or
+   every token is refused keeps the bill READING with "We could not read this bill yet. We will try again." and does **not** use
+   up one of its 5 attempts; the bill is read once the sign-in works again. The production guard refuses the HTTP reader
+   without a username and password (or the token override); it only checks that they are set, never prints them.
+3. **The reading keeps the cost app's matches, and nothing else of it** (replaces "plain fields only" in D-113 §3, on purpose).
+   Per line `skuMatch {id, name, unit, unitPrice, categoryName}` from the line's `sku` (`SKUDetailFullResponse`) and per bill
+   `supplierMatch {id, name}` from `supplier` (`SupplierResponse.supplierName`). Per line also `amount` (the cost app's
+   `taxableAmount`) and `tax` (`taxAmount`). **The SKU's price per unit is `itemPrice`** (else `initialItemPrice` for a SKU never
+   bought): that is what the cost app's own screen shows under the SKU ("₹360.00/KG") and checks deviations against; the SKU's
+   `unitPrice` field is not used. Everything else (users, costs, yield, wastage, HSN, item master, contact and tax ids) is still
+   never parsed. Names are capped at 150, units at 20, categories at 100, items at 100. `sno`, `description` and `hsn` are not
+   kept: the screen does not need them.
+4. **The review is ours, the reading is never overwritten.** V50 adds `review_json`, `reviewed_at`, `reviewed_by` to
+   `wallet_entry_invoice` (V45 to V48 stay reserved). The invoice answer gains `version`, `draft` and `review`. `draft` is what
+   the screen starts from when there is no review: built from the reading (supplier match, else the vendor name without an id;
+   each line with its SKU match; stock-in date today in India; PENDING; delivery as read, else 0), or an empty form for an
+   UNREADABLE bill (supplier name '', no lines: the user fills it in by hand). `PUT .../invoice/review` saves the user's version
+   when the bill is READ or UNREADABLE (409 `INVOICE_STILL_READING` while reading), with `version` for optimistic concurrency
+   (409 `INVOICE_CHANGED` when stale), audited as `WALLET_INVOICE_REVIEW`. A line's `lineNo` points at the bill line it came
+   from; its `fromInvoice` is then taken from the reading by the server, never from the request. Unknown fields, and computed
+   fields sent back, are ignored.
+5. **The money follows the cost app's screen, and only the server adds it up** (BigDecimal, 2 decimals, half up). A line's
+   amount is before tax, its total = amount + tax, its item price = total / quantity. Subtotal = sum of amounts, tax = sum of
+   taxes, total = subtotal + tax + delivery. The screen's "Auto-summed from the line items — edit to override" caption is about
+   **subtotal and tax**, not delivery: delivery is a charge of its own on the bill (tax inclusive), pre-filled from what was read
+   and typed by the user, never derived from the lines; `deliveryOverridden` says it differs from what was read. A line is flagged
+   `ABOVE`/`BELOW` when its item price is more than 50% away from the SKU's price per unit, as on the cost app; the user can mark
+   it `ignoredDeviation`. **Not copied:** the cost app also lets the user type over the subtotal and the tax; we do not (the sums
+   are always the lines'), and its third payment status `CANCELLED` is not offered. `check` compares what was paid with the
+   reviewed total when there is a review, else the read total; the transaction page's bill line shows the reviewed supplier and total.
+6. **Pickers read the cost app, read only.** `GET /outlets/{outletId}/invoice-lookups/suppliers?q=&limit=` and
+   `.../skus?q=&supplierId=&limit=` (ORDER_VIEW on the outlet, as for the bill). The cost app has no search: we call
+   `GET /supplier/list` and `GET /sku/list/expand` with `outlet=<configured cost outlet>&userId=<configured cost user>&status=false`
+   as its own screen does, keep id and name (SKUs: unit, price per unit, category; suppliers: no city, the cost app only has
+   `cityId`), drop disabled rows, keep the lists 60 s, filter by `q` (case-insensitive, names starting with it first) and cut to
+   `limit` (default 20, 1 to 50; `q` at most 60 characters). Only GET, only those two paths (a hard-coded allow-list). The caller's
+   outlet is checked on our side and never sent. A per-outlet limit (60 a minute, `INVOICE_LOOKUPS_PER_MINUTE`) answers 429; the
+   cost app down is a plain 503. `supplierId` is accepted but not applied: the cost app's SKU list carries no supplier. The FAKE
+   provider answers fixed lists (Kosta Delights - Sea Food; Prawns 16/20 360/KG id 9465, PRAWNS 21/25 300/KG id 152,
+   Prawns 30/40 270/KG id 9001, Prawns 30/50 250/KG id 9002, ...) and the fake reader now carries the matching ids.
+
+**Not done.** No write of any kind to the cost system. The live production check (sign-in, extraction, lookups) is the owner's
+to run (`27-live-test-runbook.md`); everything here is tested against a local stub of the cost app only.
+
+**Tests.** `CostApiSessionTest` (sign-in and extract, renewal before expiry, 401 then refresh, refused refresh then sign-in,
+three 401s, wrong password with back-off, 10 callers and one sign-in, timeout, no secret in any log line or error at TRACE,
+JWT `exp`), `HttpInvoiceReaderTest` (allowed fields only, matches from `itemPrice`), `CostLookupsTest` (GET only, configured outlet,
+allow-list, fields, filter, cache, limits, 503), `InvoiceReviewsTest` (draft, money to the paisa, every validation sentence),
+`WalletInvoiceReviewIT`, `WalletInvoiceReaderLoginIT` and the extended `WalletInvoiceHttpReaderIT`. Mutations: logging the access
+token once fails `secretsNeverLogged`; passing the whole `sku` object through fails `noInternalDataKept` and
+`internalDataNeverStoredOrReturned`.
+
+## D-115 — Review fixes for the bill: bounded reading, bill-level tax, fixed calls, an outlet map, safe retries
+
+Two independent reviews of D-113/D-114 (one of the API, one of the mobile review screen) found two serious problems and a set
+of contract gaps. This entry changes D-114 where it says so. V51 adds seven nullable or defaulted columns to
+`wallet_entry_invoice`; nothing existing changes.
+
+1. **A reading always ends, and one bill can cause at most `max-attempts` (5) extraction calls.** A currency printed as
+   "Indian Rupees (INR)" (19 characters for a `VARCHAR(16)`) or a total of 10^15 (for `DECIMAL(19,4)`) made the result write
+   fail; the attempt was never counted, and the bill was sent to production extraction again every two minutes, forever.
+   Now: the currency is a three-letter code when one is printed (`INR`), else the text when it fits 16 characters, else
+   none; any number of 10^14 or more either way is unreadable and dropped; at most 4 decimals are kept
+   (`InvoiceReading.capped()`). The claim counts the call (`extract_calls`) in its own committed transaction before the
+   reader runs and refuses once 5 were made (the bill is then UNREADABLE). If the result still cannot be written, a failed
+   attempt is counted in a fresh transaction (`REQUIRES_NEW`), so the attempts always move on.
+2. **The cost app unavailable uses no attempt, and waits.** 401 is handled by the session as before. 403, 408, 429 and 5xx
+   from the cost app (and a sign-in that fails or backs off, and a dropped connection) mean "unavailable": the bill stays
+   READING with "We could not read this bill yet. We will try again.", `unavailable_count` goes up and `next_try_at` is set
+   1, 2, 4... minutes ahead, at most 30. A refusal that started no reading (sign-in, 403, 429, connection refused) is given
+   back from `extract_calls`; a 408, a 5xx or a broken answer may have started one and counts. After `max-unavailable` (48,
+   about a day) such tries the bill is UNREADABLE. Only a 200 that cannot be used (no invoice, every entry with `error`,
+   not JSON), another 4xx, or a timeout uses an attempt. The invoice answer shows `unavailableCount` and `nextTryAt`.
+   Worst case for one bill: 5 extraction calls that may have done work, plus at most 48 refused ones spread over a day.
+3. **No immediate second extraction.** One call per reading; after a timeout the retry job decides. The timeout grows with
+   the pages: 60 s, plus 45 s per page after the first, at most 5 minutes (`INVOICE_READER_TIMEOUT`,
+   `..._TIMEOUT_PER_EXTRA_PAGE`, `..._TIMEOUT_MAX`). The duration of each call is logged.
+4. **Bill-level tax (`taxOverride`).** The cost app uses the bill's tax when the lines carry none, and lets the user type over
+   it. The review request, the review and the draft gain `taxOverride` (number or null). `tax` = `taxOverride` when set, else
+   the sum of the line taxes; total = subtotal + tax + delivery, as before. The draft sets `taxOverride` = the bill's tax when
+   the line taxes add up to 0 and the bill shows a tax above 0; otherwise null. Validated like money (0 or more, 12 digits,
+   2 decimals). The reviewer's case (subtotal 2640, tax 180, total 2820, paid 2820) now drafts 2820 and still matches after
+   the untouched draft is saved.
+5. **Only five fixed calls can be made to the cost app.** `CostApiSession.call(Call, query, body, timeout)` replaces the
+   public `send(Function<String, HttpRequest>)`: `Call` is an enum of `LOGIN` and `REFRESH` (made by the session only),
+   `EXTRACT` (POST `/item-purchase/invoice/extract`), `SUPPLIER_LIST` (GET `/supplier/list`) and `SKU_LIST` (GET
+   `/sku/list/expand`). The session builds every URL from the configured base URL (query values encoded, scheme, host and
+   port checked), refuses a base URL that is not https (http only for localhost and 127.0.0.1, for tests) or carries user
+   info, query or fragment, and never follows a redirect. No other method or path can be written in code. **Operationally the
+   cost-app account must be least-privilege**: a dedicated, non-admin user whose role holds only reading purchase data and
+   the invoice-extract permission, for the mapped cost outlets only. The cost app's extract endpoint needs `WRITE_PURCHASE`,
+   so that account could create purchases through the cost app's own API; we never call one, but the account must not be a
+   super admin (which skips the cost app's outlet check).
+6. **Each outlet sees only its own cost outlet** (`INVOICE_COST_OUTLET_MAP`, `mpOutletId:costOutletId,...`). Lookups, the
+   extraction and the cache use the mapped cost outlet; lists are cached per cost outlet; a list is loaded under a lock of its
+   own (never one lock for all, never network I/O under a global lock) and a failure is remembered for 10 s. An outlet without
+   a mapping gets `403 INVOICE_LOOKUP_NOT_AVAILABLE` ("Supplier and SKU lists are not available for this outlet. You can still
+   type a name.") before the cost app is asked, and its bills are still read (with the reading account's own outlet,
+   `INVOICE_READER_OUTLET`) but without the cost app's supplier and SKU matches, in the reading, the stored JSON and the
+   draft. The old single `reader.outlet` for everything is now only a fallback when the map is empty **and**
+   `INVOICE_COST_OUTLET_FALLBACK=true` (default false; refused in production). The settings are read on each use.
+7. **Writing a bill needs the payment permission.** Upload, `PUT .../invoice/review` and `DELETE` need `QUICKSCAN_PAY` on the
+   outlet (owner, admin, purchase manager, finance staff: the roles that pay a shop from the wallet) after the usual
+   `ORDER_VIEW` scope check; a user who only sees the outlet gets 403 `FORBIDDEN`. GETs and lookups keep `ORDER_VIEW`.
+8. **An edit cannot hide a difference.** `check` gains `readingTotal` and `matchesReading`, always against the total as read.
+   The `WALLET_INVOICE_REVIEW` audit's reason records the old and new total and the versions ("total 2820.00 -> 2126.09,
+   version 3 -> 4"). `review_history_json` keeps the earlier reviews' `{at, by, total, version}`, newest last, at most 20.
+9. **Safe retries of a save** (`Idempotency-Key` on PUT, optional, at most 128 characters). The last key per bill is kept
+   with the SHA-256 of the parsed request and the version it produced. The same key with the same body again answers 200 with
+   the bill as it is now (no new version, no 409, no second audit); the same key with another body is 422
+   `IDEMPOTENCY_KEY_REUSED`. A lost answer is therefore no longer reported to the user as "someone else changed this bill".
+10. **Contract details for the mobile app.** `draft` is present whenever the bill is READ or UNREADABLE, also next to a
+    `review`, so "start over" and "reset delivery" go back to what was read. `lineNo` is null for a line the user added and
+    1..N, each once, for a bill line; `fromInvoice` and `deliveryOverridden` are never read from a request. A SKU's
+    `unitPrice` may have 4 decimals (cost-app per-gram prices); quantity stays at 9 integer digits and 3 decimals (the app
+    uses 9); amounts, tax and delivery 12 and 2. A `MALFORMED_REQUEST` names the field when it is known
+    (`details.fields["items[1].quantity"]`, or the query parameter or header) with a plain sentence, never the value; an
+    empty PUT body is a `VALIDATION_ERROR` with `details.fields.body`. The stock-in date may be at most one day after today
+    in Asia/Kolkata ("The stock-in date cannot be later than tomorrow."). The SKU lookup has no `supplierId` (unknown
+    parameters are ignored); `q` over 60 characters is a 400; suppliers are `{id, name}` only.
+11. **Smaller fixes.** Money in the JSON columns is stored as strings, because MySQL's JSON type turns decimals into doubles;
+    GET and PUT now give the same figures with the same scale. Amounts written as text drop a leading `Rs.`, `INR` or `₹`
+    and grouping commas, and anything that is then not a plain decimal is no value ("Rs. 500" is 500, never 0.5). When the
+    answer holds several bills the first is kept and `reading.invoiceCount` says how many there were. A sign-in answered 200
+    with something that is not JSON (a proxy's page) backs off 30 s like any failed sign-in. The production guard also
+    refuses: a static token, a blank username or password, a non-https base URL, user id or reader outlet 0, the outlet
+    fallback, and an empty or unreadable outlet map; its messages name the setting, never the value.
+
+**Declined or left as they are.** L6's other validation edges (no lower bound on dates, control characters in names, amount
+0, negative credit lines, `description` when `itemName` is missing), L7 (deviation compared after rounding to 2 decimals; the
+app's preview is the stricter one), L8's `categoryName` on a review line, and L9 (the retry batch of 50; with the
+per-bill ceiling and the back-off a run is bounded, but it can still take long when the cost app is slow).
+
+**Tests.** Unit: `CostApiSessionTest` (+ only the enum's calls, https and no redirects, a non-JSON sign-in backs off),
+`HttpInvoiceReaderTest` (+ status mapping, no immediate re-post, timeout by pages, unmapped outlet without matches, values
+made to fit, invoice count, no secret in any log line at the call site), `CostLookupsTest` (+ per-cost-outlet lists and cache,
+403 for an unmapped outlet, the fallback rule, a failure remembered 10 s, no lock across cost outlets, 4-decimal prices, no
+secret logged at the call site), `InvoiceReviewsTest` (+ bill-level tax, 4-decimal SKU prices, an untouched draft always
+saves), `InvoiceReadingTest` (+ currency and number limits), `ProductionProviderGuardTest` (+ every new refusal).
+Integration: `WalletInvoiceRetryIT` (+ the H1 bill reaches READ with `INR`; an unwritable reading ends UNREADABLE with 5
+attempts after exactly 5 calls; back-off 1 then 2 minutes; at most 5 extraction calls; refusals capped at 48),
+`WalletInvoiceReviewIT` (+ bill-level tax end to end, the lost-answer retry, two saves at once, view-only 403, ignored
+fields, malformed and empty bodies, history and audit), `WalletInvoiceHttpReaderIT` (+ outlet map).
+
+## D-116 — Bill status in the wallet History: one rule, a start date, 'No bill needed', a filter, counts and statements
+
+A kitchen must see at a glance which payments still need the shop's bill. The owner chose the words, the five values, the
+start date, the waiver with undo, a server-side filter, counts for a banner and the month sheet, and a Bill column in
+statements. V52 adds one table; nothing existing changes.
+
+1. **Which payments need a bill.** Only payments from the wallet of kinds `ORDER_PAYMENT` and `QUICKSCAN_PAYMENT` whose entry
+   status is COMPLETED. For these two kinds the History's status (`statusOf`) is always COMPLETED (only a withdrawal is ever
+   IN_PROGRESS or RETURNED, and a returned top-up is not a payment); the one paid entry that ended the other way is a QuickScan
+   payment whose payout failed and whose money came back, recognised by its `QUICKSCAN_RETURN` (reference
+   `quickscan-return-<id>` next to the payment's `quickscan-<id>`, a unique key): it is not eligible. Nor is an order payment
+   whose order was cancelled and paid back in full: an `ORDER_REFUND` with the same `supplier_order_id` on the same wallet
+   (written at most once per order by `WalletService.refundFor`; found with a `not exists` on `ix_wallet_txn_order`, not a
+   join, as (supplier_order_id, kind) has no unique key). A partial money-back (`DISPUTE_REFUND`) keeps the payment eligible:
+   the goods came, so the bill is still owed. Top-ups, refunds, withdrawals and their reversals, and returns never are.
+2. **One rule, written once** (`BillStatuses`). A bill that exists always shows its own status, whatever the date: `READING`,
+   `UNREADABLE`, and `READ` as `REVIEWED` once a review was saved (`reviewed_at`, written with `review_json`), else `ADDED`.
+   An `UNREADABLE` bill that a person then filled in by hand (a review saved) is `REVIEWED` too (owner's decision after the
+   review, M3; in `resolve`, the filter and the count alike, so the statement says Reviewed). A bill that exists wins over a
+   waiver row should both ever exist. Without a bill: 'No bill needed' is `NOT_REQUIRED`; an eligible payment created on or after the tracking start is `PENDING`;
+   anything else has none. The same rule is expressed as JPQL over a ledger row with three left joins on unique keys (bill,
+   waiver, QuickScan return) and one `exists` (the order's cancellation), so the list, its filter, the counts, the details and
+   the statement agree by construction.
+3. **The tracking start** (`INVOICE_TRACKING_START`, ISO date, from midnight Asia/Kolkata). Older payments would all say
+   pending on the first day; before the start they show nothing, and a bill can still be added from the details page
+   (`canAddBill` unchanged). Blank turns tracking off: nothing is PENDING anywhere, bills that exist still show. A value that
+   is not a date refuses to start the application.
+4. **The list.** Each item gains `bill`: null or `{"status": "PENDING|READING|ADDED|REVIEWED|UNREADABLE"}`; 'No bill needed'
+   shows null (no chip). The status is selected by the page's own query (no extra query at all, never one per row; a test
+   counts the statements of a 2-row and a 40-row page and requires them equal). The answer gains `billSummary`
+   `{pending, reading, unreadable}`, all months, whatever the filters, each equal to what its `bills=` filter returns (M2):
+   `pending` counts PENDING (eligible, on or after the start, no bill, not waived); `reading` and `unreadable` count every bill
+   of this wallet in that state (unreadable: not yet filled in by hand), whatever its payment's date or eligibility, waived or
+   not, because a bill that exists always shows. Each `monthTotals[]` item gains `billsPending` for its Asia/Kolkata month.
+   Both come from **one** grouped query (conditional sums, one per month asked for) over the rows that have a bill or can be
+   PENDING, never a database time-zone conversion. `billSummary` is sent on the first page only (no `cursor`); later pages
+   send it null and skip its work, keeping the month counts (L2). The app reads the banner from the first page only and maps
+   a missing or null `billSummary` to null, so later pages change nothing.
+5. **The filter.** `bills=` (comma list of the five values, any case; anything else, `NOT_REQUIRED` included, is a 400 with a
+   plain sentence) is a where-clause term of the page query, so it composes with `months`, `kinds`, `statuses` and the cursor
+   and pages exactly. A row without a bill status never matches (returned top-ups are skipped entirely). `monthTotals` stay the
+   ledger's, unfiltered, as D-108 says.
+6. **'No bill needed'.** `PUT .../wallet/transactions/{entryId}/invoice/waiver` answers 200 `{"waived": true}` (again 200 when
+   already set, nothing written); `DELETE` the same path answers 204 (also when nothing was set). Same doors as adding a bill:
+   `ORDER_VIEW` scope (another outlet's or a missing entry is 404) and `QUICKSCAN_PAY` (else 403). Only for an eligible payment
+   (422 `INVOICE_NOT_ALLOWED`) without a bill (409 `INVOICE_EXISTS`). A waiver is allowed before the tracking start too
+   (eligibility is the kind and status, not the date). Both are audited as `WALLET_INVOICE_WAIVER` on the wallet entry
+   (`WAIVED`, then `CLEARED`). Adding a bill removes the waiver in the bill's own transaction (audited, reason "a bill was
+   added"); waive and upload lock the entry's ledger row, so they cannot interleave. The row is deleted on undo; the audit log
+   keeps who and when. V52: `wallet_entry_invoice_waiver` (unique `wallet_transaction_id`, `outlet_id`, `waived_by`,
+   `waived_at`, `version`), V45 to V48 still reserved.
+   **The race (M1).** The database runs REPEATABLE READ and takes a transaction's snapshot at its first plain read. Waive used
+   to read the wallet and the entry before taking the lock, so a bill committed while it waited was invisible to it and both
+   rows could stay. Now the entry's lock (`select ... for update`, scoped to the outlet's wallet) is the **first** statement of
+   the waive (and undo) transaction, as it already was for upload's; the bill check reads after it. Whichever comes second
+   sees what the first committed: a waive behind an upload answers 409 `INVOICE_EXISTS`; an upload behind a waive removes the
+   waiver in its own transaction. Same lock, same order, so no deadlock. A unique-key failure on the waiver insert is taken as
+   success only when a waiver row is really there afterwards; anything else is rethrown (L4).
+7. **The details page** gains `billStatus` (the full rule, `NOT_REQUIRED` included; an eligible payment before the start is
+   null), `actions.canWaiveBill` (only when `billStatus` is PENDING: before the start the app offers just "Add bill", L1) and
+   `actions.canUndoWaiver` (waived). The waive endpoint itself still accepts any eligible payment without a bill. Every existing field stays.
+8. **Statements.** CSV and PDF gain `Bill` (Pending, Reading, Added, Reviewed, Unreadable, No bill needed, or blank), `Shop` and
+   `Bill no.` (the review's when saved and not blank, else as read), after the existing columns, which do not move and still
+   reconcile. One query for the period's bill columns, however many rows. The PDF is now A4 landscape to fit them.
+9. **The wallet's recent list** (`GET /outlets/{outletId}/wallet`, `recent[]`, the Wallet screen's 'Recent' card; `POST
+   .../wallet/top-ups/{topUpId}/confirm` answers the same wallet, built by the same code). Each entry gains the same `bill` as the History list item for that
+   entry: null or `{"status": ...}`, 'No bill needed' null. Read by `BillStatuses.forListOf` (the `forEntries` query, then
+   `forList`, the History's own rule) through `WalletHistoryService.billsOf`: one query for the whole list, never one per row.
+   These are the only wallet-entry lists the API returns: QuickScan's payment list and receipt return QuickScan payments, not
+   ledger entries, and carry no bill (the app shows a bill from the transaction details); the mock top-up answers an empty
+   `recent`.
+
+**After the independent review.** H1 (a cancelled order asked for a bill), M1 (the waive/upload race), M2 (counts that
+disagreed with their filters), M3 (a hand-filled unreadable bill, now REVIEWED), L1, L2 and L4 are fixed as described above.
+Left as it is: a sparse `bills=` filter walks the wallet's keyset until it finds a page (L3; fine at today's volumes), and a
+READING bill with no pages has no guard in the reader (L5; upload writes the bill and its pages together).
+
+**Tests.** `WalletBillStatusIT` (a seeded matrix: every kind, a returned QuickScan payment, a waiver, a bill in each status, a
+microsecond either side of the start, an IST month boundary, a second outlet; summary under every filter; month counts; tracking
+off; filter and composition and 400s; a filtered walk of more than two pages over shared instants; the statement count of a
+2-row and a 40-row page; details; statement columns, reconciliation and one query), `WalletInvoiceIT` (+ waiver set, again,
+undo, again; 422 and 409; a bill clears it; 404/401/403), `BillStatusesTest`, `WalletStatementFilesTest` (+ columns, landscape
+pagination), `WalletHistoryIT` (item shape). Mutations: computing the bill with one query per row fails `oneQueryPerPage`
+(13 statements became 51); dropping the start date from the SQL fails `summary`, `filter` and `monthTotals`; dropping it from the
+Java rule fails `BillStatusesTest.withoutBill`, `listStatuses`, `details` and `statementColumns`. Review fixes:
+`cancelledOrderNeedsNoBill` (H1: list, filter, counts, month, details, waive 422, statement; DISPUTE_REFUND stays PENDING; a
+bill on a cancelled payment still shows), `countsMatchFilters` (M2: `bills=UNREADABLE` returns 4, `unreadable` is 4; a bill
+next to a waiver counts and shows), `unreadableReviewedIsReviewed` and `WalletInvoiceReviewIT.unreadableFilledByHand` (M3,
+through the real review endpoint), `summaryOnFirstPageOnly` (L2), `WalletInvoiceIT.waiverWaitingBehindABill` and
+`uploadWaitingBehindAWaiver` (M1: a second connection or a waive holds the entry's lock; the other side is shown to be
+waiting, then ends with a bill and no waiver), `WalletInvoiceWaiveTest` (L4). Mutations: dropping the cancellation from the
+rule fails `cancelledOrderNeedsNoBill`; reading before locking in waive fails `waiverWaitingBehindABill` (200 and a waiver
+next to the bill). The recent list (9): `recentCarriesBill` (every status and null among the ten newest, each equal to the
+History's item for the same entry; a second outlet's own), `recentTrackingStart` (a microsecond either side of the start, a bill
+before it, a returned QuickScan payment, a cancelled order, a dispute; tracking off), `recentOneQuery` (equal statement counts
+for 2 and 10 entries). Mutations: one query per entry fails `recentOneQuery` (9 statements became 17); the full rule instead of
+the list's fails `recentCarriesBill` (a waived payment showed `NOT_REQUIRED`).
