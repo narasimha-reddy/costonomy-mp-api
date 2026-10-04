@@ -28,7 +28,7 @@ class TaxInvoiceFlagOffIT extends TaxInvoiceTestBase {
 
         // A rejection at the door issues no credit note either: nothing listens while the feature is off.
         assertThat(receive(p, "9.5", "0", "0.1").status()).isEqualTo(200);
-        awaitPublished(p.orderId(), "ReceivingCompleted");
+        deliverReceivingCompleted(p.orderId());
         assertThat(creditNoteRows(p.orderId())).isZero();
     }
 }

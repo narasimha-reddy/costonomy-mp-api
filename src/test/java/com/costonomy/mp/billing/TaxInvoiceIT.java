@@ -277,7 +277,7 @@ class TaxInvoiceIT extends TaxInvoiceTestBase {
             assertThat(post(seller.token(), generatePath(p), Map.of()).status()).isEqualTo(200);
 
             assertThat(receive(p, "9.5", "0", "0.1").status()).isEqualTo(200);
-            awaitPublished(p.orderId(), "ReceivingCompleted");
+            deliverReceivingCompleted(p.orderId());
 
             var note = jdbc.queryForMap("select * from credit_note where supplier_order_id = ?", p.orderId());
             assertThat((BigDecimal) note.get("total_refund_amount")).isEqualByComparingTo("10.50");
@@ -295,7 +295,7 @@ class TaxInvoiceIT extends TaxInvoiceTestBase {
                     BigDecimal.class, p.orderId())).isEqualByComparingTo("10.50");
 
             // Replaying the event issues no second note.
-            outbox.drain();
+            deliverReceivingCompleted(p.orderId());
             assertThat(creditNoteRows(p.orderId())).isEqualTo(1);
         }
 
@@ -307,7 +307,7 @@ class TaxInvoiceIT extends TaxInvoiceTestBase {
             readyAt(p, "9.6");
 
             assertThat(receive(p, "9.5", "0", "0.1").status()).isEqualTo(200);
-            awaitPublished(p.orderId(), "ReceivingCompleted");
+            deliverReceivingCompleted(p.orderId());
             assertThat(creditNoteRows(p.orderId())).isEqualTo(1);
             assertThat(jdbc.queryForObject("select tax_invoice_id from credit_note where supplier_order_id = ?",
                     Long.class, p.orderId())).isNull();
@@ -327,7 +327,7 @@ class TaxInvoiceIT extends TaxInvoiceTestBase {
             readyAt(p, "9.6");
 
             assertThat(receive(p, "9.5", "0", "0.1").status()).isEqualTo(200);
-            awaitPublished(p.orderId(), "ReceivingCompleted");
+            deliverReceivingCompleted(p.orderId());
 
             assertThat(jdbc.queryForObject("select status from supplier_order where id = ?", String.class, p.orderId()))
                     .isEqualTo("COMPLETED");

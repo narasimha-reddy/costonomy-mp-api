@@ -30,6 +30,7 @@ abstract class TaxInvoiceTestBase extends AbstractIntegrationTest {
     @Autowired protected ObjectMapper json;
     @Autowired protected JdbcTemplate jdbc;
     @Autowired protected OutboxPublisher outbox;
+    @Autowired protected com.costonomy.mp.billing.service.BillingEventListener billingListener;
 
     protected ApiClient api;
     protected TestOrder orders;
@@ -156,24 +157,23 @@ abstract class TaxInvoiceTestBase extends AbstractIntegrationTest {
     }
 
     /**
-     * Waits until the outbox has published an event of this type for the order. The scheduled drain and a direct call
-     * share one lock, so a direct drain right after the scheduler's is skipped: poll instead of assuming it ran.
-     * Listeners run before an event is marked PUBLISHED, so what they did is visible once this returns.
+     * Delivers the order's stored {@code ReceivingCompleted} event to the billing listener, as the outbox would.
+     *
+     * <p>Not left to the global outbox: it is one queue shared by every test in the suite, drained a batch at a time,
+     * so how soon this order's event is reached depends on what other tests left behind. The event row is real (it
+     * is asserted to exist), and only its delivery is made deterministic. Listeners are idempotent, so a scheduled
+     * drain that delivers it too changes nothing.
      */
-    protected void awaitPublished(long orderId, String eventType) throws Exception {
-        long deadline = System.currentTimeMillis() + 15_000;
-        while (System.currentTimeMillis() < deadline) {
-            outbox.drain();
-            Integer published = jdbc.queryForObject("""
-                    select count(*) from outbox_event
-                     where aggregate_type = 'SUPPLIER_ORDER' and aggregate_id = ? and event_type = ?
-                       and status = 'PUBLISHED'""", Integer.class, orderId, eventType);
-            if (published != null && published > 0) {
-                return;
-            }
-            Thread.sleep(100);
-        }
-        throw new AssertionError("The outbox did not publish " + eventType + " for order " + orderId);
+    protected void deliverReceivingCompleted(long orderId) {
+        var event = jdbc.queryForMap("""
+                select event_id, payload_version, payload, actor_id, occurred_at from outbox_event
+                 where aggregate_type = 'SUPPLIER_ORDER' and aggregate_id = ? and event_type = 'ReceivingCompleted'
+                 order by id desc limit 1""", orderId);
+        billingListener.onDomainEvent(new OutboxPublisher.DomainEventEnvelope(
+                (String) event.get("event_id"), "ReceivingCompleted", "SUPPLIER_ORDER", orderId,
+                (Integer) event.get("payload_version"), (String) event.get("payload"),
+                event.get("actor_id") == null ? null : ((Number) event.get("actor_id")).longValue(), null,
+                ((java.sql.Timestamp) event.get("occurred_at")).toInstant()));
     }
 
     protected String generatePath(Placed p) {
