@@ -328,9 +328,11 @@ These are live questions, not omissions. Do not close one silently.
 1. **Chat has no realtime channel.** Events are on the outbox ready for one, but
    both chat screens poll — 8s in a thread, 20s in the inbox. Wiring it to the
    existing realtime projection (D-031) is the obvious next step.
-2. **Supplier and popular lists do not filter by serviceability.** Product
-   comparison does. So a restaurant can be shown a supplier who cannot deliver to
-   them. Whether that is a bug or deliberate reach is undecided.
+2. **Resolved (D-138): Supplier and popular lists filter by serviceability.** Serviceability
+   is governed by one shared ServiceabilityPolicy (declared pincode list > store radius > default
+   radius fallback; missing coordinates serviceable). Popular suppliers filter before applying the limit
+   (clamped to 100). Credit request supplier search stays unfiltered via `reach=all`. Unscoped outletId
+   returns 404.
 3. **`V36` deliberately has no `NOT NULL`.** Only one of seven existing stores had
    anything to backfill from. D-089 keeps a backfill separate from the constraint
    that depends on it; the constraint still needs to be added once the data is

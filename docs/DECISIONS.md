@@ -5919,3 +5919,21 @@ Verified before changing: `openDraft` looked for a draft and created one if none
 
 **Not done.** The response to an add may omit a line committed by a concurrent add (it is built from this transaction's snapshot); the next read shows it. The mobile cart's own part of this bug (unflushed edits, rapid taps) is fixed in the app.
 
+---
+
+## D-138 — Discovery serviceability: unified policy across storefront, recommendations, and popular suppliers
+
+**2026-10-04 · Settled**
+
+Verified against the code before changing: `StorefrontService.serves` hard-coded 25 km, `RecommendationService.servesOutlet` checked `serviceability.defaultRadiusKm`, `PopularSupplierService.forOutlet` applied no serviceability filtering at all (allowing far stores to consume the limit), and `DiscoveryController` did not scope `outletId` to the caller on discovery endpoints (`/search/suppliers`, `/search/skus`, `/supplier-skus/{skuId}`, `/supplier-stores/{storeId}/catalog`).
+
+1. **Unified `ServiceabilityPolicy`.** One shared component used across `StorefrontService`, `RecommendationService`, and `PopularSupplierService`. Precedence order:
+   - If the store has a declared pincode list (`delivery_pincodes`), that list wins exclusively (the outlet pincode must match).
+   - Otherwise, if the store defines its own radius (`delivery_radius_km`), that radius applies.
+   - Otherwise, fall back to the configured default radius (`costonomy.mp.discovery.serviceability.default-radius-km`, defaulting to 25 km).
+   - Missing coordinates on either side (`distanceKm == null`) means serviceable (suppliers are not hidden due to missing coordinate data). No opening-hours filter is applied.
+2. **Popular suppliers.** Serviceability filtering is evaluated *before* applying the result limit, so distant suppliers do not consume slots for serviceable candidates. The limit is clamped to at most 100 (`Math.min(Math.max(1, limit), 100)`).
+3. **Credit reach parameter.** `GET /api/v1/search/suppliers` supports `reach=all` to bypass serviceability filtering specifically for credit request flows.
+4. **Scoped `outletId` authorization.** Discovery endpoints (`/search/suppliers`, `/search/skus`, `/supplier-skus/{skuId}`, `/supplier-stores/{storeId}/catalog`) enforce `accessControl.requireScoped(actorId, Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "Outlet")`. When the caller cannot access the outlet, `NotFoundException` (404) is thrown instead of 403.
+5. **Tests.** `ServiceabilityPolicyTest` unit tests (pincode precedence, store radius, default radius fallback, null coordinates). `StorefrontIT` integration tests: unscoped outlet returns 404, `reach=all` bypasses serviceability, popular suppliers exclude distant stores without consuming limits, and limit clamps to at most 100.
+

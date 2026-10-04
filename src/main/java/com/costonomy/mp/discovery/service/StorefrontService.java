@@ -39,9 +39,6 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class StorefrontService {
 
-    /** Matches the recommendation feed's fallback for a store that declared none. */
-    private static final BigDecimal DEFAULT_RADIUS_KM = BigDecimal.valueOf(25);
-
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 100;
     private static final int MIN_TERM = 2;
@@ -79,6 +76,7 @@ public class StorefrontService {
     private final JdbcTemplate jdbc;
     private final DiscoveryDirectory directory;
     private final SupplierPerformanceProvider performance;
+    private final ServiceabilityPolicy serviceabilityPolicy;
 
     /**
      * SKUs matching a term, across every supplier that serves this outlet.
@@ -159,8 +157,15 @@ public class StorefrontService {
     @Transactional(readOnly = true)
     public DiscoveryDtos.SupplierSearchPage searchSuppliers(String query, Long outletId,
                                                             BigDecimal radiusKm) {
+        return searchSuppliers(query, outletId, radiusKm, null);
+    }
+
+    @Transactional(readOnly = true)
+    public DiscoveryDtos.SupplierSearchPage searchSuppliers(String query, Long outletId,
+                                                            BigDecimal radiusKm, String reach) {
         String term = query == null ? "" : query.trim().toLowerCase();
         boolean filtered = term.length() >= MIN_TERM;
+        boolean reachAll = "all".equalsIgnoreCase(reach);
 
         var outlet = outletId == null ? null : directory.outlet(outletId).orElse(null);
 
@@ -234,7 +239,7 @@ public class StorefrontService {
             Double distance = outlet == null ? null : Serviceability.distanceKm(
                     outlet.latitude(), outlet.longitude(), row.latitude(), row.longitude());
 
-            boolean serves = outlet == null || store == null
+            boolean serves = reachAll || outlet == null || store == null
                     || serves(store, outlet.pincode(), distance);
             // A supplier who cannot deliver here is not a search result. The old
             // behaviour returned them with `serviceable: false`, which the app had
@@ -443,17 +448,9 @@ public class StorefrontService {
         return new Decorated(out.stream().map(Sized::sku).toList());
     }
 
-    /** Doc 07 §13: a declared pincode list wins, then the store's own radius. */
+    /** Doc 07 §13: a declared pincode list wins, then the store's own radius. D-138. */
     private boolean serves(DiscoveryDirectory.StoreInfo store, String outletPincode, Double distanceKm) {
-        if (store.serviceablePincodes() != null && !store.serviceablePincodes().isEmpty()) {
-            return outletPincode != null && store.serviceablePincodes().contains(outletPincode);
-        }
-        if (distanceKm == null) {
-            return true;
-        }
-        BigDecimal radius = store.maxDeliveryRadiusKm() == null
-                ? DEFAULT_RADIUS_KM : store.maxDeliveryRadiusKm();
-        return BigDecimal.valueOf(distanceKm).compareTo(radius) <= 0;
+        return serviceabilityPolicy.serves(store, outletPincode, distanceKm);
     }
 
     private static BigDecimal packInclusiveOfGst(BigDecimal sellingPrice, BigDecimal gstRate) {

@@ -55,6 +55,7 @@ public class RecommendationService {
     private final DiscoveryDirectory directory;
     private final AccessControlService accessControl;
     private final AppConfigService config;
+    private final ServiceabilityPolicy serviceabilityPolicy;
 
     /**
      * Ranked offers for a product, for a specific outlet.
@@ -244,30 +245,16 @@ public class RecommendationService {
     }
 
     /**
-     * Whether a store delivers to an outlet. Doc 07 §13, doc 41.
+     * Whether a store delivers to an outlet. Doc 07 §13, doc 41. D-138.
      *
-     * <p>An explicit pincode list overrides geography entirely: a supplier who has
-     * said "these areas only" means it, and a distance calculation should not
-     * second-guess them.
-     *
-     * <p>When coordinates are missing the store is treated as serviceable rather
-     * than excluded. A supplier whose address has not been geocoded should not
-     * become invisible — that is a data gap on our side, and the checkout-time
-     * re-check (doc 41) is the place it gets caught.
+     * <p>Delegates to shared {@link ServiceabilityPolicy}.
      */
     private boolean servesOutlet(DiscoveryDirectory.StoreInfo store,
                                  DiscoveryDirectory.OutletInfo outlet,
                                  Double distanceKm, BigDecimal defaultRadius) {
-
-        if (store.serviceablePincodes() != null && !store.serviceablePincodes().isEmpty()) {
-            return outlet.pincode() != null && store.serviceablePincodes().contains(outlet.pincode());
-        }
-        if (distanceKm == null) {
-            return true;
-        }
-        BigDecimal radius = store.maxDeliveryRadiusKm() == null
-                ? defaultRadius : store.maxDeliveryRadiusKm();
-        return BigDecimal.valueOf(distanceKm).compareTo(radius) <= 0;
+        return serviceabilityPolicy.serves(
+                store.serviceablePincodes(), store.maxDeliveryRadiusKm(),
+                outlet.pincode(), distanceKm, defaultRadius);
     }
 
     private DiscoveryDtos.RecommendedOffer toResponse(

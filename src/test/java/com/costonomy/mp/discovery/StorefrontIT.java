@@ -339,6 +339,88 @@ class StorefrontIT extends AbstractIntegrationTest {
             // Nothing they sell matched, so the row will not claim otherwise.
             assertThat(matched.get(0).get("matchingProductCount").asInt()).isZero();
         }
+
+        @Test
+        @DisplayName("an outlet the caller cannot see returns 404, not 403")
+        void unscopedOutletReturnsNotFound() throws Exception {
+            var outlet = newOutlet();
+            String otherToken = api.loginFresh();
+
+            // When an outletId is supplied that the caller is not scoped to, requireScoped
+            // throws NotFoundException, mapped to 404.
+            int status = api.getStatus(otherToken, "/api/v1/search/suppliers?outletId=" + outlet.outletId());
+            assertThat(status).isEqualTo(404);
+        }
+
+        @Test
+        @DisplayName("reach=all bypasses serviceability filter for credit flow")
+        void reachAllBypassesServiceability() throws Exception {
+            var outlet = newOutlet();
+            String run = "R" + System.nanoTime();
+            newStore(run + " Chennai Foods", FAR_LAT, FAR_LON);
+
+            var page = directory(outlet, "&reach=all&q=" + run);
+            var names = page.get("suppliers").findValuesAsText("supplierName");
+            assertThat(names).contains(run + " Chennai Foods");
+        }
+    }
+
+    // ── Popular suppliers ────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("popular suppliers")
+    class Popular {
+
+        @Test
+        @DisplayName("a far supplier is excluded and does not eat the limit")
+        void farSupplierIsExcludedAndDoesNotEatTheLimit() throws Exception {
+            var outlet = newOutlet();
+            long p1 = TestCatalog.freshProduct(jdbc, "pop1");
+            long p2 = TestCatalog.freshProduct(jdbc, "pop2");
+            long p3 = TestCatalog.freshProduct(jdbc, "pop3");
+            long p4 = TestCatalog.freshProduct(jdbc, "pop4");
+            long p5 = TestCatalog.freshProduct(jdbc, "pop5");
+
+            // 1 Far store (500 km away) with 4 SKUs (higher skuCount than other stores)
+            var farStore = newStore("Far Popular Store", FAR_LAT, FAR_LON);
+            stock(farStore, p1, code("FAR1", p1), "100");
+            stock(farStore, p2, code("FAR2", p2), "100");
+            stock(farStore, p3, code("FAR3", p3), "100");
+            stock(farStore, p4, code("FAR4", p4), "100");
+
+            // 2 Near stores (7 km away) with 3 SKUs each
+            var near1 = newStore("Near Popular 1", NEARBY_LAT, NEARBY_LON);
+            stock(near1, p1, code("N1_1", p1), "110");
+            stock(near1, p2, code("N1_2", p2), "110");
+            stock(near1, p3, code("N1_3", p3), "110");
+
+            var near2 = newStore("Near Popular 2", NEARBY_LAT, NEARBY_LON);
+            stock(near2, p1, code("N2_1", p1), "120");
+            stock(near2, p2, code("N2_2", p2), "120");
+            stock(near2, p3, code("N2_3", p3), "120");
+
+            // Far store is closer to top in SQL query (4 SKUs vs 3 SKUs vs earlier test stores with 1 SKU).
+            // With limit=2: if farStore was not filtered out before limit, it would be included and eat the limit!
+            // But because farStore is filtered by serviceability, both Near Popular 1 and Near Popular 2 are returned.
+            var res = api.get(outlet.token(),
+                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=2").at("/data");
+
+            var names = res.findValuesAsText("supplierName");
+            assertThat(names).doesNotContain("Far Popular Store");
+            assertThat(names).contains("Near Popular 1", "Near Popular 2");
+            assertThat(res.size()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("limit is clamped to at most 100")
+        void limitIsClampedToAtMost100() throws Exception {
+            var outlet = newOutlet();
+            // Request limit=200, ensure endpoint does not fail and returns valid list
+            var res = api.get(outlet.token(),
+                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=200").at("/data");
+            assertThat(res.isArray()).isTrue();
+            assertThat(res.size()).isLessThanOrEqualTo(100);
+        }
     }
 
     // ── "N suppliers" on a product card ──────────────────────────────────
