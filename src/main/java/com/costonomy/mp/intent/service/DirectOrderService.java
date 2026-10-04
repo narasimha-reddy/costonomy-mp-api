@@ -93,7 +93,9 @@ public class DirectOrderService {
     public IntentDtos.DirectOrderResponse prepare(
             Long actorId, Long intentId, boolean acceptPriceChanges) {
 
-        var intent = intents.findById(intentId)
+        // Locked first (D-137): an add or removal in flight finishes before this reads the lines, and the status
+        // check below sees a send that beat us.
+        var intent = intents.lockById(intentId)
                 .orElseThrow(() -> new NotFoundException("Intent", intentId));
 
         accessControl.requireScoped(actorId, Permissions.PROCUREMENT_SUBMIT,
@@ -106,7 +108,7 @@ public class DirectOrderService {
                             : "This request has already been sent.");
         }
 
-        var lines = intentItems.findByIntentIdOrderByIdAsc(intentId);
+        var lines = intentItems.lockByIntentId(intentId);
         if (lines.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "Add something before ordering.");

@@ -665,6 +665,162 @@ class IntentFlowIT extends AbstractIntegrationTest {
             }
         }
 
+        @Test
+        @DisplayName("two first additions for one supplier make one draft with both lines (five races)")
+        void twoFirstAdditionsMakeOneDraft() throws Exception {
+            for (int round = 1; round <= 5; round++) {
+                var buyer = newBuyer();
+                var seller = newSeller("Metro");
+                long paneer = listSku(seller, "paneer", "410");
+                long rice = listSku(seller, "rice", "120");
+                var a = new AtomicReference<JsonNode>();
+                var b = new AtomicReference<JsonNode>();
+
+                race(() -> a.set(attempt(() -> addItem(buyer, paneer, 3))),
+                     () -> b.set(attempt(() -> addItem(buyer, rice, 4))));
+
+                String context = "round %d a=%s b=%s".formatted(round, a.get(), b.get());
+                assertThat(failed(a.get())).as(context).isFalse();
+                assertThat(failed(b.get())).as(context).isFalse();
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent where outlet_id = ? and status = 'DRAFT'",
+                        Integer.class, buyer.outletId())).as(context).isEqualTo(1);
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent_item i join intent d on d.id = i.intent_id where d.outlet_id = ?",
+                        Integer.class, buyer.outletId())).as(context).isEqualTo(2);
+            }
+        }
+
+        @Test
+        @DisplayName("the same pack added twice at once is one line with both quantities (five races)")
+        void samePackAddedTwiceAtOnce() throws Exception {
+            for (int round = 1; round <= 5; round++) {
+                var buyer = newBuyer();
+                var seller = newSeller("Metro");
+                long paneer = listSku(seller, "paneer", "410");
+                var a = new AtomicReference<JsonNode>();
+                var b = new AtomicReference<JsonNode>();
+
+                race(() -> a.set(attempt(() -> addItem(buyer, paneer, 1))),
+                     () -> b.set(attempt(() -> addItem(buyer, paneer, 1))));
+
+                String context = "round %d a=%s b=%s".formatted(round, a.get(), b.get());
+                assertThat(failed(a.get())).as(context).isFalse();
+                assertThat(failed(b.get())).as(context).isFalse();
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent where outlet_id = ? and status = 'DRAFT'",
+                        Integer.class, buyer.outletId())).as(context).isEqualTo(1);
+                assertThat(jdbc.queryForList(
+                        "select i.requested_quantity from intent_item i join intent d on d.id = i.intent_id "
+                                + "where d.outlet_id = ?", java.math.BigDecimal.class, buyer.outletId()))
+                        .as(context).hasSize(1).allSatisfy(q -> assertThat(q).isEqualByComparingTo("2"));
+            }
+        }
+
+        @Test
+        @DisplayName("an add and a send at once lose no line: it is on the sent request or on a new draft (five races)")
+        void addAgainstSend() throws Exception {
+            for (int round = 1; round <= 5; round++) {
+                var buyer = newBuyer();
+                var seller = newSeller("Metro");
+                long paneer = listSku(seller, "paneer", "410");
+                long rice = listSku(seller, "rice", "120");
+                long intentId = addItem(buyer, paneer, 2).at("/data/id").asLong();
+                var add = new AtomicReference<JsonNode>();
+                var send = new AtomicReference<JsonNode>();
+
+                race(() -> add.set(attempt(() -> addItem(buyer, rice, 1))),
+                     () -> send.set(attempt(() -> api.post(buyer.token(),
+                             "/api/v1/intents/" + intentId + "/send", Map.of()))));
+
+                String context = "round %d add=%s send=%s".formatted(round, add.get(), send.get());
+                assertThat(failed(add.get())).as(context).isFalse();
+                assertThat(failed(send.get())).as(context).isFalse();
+                // Both packs exist exactly once across everything this outlet has, and at most one draft remains.
+                assertThat(jdbc.queryForList(
+                        "select i.supplier_sku_id from intent_item i join intent d on d.id = i.intent_id "
+                                + "where d.outlet_id = ? order by 1", Long.class, buyer.outletId()))
+                        .as(context).containsExactlyInAnyOrder(paneer, rice);
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent where outlet_id = ? and status = 'DRAFT'",
+                        Integer.class, buyer.outletId())).as(context).isLessThanOrEqualTo(1);
+                // The sent request is never left holding a line it was not sent with: its lines are 1 or 2, and any
+                // draft holds the rest.
+                assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, intentId))
+                        .as(context).isEqualTo("OPEN");
+            }
+        }
+
+        @Test
+        @DisplayName("removing the last line while another is added keeps the new line (five races)")
+        void removeLastAgainstAdd() throws Exception {
+            for (int round = 1; round <= 5; round++) {
+                var buyer = newBuyer();
+                var seller = newSeller("Metro");
+                long paneer = listSku(seller, "paneer", "410");
+                long rice = listSku(seller, "rice", "120");
+                long itemId = addItem(buyer, paneer, 2).at("/data/items/0/id").asLong();
+                var add = new AtomicReference<JsonNode>();
+                var remove = new AtomicReference<Integer>();
+
+                race(() -> add.set(attempt(() -> addItem(buyer, rice, 1))),
+                     () -> remove.set(patchQuietly(buyer, itemId)));
+
+                String context = "round %d add=%s remove=%s".formatted(round, add.get(), remove.get());
+                assertThat(failed(add.get())).as(context).isFalse();
+                assertThat(remove.get()).as(context).isEqualTo(200);
+                assertThat(jdbc.queryForList(
+                        "select i.supplier_sku_id from intent_item i join intent d on d.id = i.intent_id "
+                                + "where d.outlet_id = ? and d.status = 'DRAFT'", Long.class, buyer.outletId()))
+                        .as(context).containsExactly(rice);
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent where outlet_id = ? and status = 'DRAFT'",
+                        Integer.class, buyer.outletId())).as(context).isEqualTo(1);
+            }
+        }
+
+        @Test
+        @DisplayName("a removed line and an emptied draft are written to the audit log")
+        void removalIsAudited() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            addItem(buyer, listSku(seller, "rice", "120"), 1);
+            var draft = addItem(buyer, listSku(seller, "paneer", "410"), 3);
+            long intentId = draft.at("/data/id").asLong();
+            long first = draft.at("/data/items/0/id").asLong();
+            long second = draft.at("/data/items/1/id").asLong();
+
+            api.patchStatus(buyer.token(), "/api/v1/intent-items/" + first, Map.of("quantity", 0));
+            api.patchStatus(buyer.token(), "/api/v1/intent-items/" + second, Map.of("quantity", 0));
+
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from audit_log where action = 'INTENT_ITEM_REMOVED' and entity_id in (?, ?)",
+                    Integer.class, first, second)).isEqualTo(2);
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from audit_log where action = 'INTENT_DRAFT_DELETED' and entity_id = ?",
+                    Integer.class, intentId)).isEqualTo(1);
+        }
+
+        private JsonNode attempt(Callable<JsonNode> call) {
+            try {
+                return call.call();
+            } catch (Exception e) {
+                return json.createObjectNode().put("thrown", e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
+        }
+
+        private Integer patchQuietly(Buyer buyer, long itemId) {
+            try {
+                return api.patchStatus(buyer.token(), "/api/v1/intent-items/" + itemId, Map.of("quantity", 0));
+            } catch (Exception e) {
+                return -1;
+            }
+        }
+
+        private boolean failed(JsonNode response) {
+            return response.has("thrown") || !(response.at("/error").isMissingNode() || response.at("/error").isNull());
+        }
+
         /** One order attempt, with its own idempotency key (a crashed client retries with a fresh one). */
         private JsonNode orderAttempt(OpenRequest open) {
             try {
