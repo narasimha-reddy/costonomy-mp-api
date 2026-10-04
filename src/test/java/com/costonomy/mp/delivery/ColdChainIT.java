@@ -439,6 +439,24 @@ class ColdChainIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("the cart item and the order preview carry the catch-weight and cold-chain flags the apps need")
+        void cartAndPreviewCarryTheFlags() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller(false);
+            long intentId = chilledIntent(buyer, seller);
+            declare(seller, Map.of("isCatchWeight", true, "reason", "Sold by weight"));
+
+            var intent = api.get(buyer.token(), "/api/v1/intents/" + intentId).at("/data");
+            var preview = post(buyer.token(), "/api/v1/intents/" + intentId + "/orders/preview",
+                    Map.of("deliveryMode", "PICKUP")).body().at("/data");
+
+            assertThat(intent.at("/items/0/sku/isCatchWeight").asBoolean()).isTrue();
+            assertThat(intent.at("/items/0/sku/requiresColdChain").asBoolean()).isTrue();
+            assertThat(preview.at("/lines/0/isCatchWeight").asBoolean()).isTrue();
+            assertThat(preview.at("/lines/0/requiresColdChain").asBoolean()).isTrue();
+        }
+
+        @Test
         @DisplayName("with a verified carrier the fee is quoted, and the quote is marked as a chilled one")
         void checkoutQuotedWithAVerifiedCarrier() throws Exception {
             var buyer = newBuyer();

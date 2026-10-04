@@ -177,7 +177,9 @@ public class IntentOrderCreator {
                             line.offer().getGstRate(),
                             line.lineValue(),
                             line.lineGst(),
-                            line.lineTotal());
+                            line.lineTotal(),
+                            label != null && label.isCatchWeight(),
+                            label != null && label.requiresColdChain());
                 })
                 .toList();
 

@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [phase5/api-flags] - Flags the apps need (D-134, D-128)
+
+### Added
+- `isCatchWeight` and `requiresColdChain` on the SKU description (so on every cart item) and on each order-preview line, so the apps can tell a restaurant a catch-weight price is an estimate before they order.
+
+### Changed
+- The wallet statement label for a dispute refund reads "Refund from a dispute", matching the app.
+
+---
+
 ## [phase4/cold-chain] - Cold chain and delivery safety (D-134)
 
 ### Fixed

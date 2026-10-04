@@ -581,7 +581,11 @@ public final class IntentDtos {
             BigDecimal gstRate,
             BigDecimal lineValue,
             BigDecimal lineGst,
-            BigDecimal lineTotal) {
+            BigDecimal lineTotal,
+            /** Sold by weight: this line's price is an estimate until the scale weight fixes it (D-128). */
+            boolean isCatchWeight,
+            /** Needs temperature-controlled carriage (D-134). */
+            boolean requiresColdChain) {
     }
 
     public record Blocker(Long intentItemId, String productName, String code, String message) {
