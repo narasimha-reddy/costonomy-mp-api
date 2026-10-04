@@ -116,9 +116,9 @@ public class PorterApiClient {
 
         // No HTTP call: the fare field of Porter's cost endpoint has never been verified against
         // a live response, and the old code guessed three field names and then fell back to a
-        // rate card. A decline is honest; a guessed price is not (D-117).
+        // rate card. A decline is honest; a guessed price is not (D-121).
         return DeliveryProvider.Quote.unserviceable(
-                "Porter fare contract not verified against a live response; a rate card is not a quote (D-117)");
+                "Porter fare contract not verified against a live response; a rate card is not a quote (D-121)");
     }
 
     // ── book ───────────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ public class PorterApiClient {
      * Refuses to book. Porter's create-order response has no verified fare, and
      * {@code Booking.amount} must be a real figure because it becomes delivery.fee and the
      * ledger. This throws before any network call: failing after the carrier has accepted an
-     * order would leave a live consignment nobody owns (D-117). Our own data is validated
+     * order would leave a live consignment nobody owns (D-121). Our own data is validated
      * first so a bad request is reported precisely.
      */
     public DeliveryProvider.Booking createOrder(DeliveryProvider.BookingRequest request) {
@@ -141,12 +141,12 @@ public class PorterApiClient {
 
         throw new PorterContractException(
                 "Porter create-order fare is not verified; refusing to book without a carrier fare "
-                        + "- a rate card is not a quote (D-117)");
+                        + "- a rate card is not a quote (D-121)");
     }
 
     /**
      * The create-order body, built only from our own records. Anything missing is rejected by
-     * name; nothing is defaulted (D-117).
+     * name; nothing is defaulted (D-121).
      */
     Map<String, Object> orderPayload(DeliveryProvider.BookingRequest request) {
         var vehicleType = request.vehicleType() != null ? request.vehicleType() : VehicleType.TWO_WHEELER;

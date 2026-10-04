@@ -9,7 +9,7 @@ public enum RefundReason {
     CANCELLATION,
     DELIVERY_FAILURE,
     DISPUTE_RESOLVED,
-    /** A line rejected at the doorstep (D-124): the buyer pays less than the captured amount. */
+    /** A line rejected at the doorstep (D-128): the buyer pays less than the captured amount. */
     DOORSTEP_REJECTION,
     DUPLICATE_PAYMENT,
     PROVIDER_REVERSAL,

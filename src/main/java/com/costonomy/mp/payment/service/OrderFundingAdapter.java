@@ -273,7 +273,7 @@ public class OrderFundingAdapter implements OrderFundingPort {
     }
 
     /**
-     * A doorstep rejection on a captured card payment (D-124): a refund to the wallet, withdrawable (D-104),
+     * A doorstep rejection on a captured card payment (D-128): a refund to the wallet, withdrawable (D-104),
      * keyed so a repeat refunds nothing more. A payment still being collected cannot be refunded yet and the
      * refund service says so with a retryable conflict; nothing is written in that case.
      */

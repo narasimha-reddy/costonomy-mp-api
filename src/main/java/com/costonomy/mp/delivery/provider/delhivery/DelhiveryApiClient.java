@@ -25,8 +25,8 @@ import java.util.regex.Pattern;
  * HTTP client for the Delhivery Express & Logistics API.
  *
  * <p>Implements serviceability quoting, order creation, tracking, and cancellation.
- * Adheres strictly to the fail-closed principles, 30 km intra-city radius ceiling (D-116),
- * verified carrier fares (D-117), and deterministic event ordering (D-114, D-115).
+ * Adheres strictly to the fail-closed principles, 30 km intra-city radius ceiling (D-120),
+ * verified carrier fares (D-121), and deterministic event ordering (D-118, D-119).
  */
 @Component
 @Slf4j

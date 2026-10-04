@@ -145,7 +145,7 @@ class TrustFlowIT extends AbstractIntegrationTest {
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/preparing");
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/ready");
         // The money is taken at ready by a job that runs every few seconds in production. A doorstep
-        // rejection refunds against a captured payment (D-124), so the fixture lets the capture land first.
+        // rejection refunds against a captured payment (D-128), so the fixture lets the capture land first.
         paymentJobs.capturePending();
 
         long deliveryId = mvcPostDelivery(seller, orderId);

@@ -89,7 +89,7 @@ public class WalletFundingAdapter implements OrderFundingPort {
         wallets.refundFor(supplierOrderId, reason);
     }
 
-    /** The wallet paid the accepted total up front; what a weighing took off it comes back now (D-124). */
+    /** The wallet paid the accepted total up front; what a weighing took off it comes back now (D-128). */
     @Override
     @Transactional
     public void onOrderDispatched(Long supplierOrderId, BigDecimal finalPayable) {

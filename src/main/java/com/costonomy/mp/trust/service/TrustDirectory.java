@@ -60,7 +60,7 @@ public class TrustDirectory {
             BigDecimal gstRate,
             BigDecimal doorstepRefundAmount,
             String doorstepRejectionReason,
-            /** The line's stored total: the quantity billed, at its price, with GST (D-124). */
+            /** The line's stored total: the quantity billed, at its price, with GST (D-128). */
             BigDecimal lineTotal,
             boolean catchWeight,
             /** What a weighed catch-weight line is billed for; null until weighed. */
@@ -68,7 +68,7 @@ public class TrustDirectory {
 
         /**
          * What the restaurant must account for at the door: the billed weight on a weighed catch-weight
-         * line, the accepted quantity otherwise (D-124). Checking against the accepted quantity on a line that
+         * line, the accepted quantity otherwise (D-128). Checking against the accepted quantity on a line that
          * weighed lighter would have the buyer enter the shortfall as "missing" and be refunded for it twice.
          */
         public BigDecimal receivableQuantity() {
@@ -134,7 +134,7 @@ public class TrustDirectory {
      * Record what a doorstep rejection takes off the order, and return what the order now comes to.
      *
      * <p>Guarded in the statement: the final payable may not go below zero, and exactly one row must change.
-     * A negative final would be clamped to zero downstream and the platform would fund the excess (D-124), so
+     * A negative final would be clamped to zero downstream and the platform would fund the excess (D-128), so
      * it is refused here, where the figure is written.
      *
      * @return the order's final payable after the rejection
@@ -156,7 +156,7 @@ public class TrustDirectory {
                 BigDecimal.class, supplierOrderId);
     }
 
-    /** The credit note raised for this order's doorstep rejection, or null when none exists (D-124). */
+    /** The credit note raised for this order's doorstep rejection, or null when none exists (D-128). */
     public String creditNoteNumberFor(Long supplierOrderId) {
         var numbers = jdbc.queryForList(
                 "select credit_note_number from credit_note where supplier_order_id = ? order by id limit 1",

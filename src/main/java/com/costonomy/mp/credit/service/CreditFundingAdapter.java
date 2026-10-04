@@ -115,7 +115,7 @@ public class CreditFundingAdapter implements OrderFundingPort {
         ledger.release(supplierOrderId, reason);
     }
 
-    /** Credit draws the accepted value at acceptance; at ready it comes down to the final payable (D-124). */
+    /** Credit draws the accepted value at acceptance; at ready it comes down to the final payable (D-128). */
     @Override
     @Transactional
     public void onOrderDispatched(Long supplierOrderId, BigDecimal finalPayable) {

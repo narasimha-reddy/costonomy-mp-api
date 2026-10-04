@@ -57,7 +57,7 @@ public class CreditInvoiceService {
     }
 
     /**
-     * Bring an order's invoice down to what the order finally comes to (D-124).
+     * Bring an order's invoice down to what the order finally comes to (D-128).
      *
      * <p>State-based, so it is naturally idempotent: it reduces by the difference between the invoice's
      * current amount and the target, and a second call finds no difference. It never raises an invoice, and

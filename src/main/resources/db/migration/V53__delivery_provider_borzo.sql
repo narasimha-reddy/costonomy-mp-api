@@ -1,4 +1,4 @@
--- V49 — Borzo as a second Costonomy-delivery provider, alongside Pidge.
+-- V53 — Borzo as a second Costonomy-delivery provider, alongside Pidge.
 --
 -- Seeded disabled (enabled = 0), same as PIDGE was in V37. The adapter bean has
 -- its own independent flag (costonomy.mp.borzo.enabled) rather than sharing

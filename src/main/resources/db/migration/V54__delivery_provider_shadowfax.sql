@@ -1,4 +1,4 @@
--- V50 — Shadowfax as a delivery provider alongside Pidge and Borzo.
+-- V54 — Shadowfax as a delivery provider alongside Pidge and Borzo.
 --
 -- Seeded disabled (enabled = 0), same as PIDGE and BORZO. The adapter bean has
 -- its own independent flag (costonomy.mp.shadowfax.enabled). Flipping this row

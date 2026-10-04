@@ -4997,7 +4997,7 @@ reversal together (ledger equals balance). `WalletEntryCopyTest`.
 
 ---
 
-## D-113 — Borzo joins the auction alongside Pidge, verified live instead of assumed
+## D-117 — Borzo joins the auction alongside Pidge, verified live instead of assumed
 **Raised 2026-10-01 · Settled 2026-10-01**
 
 Pidge's contract was never checked against a real response — its own
@@ -5016,7 +5016,7 @@ switch that cannot also equal `"BORZO"`. Rather than widen that property into a
 list (touching Pidge's tested activation path for no reason), Borzo gets its
 own flag, `costonomy.mp.borzo.enabled`, so it can run next to Pidge, next to
 the mocks, or alone. Both still need the matching `delivery_provider.enabled`
-row (V49, seeded `0`) before `DeliveryProviderRegistry` actually offers the
+row (V53, seeded `0`) before `DeliveryProviderRegistry` actually offers the
 adapter a quote — the same dual-gate Pidge already uses.
 `BorzoPidgeCoexistenceTest` proves the two switches don't interfere.
 
@@ -5087,12 +5087,12 @@ to.
 
 ---
 
-## D-114 — Shadowfax delivery provider integration alongside Pidge and Borzo
+## D-118 — Shadowfax delivery provider integration alongside Pidge and Borzo
 **2026-10-02 · Settled**
 
 Shadowfax is integrated as a third carrier in the multi-carrier delivery auction,
 joining Pidge and Borzo. The implementation follows the provider SPI pattern
-established in doc 06 §4 and decisions D-113.
+established in doc 06 §4 and decisions D-117.
 
 ### Dual-gate activation
 Like Borzo, Shadowfax is protected by two distinct gates:
@@ -5125,16 +5125,16 @@ Like Borzo, Shadowfax is protected by two distinct gates:
 Shadowfax webhook ingestion is deferred pending live payload and HMAC verification confirmation,
 relying on polling via `DeliveryJobs.pollActiveDeliveries()` for status advancement.
 
-*Corrected by D-117: Shadowfax fares and ETAs are no longer computed from baseline rates; quote and booking fail closed until a carrier fare is verified.*
+*Corrected by D-121: Shadowfax fares and ETAs are no longer computed from baseline rates; quote and booking fail closed until a carrier fare is verified.*
 
 ---
 
-## D-115 — Porter delivery provider integration alongside Pidge, Borzo and Shadowfax
+## D-119 — Porter delivery provider integration alongside Pidge, Borzo and Shadowfax
 **2026-10-02 · Settled**
 
 Porter is integrated as a fourth carrier in the multi-carrier delivery auction,
 joining Pidge, Borzo, and Shadowfax. The implementation adheres to the provider SPI pattern
-established in doc 06 §4 and decisions D-113 and D-114.
+established in doc 06 §4 and decisions D-117 and D-118.
 
 ### Dual-gate activation
 Porter is gated by:
@@ -5165,11 +5165,11 @@ Porter is gated by:
 Porter webhook ingestion is deferred pending live payload and HMAC verification confirmation,
 relying on polling via `DeliveryJobs.pollActiveDeliveries()` for status advancement.
 
-*Corrected by D-117: Porter's quote and booking no longer fall back to a configured rate card; both fail closed until a carrier fare is verified.*
+*Corrected by D-121: Porter's quote and booking no longer fall back to a configured rate card; both fail closed until a carrier fare is verified.*
 
 ---
 
-## D-116 — Intra-city 30 km radius boundary and tiered assignment deadlines
+## D-120 — Intra-city 30 km radius boundary and tiered assignment deadlines
 **2026-10-02 · Settled**
 
 Initial marketplace delivery operations focus strictly on intra-city fulfillment within municipal limits (maximum 30 km radius).
@@ -5191,15 +5191,15 @@ Commercial vehicles take longer to match in Indian metropolitan traffic than two
 
 ---
 
-## D-117 — Shadowfax and Porter quote and book only on a carrier fare; until then they decline
-**2026-10-02 · Settled** — corrects D-114 and D-115
+## D-121 — Shadowfax and Porter quote and book only on a carrier fare; until then they decline
+**2026-10-02 · Settled** — corrects D-118 and D-119
 
 ### What was wrong
-D-114 describes Shadowfax fees and ETAs as "computed from configured baseline rates". Porter's quote (D-115) fell back to the same kind of rate card when a response field was missing, and both clients filled `Booking.amount` from `base-fee` / `per-km-fee` properties. That put a price we invented into `delivery.fee` and the delivery ledger, and contradicts doc 06 §8 ("never fabricate") and the rule in CLAUDE.md. Both carriers are seeded disabled, so nothing was charged this way, but enabling a row would have started doing so.
+D-118 describes Shadowfax fees and ETAs as "computed from configured baseline rates". Porter's quote (D-119) fell back to the same kind of rate card when a response field was missing, and both clients filled `Booking.amount` from `base-fee` / `per-km-fee` properties. That put a price we invented into `delivery.fee` and the delivery ledger, and contradicts doc 06 §8 ("never fabricate") and the rule in CLAUDE.md. Both carriers are seeded disabled, so nothing was charged this way, but enabling a row would have started doing so.
 
 ### No carrier fare has been verified
 - Shadowfax: the serviceability response lists pincodes and services only. The create-order response carries `awb_number`, `promised_delivery_date` and `product_value` (our own declared value echoed back), and no fare.
-- Porter: the quote fixture was written by the same author as the client, with no live check (unlike Borzo, D-113). The client guessed three field names for the fare (`cost.amount`, `fare`, `estimated_fare`). The create-order fixture has no fare.
+- Porter: the quote fixture was written by the same author as the client, with no live check (unlike Borzo, D-117). The client guessed three field names for the fare (`cost.amount`, `fare`, `estimated_fare`). The create-order fixture has no fare.
 
 ### Decision
 1. **Quotes decline.** Shadowfax returns `Quote.unserviceable` with a reason saying it publishes no fare. Porter returns `Quote.unserviceable` without any HTTP call. A decline is recorded in `delivery_quote` as UNSERVICEABLE; a failed serviceability check is recorded as FAILED. Neither can win the auction.
@@ -5221,23 +5221,23 @@ D-114 describes Shadowfax fees and ETAs as "computed from configured baseline ra
 6. When no carrier can answer, checkout falls back to the rate card and dispatch ends as QUOTE_FAILED / `NO_SERVICEABLE_PROVIDER`, as before.
 
 ### What would re-enable each carrier
-A fare and ETA field verified against a live sandbox response, read through a required-field helper as Borzo does (D-113), plus a booking path that carries that fare into `Booking.amount`. For Shadowfax also confirm the `actual_weight` unit (assumed grams), whether `volumetric_weight` is required, what `total_amount` means for Prepaid, and the `category` values. For Porter also confirm auth (the client sends both `x-api-key` and a Bearer token, which is a guess), the endpoints and the address fields.
+A fare and ETA field verified against a live sandbox response, read through a required-field helper as Borzo does (D-117), plus a booking path that carries that fare into `Booking.amount`. For Shadowfax also confirm the `actual_weight` unit (assumed grams), whether `volumetric_weight` is required, what `total_amount` means for Prepaid, and the `category` values. For Porter also confirm auth (the client sends both `x-api-key` and a Bearer token, which is a guess), the endpoints and the address fields.
 
 ### Still open (not changed here)
 - Porter `getStatus` invents a PICKED_UP event timestamped five minutes in the past when DELIVERED is the first status seen. Both Porter and Shadowfax give an event the current time when the carrier's timestamp cannot be read. Both break doc 06 §8.
 - Tracking URLs for Shadowfax and Porter are built from unverified patterns.
 - Two weight calculations disagree (`DeliveryDirectory.calculateWeightKg` counts 1 kg per unit of unknown type; `consignmentWeightGrams` uses 500 g per piece). Decide which is authoritative before any carrier is re-enabled; declaring an estimated weight can cause re-weigh charges.
-- Pidge still defaults missing fields (D-113). Borzo sums distance with a default of 0.
+- Pidge still defaults missing fields (D-117). Borzo sums distance with a default of 0.
 - `ShadowfaxDeliveryFlowIT` leaves the SHADOWFAX row enabled for later tests that share the database.
 
 ---
 
-## D-118 — Shiprocket delivery provider integration alongside Pidge, Borzo, Shadowfax and Porter
+## D-122 — Shiprocket delivery provider integration alongside Pidge, Borzo, Shadowfax and Porter
 **2026-10-02 · Settled**
 
 Shiprocket is integrated as a fifth carrier in the multi-carrier delivery auction,
 joining Pidge, Borzo, Shadowfax, and Porter. The implementation adheres to the provider SPI pattern
-established in doc 06 §3 and decisions D-113, D-115, D-116, and D-117.
+established in doc 06 §3 and decisions D-117, D-119, D-120, and D-121.
 
 ### Dual-gate activation
 Shiprocket is gated by:
@@ -5255,7 +5255,7 @@ Shiprocket is gated by:
   `pickup_postcode`, `delivery_postcode`, `weight`, and `cod=0`.
   Parses `data.available_courier_companies`, selecting the lowest available carrier rate,
   distance, and ETA.
-- **30 km Intra-City Boundary (D-116)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+- **30 km Intra-City Boundary (D-120)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
   without making an HTTP call.
 - **Booking**: `POST /v1/external/orders/create/adhoc` with structured pickup/drop addresses,
   pincodes, contact details, and item details. Returns Shiprocket `shipment_id` as `providerDeliveryId`.
@@ -5268,12 +5268,12 @@ Shiprocket is gated by:
 
 ---
 
-## D-119 — LoadShare Networks delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter and Shiprocket
+## D-123 — LoadShare Networks delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter and Shiprocket
 **2026-10-02 · Settled**
 
 LoadShare Networks is integrated as a sixth carrier in the multi-carrier delivery auction,
 joining Pidge, Borzo, Shadowfax, Porter, and Shiprocket. The implementation adheres to the provider SPI pattern
-established in doc 06 §3 and decisions D-113, D-115, D-116, and D-117.
+established in doc 06 §3 and decisions D-117, D-119, D-120, and D-121.
 
 ### Dual-gate activation
 LoadShare is gated by:
@@ -5289,8 +5289,8 @@ LoadShare is gated by:
   `SHA-256(${authToken}|${customerCode}|${orderId})`.
 - **Serviceability & Fare Estimation**: `POST /hyperlocal/v2/order/checkServiceability` passing structured pickup and drop
   tasks with coordinates, address, and goods value. Extracts real carrier fare (`fare.value`, `unit`), distance (`predictedDistanceInMetre`),
-  and SLA (`promisedSlaInEpoch`). Fails closed (D-117) if no fare is returned.
-- **30 km Intra-City Boundary (D-116)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  and SLA (`promisedSlaInEpoch`). Fails closed (D-121) if no fare is returned.
+- **30 km Intra-City Boundary (D-120)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
   without making an HTTP call.
 - **Booking**: `POST /hyperlocal/v2/order` with task payloads, normalized phone numbers (`+91XXXXXXXXXX`), and coordinates. Returns LoadShare `orderId` as `providerDeliveryId`.
 - **Status Tracking & Polling**: `GET /hyperlocal/v2/order/{orderId}/track` retrieving status and `statusHistory`.
@@ -5302,12 +5302,12 @@ LoadShare is gated by:
 
 ---
 
-## D-120 — Blowhorn delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket and LoadShare
+## D-124 — Blowhorn delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket and LoadShare
 **2026-10-02 · Settled**
 
 Blowhorn is integrated as a seventh carrier in the multi-carrier delivery auction,
 joining Pidge, Borzo, Shadowfax, Porter, Shiprocket, and LoadShare Networks. The implementation adheres to the provider SPI pattern
-established in doc 06 §3 and decisions D-113, D-115, D-116, and D-117.
+established in doc 06 §3 and decisions D-117, D-119, D-120, and D-121.
 
 ### Dual-gate activation
 Blowhorn is gated by:
@@ -5322,8 +5322,8 @@ Blowhorn is gated by:
 - **Authentication**: Secured via `API_KEY: {apiKey}` and `Authorization: Bearer {apiKey}` headers.
 - **Serviceability & Fare Estimation**: `POST /v1/serviceability` passing structured coordinates, vehicle type, weight, and addresses.
   Extracts real carrier fare (`fare.amount`, `currency`), distance (`distance_km`), and ETA (`estimated_delivery_time_minutes`).
-  Fails closed (D-117) if no carrier fare is returned.
-- **30 km Intra-City Boundary (D-116)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  Fails closed (D-121) if no carrier fare is returned.
+- **30 km Intra-City Boundary (D-120)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
   without making an HTTP call.
 - **Booking**: `POST /v1/orders` with pickup/delivery points, vehicle type (`2_WHEELER`, `3_WHEELER`, `TATA_ACE`), normalized phone numbers (`+91XXXXXXXXXX`),
   and coordinates. Returns Blowhorn `awb_number` / `order_id` as `providerDeliveryId`.
@@ -5336,12 +5336,12 @@ Blowhorn is gated by:
 
 ---
 
-## D-121 — Delhivery delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare and Blowhorn
+## D-125 — Delhivery delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare and Blowhorn
 **2026-10-02 · Settled**
 
 Delhivery is integrated as an eighth carrier in the multi-carrier delivery auction,
 joining Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, and Blowhorn. The implementation adheres to the provider SPI pattern
-established in doc 06 §3 and decisions D-113, D-115, D-116, and D-117.
+established in doc 06 §3 and decisions D-117, D-119, D-120, and D-121.
 
 ### Dual-gate activation
 Delhivery is gated by:
@@ -5355,8 +5355,8 @@ Delhivery is gated by:
 ### API Contract mapping
 - **Authentication**: Secured via `Authorization: Token {apiToken}` header.
 - **Serviceability & Fare Estimation**: `GET /api/kinko/v1/invoice/charges.json` querying charges with origin and destination pincodes and weight in grams.
-  Extracts real carrier fare (`total_amount` or `gross_amount`). Fails closed (D-117) if no carrier fare is returned.
-- **30 km Intra-City Boundary (D-116)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  Extracts real carrier fare (`total_amount` or `gross_amount`). Fails closed (D-121) if no carrier fare is returned.
+- **30 km Intra-City Boundary (D-120)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
   without making an HTTP call.
 - **Booking**: `POST /api/cmu/create.json` pushing shipment and pickup location data with normalized phone numbers (`+91XXXXXXXXXX`) and pincodes. Returns Delhivery `waybill` as `providerDeliveryId`.
 - **Status Tracking & Polling**: `GET /api/v1/packages/json/?waybill={waybill}` retrieving `ShipmentData.Shipment.Status` and `Scans`.
@@ -5367,12 +5367,12 @@ Delhivery is gated by:
 
 ---
 
-## D-122 — Xpressbees delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare, Blowhorn and Delhivery
+## D-126 — Xpressbees delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare, Blowhorn and Delhivery
 **2026-10-02 · Settled**
 
 Xpressbees is integrated as a ninth carrier in the multi-carrier delivery auction,
 joining Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, Blowhorn, and Delhivery. The implementation adheres to the provider SPI pattern
-established in doc 06 §3 and decisions D-113, D-115, D-116, and D-117.
+established in doc 06 §3 and decisions D-117, D-119, D-120, and D-121.
 
 ### Dual-gate activation
 Xpressbees is gated by:
@@ -5386,8 +5386,8 @@ Xpressbees is gated by:
 ### API Contract mapping
 - **Authentication**: Secured via `Authorization: Bearer {token}` header.
 - **Serviceability & Fare Estimation**: `POST /v1/courier/serviceability` querying serviceability with origin and destination pincodes, order amount, and weight in kg.
-  Extracts real carrier fare (`data.rate` or `charges.total_amount`). Fails closed (D-117) if no carrier fare is returned.
-- **30 km Intra-City Boundary (D-116)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  Extracts real carrier fare (`data.rate` or `charges.total_amount`). Fails closed (D-121) if no carrier fare is returned.
+- **30 km Intra-City Boundary (D-120)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
   without making an HTTP call.
 - **Booking**: `POST /v1/shipments/create` pushing order and pickup/delivery details with normalized phone numbers (`+91XXXXXXXXXX`) and pincodes. Returns Xpressbees `awb_number` as `providerDeliveryId`.
 - **Status Tracking & Polling**: `GET /v1/shipments/track/{awb_number}` retrieving `status` and `history`.
@@ -5398,7 +5398,7 @@ Xpressbees is gated by:
 
 ---
 
-## D-123 — Delivery Slots, Recurring Subscriptions, and Delivery Mode Gating
+## D-127 — Delivery Slots, Recurring Subscriptions, and Delivery Mode Gating
 **2026-10-02 · Settled**
 
 **Decision:**
@@ -5757,8 +5757,8 @@ the list's fails `recentCarriesBill` (a waived payment showed `NOT_REQUIRED`).
 
 ---
 
-## D-124 — Catch-weight settles at dispatch; weighing moves no money
-**2026-10-04 · Settled** — also records the catch-weight and doorstep parts of V59, V62 and V63. Billing (V60) and cold chain (V61) still have no record.
+## D-128 — Catch-weight settles at dispatch; weighing moves no money
+**2026-10-04 · Settled** — also records the catch-weight and doorstep parts of V63, V66 and V67. Billing (V64) and cold chain (V65) still have no record.
 
 ### What was wrong
 Weighing could happen before or after a card was captured, and it moved wallet money immediately. That produced money that nobody had paid or been owed:
@@ -5781,7 +5781,7 @@ Weighing could happen before or after a card was captured, and it moved wallet m
    - Credit: the invoice and the amount drawn come down to the final payable (`CreditInvoiceService.reduceTo`, state-based and so idempotent), recorded as a credit `ADJUSTMENT`. It never takes an invoice below what has already been repaid.
 5. **After ready, money only goes down**, through `OrderFundingPort.reduceAfterDispatch` (a doorstep rejection). Card: a refund of the captured payment to the wallet, kind `REFUND` and withdrawable (D-104), reason `DOORSTEP_REJECTION`. Wallet: an `ORDER_ADJUSTMENT` credit. Credit: the invoice comes down. The supplier bears it through `final_payable`; Costonomy never funds a refund.
 6. **Receiving** checks received + damaged + missing against the **billed** quantity on a weighed catch-weight line (`TrustDirectory.OrderLine.receivableQuantity`), and against the accepted quantity otherwise. The accepted quantity on the order is untouched. A whole-line rejection refunds the line's stored total exactly; a partial one is priced through `Pricing` and capped at it. The refund goes through the funding port, never straight into the wallet. No credit-note number is invented: the response carries the number actually issued, or none.
-7. **Guards where the figures are written.** `supplier_order.final_payable_amount` has a CHECK `>= 0` (V63) and the doorstep update refuses to take it below zero; `CommissionService` throws on a negative base instead of clamping it to zero, which would have paid the supplier nothing and quietly made the platform whole.
+7. **Guards where the figures are written.** `supplier_order.final_payable_amount` has a CHECK `>= 0` (V67) and the doorstep update refuses to take it below zero; `CommissionService` throws on a negative base instead of clamping it to zero, which would have paid the supplier nothing and quietly made the platform whole.
 8. **Settlement figures:** `SettlementDirectory.orderFigures` now uses `coalesce(final_payable_amount, accepted_amount)`, so dispute-refund coverage is computed on what the supplier is actually owed.
 
 ### Who pays what
@@ -5802,6 +5802,6 @@ After ready, 0.1 kg of the 9.6 kg found missing at the door: Rs 10.50 less (10.0
 ### Not changed here (open)
 - **Order adjustment record and per-method reconciliation.** A card order's capture still reads as a mismatch against settlement where wallet or credit movements are involved, and `SettlementService.approve` does not require a clean reconciliation. Next slice.
 - **A doorstep rejection on a pickup order whose capture is still pending** is refused with a retryable conflict (the refund service needs a captured payment); nothing is written.
-- **Subscriptions, tax invoices, and the mobile app** are separate follow-ups. Subscription order lines do not yet carry the catch-weight flag at creation (V63 backfills existing ones).
+- **Subscriptions, tax invoices, and the mobile app** are separate follow-ups. Subscription order lines do not yet carry the catch-weight flag at creation (V67 backfills existing ones).
 - **Orders weighed under the old code and not yet ready** already carry a wallet adjustment and would also get a reduced capture. Before deploying, check `select supplier_order_id, direction, sum(amount) from wallet_transaction where kind = 'ORDER_ADJUSTMENT' group by 1, 2` against orders not yet COMPLETED or CANCELLED.
 - A legacy `ORDER_ADJUSTMENT` debit (the old over-weight surcharge) now raises what the wallet can give back for that order, and a credit lowers it; both are counted by direction.

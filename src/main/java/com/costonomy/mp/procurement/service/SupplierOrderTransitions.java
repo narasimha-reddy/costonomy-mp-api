@@ -85,7 +85,7 @@ public class SupplierOrderTransitions {
     public ProcurementDtos.SupplierOrderResponse advance(
             Long actorId, Long orderId, SupplierOrderStatus target, String permission) {
 
-        // Ready settles the money (D-124), and a weighing may be in flight: lock the order before reading it,
+        // Ready settles the money (D-128), and a weighing may be in flight: lock the order before reading it,
         // so the two queue and the settlement sees the figures the weighing committed.
         var order = loadForSupplier(actorId, orderId, permission, target == SupplierOrderStatus.READY_FOR_PICKUP);
         var mode = order.getDeliveryMode();
@@ -128,7 +128,7 @@ public class SupplierOrderTransitions {
             // The money is taken here, not at confirmation (D-103): from READY an
             // order can no longer be cancelled, so a cancellation before it only
             // ever drops a hold, and the two can never race.
-            // Settled to what the buyer finally owes (D-124): the accepted amount less any catch-weight
+            // Settled to what the buyer finally owes (D-128): the accepted amount less any catch-weight
             // shortfall, and the same figure for card, wallet and credit. Unweighed orders have no
             // final payable yet, and owe what was accepted.
             funding.onOrderDispatched(orderId, order.getFinalPayableAmount() != null
@@ -268,7 +268,7 @@ public class SupplierOrderTransitions {
 
     /**
      * Ready is the point the price is fixed, so a catch-weight line nobody weighed would be billed at the
-     * ordered quantity on nobody's measurement (D-124). Refused until each one has a reading.
+     * ordered quantity on nobody's measurement (D-128). Refused until each one has a reading.
      */
     private void requireCatchWeightLinesWeighed(SupplierOrder order) {
         boolean unweighed = orderItems.findBySupplierOrderId(order.getId()).stream()

@@ -30,7 +30,7 @@ import java.util.concurrent.Executors;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * D-124: catch-weight settles at dispatch.
+ * D-128: catch-weight settles at dispatch.
  *
  * <p>Rs 100/kg, 5% GST, 10 kg accepted: the agreed line is 1,000 + 50 = Rs 1,050. Every case asserts what
  * the ledgers, the payment, the invoice and the order say afterwards, and every refusal asserts that

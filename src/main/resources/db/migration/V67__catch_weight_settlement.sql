@@ -1,4 +1,4 @@
--- V63 (D-124): catch-weight settles at dispatch.
+-- V67 (D-128): catch-weight settles at dispatch.
 --
 -- A weighed line now carries the quantity the buyer is billed for, separately from the raw
 -- scale reading. billable = min(reading, accepted): overweight within the tolerance band is the
@@ -13,7 +13,7 @@ UPDATE supplier_order_item
  WHERE dispatched_weight IS NOT NULL
    AND unit_price_snapshot > 0;
 
--- V62 backfilled the flag from the SKU, but order lines created since by a path that did not set
+-- V66 backfilled the flag from the SKU, but order lines created since by a path that did not set
 -- it (subscriptions) are still false.
 UPDATE supplier_order_item soi
   JOIN supplier_sku sku ON sku.id = soi.supplier_sku_id

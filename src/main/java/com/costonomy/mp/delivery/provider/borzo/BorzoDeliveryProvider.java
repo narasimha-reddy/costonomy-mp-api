@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
  * {@code costonomy.mp.providers.delivery} — that property is a single-valued
  * switch Pidge's own {@code @ConditionalOnProperty} is pinned to, and Borzo
  * needs to be dispatchable alongside Pidge, not instead of it. The
- * {@code delivery_provider} row this adapter answers to (migration V49) is
+ * {@code delivery_provider} row this adapter answers to (migration V53) is
  * seeded {@code enabled = 0}; both gates have to agree before
  * {@link com.costonomy.mp.delivery.service.DeliveryProviderRegistry} will
  * actually offer this adapter a quote.

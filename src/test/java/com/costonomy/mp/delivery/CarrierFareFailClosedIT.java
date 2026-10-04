@@ -22,7 +22,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * D-117: Shadowfax and Porter have no verified carrier fare, so in a real auction they must be
+ * D-121: Shadowfax and Porter have no verified carrier fare, so in a real auction they must be
  * recorded as having been asked and must never win or be charged.
  *
  * <p>The carrier clients are deliberately not mocked: this exercises the real wiring. Shadowfax

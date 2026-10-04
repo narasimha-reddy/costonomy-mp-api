@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [fix/d124-catchweight-settle-at-dispatch] - Catch-weight settles at dispatch (D-124)
+## [fix/d124-catchweight-settle-at-dispatch] - Catch-weight settles at dispatch (D-128)
 
 ### Fixed
 - Weighing no longer moves money. A duplicated line, a partial re-weigh, weigh-then-cancel and an uncovered over-weight debit could each create money or leave the platform paying; none is possible now.
@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Over-weight within the band is billed at the ordered quantity; readings outside -20% / +10% are refused.
 
 ### Added
-- `CatchWeight` and `CatchWeightPolicy` (`costonomy.mp.catch-weight.*`), V63 (`billable_quantity`, final payable CHECK), `OrderFundingPort.reduceAfterDispatch`, credit invoice reduction, and `billableQuantity` on the order item response.
+- `CatchWeight` and `CatchWeightPolicy` (`costonomy.mp.catch-weight.*`), V67 (`billable_quantity`, final payable CHECK), `OrderFundingPort.reduceAfterDispatch`, credit invoice reduction, and `billableQuantity` on the order item response.
 - Ready now requires every catch-weight line to be weighed.
 
 ### Removed
@@ -65,7 +65,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [feat/supplier-buyer-slots-subscriptions] - Delivery Slots, Subscriptions & Logistics Gating
 ### Added
 - **Logistics Dispatch Gating**: Strict enforcement in `DeliveryService.autoDispatch` so that third-party courier dispatch (`quoteAndBook`) triggers *only* when `COSTONOMY` delivery mode is selected. `PICKUP` orders are skipped cleanly without driver assignment or courier auction. `SUPPLIER_OWN` orders assign the store contact directly as driver without booking third-party couriers.
-- **Database Migration `V49__delivery_slots_and_subscriptions.sql`**:
+- **Database Migration `V53__delivery_slots_and_subscriptions.sql`**:
   - `delivery_slot`: Time windows (`start_time`, `end_time`), same-day cutoff time (`order_cutoff_time`), daily capacity (`max_orders_per_day`), and active status.
   - `subscription`: Recurring subscriptions (`frequency`, `preferred_slot_id`, `delivery_mode`, `status`, `start_date`, `next_delivery_date`).
   - `subscription_skip_date`: Skip dates for vacations and closures.
@@ -95,8 +95,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `XpressbeesApiClient` HTTP client for Xpressbees Logistics API:
   - Header authentication via `Authorization: Bearer <token>`.
   - Rate limiting with 20 RPS local token-bucket throttle protection.
-  - Hard 30 km intra-city radius ceiling enforcement (D-116).
-  - Quoting / Pricing via `POST /v1/courier/serviceability` extracting verified carrier fare (`data.rate`, `charges.total_amount`) based on pincodes and weight (fails closed per D-117 if missing fare).
+  - Hard 30 km intra-city radius ceiling enforcement (D-120).
+  - Quoting / Pricing via `POST /v1/courier/serviceability` extracting verified carrier fare (`data.rate`, `charges.total_amount`) based on pincodes and weight (fails closed per D-121 if missing fare).
   - Order creation via `POST /v1/shipments/create` with structured pickup and delivery details, normalized phone numbers (`+91XXXXXXXXXX`), and pincodes, returning `awb_number` as `providerDeliveryId`.
   - Tracking & Status polling via `GET /v1/shipments/track/{awb_number}` parsing `status` and `history`.
   - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first with duplicate event suppression via `uk_delivery_event_provider`.
@@ -106,7 +106,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `XpressbeesStatusMappingTest` (2 tests).
   - `XpressbeesApiClientContractTest` WireMock tests (10 tests).
   - `XpressbeesDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
-- Architecture decision recorded in `docs/DECISIONS.md` (D-122) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-020).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-126) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-020).
 
 ## [feat/delhivery-provider] - Delhivery Delivery Provider Integration
 ### Added
@@ -119,8 +119,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `DelhiveryApiClient` HTTP client for Delhivery Express API:
   - Header authentication via `Authorization: Token <apiToken>`.
   - Rate limiting with 20 RPS local token-bucket throttle protection.
-  - Hard 30 km intra-city radius ceiling enforcement (D-116).
-  - Quoting / Pricing via `GET /api/kinko/v1/invoice/charges.json` extracting verified carrier fare (`total_amount`, `gross_amount`) based on pincodes and weight (fails closed per D-117 if missing fare).
+  - Hard 30 km intra-city radius ceiling enforcement (D-120).
+  - Quoting / Pricing via `GET /api/kinko/v1/invoice/charges.json` extracting verified carrier fare (`total_amount`, `gross_amount`) based on pincodes and weight (fails closed per D-121 if missing fare).
   - Order creation via `POST /api/cmu/create.json` with structured pickup and drop shipment payloads, normalized phone numbers (`+91XXXXXXXXXX`), and pincodes, returning `waybill` as `providerDeliveryId`.
   - Tracking & Status polling via `GET /api/v1/packages/json/?waybill={waybill}` parsing `ShipmentData.Shipment.Status` and `Scans`.
   - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first with duplicate event suppression via `uk_delivery_event_provider`.
@@ -130,7 +130,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `DelhiveryStatusMappingTest` (2 tests).
   - `DelhiveryApiClientContractTest` WireMock tests (10 tests).
   - `DelhiveryDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
-- Architecture decision recorded in `docs/DECISIONS.md` (D-121) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-018).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-125) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-018).
 
 ## [feat/blowhorn-provider] - Blowhorn Delivery Provider Integration
 ### Added
@@ -143,8 +143,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `BlowhornApiClient` HTTP client for Blowhorn Logistics API:
   - Header authentication via `API_KEY` and `Authorization: Bearer <apiKey>`.
   - Rate limiting with 20 RPS local token-bucket throttle protection.
-  - Hard 30 km intra-city radius ceiling enforcement (D-116).
-  - Quoting / Serviceability via `POST /v1/serviceability` extracting verified carrier fare (`fare.amount`, `currency`), distance, and ETA (fails closed per D-117 if missing fare).
+  - Hard 30 km intra-city radius ceiling enforcement (D-120).
+  - Quoting / Serviceability via `POST /v1/serviceability` extracting verified carrier fare (`fare.amount`, `currency`), distance, and ETA (fails closed per D-121 if missing fare).
   - Vehicle type mapping for 2-wheelers, 3-wheelers, and mini-trucks (`TATA_ACE`).
   - Order creation via `POST /v1/orders` with structured pickup and delivery points, normalized phone numbers (`+91XXXXXXXXXX`), and coordinates, returning `awb_number` as `providerDeliveryId`.
   - Tracking & Status polling via `GET /v1/orders/{orderId}/track` parsing current status, driver details, and events.
@@ -156,7 +156,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `BlowhornStatusMappingTest` (2 tests).
   - `BlowhornApiClientContractTest` WireMock tests (11 tests).
   - `BlowhornDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
-- Architecture decision recorded in `docs/DECISIONS.md` (D-120) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-016).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-124) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-016).
 
 ## [feat/loadshare-provider] - LoadShare Networks Delivery Provider Integration
 ### Added
@@ -169,8 +169,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `LoadshareApiClient` HTTP client for LoadShare Hyperlocal v2 Delivery API:
   - Header authentication via `Customer-Code` and SHA-256 `Checksum` (`${authToken}|${customerCode}|${orderId}`).
   - Rate limiting with 20 RPS local token-bucket throttle protection.
-  - Hard 30 km intra-city radius ceiling enforcement (D-116).
-  - Quoting / Serviceability via `POST /hyperlocal/v2/order/checkServiceability` extracting verified carrier fare (`fare.value`, `unit`), predicted distance, and promised SLA (fails closed per D-117 if missing fare).
+  - Hard 30 km intra-city radius ceiling enforcement (D-120).
+  - Quoting / Serviceability via `POST /hyperlocal/v2/order/checkServiceability` extracting verified carrier fare (`fare.value`, `unit`), predicted distance, and promised SLA (fails closed per D-121 if missing fare).
   - Order creation via `POST /hyperlocal/v2/order` with structured pickup and drop tasks, normalized phone numbers (`+91XXXXXXXXXX`), and coordinates, returning `orderId` as `providerDeliveryId`.
   - Tracking & Status polling via `GET /hyperlocal/v2/order/{orderId}/track` parsing current status and `statusHistory`.
   - Driver location tracking via `GET /hyperlocal/v2/order/{orderId}/track` parsing `currentLocation` (`latitude`, `longitude`, `bearing`, `speed`).
@@ -181,7 +181,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `LoadshareStatusMappingTest` (2 tests).
   - `LoadshareApiClientContractTest` WireMock tests (11 tests).
   - `LoadshareDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
-- Architecture decision recorded in `docs/DECISIONS.md` (D-119) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-014).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-123) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-014).
 
 ## [feat/shiprocket-provider] - Shiprocket Delivery Provider Integration
 ### Added
@@ -194,7 +194,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `ShiprocketApiClient` HTTP client for Shiprocket Logistics API:
   - Token authentication via `Authorization: Bearer <token>` (direct API token or cached from `POST /v1/external/auth/login`).
   - Rate limiting with 20 RPS local token-bucket protection.
-  - Hard 30 km intra-city radius ceiling enforcement (D-116).
+  - Hard 30 km intra-city radius ceiling enforcement (D-120).
   - Quoting / Serviceability via `GET /v1/external/courier/serviceability/` selecting the cheapest available courier rate from `data.available_courier_companies`.
   - Adhoc order creation via `POST /v1/external/orders/create/adhoc` with validated customer, address, contact, and item payloads, returning `shipment_id` as `providerDeliveryId`.
   - Tracking & Status polling via `GET /v1/external/courier/track/shipment/{shipment_id}` parsing `current_status` and activities.
@@ -205,9 +205,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `ShiprocketStatusMappingTest` (2 tests).
   - `ShiprocketApiClientContractTest` WireMock tests (9 tests).
   - `ShiprocketDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
-- Architecture decision recorded in `docs/DECISIONS.md` (D-118) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-009).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-122) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-009).
 
-## [feat/porter-provider] - Fail-closed carrier fares (D-117)
+## [feat/porter-provider] - Fail-closed carrier fares (D-121)
 ### Fixed
 - Shadowfax and Porter no longer invent a fare or ETA from a configured rate card. Quotes decline with a reason; booking refuses before any HTTP call and the auction fails over to the next carrier.
 - Shadowfax serviceability check fails closed: it checks each pincode's `Regular` service, and an unreachable or malformed answer is a recorded failure, never "serviceable".
@@ -232,7 +232,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `PorterApiClient` HTTP client for Porter Logistics API:
   - Authentication headers: `x-api-key: {apiKey}` and `Authorization: Bearer {apiKey}`.
   - Rate limiting with 20 RPS local token-bucket protection.
-  - Quoting via `POST /v1/orders/cost` with vehicle category mapping (superseded by D-117: quoting now declines until a carrier fare is verified) (`TWO_WHEELER` -> `2_wheeler`, `THREE_WHEELER` -> `three_wheeler`, `FOUR_WHEELER_TRUCK` -> `tata_ace`).
+  - Quoting via `POST /v1/orders/cost` with vehicle category mapping (superseded by D-121: quoting now declines until a carrier fare is verified) (`TWO_WHEELER` -> `2_wheeler`, `THREE_WHEELER` -> `three_wheeler`, `FOUR_WHEELER_TRUCK` -> `tata_ace`).
   - Order creation via `POST /v1/orders/create` with structured pickup/drop addresses, contacts, coordinates, and idempotency request ID, returning Porter `order_id` as `providerDeliveryId`.
   - Tracking & Status polling via `GET /v1/orders/{order_id}` with partner/driver details parsing (`name`, `mobile`, `vehicle_number`).
   - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first so `DeliveryOrderBridge` transitions `supplier_order` through `OUT_FOR_DELIVERY` to `DELIVERED`.
@@ -242,8 +242,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `PorterStatusMappingTest` (2 tests).
   - `PorterApiClientContractTest` WireMock tests (8 tests including 30 km boundary rejection).
   - `PorterDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
-- Architecture decisions recorded in `docs/DECISIONS.md` (D-115) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-007).
-- Intra-City 30 km Radius Limit & Dynamic Tiered Deadlines (D-116):
+- Architecture decisions recorded in `docs/DECISIONS.md` (D-119) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-007).
+- Intra-City 30 km Radius Limit & Dynamic Tiered Deadlines (D-120):
   - Hard 30 km maximum radius ceiling enforced across `DeliveryFeeQuoteService` (pre-order quoting), `DeliveryQuotingService` (multi-carrier auction gathering), and provider HTTP clients (`PorterApiClient`, `BorzoApiClient`, `ShadowfaxApiClient`).
   - Dynamic assignment deadlines in `DeliveryBookingService`: 3 minutes for two-wheelers (`costonomy.mp.delivery.bike-assignment-timeout=PT3M`), 12 minutes for three-wheelers and mini-trucks (`costonomy.mp.delivery.truck-assignment-timeout=PT12M`).
   - Unit test coverage in `DeliveryBookingServiceTest` (4 tests), `DeliveryQuotingServiceTest` (2 tests), and `DeliveryFeeQuoteServiceTest` (2 tests).
@@ -270,7 +270,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `ShadowfaxStatusMappingTest` (2 tests).
   - `ShadowfaxApiClientContractTest` WireMock tests (6 tests).
   - `ShadowfaxDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
-- Architecture decisions recorded in `docs/DECISIONS.md` (D-114) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-005).
+- Architecture decisions recorded in `docs/DECISIONS.md` (D-118) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-005).
 
 ---
 
@@ -292,7 +292,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `BorzoApiClientContractTest` (12 tests).
   - `BorzoPidgeCoexistenceTest` (3 tests).
   - `BorzoDeliveryFlowIT` Testcontainers MySQL 8 integration tests (4 tests).
-- Architecture decisions recorded in `docs/DECISIONS.md` (D-113) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-003).
+- Architecture decisions recorded in `docs/DECISIONS.md` (D-117) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-003).
 
 ---
 

@@ -82,7 +82,7 @@ class PorterApiClientContractTest {
     }
 
     @Test
-    @DisplayName("declines because Porter's fare contract is unverified and makes no HTTP call (D-117)")
+    @DisplayName("declines because Porter's fare contract is unverified and makes no HTTP call (D-121)")
     void declinesBecauseFareContractUnverified() {
         var quote = client.calculateQuote(quoteRequest());
 
@@ -105,7 +105,7 @@ class PorterApiClientContractTest {
     }
 
     @Test
-    @DisplayName("refuses to book without a verified carrier fare and sends nothing (D-117)")
+    @DisplayName("refuses to book without a verified carrier fare and sends nothing (D-121)")
     void refusesToBookWithoutFareAndSendsNothing() {
         var hydDrop = new DeliveryProvider.Locality("Hyderabad", "Telangana", "500081");
 

@@ -136,7 +136,7 @@ public class ReceivingService {
             }
 
             // What was billed and so what the buyer has to account for: the weighed quantity on a weighed
-            // catch-weight line, the accepted quantity otherwise (D-124). The accepted quantity stays on the
+            // catch-weight line, the accepted quantity otherwise (D-128). The accepted quantity stays on the
             // order as committed; this is only what the three counts must add up to.
             BigDecimal accepted = line.receivableQuantity();
             BigDecimal counted = answer.receivedQuantity()
@@ -213,7 +213,7 @@ public class ReceivingService {
         receivings.save(receiving);
 
         // A doorstep rejection takes money off what the buyer pays, and the supplier bears it through the final
-        // payable (D-124). It goes back by the funding method the order was paid with, through the one port,
+        // payable (D-128). It goes back by the funding method the order was paid with, through the one port,
         // never straight into the wallet: card money returns as a withdrawable refund, wallet money to the
         // wallet, and a credit order's invoice comes down.
         String creditNoteNumber = null;

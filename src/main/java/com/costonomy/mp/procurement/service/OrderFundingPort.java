@@ -75,7 +75,7 @@ public interface OrderFundingPort {
     void onOrderUnfulfilled(Long supplierOrderId, String reason);
 
     /**
-     * The goods are about to leave: settle the order's money to what it finally comes to (D-103, D-124).
+     * The goods are about to leave: settle the order's money to what it finally comes to (D-103, D-128).
      *
      * <p>{@code finalPayable} is the accepted amount less any catch-weight shortfall. Called exactly once in
      * effect, with the order locked, and idempotent: a repeat finds the money already settled.
@@ -92,7 +92,7 @@ public interface OrderFundingPort {
     }
 
     /**
-     * Reduce what the restaurant pays after the goods left, once per key (D-124): a doorstep rejection. The
+     * Reduce what the restaurant pays after the goods left, once per key (D-128): a doorstep rejection. The
      * supplier bears it, through the order's final payable, and Costonomy never funds it.
      *
      * <p>Down only. Card: a refund of the captured payment to the wallet, withdrawable (D-104). Wallet: a

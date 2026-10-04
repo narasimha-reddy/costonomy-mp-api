@@ -1,4 +1,4 @@
--- V62: Add is_catch_weight to supplier_order_item so order line items carry catch-weight identity.
+-- V66: Add is_catch_weight to supplier_order_item so order line items carry catch-weight identity.
 ALTER TABLE supplier_order_item
     ADD COLUMN is_catch_weight BOOLEAN NOT NULL DEFAULT FALSE AFTER requires_cold_chain;
 

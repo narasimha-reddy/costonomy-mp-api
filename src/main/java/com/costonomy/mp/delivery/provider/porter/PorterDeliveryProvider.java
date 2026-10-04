@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
  *
  * <p>Gated on {@code costonomy.mp.porter.enabled}, independent of Pidge, Borzo and Shadowfax.
  * Requires both the configuration property and the enabled row in {@code delivery_provider}
- * (migration V51) to participate in the delivery auction.
+ * (migration V55) to participate in the delivery auction.
  */
 @Component
 @ConditionalOnProperty(name = "costonomy.mp.porter.enabled", havingValue = "true")

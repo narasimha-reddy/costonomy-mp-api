@@ -10,7 +10,7 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** D-124: Rs 100/kg, 5% GST, 10 kg accepted, so the agreed line is 1,000 + 50 = 1,050. */
+/** D-128: Rs 100/kg, 5% GST, 10 kg accepted, so the agreed line is 1,000 + 50 = 1,050. */
 class CatchWeightTest {
 
     private static final CatchWeight.Policy BAND = new CatchWeight.Policy(

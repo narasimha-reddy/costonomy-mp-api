@@ -1,4 +1,4 @@
--- V57: Delivery slots and recurring subscriptions.
+-- V61: Delivery slots and recurring subscriptions.
 --
 -- Enables supplier slot-based dispatch windows (morning, afternoon, evening)
 -- with daily capacity ceilings and cut-offs.

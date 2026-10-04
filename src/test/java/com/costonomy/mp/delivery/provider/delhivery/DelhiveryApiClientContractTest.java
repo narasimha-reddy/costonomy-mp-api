@@ -100,7 +100,7 @@ class DelhiveryApiClientContractTest {
     }
 
     @Test
-    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit (D-116)")
+    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit (D-120)")
     void calculateQuote_exceeds30Km() {
         var longRouteRequest = new DeliveryProvider.QuoteRequest(
                 101L,

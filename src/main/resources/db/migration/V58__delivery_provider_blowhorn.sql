@@ -1,4 +1,4 @@
--- V54 — Blowhorn as an on-demand intra-city delivery provider alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, and LoadShare.
+-- V58 — Blowhorn as an on-demand intra-city delivery provider alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, and LoadShare.
 --
 -- Seeded disabled (enabled = 0), same as other carriers. The adapter bean has
 -- its own independent flag (costonomy.mp.blowhorn.enabled). Flipping this row

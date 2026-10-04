@@ -8,7 +8,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * What a weighed catch-weight line is billed for (D-124).
+ * What a weighed catch-weight line is billed for (D-128).
  *
  * <p>Pure, and the only place the rule lives. A line is sold by weight but ordered as an estimate, so
  * the scale reading decides the bill, with two limits:

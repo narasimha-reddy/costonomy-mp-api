@@ -28,8 +28,8 @@ import java.util.regex.Pattern;
  * HTTP client for the Shiprocket Logistics API.
  *
  * <p>Implements courier serviceability querying, adhoc order creation, tracking polling,
- * and order cancellation. Adheres strictly to the fail-closed principles, 30 km intra-city radius ceiling (D-116),
- * and deterministic event ordering (D-114, D-115).
+ * and order cancellation. Adheres strictly to the fail-closed principles, 30 km intra-city radius ceiling (D-120),
+ * and deterministic event ordering (D-118, D-119).
  */
 @Component
 @Slf4j

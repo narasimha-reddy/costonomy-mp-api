@@ -138,7 +138,7 @@ public class SupplierOrderService {
 
     /**
      * Record the scale readings for catch-weight lines (meat, paneer, produce) before the order is marked
-     * ready (D-124).
+     * ready (D-128).
      *
      * <p><b>Weighing moves no money.</b> It fixes what the buyer will be billed: for each line,
      * {@code min(reading, accepted)} at the snapshot price, through {@link CatchWeight}. The money is settled

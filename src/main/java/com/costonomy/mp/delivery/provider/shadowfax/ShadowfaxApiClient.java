@@ -85,7 +85,7 @@ public class ShadowfaxApiClient {
 
     /**
      * Shadowfax publishes no fare through its API, so this can never return a priced quote:
-     * a rate card is not a quote (D-117). It still checks serviceability so a decline says
+     * a rate card is not a quote (D-121). It still checks serviceability so a decline says
      * why, which is useful evidence when a rate contract is negotiated.
      */
     public DeliveryProvider.Quote calculateQuote(DeliveryProvider.QuoteRequest request) {
@@ -123,7 +123,7 @@ public class ShadowfaxApiClient {
         }
 
         return DeliveryProvider.Quote.unserviceable(
-                "Shadowfax publishes no fare through its API; a rate card is not a quote (D-117)");
+                "Shadowfax publishes no fare through its API; a rate card is not a quote (D-121)");
     }
 
     /**
@@ -175,7 +175,7 @@ public class ShadowfaxApiClient {
      * Refuses to book. Shadowfax's create-order response carries no fare (only the product
      * value we declared), and {@code Booking.amount} must be a real figure because it becomes
      * delivery.fee and the ledger. This throws before any network call: failing after the
-     * carrier has accepted an order would leave a live consignment nobody owns (D-117).
+     * carrier has accepted an order would leave a live consignment nobody owns (D-121).
      * Our own data is validated first so a bad request is reported precisely.
      */
     public DeliveryProvider.Booking createOrder(DeliveryProvider.BookingRequest request) {
@@ -189,12 +189,12 @@ public class ShadowfaxApiClient {
 
         throw new ShadowfaxContractException(
                 "Shadowfax create-order returns no fare (only product_value, our own declared value); "
-                        + "refusing to book without a carrier fare - a rate card is not a quote (D-117)");
+                        + "refusing to book without a carrier fare - a rate card is not a quote (D-121)");
     }
 
     /**
      * The create-order body, built only from our own records. Anything missing is rejected
-     * by name; nothing is defaulted (D-117).
+     * by name; nothing is defaulted (D-121).
      */
     Map<String, Object> orderPayload(DeliveryProvider.BookingRequest request) {
         var pickup = requireLocality("pickup", request.pickupLocality());

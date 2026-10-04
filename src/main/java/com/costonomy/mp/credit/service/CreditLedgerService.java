@@ -176,7 +176,7 @@ public class CreditLedgerService {
     }
 
     /**
-     * Bring a drawn order down to what it finally comes to (D-124): the invoice, what is drawn against the
+     * Bring a drawn order down to what it finally comes to (D-128): the invoice, what is drawn against the
      * limit, and the reservation's record of it, together. Idempotent: it acts only on the difference.
      */
     @Transactional

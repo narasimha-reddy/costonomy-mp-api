@@ -342,7 +342,7 @@ public class WalletService {
     }
 
     /**
-     * The order is ready: give back what it was paid beyond what it finally comes to (D-124).
+     * The order is ready: give back what it was paid beyond what it finally comes to (D-128).
      *
      * <p>The wallet paid the accepted total when the order was created. A catch-weight shortfall made the
      * final payable smaller, and this returns the difference in one credit, once: the reference is unique per
@@ -378,7 +378,7 @@ public class WalletService {
 
     /**
      * A reduction after the goods left (a doorstep rejection) on a wallet-paid order: back into the wallet,
-     * once per reference, never more than the order can still give back (D-124).
+     * once per reference, never more than the order can still give back (D-128).
      */
     @Transactional
     public void creditOrderAdjustment(Long supplierOrderId, BigDecimal amount, String reference, String reason) {

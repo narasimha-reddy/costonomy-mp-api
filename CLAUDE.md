@@ -349,7 +349,7 @@ deadline**; `OrderReleaseService.releaseIfFunded` moves them to
 confirm call, the webhook or the reconciliation job arrives first. Funding means
 `PaymentStatus.fundsSecured()` — nothing else may decide it. Money is held from
 payment and captured only when the supplier marks the order ready (D-103), and
-only for what the order finally comes to (D-124: the accepted amount less any catch-weight shortfall, the same figure for card, wallet and credit); the remainder of a partial acceptance is *released*,
+only for what the order finally comes to (D-128: the accepted amount less any catch-weight shortfall, the same figure for card, wallet and credit); the remainder of a partial acceptance is *released*,
 never refunded, and so is the whole hold if the order is cancelled before ready —
 nothing reaches the restaurant's statement that should not be there.
 
@@ -358,7 +358,7 @@ This applies identically to credit, which is why both go through
 only in timing: the reservation succeeds or fails inside the submission, so the
 order releases immediately and there is no intent for the client to complete. Add
 a funding method by adding an `OrderFundingPort`, never by branching on the
-payment method in procurement. Weighing never moves money: it fixes the billed quantity, and the money is settled once at ready through `onOrderDispatched`; after that it only goes down through `reduceAfterDispatch` (D-124).
+payment method in procurement. Weighing never moves money: it fixes the billed quantity, and the money is settled once at ready through `onOrderDispatched`; after that it only goes down through `reduceAfterDispatch` (D-128).
 
 **A refund goes to the wallet, and leaves it only for the card it came from.**
 D-104. There is no endpoint for a restaurant to refund itself, and there must not
@@ -461,7 +461,7 @@ Notifications, realtime and analytics all match on these names.
 accepted quantity stays exactly as the supplier committed to it — that is what was
 paid for and what every dispute is argued from — and what arrived goes to
 `fulfilled_quantity`. Every line must be answered and
-`received + damaged + missing` must equal `accepted` (on a weighed catch-weight line, the billed weight, D-124); defaulting any of those
+`received + damaged + missing` must equal `accepted` (on a weighed catch-weight line, the billed weight, D-128); defaulting any of those
 would reinstate the blind "Complete" button §23A.22 forbids. A receiving shortfall
 does **not** re-open the requirement: it is a commercial dispute, and re-opening
 would have the restaurant order the same goods twice.

@@ -117,7 +117,7 @@ class DeliveryQuotingServiceTest {
     }
 
     @Test
-    @DisplayName("When every carrier declines or fails, each is recorded and none is selected (D-117)")
+    @DisplayName("When every carrier declines or fails, each is recorded and none is selected (D-121)")
     void gather_whenEveryCarrierDeclinesOrFails_recordsEachAndSelectsNone() {
         // Indiranagar to Koramangala (~5 km), inside the radius, so carriers really are asked
         var delivery = buildDelivery(12.9716, 77.5946, 12.9352, 77.6245);
@@ -125,7 +125,7 @@ class DeliveryQuotingServiceTest {
         var declining = mock(DeliveryProvider.class);
         var failing = mock(DeliveryProvider.class);
         when(declining.quote(any())).thenReturn(DeliveryProvider.Quote.unserviceable(
-                "Porter fare contract not verified against a live response; a rate card is not a quote (D-117)"));
+                "Porter fare contract not verified against a live response; a rate card is not a quote (D-121)"));
         when(failing.quote(any())).thenThrow(
                 new DeliveryProviderException("SHADOWFAX", "Shadowfax serviceability timeout", true));
 

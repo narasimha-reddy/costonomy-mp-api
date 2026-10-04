@@ -1,4 +1,4 @@
--- V60: Statutory B2B Tax Invoices, Credit Notes (Section 31 & 34 CGST Act), and Subscription Funding.
+-- V64: Statutory B2B Tax Invoices, Credit Notes (Section 31 & 34 CGST Act), and Subscription Funding.
 --
 -- Provides:
 -- 1. Full GST-compliant Tax Invoices for fulfilled B2B orders with supplier & buyer GSTIN,

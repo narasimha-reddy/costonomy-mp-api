@@ -77,7 +77,7 @@ public class OrderFunding {
         forOrder(supplierOrderId).onOrderDispatched(supplierOrderId, finalPayable);
     }
 
-    /** A reduction after dispatch, routed to whatever funds the order (D-124). */
+    /** A reduction after dispatch, routed to whatever funds the order (D-128). */
     public void reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
                                     String key, Long actorId, String reason) {
         forOrder(supplierOrderId).reduceAfterDispatch(supplierOrderId, amount, newFinalPayable, key, actorId, reason);

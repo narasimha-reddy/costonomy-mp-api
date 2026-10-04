@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 
 /**
- * How far a scale reading may be from the accepted quantity (D-124). Configuration, because the right
+ * How far a scale reading may be from the accepted quantity (D-128). Configuration, because the right
  * band differs by product and will be tuned with suppliers; the defaults are the product owner's.
  */
 @Component
