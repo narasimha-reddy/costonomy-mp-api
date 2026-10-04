@@ -535,19 +535,22 @@ public class IntentOrderCreator {
 
         var policy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
 
-        // Free delivery threshold check: if order subtotal qualifies, carriage is waived!
-        if (DeliveryCharges.waivedByThreshold(policy, subtotal)) {
-            return BigDecimal.ZERO;
-        }
-
+        // The checks that refuse an order (a supplier that doesn't deliver, an order below their minimum) come
+        // before the free-delivery threshold: waiving the fee must not also waive whether delivery is offered.
         return switch (mode) {
-            case PICKUP, SUPPLIER_DELIVERY -> deliveryCharges.supplierCarriedFee(policy, mode, subtotal);
+            case PICKUP, SUPPLIER_DELIVERY -> {
+                BigDecimal fee = deliveryCharges.supplierCarriedFee(policy, mode, subtotal);
+                yield DeliveryCharges.waivedByThreshold(policy, subtotal) ? BigDecimal.ZERO : fee;
+            }
 
             case COSTONOMY_DELIVERY -> {
                 if (!policy.costonomyDeliveryEnabled()) {
                     throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                             "We can't deliver from this supplier. Choose pickup, or ask "
                                     + "them to deliver.");
+                }
+                if (DeliveryCharges.waivedByThreshold(policy, subtotal)) {
+                    yield BigDecimal.ZERO;
                 }
                 if (request.deliveryQuoteReference() == null) {
                     // Creating: not defaulted to zero and not quoted on the fly —

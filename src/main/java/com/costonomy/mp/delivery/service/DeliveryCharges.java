@@ -61,9 +61,8 @@ public class DeliveryCharges {
     /** The fee for a store and mode, applying the free-delivery threshold. Subscriptions use this. */
     public BigDecimal feeFor(Long supplierStoreId, DeliveryMode mode, BigDecimal subtotal) {
         var policy = policies.deliveryPolicy(supplierStoreId);
-        if (waivedByThreshold(policy, subtotal)) {
-            return BigDecimal.ZERO;
-        }
-        return supplierCarriedFee(policy, mode, subtotal);
+        // Refusals first: waiving the fee must not also waive whether the supplier delivers at all.
+        BigDecimal fee = supplierCarriedFee(policy, mode, subtotal);
+        return waivedByThreshold(policy, subtotal) ? BigDecimal.ZERO : fee;
     }
 }
