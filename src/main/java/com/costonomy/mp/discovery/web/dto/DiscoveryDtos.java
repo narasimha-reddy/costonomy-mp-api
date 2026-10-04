@@ -209,7 +209,13 @@ public final class DiscoveryDtos {
      */
     public record SupplierSearchPage(
             List<SupplierSearchResult> suppliers,
-            int beyondRadius) {
+            int beyondRadius,
+            int total,
+            Integer nextOffset) {
+
+        public SupplierSearchPage(List<SupplierSearchResult> suppliers, int beyondRadius) {
+            this(suppliers, beyondRadius, suppliers.size(), null);
+        }
     }
 
     /**

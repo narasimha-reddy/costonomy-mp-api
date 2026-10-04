@@ -72,12 +72,14 @@ public class DiscoveryController {
             @RequestParam(value = "q", required = false) String query,
             @RequestParam(required = false) Long outletId,
             @RequestParam(required = false) BigDecimal radiusKm,
-            @RequestParam(required = false) String reach) {
+            @RequestParam(required = false) String reach,
+            @RequestParam(required = false, defaultValue = "0") Integer offset,
+            @RequestParam(required = false, defaultValue = "50") Integer limit) {
         if (outletId != null) {
             accessControl.requireScoped(ActorContext.requireUserId(),
                     Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "Outlet");
         }
-        return ApiResponse.ok(storefront.searchSuppliers(query, outletId, radiusKm, reach));
+        return ApiResponse.ok(storefront.searchSuppliers(query, outletId, radiusKm, reach, offset, limit));
     }
 
     @GetMapping("/search/skus")

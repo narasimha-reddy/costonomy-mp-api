@@ -157,15 +157,26 @@ public class StorefrontService {
     @Transactional(readOnly = true)
     public DiscoveryDtos.SupplierSearchPage searchSuppliers(String query, Long outletId,
                                                             BigDecimal radiusKm) {
-        return searchSuppliers(query, outletId, radiusKm, null);
+        return searchSuppliers(query, outletId, radiusKm, null, 0, 50);
     }
 
     @Transactional(readOnly = true)
     public DiscoveryDtos.SupplierSearchPage searchSuppliers(String query, Long outletId,
                                                             BigDecimal radiusKm, String reach) {
+        return searchSuppliers(query, outletId, radiusKm, reach, 0, 50);
+    }
+
+    @Transactional(readOnly = true)
+    public DiscoveryDtos.SupplierSearchPage searchSuppliers(String query, Long outletId,
+                                                            BigDecimal radiusKm, String reach,
+                                                            Integer offset, Integer limit) {
         String term = query == null ? "" : query.trim().toLowerCase();
         boolean filtered = term.length() >= MIN_TERM;
         boolean reachAll = "all".equalsIgnoreCase(reach);
+
+        int effectiveOffset = Math.max(0, offset == null ? 0 : offset);
+        int requestedLimit = limit == null ? 50 : limit;
+        int effectiveLimit = Math.min(Math.max(1, requestedLimit), 100);
 
         var outlet = outletId == null ? null : directory.outlet(outletId).orElse(null);
 
@@ -207,7 +218,6 @@ public class StorefrontService {
             args.add(term);
             args.add(term);
         }
-        sql.append(" order by o.display_name limit 100");
 
         record Row(Long storeId, String supplierName, String storeName, String city,
                    BigDecimal latitude, BigDecimal longitude, int productCount,
@@ -224,7 +234,7 @@ public class StorefrontService {
                 args.toArray());
 
         if (rows.isEmpty()) {
-            return new DiscoveryDtos.SupplierSearchPage(List.of(), 0);
+            return new DiscoveryDtos.SupplierSearchPage(List.of(), 0, 0, null);
         }
 
         var storeInfo = directory.stores(rows.stream().map(Row::storeId).toList());
@@ -259,22 +269,36 @@ public class StorefrontService {
                     store == null ? null : store.opensAt()), distance));
         }
 
-        // Nearest first, and a store with no coordinates last rather than first:
+        // Nearest first, tie-breaker store ID, and a store with no coordinates last:
         // an unknown distance is not a short one.
         sized.sort(Comparator.comparing(
-                (Sized s) -> s.distance() == null ? Double.MAX_VALUE : s.distance()));
+                (Sized s) -> s.distance() == null ? Double.MAX_VALUE : s.distance())
+                .thenComparing(s -> s.result().supplierStoreId()));
 
-        if (radiusKm == null) {
-            return new DiscoveryDtos.SupplierSearchPage(
-                    sized.stream().map(Sized::result).toList(), 0);
+        int beyondRadius = 0;
+        List<DiscoveryDtos.SupplierSearchResult> candidates;
+        if (radiusKm != null) {
+            var within = sized.stream()
+                    .filter(s -> s.distance() == null
+                            || BigDecimal.valueOf(s.distance()).compareTo(radiusKm) <= 0)
+                    .toList();
+            beyondRadius = sized.size() - within.size();
+            candidates = within.stream().map(Sized::result).toList();
+        } else {
+            candidates = sized.stream().map(Sized::result).toList();
         }
 
-        var within = sized.stream()
-                .filter(s -> s.distance() == null
-                        || BigDecimal.valueOf(s.distance()).compareTo(radiusKm) <= 0)
-                .map(Sized::result)
-                .toList();
-        return new DiscoveryDtos.SupplierSearchPage(within, sized.size() - within.size());
+        int total = candidates.size();
+        List<DiscoveryDtos.SupplierSearchResult> pageItems;
+        if (effectiveOffset >= total) {
+            pageItems = List.of();
+        } else {
+            int toIndex = Math.min(effectiveOffset + effectiveLimit, total);
+            pageItems = candidates.subList(effectiveOffset, toIndex);
+        }
+
+        Integer nextOffset = (effectiveOffset + effectiveLimit < total) ? effectiveOffset + effectiveLimit : null;
+        return new DiscoveryDtos.SupplierSearchPage(pageItems, beyondRadius, total, nextOffset);
     }
 
     // ── internals ────────────────────────────────────────────────────────

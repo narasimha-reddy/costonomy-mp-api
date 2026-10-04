@@ -363,6 +363,82 @@ class StorefrontIT extends AbstractIntegrationTest {
             var names = page.get("suppliers").findValuesAsText("supplierName");
             assertThat(names).contains(run + " Chennai Foods");
         }
+
+        @Test
+        @DisplayName("100 AAA stores at 2-5 km plus one ZZZ at 0.5 km: ZZZ must be first on page 1, disjoint pages cover all with no repeats, limit clamped, nextOffset null at end")
+        void paginationAndNearestSorting() throws Exception {
+            var outlet = newOutlet();
+            String run = "D139_" + System.currentTimeMillis();
+
+            // Insert 100 AAA stores directly via SQL into database to be fast
+            // Distances around 2 to 5 km from HYD (17.4156, 78.4347).
+            // A delta of 0.02 to 0.04 deg lat is ~2.2 km to 4.5 km.
+            String insertOrg = """
+                    insert into supplier_organization (legal_name, display_name, contact_name, contact_phone, lifecycle_status, verification_status)
+                    values (?, ?, 'Desk', '+919876500000', 'ACTIVE', 'VERIFIED')
+                    """;
+            String insertStore = """
+                    insert into supplier_store (supplier_organization_id, name, address_line1, city, state, pincode, latitude, longitude, preparation_minutes, status)
+                    values (?, ?, 'Street', 'Hyderabad', 'Telangana', '500034', ?, ?, 30, 'ACTIVE')
+                    """;
+
+            for (int i = 0; i < 100; i++) {
+                String orgName = String.format("%s_AAA_%03d", run, i);
+                jdbc.update(insertOrg, orgName + " Ltd", orgName);
+                Long orgId = jdbc.queryForObject("select id from supplier_organization where display_name = ?", Long.class, orgName);
+                double lat = 17.4350 + (i * 0.0001); // ~2.2 km away
+                double lon = 78.4350;
+                jdbc.update(insertStore, orgId, orgName + " Store", String.valueOf(lat), String.valueOf(lon));
+                Long storeId = jdbc.queryForObject("select id from supplier_store where supplier_organization_id = ?", Long.class, orgId);
+                TestCatalog.tradesAroundTheClock(jdbc, orgId);
+            }
+
+            // Insert one ZZZ store at 0.5 km (~0.004 deg lat)
+            String zzzName = run + "_ZZZ_Near";
+            jdbc.update(insertOrg, zzzName + " Ltd", zzzName);
+            Long zzzOrgId = jdbc.queryForObject("select id from supplier_organization where display_name = ?", Long.class, zzzName);
+            double zzzLat = 17.4200; // ~0.5 km away
+            double zzzLon = 78.4347;
+            jdbc.update(insertStore, zzzOrgId, zzzName + " Store", String.valueOf(zzzLat), String.valueOf(zzzLon));
+            TestCatalog.tradesAroundTheClock(jdbc, zzzOrgId);
+
+            // Total stores matching run is 101.
+            // Page 1 with default limit 50, offset 0:
+            var page1 = directory(outlet, "&q=" + run + "&offset=0&limit=50");
+            assertThat(page1.get("total").asInt()).isEqualTo(101);
+            assertThat(page1.get("nextOffset").asInt()).isEqualTo(50);
+            var page1Suppliers = page1.get("suppliers");
+            assertThat(page1Suppliers).hasSize(50);
+            // ZZZ must be first on page 1 because it's nearest (0.5 km vs 2+ km)!
+            assertThat(page1Suppliers.get(0).get("supplierName").asText()).isEqualTo(zzzName);
+
+            // Page 2 with limit 50, offset 50:
+            var page2 = directory(outlet, "&q=" + run + "&offset=50&limit=50");
+            assertThat(page2.get("total").asInt()).isEqualTo(101);
+            assertThat(page2.get("nextOffset").asInt()).isEqualTo(100);
+            var page2Suppliers = page2.get("suppliers");
+            assertThat(page2Suppliers).hasSize(50);
+
+            // Page 3 with limit 50, offset 100:
+            var page3 = directory(outlet, "&q=" + run + "&offset=100&limit=50");
+            assertThat(page3.get("total").asInt()).isEqualTo(101);
+            assertThat(page3.get("nextOffset").isNull()).isTrue();
+            var page3Suppliers = page3.get("suppliers");
+            assertThat(page3Suppliers).hasSize(1);
+
+            // Verify disjoint pages cover all stores with no repeats:
+            var allNames = new java.util.ArrayList<String>();
+            allNames.addAll(page1Suppliers.findValuesAsText("supplierName"));
+            allNames.addAll(page2Suppliers.findValuesAsText("supplierName"));
+            allNames.addAll(page3Suppliers.findValuesAsText("supplierName"));
+            assertThat(allNames).hasSize(101);
+            assertThat(new java.util.HashSet<>(allNames)).hasSize(101);
+
+            // Limit above 100 is clamped: request limit=200
+            var clampedPage = directory(outlet, "&q=" + run + "&offset=0&limit=200");
+            assertThat(clampedPage.get("suppliers")).hasSize(100); // clamped to 100
+            assertThat(clampedPage.get("nextOffset").asInt()).isEqualTo(100);
+        }
     }
 
     // ── Popular suppliers ────────────────────────────────────────────────

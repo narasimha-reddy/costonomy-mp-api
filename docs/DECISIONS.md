@@ -5937,3 +5937,17 @@ Verified against the code before changing: `StorefrontService.serves` hard-coded
 4. **Scoped `outletId` authorization.** Discovery endpoints (`/search/suppliers`, `/search/skus`, `/supplier-skus/{skuId}`, `/supplier-stores/{storeId}/catalog`) enforce `accessControl.requireScoped(actorId, Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "Outlet")`. When the caller cannot access the outlet, `NotFoundException` (404) is thrown instead of 403.
 5. **Tests.** `ServiceabilityPolicyTest` unit tests (pincode precedence, store radius, default radius fallback, null coordinates). `StorefrontIT` integration tests: unscoped outlet returns 404, `reach=all` bypasses serviceability, popular suppliers exclude distant stores without consuming limits, and limit clamps to at most 100.
 
+---
+
+## D-139 — Supplier directory: nearest first with offset pagination
+
+**2026-10-04 · Settled**
+
+Verified against the code before changing: `StorefrontService.searchSuppliers` executed a query with `order by o.display_name limit 100`, capping the candidate stores alphabetically before computing distances and sorting by proximity. As a consequence, a nearby supplier whose name began late in the alphabet (e.g. "ZZZ") would be completely missing if there were more than 100 active stores.
+
+1. **Remove SQL name cap.** Removed `order by o.display_name limit 100` from the store selection query in `StorefrontService.searchSuppliers`.
+2. **Nearest first sorting.** Stores are ordered nearest first (`Double.compare` on distance, with `null` distances sorted last using `Double.MAX_VALUE`), with store ID (`supplierStoreId`) as deterministic tie-breaker.
+3. **Offset pagination.** `searchSuppliers` supports `offset` (default 0) and `limit` (default 50, clamped between 1 and 100).
+4. **Pagination metadata.** `DiscoveryDtos.SupplierSearchPage` includes `total` (the count of serviceable suppliers matching filters) and `nextOffset` (`Integer`, null when on the last page). `reach=all` parameter continues to bypass serviceability filtering.
+5. **Tests.** Integration test `paginationAndNearestSorting` in `StorefrontIT$Suppliers`: verifies that with 100 "AAA" stores at 2–5 km and one "ZZZ" store at 0.5 km, "ZZZ" is returned first on page 1; disjoint pages cover all stores without repeats; limit is clamped to 100; and `nextOffset` is null on the final page. Mutation-checked by re-introducing the `order by o.display_name limit 100` cap, which caused the test to fail.
+

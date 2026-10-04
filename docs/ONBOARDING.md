@@ -357,9 +357,9 @@ These are live questions, not omissions. Do not close one silently.
    reference typed in; nothing moves money to a supplier. A design with three
    options (Route, Payouts, a wallet with virtual accounts) is with the team; it
    has a legal question to answer first.
-10. **The supplier directory lists the first 100 suppliers by name, then sorts by
-    distance** — so the nearest can be missing where there are more than 100
-    (D-101). A discovery fix, not a payments one.
+10. **Resolved (D-139): The supplier directory sorts nearest first with offset pagination.**
+    The SQL 100-name cap is removed; results are ordered nearest first (null distance last, tie-breaker
+    store ID) and paginated with offset and limit (default 50, max 100), returning total and nextOffset.
 11. **Refund money held in a wallet needs a legal answer** (D-104) — RBI's rules on
     prepaid payment instruments. Do not go live with wallet refunds until someone
     qualified has said it is allowed.
