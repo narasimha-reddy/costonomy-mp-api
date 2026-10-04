@@ -12,6 +12,15 @@ import java.util.Optional;
 
 public interface IntentRepository extends JpaRepository<Intent, Long> {
 
+    /**
+     * The intent, locked. Taken first by anything that decides what an intent turns into (an order today), so two such
+     * decisions for one intent take turns instead of racing: the second then sees the first's committed result, which
+     * a plain read under REPEATABLE READ might not (D-135).
+     */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select i from Intent i where i.id = :id")
+    Optional<Intent> lockById(@Param("id") Long id);
+
     List<Intent> findByOutletIdOrderByCreatedAtDesc(Long outletId);
 
     /**

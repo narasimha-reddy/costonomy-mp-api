@@ -192,6 +192,17 @@ public class GlobalExceptionHandler {
                 ErrorCode.CONCURRENT_MODIFICATION.defaultMessage(), Map.of());
     }
 
+    @ExceptionHandler(org.springframework.dao.PessimisticLockingFailureException.class)
+    public ResponseEntity<ApiResponse<Void>> handlePessimisticLock(
+            org.springframework.dao.PessimisticLockingFailureException ex) {
+        // A deadlock or a lock wait that timed out: the database rolled this request back and nothing was written. Safe
+        // to retry, so it is a conflict and not a fault (it surfaced as a 500 before). The paths that matter lock in a
+        // fixed order so that this should be rare; this is the backstop.
+        log.warn("Lock conflict, request rolled back: {}", ex.getMessage());
+        return respond(ErrorCode.CONCURRENT_MODIFICATION,
+                ErrorCode.CONCURRENT_MODIFICATION.defaultMessage(), Map.of());
+    }
+
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleDataIntegrity(DataIntegrityViolationException ex) {
         // Constraint names describe our schema, so the client gets a generic

@@ -345,10 +345,10 @@ These are live questions, not omissions. Do not close one silently.
    `IntentOrderCreator.create` keeps the order and its payment atomic, so the
    provider call holds a connection there — the one place D-099 left alone.
    Changing it changes the order flow.
-7. **A truly simultaneous duplicate order gets a 500.** Exactly one order is
-   created, as `IntentFlowIT$Concurrency` requires, but the losing call surfaces
-   the lock error rather than a clean conflict. The app no longer sends one
-   (mobile, D-099).
+7. **Resolved (D-135): a simultaneous duplicate order.** `IntentOrderCreator.create` locks the
+   intent first, so the second creation waits for the first and gets its order back; a deadlock that
+   still happens answers 409, not 500. `IntentFlowIT$Concurrency` races five times and asserts both
+   callers name the same order.
 8. **Not yet tested:** UPI (not offered on the test account's checkout), native
    checkout on a phone (needs a dev build), and a webhook actually delivered by
    Razorpay — the suite sends correctly signed ones instead.

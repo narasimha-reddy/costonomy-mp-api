@@ -215,6 +215,13 @@ public class IntentOrderCreator {
     public IntentDtos.CreateOrderResponse create(
             Long actorId, Long intentId, IntentDtos.CreateOrderRequest request) {
 
+        // The intent first, locked (D-135). Two creations for one intent used to both pass the check below, both build
+        // an order, and then deadlock on the intent row (the link insert takes a shared lock on it, the status update
+        // wants an exclusive one) and the loser surfaced as a 500. Taken here, the second waits for the first to commit,
+        // then sees its link and gets its order back. The lock comes before any consistent read, so what the check below
+        // reads is the state after the first one committed. Lock order is intent, then order, then payment.
+        intents.lockById(intentId).orElseThrow(() -> new NotFoundException("Intent", intentId));
+
         // Already ordered. Return the order rather than failing — a retry whose
         // idempotency key was lost asks "did my order go through?", and that has a
         // true answer. uk_intent_order_link_intent is the backstop underneath,

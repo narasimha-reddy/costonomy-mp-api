@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [phase6/known-bugs] - Known bugs (D-135 onward)
+
+### Fixed
+- A truly simultaneous duplicate order no longer returns a 500: the intent is locked first, the loser gets the first order back, and a lock conflict that still occurs answers 409. Replaying an order key with a different delivery mode is now refused as a reused key (D-135).
+
+---
+
 ## [phase5/api-flags] - Flags the apps need (D-134, D-128)
 
 ### Added

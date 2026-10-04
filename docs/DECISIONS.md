@@ -5889,3 +5889,12 @@ Also the record V65 (the cold-chain columns, `has_cold_chain_items`, the origina
 
 **Not done.** Which real carriers, if any, offer temperature control is a fact to be supplied with evidence, one `INSERT` per carrier and vehicle class; nothing else changes. A store-level declaration of its own cold-chain fleet for supplier delivery. An admin edit of the product flag.
 
+## D-135 — A simultaneous duplicate order returns the first order, not a 500
+
+Verified before changing: `IntentOrderCreator.create` checked for an existing link with no lock, so two calls for one intent both passed it and both built an order. The link insert takes a shared lock on the intent row (foreign key) and the later status update needs an exclusive one, so they deadlocked, and the handler had no mapping for a deadlock, so the loser surfaced as a 500. `IntentFlowIT$Concurrency` only asserted that one order existed, "whatever each call reported", so it could not see this.
+
+1. **The intent is locked first** (`IntentRepository.lockById`, `PESSIMISTIC_WRITE`) as the first statement of `create`. The second creation waits for the first to commit, then reads its link and returns its order through the existing "already ordered" path (D-102), which also hands back the checkout the first caller may not have seen. The lock is taken before any consistent read, so what the check reads is the state after the first commit. Lock order is intent, then order, then payment, matching `OrderReleaseService`.
+2. **A lock failure that still happens is a 409** (`CONCURRENT_MODIFICATION`, WARN), not a 500: the database rolled the request back and nothing was written, so a retry is safe.
+3. **The idempotency fingerprint now includes the delivery mode, quote reference, slot and scheduled date.** The same key with a different delivery used to return the first order silently; it is now `IDEMPOTENCY_KEY_REUSE`.
+4. **Tests:** `duplicateOrderCreation` races five times with different keys and asserts both callers succeed with the same order id, and one order, one link, one payment and an ORDERED intent. Mutation-checked: without the lock round 1 fails. `keyReusedWithADifferentDeliveryIsRefused` is mutation-checked against the fingerprint.
+

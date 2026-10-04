@@ -57,6 +57,13 @@ public class IntentOrderService {
         Map<String, Object> fingerprint = new HashMap<>();
         fingerprint.put("intentId", intentId);
         fingerprint.put("paymentMethod", request == null ? null : request.paymentMethod());
+        // How it travels and when are part of what was asked for: the same key with a different delivery is a different
+        // order, and must be refused as a reused key rather than answered with the first one (D-135).
+        fingerprint.put("deliveryMode", request == null ? null : request.deliveryMode());
+        fingerprint.put("deliveryQuoteReference", request == null ? null : request.deliveryQuoteReference());
+        fingerprint.put("deliverySlotId", request == null ? null : request.deliverySlotId());
+        fingerprint.put("scheduledDeliveryDate", request == null || request.scheduledDeliveryDate() == null
+                ? null : request.scheduledDeliveryDate().toString());
         if (request != null && request.lines() != null) {
             fingerprint.put("lines", request.lines().stream()
                     .map(line -> "%d:%s".formatted(

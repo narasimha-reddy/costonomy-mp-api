@@ -628,29 +628,75 @@ class IntentFlowIT extends AbstractIntegrationTest {
          * call it a concurrency test.
          */
         @Test
-        @DisplayName("two order creations produce one order")
+        @DisplayName("two order creations produce one order, and both callers are told which (five races)")
         void duplicateOrderCreation() throws Exception {
+            for (int round = 1; round <= 5; round++) {
+                var open = sendRequest(6);
+                answer(open, 6);
+
+                var first = new AtomicReference<JsonNode>();
+                var second = new AtomicReference<JsonNode>();
+
+                race(
+                    () -> first.set(orderAttempt(open)),
+                    () -> second.set(orderAttempt(open)));
+
+                // Both calls succeed and name the SAME order: the loser used to deadlock on the intent row and surface
+                // as a 500 (D-135). A sequential retry has always returned the first order; so does a simultaneous one.
+                String context = "round %d first=%s second=%s".formatted(round, first.get(), second.get());
+                assertThat(first.get().at("/error").isMissingNode() || first.get().at("/error").isNull())
+                    .as(context).isTrue();
+                assertThat(second.get().at("/error").isMissingNode() || second.get().at("/error").isNull())
+                    .as(context).isTrue();
+                long orderId = first.get().at("/data/supplierOrderId").asLong();
+                assertThat(orderId).as(context).isPositive();
+                assertThat(second.get().at("/data/supplierOrderId").asLong()).as(context).isEqualTo(orderId);
+
+                // And the side effects: one order, one link, one payment, never two real charges.
+                assertThat(ordersFor(open.buyer().outletId())).as(context).isEqualTo(1);
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent_order_link where intent_id = ?",
+                        Integer.class, open.intentId())).as(context).isEqualTo(1);
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from payment where supplier_order_id = ?",
+                        Integer.class, orderId)).as(context).isEqualTo(1);
+                assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class,
+                        open.intentId())).as(context).isEqualTo("ORDERED");
+            }
+        }
+
+        /** One order attempt, with its own idempotency key (a crashed client retries with a fresh one). */
+        private JsonNode orderAttempt(OpenRequest open) {
+            try {
+                return createOrder(open.buyer().token(), open.intentId(), Map.of());
+            } catch (Exception e) {
+                return json.createObjectNode().put("thrown", e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
+        }
+
+        @Test
+        @DisplayName("replaying an order key with a different delivery mode is refused, not answered with the first order")
+        void keyReusedWithADifferentDeliveryIsRefused() throws Exception {
             var open = sendRequest(6);
             answer(open, 6);
+            String key = UUID.randomUUID().toString();
+            String path = "/api/v1/intents/" + open.intentId() + "/orders";
 
-            var first = new AtomicReference<String>();
-            var second = new AtomicReference<String>();
+            var first = mvc.perform(MockMvcRequestBuilders.post(path)
+                    .header("Authorization", "Bearer " + open.buyer().token())
+                    .header("Idempotency-Key", key)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"deliveryMode\":\"PICKUP\"}")).andReturn().getResponse();
+            var replay = mvc.perform(MockMvcRequestBuilders.post(path)
+                    .header("Authorization", "Bearer " + open.buyer().token())
+                    .header("Idempotency-Key", key)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"deliveryMode\":\"SUPPLIER_DELIVERY\"}")).andReturn().getResponse();
 
-            race(
-                () -> first.set(quietly(() ->
-                    createOrder(open.buyer().token(), open.intentId(), Map.of()).toString())),
-                () -> second.set(quietly(() ->
-                    createOrder(open.buyer().token(), open.intentId(), Map.of()).toString())));
-
-            // Exactly one order, whatever each call reported. Doc 10 §2 asks only
-            // that one outcome lands, not which caller sees it.
-            assertThat(ordersFor(open.buyer().outletId()))
-                .as("first=%s second=%s", first.get(), second.get())
-                .isEqualTo(1);
-
-            assertThat(jdbc.queryForObject(
-                    "select count(*) from intent_order_link where intent_id = ?",
-                    Integer.class, open.intentId())).isEqualTo(1);
+            assertThat(first.getStatus()).isEqualTo(200);
+            assertThat(json.readTree(replay.getContentAsString()).at("/error/code").asText())
+                .isEqualTo("IDEMPOTENCY_KEY_REUSE");
+            assertThat(ordersFor(open.buyer().outletId())).isEqualTo(1);
         }
 
         /**
