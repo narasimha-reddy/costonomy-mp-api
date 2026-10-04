@@ -22,6 +22,7 @@ import com.costonomy.mp.intent.repository.IntentItemRepository;
 import com.costonomy.mp.intent.repository.IntentOrderLinkRepository;
 import com.costonomy.mp.intent.repository.IntentRepository;
 import com.costonomy.mp.intent.web.dto.IntentDtos;
+import com.costonomy.mp.delivery.service.DeliveryCharges;
 import com.costonomy.mp.delivery.service.DeliveryDirectory;
 import com.costonomy.mp.delivery.service.DeliveryFeeQuoteService;
 import com.costonomy.mp.procurement.domain.DeliveryMode;
@@ -94,6 +95,7 @@ public class IntentOrderCreator {
     /** What a Costonomy delivery costs, and what the store is willing to carry. */
     private final DeliveryFeeQuoteService deliveryQuotes;
     private final DeliveryDirectory deliveryPolicies;
+    private final DeliveryCharges deliveryCharges;
 
     /** What the caller asked to order, resolved against what was offered. */
     private record Plan(
@@ -534,30 +536,12 @@ public class IntentOrderCreator {
         var policy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
 
         // Free delivery threshold check: if order subtotal qualifies, carriage is waived!
-        if (policy.freeDeliveryThreshold() != null
-                && policy.freeDeliveryThreshold().compareTo(BigDecimal.ZERO) > 0
-                && subtotal != null
-                && subtotal.compareTo(policy.freeDeliveryThreshold()) >= 0) {
+        if (DeliveryCharges.waivedByThreshold(policy, subtotal)) {
             return BigDecimal.ZERO;
         }
 
         return switch (mode) {
-            case PICKUP -> BigDecimal.ZERO;
-
-            case SUPPLIER_DELIVERY -> {
-                if (!policy.ownDeliveryEnabled()) {
-                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                            "This supplier doesn't deliver. Choose pickup or our delivery.");
-                }
-                if (policy.ownDeliveryMinOrderValue() != null
-                        && subtotal != null
-                        && subtotal.compareTo(policy.ownDeliveryMinOrderValue()) < 0) {
-                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                            "Supplier delivery requires at least ₹%s of goods."
-                                    .formatted(policy.ownDeliveryMinOrderValue().stripTrailingZeros().toPlainString()));
-                }
-                yield policy.ownDeliveryFee() == null ? BigDecimal.ZERO : policy.ownDeliveryFee();
-            }
+            case PICKUP, SUPPLIER_DELIVERY -> deliveryCharges.supplierCarriedFee(policy, mode, subtotal);
 
             case COSTONOMY_DELIVERY -> {
                 if (!policy.costonomyDeliveryEnabled()) {

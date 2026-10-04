@@ -43,6 +43,12 @@ public class OrderFunding {
     }
 
     /** Whether an order paid for this way can be funded at all. */
+    /** Whether the method exists and could fund orders between this outlet and store. */
+    public boolean canFund(String paymentMethod, Long outletId, Long supplierStoreId) {
+        var port = byMethod.get(paymentMethod);
+        return port != null && port.canFund(outletId, supplierStoreId);
+    }
+
     public boolean supports(String paymentMethod) {
         return byMethod.containsKey(paymentMethod);
     }

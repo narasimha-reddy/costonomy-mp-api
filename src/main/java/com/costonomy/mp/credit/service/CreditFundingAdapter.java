@@ -44,6 +44,11 @@ public class CreditFundingAdapter implements OrderFundingPort {
     }
 
     @Override
+    public boolean canFund(Long outletId, Long supplierStoreId) {
+        return agreements.fundingAgreement(outletId, supplierStoreId) != null;
+    }
+
+    @Override
     @Transactional
     public List<FundingIntent> arrangeFunding(List<SupplierOrder> orders) {
         for (SupplierOrder order : orders) {

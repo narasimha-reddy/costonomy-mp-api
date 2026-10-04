@@ -50,6 +50,16 @@ public interface OrderFundingPort {
     List<FundingIntent> arrangeFunding(List<SupplierOrder> orders);
 
     /**
+     * Whether this method could fund an order between an outlet and a supplier store at all, before any
+     * order exists (a standing arrangement such as a subscription is refused up front rather than
+     * failing every morning). Wallet and card have nothing to check ahead of an amount; credit needs an
+     * active agreement.
+     */
+    default boolean canFund(Long outletId, Long supplierStoreId) {
+        return true;
+    }
+
+    /**
      * Whether this order's funding is secured well enough to show the supplier.
      *
      * <p>The predicate behind guardrail 16. An order whose payment has not been

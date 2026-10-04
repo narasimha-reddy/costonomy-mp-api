@@ -27,7 +27,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.*;
@@ -97,8 +96,7 @@ public class SubscriptionService {
         sub.setEndDate(request.endDate());
         sub.setNotes(request.notes());
 
-        LocalDate initialNext = calculateNextDeliveryDate(request.startDate(), request.frequency(), Collections.emptySet());
-        sub.setNextDeliveryDate(initialNext);
+        sub.setNextDeliveryDate(nextDue(sub, request.startDate(), Collections.emptySet()));
 
         subscriptions.save(sub);
 
@@ -172,8 +170,7 @@ public class SubscriptionService {
                 .map(SubscriptionSkipDate::getSkipDate)
                 .collect(Collectors.toSet());
 
-        LocalDate startFrom = sub.getStartDate().isAfter(today) ? sub.getStartDate() : today;
-        sub.setNextDeliveryDate(calculateNextDeliveryDate(startFrom, sub.getFrequency(), skipped));
+        sub.setNextDeliveryDate(nextDue(sub, today, skipped));
 
         subscriptions.save(sub);
 
@@ -226,8 +223,7 @@ public class SubscriptionService {
                     .collect(Collectors.toSet());
             allSkipped.add(request.skipDate());
 
-            LocalDate next = advanceFrequencyDate(sub.getNextDeliveryDate(), sub.getFrequency());
-            sub.setNextDeliveryDate(calculateNextDeliveryDate(next, sub.getFrequency(), allSkipped));
+            sub.setNextDeliveryDate(nextDue(sub, sub.getNextDeliveryDate(), allSkipped));
             subscriptions.save(sub);
         }
 
@@ -248,8 +244,7 @@ public class SubscriptionService {
                 .map(SubscriptionSkipDate::getSkipDate)
                 .collect(Collectors.toSet());
 
-        LocalDate startFrom = sub.getStartDate().isAfter(today) ? sub.getStartDate() : today;
-        sub.setNextDeliveryDate(calculateNextDeliveryDate(startFrom, sub.getFrequency(), allSkipped));
+        sub.setNextDeliveryDate(nextDue(sub, today, allSkipped));
         subscriptions.save(sub);
 
         return toResponse(sub);
@@ -449,8 +444,7 @@ public class SubscriptionService {
                 Set<LocalDate> skipped = skipDates.findBySubscriptionId(sub.getId()).stream()
                         .map(SubscriptionSkipDate::getSkipDate)
                         .collect(Collectors.toSet());
-                LocalDate nextDay = advanceFrequencyDate(date, sub.getFrequency());
-                sub.setNextDeliveryDate(calculateNextDeliveryDate(nextDay, sub.getFrequency(), skipped));
+                sub.setNextDeliveryDate(nextDue(sub, date.plusDays(1), skipped));
                 subscriptions.save(sub);
             } else {
                 // Keep subscription nextDeliveryDate on current date (retryable) and alert restaurant to top up
@@ -473,51 +467,20 @@ public class SubscriptionService {
     }
 
     private boolean isDueOn(Subscription sub, LocalDate date) {
-        if (date.isBefore(sub.getStartDate())) return false;
-        if (sub.getEndDate() != null && date.isAfter(sub.getEndDate())) return false;
-
-        // Check if skipped
-        if (skipDates.existsBySubscriptionIdAndSkipDate(sub.getId(), date)) {
-            return false;
-        }
-
-        // Check frequency
-        return matchesFrequency(date, sub.getFrequency());
+        return SubscriptionSchedule.isDue(sub.getStartDate(), sub.getEndDate(), sub.getFrequency(), date,
+                skippedDates(sub.getId()));
     }
 
-    private boolean matchesFrequency(LocalDate date, SubscriptionFrequency frequency) {
-        return switch (frequency) {
-            case DAILY -> true;
-            case WEEKDAYS -> date.getDayOfWeek() != DayOfWeek.SATURDAY && date.getDayOfWeek() != DayOfWeek.SUNDAY;
-            case ALTERNATE_DAYS -> true; // on target days
-            case WEEKLY -> true; // on chosen day of week
-        };
+    private Set<LocalDate> skippedDates(Long subscriptionId) {
+        return skipDates.findBySubscriptionId(subscriptionId).stream()
+                .map(SubscriptionSkipDate::getSkipDate)
+                .collect(Collectors.toSet());
     }
 
-    private LocalDate advanceFrequencyDate(LocalDate current, SubscriptionFrequency frequency) {
-        return switch (frequency) {
-            case DAILY -> current.plusDays(1);
-            case ALTERNATE_DAYS -> current.plusDays(2);
-            case WEEKLY -> current.plusWeeks(1);
-            case WEEKDAYS -> {
-                LocalDate next = current.plusDays(1);
-                while (next.getDayOfWeek() == DayOfWeek.SATURDAY || next.getDayOfWeek() == DayOfWeek.SUNDAY) {
-                    next = next.plusDays(1);
-                }
-                yield next;
-            }
-        };
-    }
-
-    private LocalDate calculateNextDeliveryDate(LocalDate fromDate, SubscriptionFrequency frequency, Set<LocalDate> skipped) {
-        LocalDate candidate = fromDate;
-        for (int i = 0; i < 90; i++) {
-            if (matchesFrequency(candidate, frequency) && !skipped.contains(candidate)) {
-                return candidate;
-            }
-            candidate = candidate.plusDays(1);
-        }
-        return candidate;
+    /** The next due date from a day, or null when the subscription has no more deliveries. */
+    private LocalDate nextDue(Subscription sub, LocalDate from, Set<LocalDate> skipped) {
+        return SubscriptionSchedule.nextOnOrAfter(sub.getStartDate(), sub.getEndDate(), sub.getFrequency(),
+                from, skipped);
     }
 
     private com.costonomy.mp.procurement.domain.DeliveryMode parseProcurementMode(String mode) {
