@@ -90,9 +90,4 @@ public final class SubscriptionDtos {
             List<ManifestDeliveryOrder> deliveries) {
     }
 
-    public record GenerateOrdersResponse(
-            LocalDate date,
-            int ordersGenerated,
-            List<Long> orderIds) {
-    }
 }

@@ -91,12 +91,4 @@ public class SubscriptionController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
         return ApiResponse.ok(subscriptions.getManifest(ActorContext.requireUserId(), storeId, date));
     }
-
-    @PostMapping("/supplier-stores/{storeId}/subscriptions/generate-orders")
-    @Operation(summary = "Trigger generation of daily replenishment orders for a target date")
-    public ApiResponse<SubscriptionDtos.GenerateOrdersResponse> generateOrders(
-            @PathVariable Long storeId,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return ApiResponse.ok(subscriptions.generateDailyOrders(ActorContext.requireUserId(), storeId, date));
-    }
 }

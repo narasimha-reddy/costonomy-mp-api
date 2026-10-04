@@ -41,18 +41,12 @@ public class SubscriptionService {
 
     private final SubscriptionRepository subscriptions;
     private final SubscriptionSkipDateRepository skipDates;
-    private final SupplierOrderRepository supplierOrders;
-    private final SupplierOrderItemRepository supplierOrderItems;
-    private final SupplierOfferRepository supplierOffers;
     private final DeliverySlotRepository deliverySlots;
-    private final OrderNumberGenerator orderNumbers;
+    private final com.costonomy.mp.procurement.service.OrderFunding orderFunding;
+    private final com.costonomy.mp.delivery.service.DeliveryDirectory deliveryPolicies;
     private final AccessControlService accessControl;
     private final AuditService auditService;
-    private final com.costonomy.mp.common.outbox.OutboxService outbox;
     private final JdbcTemplate jdbc;
-    private final com.costonomy.mp.wallet.service.WalletService walletService;
-    private final com.costonomy.mp.credit.service.CreditAgreementService creditAgreements;
-    private final com.costonomy.mp.credit.service.CreditLedgerService creditLedger;
 
     @Transactional
     public SubscriptionDtos.SubscriptionResponse createSubscription(
@@ -69,15 +63,44 @@ public class SubscriptionService {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR, "End date cannot be before start date");
         }
 
-        // Verify SKU exists and is associated with the store
-        Long canonicalProductId = jdbc.query("""
-                select canonical_product_id from supplier_sku where id = ? and supplier_store_id = ?
+        // The item must be this supplier's, and its unit is the SKU's own: whatever unit the client sent is ignored.
+        var sku = jdbc.query("""
+                select canonical_product_id, pack_unit from supplier_sku where id = ? and supplier_store_id = ?
                 """,
-                rs -> rs.next() ? rs.getLong(1) : null,
+                rs -> rs.next() ? new Object[] {rs.getObject(1, Long.class), rs.getString(2)} : null,
                 request.supplierSkuId(), request.supplierStoreId());
-
-        if (canonicalProductId == null) {
+        if (sku == null) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR, "SKU does not belong to the selected supplier store");
+        }
+        Long canonicalProductId = (Long) sku[0];
+        String unit = (String) sku[1];
+
+        // Checked here so a subscription that can never be funded or delivered is refused now, not every morning.
+        String paymentMethod = request.paymentMethod() == null ? "WALLET" : request.paymentMethod().trim().toUpperCase();
+        if (!paymentMethod.equals("WALLET") && !paymentMethod.equals("CREDIT")) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Subscriptions can be paid from the wallet or on credit.");
+        }
+        if (!orderFunding.canFund(paymentMethod, outletId, request.supplierStoreId())) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "You don't have active credit with this supplier.");
+        }
+        String deliveryMode = request.deliveryMode() == null ? "SUPPLIER_DELIVERY" : request.deliveryMode().trim().toUpperCase();
+        if (!deliveryMode.equals("SUPPLIER_DELIVERY") && !deliveryMode.equals("PICKUP")) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Subscriptions are delivered by the supplier or picked up.");
+        }
+        if (deliveryMode.equals("SUPPLIER_DELIVERY")
+                && !deliveryPolicies.deliveryPolicy(request.supplierStoreId()).ownDeliveryEnabled()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "This supplier doesn't deliver. Choose pickup.");
+        }
+        if (request.preferredSlotId() != null) {
+            var slot = deliverySlots.findById(request.preferredSlotId()).orElse(null);
+            if (slot == null || !slot.getSupplierStoreId().equals(request.supplierStoreId()) || !slot.isActive()) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "That delivery slot isn't available at this supplier.");
+            }
         }
 
         Subscription sub = new Subscription();
@@ -86,11 +109,11 @@ public class SubscriptionService {
         sub.setCanonicalProductId(canonicalProductId);
         sub.setSupplierSkuId(request.supplierSkuId());
         sub.setQuantity(request.quantity());
-        sub.setUnit(request.unit());
+        sub.setUnit(unit);
         sub.setFrequency(request.frequency());
         sub.setPreferredSlotId(request.preferredSlotId());
-        sub.setDeliveryMode(request.deliveryMode() == null ? "SUPPLIER_DELIVERY" : request.deliveryMode());
-        sub.setPaymentMethod(request.paymentMethod() != null ? request.paymentMethod().toUpperCase() : "WALLET");
+        sub.setDeliveryMode(deliveryMode);
+        sub.setPaymentMethod(paymentMethod);
         sub.setStatus(SubscriptionStatus.ACTIVE);
         sub.setStartDate(request.startDate());
         sub.setEndDate(request.endDate());
@@ -139,7 +162,7 @@ public class SubscriptionService {
     public SubscriptionDtos.SubscriptionResponse pauseSubscription(Long actorId, Long id) {
         Subscription sub = subscriptions.findById(id)
                 .orElseThrow(() -> new NotFoundException("Subscription", id));
-        requireEitherScope(actorId, sub.getOutletId(), sub.getSupplierStoreId());
+        requireOutletEdit(actorId, sub);
 
         if (sub.getStatus() == SubscriptionStatus.CANCELLED) {
             throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION, "Cannot pause a cancelled subscription");
@@ -158,7 +181,7 @@ public class SubscriptionService {
     public SubscriptionDtos.SubscriptionResponse resumeSubscription(Long actorId, Long id) {
         Subscription sub = subscriptions.findById(id)
                 .orElseThrow(() -> new NotFoundException("Subscription", id));
-        requireEitherScope(actorId, sub.getOutletId(), sub.getSupplierStoreId());
+        requireOutletEdit(actorId, sub);
 
         if (sub.getStatus() == SubscriptionStatus.CANCELLED) {
             throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION, "Cannot resume a cancelled subscription");
@@ -184,7 +207,7 @@ public class SubscriptionService {
     public SubscriptionDtos.SubscriptionResponse cancelSubscription(Long actorId, Long id, String reason) {
         Subscription sub = subscriptions.findById(id)
                 .orElseThrow(() -> new NotFoundException("Subscription", id));
-        requireEitherScope(actorId, sub.getOutletId(), sub.getSupplierStoreId());
+        requireOutletEdit(actorId, sub);
 
         sub.setStatus(SubscriptionStatus.CANCELLED);
         sub.setNextDeliveryDate(null);
@@ -202,7 +225,7 @@ public class SubscriptionService {
 
         Subscription sub = subscriptions.findById(id)
                 .orElseThrow(() -> new NotFoundException("Subscription", id));
-        requireEitherScope(actorId, sub.getOutletId(), sub.getSupplierStoreId());
+        requireOutletEdit(actorId, sub);
 
         LocalDate today = LocalDate.now(ZONE);
         if (request.skipDate().isBefore(today)) {
@@ -234,7 +257,7 @@ public class SubscriptionService {
     public SubscriptionDtos.SubscriptionResponse removeSkipDate(Long actorId, Long id, LocalDate skipDate) {
         Subscription sub = subscriptions.findById(id)
                 .orElseThrow(() -> new NotFoundException("Subscription", id));
-        requireEitherScope(actorId, sub.getOutletId(), sub.getSupplierStoreId());
+        requireOutletEdit(actorId, sub);
 
         skipDates.findBySubscriptionIdAndSkipDate(id, skipDate).ifPresent(skipDates::delete);
 
@@ -324,148 +347,6 @@ public class SubscriptionService {
         return new SubscriptionDtos.SubscriptionManifestResponse(date, supplierStoreId, summaries, deliveries);
     }
 
-    @Transactional
-    public SubscriptionDtos.GenerateOrdersResponse generateDailyOrders(
-            Long actorId, Long supplierStoreId, LocalDate targetDate) {
-
-        accessControl.requireScoped(actorId, Permissions.STORE_EDIT,
-                ScopeType.SUPPLIER_STORE, supplierStoreId, "SupplierStore");
-
-        LocalDate date = (targetDate != null) ? targetDate : LocalDate.now(ZONE);
-
-        List<Subscription> active = subscriptions.findBySupplierStoreIdAndStatus(
-                supplierStoreId, SubscriptionStatus.ACTIVE);
-
-        List<Subscription> dueSubscriptions = active.stream()
-                .filter(sub -> isDueOn(sub, date))
-                .toList();
-
-        List<Long> generatedOrderIds = new ArrayList<>();
-
-        for (Subscription sub : dueSubscriptions) {
-            // Check if order already exists for this subscription on this date
-            Integer existing = jdbc.queryForObject("""
-                    select count(*) from supplier_order
-                     where subscription_id = ? and scheduled_delivery_date = ?
-                       and status not in ('CANCELLED', 'REJECTED')
-                    """, Integer.class, sub.getId(), java.sql.Date.valueOf(date));
-
-            if (existing != null && existing > 0) {
-                continue;
-            }
-
-            // Find current active offer price
-            SupplierOffer offer = supplierOffers.findBySupplierSkuIdAndStatus(sub.getSupplierSkuId(), "ACTIVE")
-                    .orElse(null);
-
-            BigDecimal unitPrice = (offer != null && offer.getSellingPrice() != null)
-                    ? offer.getSellingPrice() : BigDecimal.ZERO;
-            BigDecimal gstRate = (offer != null && offer.getGstRate() != null)
-                    ? offer.getGstRate() : BigDecimal.ZERO;
-
-            BigDecimal lineValue = Pricing.lineItemValue(unitPrice, sub.getQuantity());
-            BigDecimal lineGst = Pricing.lineGst(lineValue, gstRate);
-            BigDecimal totalAmount = Pricing.lineTotal(lineValue, lineGst);
-
-            String paymentMethod = sub.getPaymentMethod() != null ? sub.getPaymentMethod().toUpperCase() : "WALLET";
-
-            SupplierOrder order = new SupplierOrder();
-            order.setSupplierStoreId(supplierStoreId);
-            order.setOutletId(sub.getOutletId());
-            order.setOrderNumber(orderNumbers.next());
-            order.setStatus(SupplierOrderStatus.DRAFT);
-            order.setPaymentMethod(paymentMethod);
-            order.setPaymentStatus("PENDING");
-            order.setSubtotal(lineValue);
-            order.setGstAmount(lineGst);
-            order.setTotalAmount(totalAmount);
-            order.setAcceptedAmount(totalAmount);
-
-            com.costonomy.mp.procurement.domain.DeliveryMode mode = parseProcurementMode(sub.getDeliveryMode());
-            order.setDeliveryMode(mode);
-            order.setDeliveryFee(BigDecimal.ZERO);
-            order.setDeliverySlotId(sub.getPreferredSlotId());
-            order.setScheduledDeliveryDate(date);
-            order.setSubscriptionOrder(true);
-            order.setSubscriptionId(sub.getId());
-
-            supplierOrders.save(order);
-
-            SupplierOrderItem item = new SupplierOrderItem();
-            item.setSupplierOrderId(order.getId());
-            item.setCanonicalProductId(sub.getCanonicalProductId());
-            item.setSupplierSkuId(sub.getSupplierSkuId());
-            item.setRequestedQuantity(sub.getQuantity());
-            item.setAcceptedQuantity(sub.getQuantity());
-            item.setUnit(sub.getUnit());
-            item.setUnitPriceSnapshot(unitPrice);
-            item.setGstRateSnapshot(gstRate);
-            item.setLineItemValue(lineValue);
-            item.setLineGst(lineGst);
-            item.setLineTotal(totalAmount);
-            item.setStatus(OrderItemStatus.ACCEPTED);
-            supplierOrderItems.save(item);
-
-            boolean funded = false;
-            if ("WALLET".equals(paymentMethod)) {
-                boolean debited = walletService.debitFor(sub.getOutletId(), order.getId(), totalAmount);
-                if (debited) {
-                    order.setStatus(SupplierOrderStatus.CONFIRMED);
-                    order.setPaymentStatus("COMPLETED");
-                    supplierOrders.save(order);
-                    funded = true;
-                } else {
-                    log.warn("Subscription {} order {} could not be confirmed: insufficient wallet balance for outlet {}",
-                            sub.getId(), order.getId(), sub.getOutletId());
-                }
-            } else if ("CREDIT".equals(paymentMethod)) {
-                var agreement = creditAgreements.fundingAgreement(sub.getOutletId(), supplierStoreId);
-                if (agreement != null) {
-                    var reservation = creditLedger.reserve(agreement.getId(), order.getId(), null, totalAmount);
-                    if (reservation.getStatus() == com.costonomy.mp.credit.domain.CreditReservationStatus.RESERVED) {
-                        order.setStatus(SupplierOrderStatus.CONFIRMED);
-                        order.setPaymentStatus("PENDING");
-                        supplierOrders.save(order);
-                        funded = true;
-                    } else {
-                        log.warn("Subscription {} order {} credit reservation failed: {}",
-                                sub.getId(), order.getId(), reservation.getFailureReason());
-                    }
-                } else {
-                    log.warn("Subscription {} order {} has no active credit agreement with store {}",
-                            sub.getId(), order.getId(), supplierStoreId);
-                }
-            }
-
-            if (funded) {
-                generatedOrderIds.add(order.getId());
-
-                // Advance subscription's next delivery date
-                Set<LocalDate> skipped = skipDates.findBySubscriptionId(sub.getId()).stream()
-                        .map(SubscriptionSkipDate::getSkipDate)
-                        .collect(Collectors.toSet());
-                sub.setNextDeliveryDate(nextDue(sub, date.plusDays(1), skipped));
-                subscriptions.save(sub);
-            } else {
-                // Keep subscription nextDeliveryDate on current date (retryable) and alert restaurant to top up
-                auditService.record(actorId, null, "SUBSCRIPTION_FUNDING_FAILED", "SUBSCRIPTION",
-                        sub.getId(), "ACTIVE", "ACTIVE",
-                        "Scheduled delivery order could not be funded via " + paymentMethod + " for amount ₹" + totalAmount.toPlainString(),
-                        "SYSTEM");
-
-                outbox.publish("SubscriptionFundingFailed", "SUBSCRIPTION", sub.getId(),
-                        Map.of("outletId", sub.getOutletId(),
-                                "supplierStoreId", supplierStoreId,
-                                "scheduledDate", date.toString(),
-                                "paymentMethod", paymentMethod,
-                                "requiredAmount", totalAmount.toPlainString()),
-                        actorId);
-            }
-        }
-
-        return new SubscriptionDtos.GenerateOrdersResponse(date, generatedOrderIds.size(), generatedOrderIds);
-    }
-
     private boolean isDueOn(Subscription sub, LocalDate date) {
         return SubscriptionSchedule.isDue(sub.getStartDate(), sub.getEndDate(), sub.getFrequency(), date,
                 skippedDates(sub.getId()));
@@ -483,13 +364,14 @@ public class SubscriptionService {
                 from, skipped);
     }
 
-    private com.costonomy.mp.procurement.domain.DeliveryMode parseProcurementMode(String mode) {
-        if (mode == null) return com.costonomy.mp.procurement.domain.DeliveryMode.SUPPLIER_DELIVERY;
-        try {
-            return com.costonomy.mp.procurement.domain.DeliveryMode.valueOf(mode);
-        } catch (Exception e) {
-            return com.costonomy.mp.procurement.domain.DeliveryMode.SUPPLIER_DELIVERY;
-        }
+    /**
+     * Changing a subscription is the restaurant's call: it needs the right to create orders for the outlet.
+     * Seeing one (a supplier's staff, or an outlet member who can only view) is not enough. Refused as not
+     * found, like any other thing the actor has no business with.
+     */
+    private void requireOutletEdit(Long actorId, Subscription sub) {
+        accessControl.requireScoped(actorId, Permissions.PROCUREMENT_CREATE,
+                ScopeType.OUTLET, sub.getOutletId(), "Outlet");
     }
 
     private void requireEitherScope(Long actorId, Long outletId, Long supplierStoreId) {
