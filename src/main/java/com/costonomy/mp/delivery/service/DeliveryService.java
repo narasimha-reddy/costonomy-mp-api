@@ -244,8 +244,14 @@ public class DeliveryService {
 
         if (!outcome.anyServiceable()) {
             delivery.setStatus(DeliveryStatus.QUOTE_FAILED);
-            delivery.setFailureCode("NO_SERVICEABLE_PROVIDER");
-            delivery.setFailureReason("No delivery partner covers this route right now.");
+            if (delivery.isRequiresColdChain()) {
+                delivery.setFailureCode("NO_COLD_CHAIN_CARRIER");
+                delivery.setFailureReason("No delivery partner with verified temperature-controlled transport "
+                        + "covers this route.");
+            } else {
+                delivery.setFailureCode("NO_SERVICEABLE_PROVIDER");
+                delivery.setFailureReason("No delivery partner covers this route right now.");
+            }
             deliveries.save(delivery);
             timeline.record(delivery, DeliveryStatus.QUOTE_FAILED.eventName(),
                     DeliveryStatus.QUOTE_FAILED,
@@ -373,7 +379,7 @@ public class DeliveryService {
 
         // Excluding the couriers already tried is the whole point: handing it back
         // to the one that just cancelled is not a reassignment.
-        var usable = quoting.usableQuotes(deliveryId, tried);
+        var usable = quoting.usableQuotes(deliveryId, tried, delivery.isRequiresColdChain());
         if (usable.isEmpty()) {
             quoteAndBook(delivery, order, null, tried, "REASSIGNMENT");
         } else {

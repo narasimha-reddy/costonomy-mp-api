@@ -36,6 +36,7 @@ public class DeliveryQuotingService {
 
     private final DeliveryProviderRegistry registry;
     private final DeliveryQuoteRepository quotes;
+    private final ColdChainCarrierGate coldChainGate;
 
     @Value("${costonomy.mp.delivery.max-radius-km:30.0}")
     private double maxRadiusKm = 30.0;
@@ -81,14 +82,7 @@ public class DeliveryQuotingService {
             return new Outcome(null, List.of(unserviceableQuote), false);
         }
 
-        var request = new DeliveryProvider.QuoteRequest(
-                delivery.getSupplierOrderId(),
-                delivery.getPickupLatitude(), delivery.getPickupLongitude(),
-                delivery.getDropLatitude(), delivery.getDropLongitude(),
-                orderValue, weightGrams, requiredEtaMinutes,
-                weightKg, delivery.getVolumeCbm(), vehicleType,
-                delivery.getPickupAddress(), delivery.getDropAddress());
-
+        boolean coldChain = delivery.isRequiresColdChain();
         List<DeliveryQuote> recorded = new ArrayList<>();
         List<DeliverySelection.Candidate> candidates = new ArrayList<>();
 
@@ -102,6 +96,30 @@ public class DeliveryQuotingService {
             quote.setDeliveryProviderId(available.record().getId());
             quote.setProviderCode(available.record().getCode());
             quote.setVehicleType(vehicleType);
+
+            // A chilled consignment is only asked of a carrier verified for it, in a vehicle it is verified for
+            // (D-134). The rest are recorded as unable, and never called.
+            VehicleType askFor = vehicleType;
+            if (coldChain) {
+                var capable = coldChainGate.vehicleFor(available.record().getId(), weightKg);
+                if (capable.isEmpty()) {
+                    quote.setStatus("UNSERVICEABLE");
+                    quote.setFailureReason("No verified temperature-controlled vehicle for this consignment");
+                    quotes.save(quote);
+                    recorded.add(quote);
+                    continue;
+                }
+                askFor = capable.get();
+                quote.setVehicleType(askFor);
+            }
+
+            var request = new DeliveryProvider.QuoteRequest(
+                    delivery.getSupplierOrderId(),
+                    delivery.getPickupLatitude(), delivery.getPickupLongitude(),
+                    delivery.getDropLatitude(), delivery.getDropLongitude(),
+                    orderValue, weightGrams, requiredEtaMinutes,
+                    weightKg, delivery.getVolumeCbm(), askFor,
+                    delivery.getPickupAddress(), delivery.getDropAddress());
 
             try {
                 var answer = available.adapter().quote(request);
@@ -119,14 +137,28 @@ public class DeliveryQuotingService {
                                     .setScale(4, RoundingMode.HALF_UP));
                     quote.setProviderQuoteId(answer.providerQuoteId());
                     quote.setExpiresAt(answer.expiresAt());
-                    if (answer.vehicleType() != null) {
+                    if (coldChain) {
+                        // The quote must say which vehicle would carry it, and that vehicle must be one the carrier is
+                        // verified for. A vehicle we asked for and the carrier merely echoed back proves nothing, and
+                        // a missing one is not inherited: unstated means unverified.
+                        if (answer.vehicleType() == null) {
+                            quote.setVehicleType(null);
+                            quote.setStatus("UNSERVICEABLE");
+                            quote.setFailureReason("The carrier did not state the vehicle, so temperature control "
+                                    + "can't be confirmed");
+                        } else if (!coldChainGate.qualifies(available.record().getId(), answer.vehicleType())) {
+                            quote.setVehicleType(answer.vehicleType());
+                            quote.setStatus("UNSERVICEABLE");
+                            quote.setFailureReason("The carrier is not verified to carry chilled goods in a "
+                                    + answer.vehicleType().name());
+                        } else {
+                            quote.setVehicleType(answer.vehicleType());
+                        }
+                    } else if (answer.vehicleType() != null) {
                         quote.setVehicleType(answer.vehicleType());
                     }
 
-                    if (delivery.isRequiresColdChain() && quote.getVehicleType() == VehicleType.TWO_WHEELER) {
-                        quote.setStatus("UNSERVICEABLE");
-                        quote.setFailureReason("Cold-chain consignment requires enclosed/insulated vehicle; 2-wheeler courier disallowed");
-                    } else {
+                    if ("QUOTED".equals(quote.getStatus())) {
                         candidates.add(new DeliverySelection.Candidate(
                                 available.record().getCode(), answer.amount(), answer.etaMinutes(),
                                 available.record().getPriority()));
@@ -163,12 +195,19 @@ public class DeliveryQuotingService {
         return new Outcome(selected, recorded, !candidates.isEmpty());
     }
 
-    /** Quotes that are still usable, cheapest first, excluding ones already tried. */
+    /**
+     * Quotes that are still usable, cheapest first, excluding ones already tried. For a chilled consignment the
+     * carrier's capability is checked again now: one revoked since the quote was taken cannot be booked on a
+     * reassignment.
+     */
     @Transactional(readOnly = true)
-    public List<DeliveryQuote> usableQuotes(Long deliveryId, List<String> excludedProviderCodes) {
+    public List<DeliveryQuote> usableQuotes(Long deliveryId, List<String> excludedProviderCodes,
+                                            boolean requiresColdChain) {
         var now = java.time.Instant.now();
         return quotes.findByDeliveryIdOrderByIdAsc(deliveryId).stream()
                 .filter(quote -> "QUOTED".equals(quote.getStatus()))
+                .filter(quote -> !requiresColdChain
+                        || coldChainGate.qualifies(quote.getDeliveryProviderId(), quote.getVehicleType()))
                 .filter(quote -> !excludedProviderCodes.contains(quote.getProviderCode()))
                 // A quote has a shelf life. Booking an expired one means committing
                 // the restaurant to a price the courier no longer offers.

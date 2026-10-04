@@ -41,15 +41,11 @@ class VehicleTypeTest {
     }
 
     @Test
-    @DisplayName("cold chain requires at least 3-wheeler even for light loads")
+    @DisplayName("the cold-chain size hint is at least a 3-wheeler; it is only a request hint, not a qualification (D-134)")
     void coldChainGating() {
         assertThat(VehicleType.fromWeight(BigDecimal.valueOf(2), true)).isEqualTo(VehicleType.THREE_WHEELER);
         assertThat(VehicleType.fromWeight(BigDecimal.valueOf(15), true)).isEqualTo(VehicleType.THREE_WHEELER);
         assertThat(VehicleType.fromWeight(BigDecimal.valueOf(150), true)).isEqualTo(VehicleType.FOUR_WHEELER_TRUCK);
-
-        assertThat(VehicleType.TWO_WHEELER.canCarryColdChain()).isFalse();
-        assertThat(VehicleType.THREE_WHEELER.canCarryColdChain()).isTrue();
-        assertThat(VehicleType.FOUR_WHEELER_TRUCK.canCarryColdChain()).isTrue();
     }
 }
 

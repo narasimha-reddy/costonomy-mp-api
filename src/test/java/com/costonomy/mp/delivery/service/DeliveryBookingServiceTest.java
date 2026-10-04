@@ -115,7 +115,7 @@ class DeliveryBookingServiceTest {
         Delivery delivery = createDelivery(1L, VehicleType.TWO_WHEELER);
         DeliveryQuote quote = createQuote(1L, "PORTER", VehicleType.TWO_WHEELER);
 
-        when(quoting.usableQuotes(1L, List.of())).thenReturn(List.of(quote));
+        when(quoting.usableQuotes(1L, List.of(), false)).thenReturn(List.of(quote));
         when(registry.adapter("PORTER")).thenReturn(providerAdapter);
         when(providerAdapter.book(any())).thenReturn(new DeliveryProvider.Booking(
                 "porter-order-1",
@@ -148,7 +148,7 @@ class DeliveryBookingServiceTest {
         Delivery delivery = createDelivery(2L, VehicleType.THREE_WHEELER);
         DeliveryQuote quote = createQuote(2L, "PORTER", VehicleType.THREE_WHEELER);
 
-        when(quoting.usableQuotes(2L, List.of())).thenReturn(List.of(quote));
+        when(quoting.usableQuotes(2L, List.of(), false)).thenReturn(List.of(quote));
         when(registry.adapter("PORTER")).thenReturn(providerAdapter);
         when(providerAdapter.book(any())).thenReturn(new DeliveryProvider.Booking(
                 "porter-order-2",
@@ -176,7 +176,7 @@ class DeliveryBookingServiceTest {
         Delivery delivery = createDelivery(3L, VehicleType.FOUR_WHEELER_TRUCK);
         DeliveryQuote quote = createQuote(3L, "PORTER", VehicleType.FOUR_WHEELER_TRUCK);
 
-        when(quoting.usableQuotes(3L, List.of())).thenReturn(List.of(quote));
+        when(quoting.usableQuotes(3L, List.of(), false)).thenReturn(List.of(quote));
         when(registry.adapter("PORTER")).thenReturn(providerAdapter);
         when(providerAdapter.book(any())).thenReturn(new DeliveryProvider.Booking(
                 "porter-order-3",
@@ -207,7 +207,7 @@ class DeliveryBookingServiceTest {
         Delivery delivery = createDelivery(4L, VehicleType.FOUR_WHEELER_TRUCK);
         DeliveryQuote quote = createQuote(4L, "PORTER", VehicleType.FOUR_WHEELER_TRUCK);
 
-        when(quoting.usableQuotes(4L, List.of())).thenReturn(List.of(quote));
+        when(quoting.usableQuotes(4L, List.of(), false)).thenReturn(List.of(quote));
         when(registry.adapter("PORTER")).thenReturn(providerAdapter);
         when(providerAdapter.book(any())).thenReturn(new DeliveryProvider.Booking(
                 "porter-order-4",
@@ -241,7 +241,7 @@ class DeliveryBookingServiceTest {
         when(directory.pickupLocality(31L)).thenReturn(pickup);
         when(directory.dropLocality(41L)).thenReturn(drop);
         when(directory.goodsValue(200L)).thenReturn(new BigDecimal("1834.50"));
-        when(quoting.usableQuotes(7L, List.of())).thenReturn(List.of(quote));
+        when(quoting.usableQuotes(7L, List.of(), false)).thenReturn(List.of(quote));
         when(registry.adapter("MOCK_EXPRESS")).thenReturn(providerAdapter);
         when(providerAdapter.book(any())).thenReturn(new DeliveryProvider.Booking(
                 "m-1", new BigDecimal("80.00"), "INR", 25, Instant.now().plusSeconds(1500), null));
@@ -266,7 +266,7 @@ class DeliveryBookingServiceTest {
         winner.setAmount(new BigDecimal("80.00"));
         DeliveryProvider shadowfax = mock(DeliveryProvider.class);
 
-        when(quoting.usableQuotes(8L, List.of())).thenReturn(List.of(refusing, winner));
+        when(quoting.usableQuotes(8L, List.of(), false)).thenReturn(List.of(refusing, winner));
         when(registry.adapter("SHADOWFAX")).thenReturn(shadowfax);
         when(registry.adapter("MOCK_EXPRESS")).thenReturn(providerAdapter);
         when(shadowfax.book(any())).thenThrow(new ShadowfaxContractException(
@@ -299,7 +299,7 @@ class DeliveryBookingServiceTest {
         DeliveryQuote refusing = createQuote(9L, "SHADOWFAX", VehicleType.TWO_WHEELER);
         DeliveryProvider shadowfax = mock(DeliveryProvider.class);
 
-        when(quoting.usableQuotes(9L, List.of())).thenReturn(List.of(refusing));
+        when(quoting.usableQuotes(9L, List.of(), false)).thenReturn(List.of(refusing));
         when(registry.adapter("SHADOWFAX")).thenReturn(shadowfax);
         when(shadowfax.book(any())).thenThrow(new ShadowfaxContractException("no fare"));
 

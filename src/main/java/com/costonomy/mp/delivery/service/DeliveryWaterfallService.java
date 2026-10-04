@@ -7,7 +7,6 @@ import com.costonomy.mp.delivery.repository.DeliveryRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 
@@ -44,7 +43,9 @@ public class DeliveryWaterfallService {
     /**
      * Trigger waterfall cascade for an unassigned delivery whose deadline expired.
      */
-    @Transactional
+    // Not transactional (D-134): the audit row is written in its own transaction before the reassignment, and a
+    // reassignment that fails (no carrier qualifies, say) marks only its own transaction for rollback. Held in one
+    // outer transaction, that failure surfaced as UnexpectedRollbackException and took the audit row with it.
     public boolean cascadeUnassigned(Long deliveryId) {
         var delivery = deliveries.findById(deliveryId).orElse(null);
         if (delivery == null) {
@@ -82,7 +83,6 @@ public class DeliveryWaterfallService {
     /**
      * Manually force carrier escalation (e.g. from operations console).
      */
-    @Transactional
     public boolean forceEscalate(Long deliveryId, String reason) {
         var delivery = deliveries.findById(deliveryId).orElse(null);
         if (delivery == null) {

@@ -32,10 +32,6 @@ public enum VehicleType {
         return maxWeightKg;
     }
 
-    public boolean canCarryColdChain() {
-        return this != TWO_WHEELER;
-    }
-
     /**
      * Determines the optimal vehicle type for a total cargo weight in kg.
      *

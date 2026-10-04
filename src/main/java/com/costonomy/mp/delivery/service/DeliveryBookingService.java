@@ -59,7 +59,7 @@ public class DeliveryBookingService {
      */
     @Transactional
     public boolean book(Delivery delivery, List<String> excludedProviderCodes, String attemptType) {
-        var usable = quoting.usableQuotes(delivery.getId(), excludedProviderCodes);
+        var usable = quoting.usableQuotes(delivery.getId(), excludedProviderCodes, delivery.isRequiresColdChain());
 
         if (usable.isEmpty()) {
             return fail(delivery, DeliveryStatus.PROVIDER_UNAVAILABLE, "NO_QUOTES",

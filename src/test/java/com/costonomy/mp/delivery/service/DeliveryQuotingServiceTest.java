@@ -19,9 +19,11 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -36,11 +38,14 @@ class DeliveryQuotingServiceTest {
     @Mock
     private DeliveryProvider mockAdapter;
 
+    @Mock
+    private ColdChainCarrierGate coldGate;
+
     private DeliveryQuotingService service;
 
     @BeforeEach
     void setUp() {
-        service = new DeliveryQuotingService(registry, quotes);
+        service = new DeliveryQuotingService(registry, quotes, coldGate);
         ReflectionTestUtils.setField(service, "maxRadiusKm", 30.0);
     }
 
@@ -167,45 +172,135 @@ class DeliveryQuotingServiceTest {
         return record;
     }
 
-    @Test
-    @DisplayName("Cold-chain delivery rejects 2-wheeler quotes and selects insulated vehicle")
-    void gather_coldChainDelivery_rejectsTwoWheelerQuote() {
+    // ── cold chain (D-134) ───────────────────────────────────────────────
+
+    private DeliveryProvider.Quote answer(String id, String amount, VehicleType vehicle) {
+        return new DeliveryProvider.Quote(id, true, new BigDecimal(amount), "INR", 30, 5.0,
+                Instant.now().plusSeconds(600), null, vehicle);
+    }
+
+    private Delivery chilled() {
         var delivery = buildDelivery(12.9716, 77.5946, 12.9352, 77.6245);
         delivery.setRequiresColdChain(true);
+        return delivery;
+    }
 
-        var bikeProvider = provider(1L, "SHADOWFAX_BIKE", 30);
-        var truckProvider = provider(2L, "PORTER_3W", 20);
-
-        var bikeAdapter = mock(DeliveryProvider.class);
-        var truckAdapter = mock(DeliveryProvider.class);
-
-        when(bikeAdapter.quote(any())).thenReturn(new DeliveryProvider.Quote(
-                "q-bike", true, new BigDecimal("40.00"), "INR", 20, 5.0,
-                Instant.now().plusSeconds(600), null, VehicleType.TWO_WHEELER
-        ));
-
-        when(truckAdapter.quote(any())).thenReturn(new DeliveryProvider.Quote(
-                "q-truck", true, new BigDecimal("120.00"), "INR", 35, 5.0,
-                Instant.now().plusSeconds(600), null, VehicleType.THREE_WHEELER
-        ));
-
+    @Test
+    @DisplayName("a chilled consignment is asked only of a carrier verified for it, in the vehicle it is verified for")
+    void chilled_onlyVerifiedCarrierIsAsked() {
+        var delivery = chilled();
+        var unverified = provider(1L, "BIKE_CO", 30);
+        var verified = provider(2L, "COLD_CO", 20);
+        var unverifiedAdapter = mock(DeliveryProvider.class);
+        var verifiedAdapter = mock(DeliveryProvider.class);
+        when(coldGate.vehicleFor(eq(1L), any())).thenReturn(Optional.empty());
+        when(coldGate.vehicleFor(eq(2L), any())).thenReturn(Optional.of(VehicleType.THREE_WHEELER));
+        when(coldGate.qualifies(2L, VehicleType.THREE_WHEELER)).thenReturn(true);
+        when(verifiedAdapter.quote(any())).thenReturn(answer("q-cold", "120.00", VehicleType.THREE_WHEELER));
         when(registry.enabled()).thenReturn(List.of(
-                new DeliveryProviderRegistry.Available(bikeProvider, bikeAdapter),
-                new DeliveryProviderRegistry.Available(truckProvider, truckAdapter)
-        ));
+                new DeliveryProviderRegistry.Available(unverified, unverifiedAdapter),
+                new DeliveryProviderRegistry.Available(verified, verifiedAdapter)));
 
         var outcome = service.gather(delivery, BigDecimal.valueOf(2000), BigDecimal.valueOf(5000), 45, List.of());
 
-        assertThat(outcome.anyServiceable()).isTrue();
-        assertThat(outcome.selected()).isNotNull();
-        // The cheaper 2-wheeler is rejected due to cold chain requirement, 3-wheeler is selected
-        assertThat(outcome.selected().getProviderCode()).isEqualTo("PORTER_3W");
+        assertThat(outcome.selected().getProviderCode()).isEqualTo("COLD_CO");
         assertThat(outcome.selected().getVehicleType()).isEqualTo(VehicleType.THREE_WHEELER);
+        // The unverified carrier is on record as unable, and was never asked (and so could never undercut).
+        var recordedUnverified = outcome.all().stream().filter(q -> "BIKE_CO".equals(q.getProviderCode())).findFirst()
+                .orElseThrow();
+        assertThat(recordedUnverified.getStatus()).isEqualTo("UNSERVICEABLE");
+        assertThat(recordedUnverified.getFailureReason()).contains("No verified temperature-controlled");
+        verify(unverifiedAdapter, never()).quote(any());
+    }
 
-        var bikeQuote = outcome.all().stream()
-                .filter(q -> "SHADOWFAX_BIKE".equals(q.getProviderCode()))
-                .findFirst().orElseThrow();
-        assertThat(bikeQuote.getStatus()).isEqualTo("UNSERVICEABLE");
-        assertThat(bikeQuote.getFailureReason()).contains("Cold-chain consignment requires enclosed/insulated vehicle");
+    @Test
+    @DisplayName("a quote with no vehicle type is not given the one we asked for: unstated means unverified")
+    void chilled_nullVehicleTypeIsUnserviceable() {
+        var delivery = chilled();
+        var carrier = provider(2L, "COLD_CO", 20);
+        var adapter = mock(DeliveryProvider.class);
+        when(coldGate.vehicleFor(eq(2L), any())).thenReturn(Optional.of(VehicleType.THREE_WHEELER));
+        when(adapter.quote(any())).thenReturn(answer("q-null", "80.00", null));
+        when(registry.enabled()).thenReturn(List.of(new DeliveryProviderRegistry.Available(carrier, adapter)));
+
+        var outcome = service.gather(delivery, BigDecimal.valueOf(2000), BigDecimal.valueOf(5000), 45, List.of());
+
+        assertThat(outcome.anyServiceable()).isFalse();
+        assertThat(outcome.selected()).isNull();
+        var quote = outcome.all().get(0);
+        assertThat(quote.getStatus()).isEqualTo("UNSERVICEABLE");
+        assertThat(quote.getVehicleType()).isNull();
+        assertThat(quote.getFailureReason()).contains("did not state the vehicle");
+    }
+
+    @Test
+    @DisplayName("a quote in a vehicle the carrier is not verified for is unserviceable, even if it is the cheapest")
+    void chilled_unverifiedVehicleInAnswerIsUnserviceable() {
+        var delivery = chilled();
+        var carrier = provider(2L, "COLD_CO", 20);
+        var adapter = mock(DeliveryProvider.class);
+        when(coldGate.vehicleFor(eq(2L), any())).thenReturn(Optional.of(VehicleType.THREE_WHEELER));
+        when(coldGate.qualifies(2L, VehicleType.TWO_WHEELER)).thenReturn(false);
+        when(adapter.quote(any())).thenReturn(answer("q-bike", "40.00", VehicleType.TWO_WHEELER));
+        when(registry.enabled()).thenReturn(List.of(new DeliveryProviderRegistry.Available(carrier, adapter)));
+
+        var outcome = service.gather(delivery, BigDecimal.valueOf(2000), BigDecimal.valueOf(5000), 45, List.of());
+
+        assertThat(outcome.anyServiceable()).isFalse();
+        assertThat(outcome.all().get(0).getFailureReason()).contains("not verified");
+    }
+
+    @Test
+    @DisplayName("with no verified carrier at all every provider is recorded as unable and nothing is selected")
+    void chilled_noQualifyingCarrier() {
+        var delivery = chilled();
+        var a = provider(1L, "A", 10);
+        var b = provider(2L, "B", 20);
+        var adapterA = mock(DeliveryProvider.class);
+        var adapterB = mock(DeliveryProvider.class);
+        when(coldGate.vehicleFor(any(), any())).thenReturn(Optional.empty());
+        when(registry.enabled()).thenReturn(List.of(
+                new DeliveryProviderRegistry.Available(a, adapterA),
+                new DeliveryProviderRegistry.Available(b, adapterB)));
+
+        var outcome = service.gather(delivery, BigDecimal.valueOf(2000), BigDecimal.valueOf(5000), 45, List.of());
+
+        assertThat(outcome.anyServiceable()).isFalse();
+        assertThat(outcome.selected()).isNull();
+        assertThat(outcome.all()).hasSize(2).allMatch(q -> "UNSERVICEABLE".equals(q.getStatus()));
+        verify(adapterA, never()).quote(any());
+        verify(adapterB, never()).quote(any());
+    }
+
+    @Test
+    @DisplayName("an ordinary consignment is unaffected: no gate, and an unstated vehicle keeps the requested one")
+    void ordinary_isUnaffected() {
+        var delivery = buildDelivery(12.9716, 77.5946, 12.9352, 77.6245);
+        var carrier = provider(2L, "ANY_CO", 20);
+        var adapter = mock(DeliveryProvider.class);
+        when(adapter.quote(any())).thenReturn(answer("q", "50.00", null));
+        when(registry.enabled()).thenReturn(List.of(new DeliveryProviderRegistry.Available(carrier, adapter)));
+
+        var outcome = service.gather(delivery, BigDecimal.valueOf(2000), BigDecimal.valueOf(5000), 45, List.of());
+
+        assertThat(outcome.selected()).isNotNull();
+        assertThat(outcome.selected().getVehicleType()).isEqualTo(VehicleType.TWO_WHEELER);
+        verifyNoInteractions(coldGate);
+    }
+
+    @Test
+    @DisplayName("a capability revoked after quoting stops a chilled quote being booked again")
+    void chilled_usableQuotesRecheckCapability() {
+        var quote = new DeliveryQuote();
+        quote.setDeliveryProviderId(2L);
+        quote.setVehicleType(VehicleType.THREE_WHEELER);
+        quote.setStatus("QUOTED");
+        quote.setProviderCode("COLD_CO");
+        quote.setAmount(new BigDecimal("120.00"));
+        when(quotes.findByDeliveryIdOrderByIdAsc(100L)).thenReturn(List.of(quote));
+        when(coldGate.qualifies(2L, VehicleType.THREE_WHEELER)).thenReturn(false);
+
+        assertThat(service.usableQuotes(100L, List.of(), true)).isEmpty();
+        assertThat(service.usableQuotes(100L, List.of(), false)).hasSize(1);
     }
 }

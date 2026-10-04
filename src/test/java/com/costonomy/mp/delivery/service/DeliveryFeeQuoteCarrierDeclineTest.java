@@ -51,7 +51,8 @@ class DeliveryFeeQuoteCarrierDeclineTest {
 
     @BeforeEach
     void setUp() {
-        service = new DeliveryFeeQuoteService(quotes, directory, registry, config);
+        service = new DeliveryFeeQuoteService(quotes, directory, registry, config,
+                org.mockito.Mockito.mock(ColdChainCarrierGate.class));
         // Every key falls back to the default the code passes in, i.e. the shipped rate card.
         when(config.getInt(anyString(), anyInt())).thenAnswer(i -> i.getArgument(1));
         when(config.getDecimal(anyString(), any(BigDecimal.class))).thenAnswer(i -> i.getArgument(1));
