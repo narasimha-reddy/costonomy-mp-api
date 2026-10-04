@@ -184,12 +184,13 @@ public class WalletService {
 
     /**
      * Credit or debit adjustment for catch-weight reconciliation or doorstep line rejection.
+     * Returns true if applied, false if a debit could not be covered by wallet balance.
      */
     @Transactional
-    public void recordAdjustment(Long outletId, Long supplierOrderId, WalletDirection direction,
-                                 BigDecimal amount, String reason) {
+    public boolean recordAdjustment(Long outletId, Long supplierOrderId, WalletDirection direction,
+                                    BigDecimal amount, String reason) {
         if (amount == null || amount.signum() <= 0) {
-            return;
+            return true;
         }
         var wallet = forOutlet(outletId);
         if (direction == WalletDirection.CREDIT) {
@@ -198,7 +199,7 @@ public class WalletService {
             if (wallets.debit(wallet.getId(), amount) == 0) {
                 log.warn("Wallet {} could not cover adjustment debit {} for order {}",
                         wallet.getId(), amount, supplierOrderId);
-                return;
+                return false;
             }
         }
         wallets.flush();
@@ -206,6 +207,7 @@ public class WalletService {
         var refreshed = wallets.findById(wallet.getId()).orElseThrow();
         record(refreshed, supplierOrderId, direction, WalletEntryKind.ORDER_ADJUSTMENT,
                 amount, reason, null, null);
+        return true;
     }
 
     /** Whether this order's money has been taken and not given back. */
@@ -371,6 +373,46 @@ public class WalletService {
         record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.WITHDRAWAL, amount,
                 "Withdrawal to the original payment method", "withdrawal-" + refundId, refundId);
         return refreshed;
+    }
+
+    /**
+     * Debit wallet balance for an IMPS/NEFT bank payout to verified account.
+     */
+    @Transactional
+    public Wallet debitBankPayout(Long outletId, String payoutReference, BigDecimal amount, String maskedAccount) {
+        var wallet = forOutlet(outletId);
+        if (wallets.debit(wallet.getId(), amount) == 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Your wallet doesn't have ₹%s to transfer.".formatted(Rupees.of(amount)));
+        }
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.BANK_PAYOUT, amount,
+                "Bank transfer to " + maskedAccount, payoutReference, null);
+        log.info("Wallet {} debited {} for bank payout {}; new balance {}",
+                wallet.getId(), amount.toPlainString(), payoutReference, refreshed.getBalance().toPlainString());
+        return refreshed;
+    }
+
+    /**
+     * Reverse a failed bank payout back into the wallet. Idempotent on reference.
+     */
+    @Transactional
+    public void returnBankPayout(Long outletId, String payoutReference, BigDecimal amount, String reason) {
+        String reversalRef = "reversal-" + payoutReference;
+        if (entries.existsByReference(reversalRef)) {
+            return;
+        }
+        var wallet = forOutlet(outletId);
+        wallets.credit(wallet.getId(), amount);
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.CREDIT, WalletEntryKind.BANK_PAYOUT_REVERSAL, amount,
+                reason, reversalRef, null);
+        log.info("Wallet {} credited {} for reversed bank payout {}; new balance {}",
+                wallet.getId(), amount.toPlainString(), payoutReference, refreshed.getBalance().toPlainString());
     }
 
     /**

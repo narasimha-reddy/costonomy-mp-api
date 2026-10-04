@@ -171,4 +171,26 @@ public final class WalletDtos {
             @NotNull @Positive BigDecimal amount,
             @Size(max = 200) String reason) {
     }
+
+    /** Request payout from wallet balance to verified bank account (IMPS/NEFT). */
+    public record BankPayoutRequest(
+            @NotNull @Positive @Digits(integer = 15, fraction = 2) BigDecimal amount,
+            @NotBlank @Size(max = 34) String accountNumber,
+            @NotBlank @Size(max = 11) @Pattern(regexp = "^[A-Z]{4}0[A-Z0-9]{6}$", message = "Invalid IFSC code") String ifscCode,
+            @NotBlank @Size(max = 120) String beneficiaryName,
+            @Size(max = 200) String note) {
+    }
+
+    /** Response confirming bank payout initiation and updated wallet balance. */
+    public record BankPayoutResponse(
+            Long outletId,
+            String payoutReference,
+            BigDecimal amountDebited,
+            BigDecimal balanceAfter,
+            String beneficiaryName,
+            String maskedAccountNumber,
+            String ifscCode,
+            String status,
+            Instant initiatedAt) {
+    }
 }

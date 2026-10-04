@@ -79,13 +79,16 @@ class SubscriptionServiceTest {
     @Mock
     private CreditLedgerService creditLedger;
 
+    @Mock
+    private com.costonomy.mp.common.outbox.OutboxService outbox;
+
     private SubscriptionService service;
 
     @BeforeEach
     void setUp() {
         service = new SubscriptionService(
                 subscriptions, skipDates, supplierOrders, supplierOrderItems,
-                supplierOffers, deliverySlots, orderNumbers, accessControl, auditService, jdbc,
+                supplierOffers, deliverySlots, orderNumbers, accessControl, auditService, outbox, jdbc,
                 walletService, creditAgreements, creditLedger);
     }
 

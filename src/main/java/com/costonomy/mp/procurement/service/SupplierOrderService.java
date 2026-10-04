@@ -263,15 +263,22 @@ public class SupplierOrderService {
         order.setFinalPayableAmount(Pricing.money(netDeliveredPayable));
         orders.save(order);
 
-        // Idempotent delta adjustment via wallet
+        // Idempotent delta adjustment via wallet with lock safety
         if (netAdjustmentToApply.compareTo(BigDecimal.ZERO) > 0) {
             walletService.recordAdjustment(order.getOutletId(), order.getId(),
                     WalletDirection.CREDIT, netAdjustmentToApply,
                     "Catch-weight variance refund for order " + order.getOrderNumber());
         } else if (netAdjustmentToApply.compareTo(BigDecimal.ZERO) < 0) {
-            walletService.recordAdjustment(order.getOutletId(), order.getId(),
+            boolean debited = walletService.recordAdjustment(order.getOutletId(), order.getId(),
                     WalletDirection.DEBIT, netAdjustmentToApply.abs(),
                     "Catch-weight adjustment correction for order " + order.getOrderNumber());
+            if (!debited) {
+                // If debit cannot be covered, throw BusinessException so transaction rolls back
+                // and platform does not absorb uncovered overweight
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "Restaurant wallet has insufficient balance to cover overweight surcharge of ₹"
+                                + netAdjustmentToApply.abs().toPlainString());
+            }
         }
 
         auditService.record(actorId, null, "ORDER_WEIGHTS_RECORDED", "SUPPLIER_ORDER",

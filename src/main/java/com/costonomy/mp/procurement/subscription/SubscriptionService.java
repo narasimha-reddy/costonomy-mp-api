@@ -49,6 +49,7 @@ public class SubscriptionService {
     private final OrderNumberGenerator orderNumbers;
     private final AccessControlService accessControl;
     private final AuditService auditService;
+    private final com.costonomy.mp.common.outbox.OutboxService outbox;
     private final JdbcTemplate jdbc;
     private final com.costonomy.mp.wallet.service.WalletService walletService;
     private final com.costonomy.mp.credit.service.CreditAgreementService creditAgreements;
@@ -443,15 +444,29 @@ public class SubscriptionService {
 
             if (funded) {
                 generatedOrderIds.add(order.getId());
-            }
 
-            // Advance subscription's next delivery date
-            Set<LocalDate> skipped = skipDates.findBySubscriptionId(sub.getId()).stream()
-                    .map(SubscriptionSkipDate::getSkipDate)
-                    .collect(Collectors.toSet());
-            LocalDate nextDay = advanceFrequencyDate(date, sub.getFrequency());
-            sub.setNextDeliveryDate(calculateNextDeliveryDate(nextDay, sub.getFrequency(), skipped));
-            subscriptions.save(sub);
+                // Advance subscription's next delivery date
+                Set<LocalDate> skipped = skipDates.findBySubscriptionId(sub.getId()).stream()
+                        .map(SubscriptionSkipDate::getSkipDate)
+                        .collect(Collectors.toSet());
+                LocalDate nextDay = advanceFrequencyDate(date, sub.getFrequency());
+                sub.setNextDeliveryDate(calculateNextDeliveryDate(nextDay, sub.getFrequency(), skipped));
+                subscriptions.save(sub);
+            } else {
+                // Keep subscription nextDeliveryDate on current date (retryable) and alert restaurant to top up
+                auditService.record(actorId, null, "SUBSCRIPTION_FUNDING_FAILED", "SUBSCRIPTION",
+                        sub.getId(), "ACTIVE", "ACTIVE",
+                        "Scheduled delivery order could not be funded via " + paymentMethod + " for amount ₹" + totalAmount.toPlainString(),
+                        "SYSTEM");
+
+                outbox.publish("SubscriptionFundingFailed", "SUBSCRIPTION", sub.getId(),
+                        Map.of("outletId", sub.getOutletId(),
+                                "supplierStoreId", supplierStoreId,
+                                "scheduledDate", date.toString(),
+                                "paymentMethod", paymentMethod,
+                                "requiredAmount", totalAmount.toPlainString()),
+                        actorId);
+            }
         }
 
         return new SubscriptionDtos.GenerateOrdersResponse(date, generatedOrderIds.size(), generatedOrderIds);

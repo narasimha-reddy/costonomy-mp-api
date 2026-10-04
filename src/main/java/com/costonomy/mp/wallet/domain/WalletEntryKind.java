@@ -50,5 +50,13 @@ public enum WalletEntryKind {
      * order-movement key that makes an order's payment and return one row each. Like a dispute
      * refund on a wallet order it has no card behind it: spendable, not withdrawable.
      */
-    ORDER_ADJUSTMENT
+    ORDER_ADJUSTMENT,
+    /**
+     * Payout from wallet balance directly to restaurant's verified bank account via IMPS/NEFT.
+     */
+    BANK_PAYOUT,
+    /**
+     * Reversal of a failed bank payout back into the wallet.
+     */
+    BANK_PAYOUT_REVERSAL
 }

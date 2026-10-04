@@ -29,6 +29,8 @@ public final class WalletEntryCopy {
             case WITHDRAWAL_REVERSAL -> "Withdrawal returned to your wallet";
             case ORDER_ADJUSTMENT -> direction == WalletDirection.CREDIT
                     ? "Order adjusted · money back" : "Order adjusted · extra charge";
+            case BANK_PAYOUT -> "Transferred to verified bank account";
+            case BANK_PAYOUT_REVERSAL -> "Bank transfer returned to wallet";
         };
     }
 }
