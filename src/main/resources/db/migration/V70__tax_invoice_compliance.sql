@@ -16,14 +16,14 @@ UPDATE supplier_order_item i
  WHERE i.hsn_code IS NULL;
 
 -- No cascade: nothing here is ever hard-deleted. No default HSN: 9968 is a courier-services code, not goods.
+ALTER TABLE tax_invoice_item DROP FOREIGN KEY fk_tax_invoice_item_invoice;
 ALTER TABLE tax_invoice_item
-    DROP FOREIGN KEY fk_tax_invoice_item_invoice,
     MODIFY hsn_code VARCHAR(16) NOT NULL,
     ADD CONSTRAINT fk_tax_invoice_item_invoice FOREIGN KEY (tax_invoice_id) REFERENCES tax_invoice (id),
     ADD CONSTRAINT fk_tax_invoice_item_order_item FOREIGN KEY (supplier_order_item_id) REFERENCES supplier_order_item (id);
 
+ALTER TABLE credit_note_item DROP FOREIGN KEY fk_credit_note_item_note;
 ALTER TABLE credit_note_item
-    DROP FOREIGN KEY fk_credit_note_item_note,
     MODIFY hsn_code VARCHAR(16) NOT NULL,
     ADD CONSTRAINT fk_credit_note_item_note FOREIGN KEY (credit_note_id) REFERENCES credit_note (id),
     ADD CONSTRAINT fk_credit_note_item_order_item FOREIGN KEY (supplier_order_item_id) REFERENCES supplier_order_item (id);
@@ -39,7 +39,7 @@ ALTER TABLE tax_invoice
     MODIFY buyer_address TEXT NOT NULL,
     MODIFY buyer_state_code VARCHAR(2) NOT NULL,
     MODIFY place_of_supply VARCHAR(64) NOT NULL,
-    ADD COLUMN fiscal_year SMALLINT NOT NULL AFTER invoice_number,
+    ADD COLUMN fiscal_year INT NOT NULL AFTER invoice_number,
     ADD COLUMN sequence_value BIGINT NOT NULL AFTER fiscal_year,
     ADD CONSTRAINT uk_tax_invoice_supplier_number UNIQUE (supplier_gstin, invoice_number),
     ADD CONSTRAINT ck_tax_invoice_number_length CHECK (CHAR_LENGTH(invoice_number) <= 16);
@@ -49,7 +49,7 @@ ALTER TABLE credit_note
     MODIFY credit_note_number VARCHAR(16) NOT NULL,
     MODIFY supplier_gstin VARCHAR(15) NOT NULL,
     MODIFY reason_code VARCHAR(64) NOT NULL,
-    ADD COLUMN fiscal_year SMALLINT NOT NULL AFTER credit_note_number,
+    ADD COLUMN fiscal_year INT NOT NULL AFTER credit_note_number,
     ADD COLUMN sequence_value BIGINT NOT NULL AFTER fiscal_year,
     ADD CONSTRAINT uk_credit_note_supplier_number UNIQUE (supplier_gstin, credit_note_number),
     -- One credit note per order and reason: the same doorstep check-in replayed cannot issue a second.
@@ -62,7 +62,7 @@ ALTER TABLE credit_note
 CREATE TABLE document_sequence (
     id          BIGINT PRIMARY KEY AUTO_INCREMENT,
     scope_key   VARCHAR(32)  NOT NULL,
-    fiscal_year SMALLINT     NOT NULL,
+    fiscal_year INT     NOT NULL,
     doc_type    VARCHAR(16)  NOT NULL,
     next_value  BIGINT       NOT NULL DEFAULT 1,
     created_at  TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
