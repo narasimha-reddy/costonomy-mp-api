@@ -91,87 +91,10 @@ public class XpressbeesApiClient {
             return DeliveryProvider.Quote.unserviceable("Xpressbees provider credentials not configured");
         }
 
-        Double distanceKm = Serviceability.distanceKm(
-                request.pickupLatitude(), request.pickupLongitude(),
-                request.dropLatitude(), request.dropLongitude());
-
-        if (distanceKm == null) {
-            return DeliveryProvider.Quote.unserviceable("No valid coordinates provided for Xpressbees quote");
-        }
-
-        if (distanceKm > 30.0) {
-            return DeliveryProvider.Quote.unserviceable(
-                    "Exceeds 30 km intra-city radius limit (%.1f km)".formatted(distanceKm));
-        }
-
-        String originPin = extractPincode(request.pickupAddress());
-        String destPin = extractPincode(request.dropAddress());
-
-        if (originPin == null || destPin == null) {
-            return DeliveryProvider.Quote.unserviceable("Xpressbees needs a pickup and drop pincode in the address");
-        }
-
-        BigDecimal weightKg = request.weightKg() != null ? request.weightKg() : BigDecimal.valueOf(2.0);
-
-        var payload = new LinkedHashMap<String, Object>();
-        payload.put("origin", originPin);
-        payload.put("destination", destPin);
-        payload.put("weight", weightKg);
-        payload.put("order_amount", request.orderValue() != null ? request.orderValue() : new BigDecimal("500.00"));
-
-        try {
-            var entity = new HttpEntity<>(payload, headers());
-            String url = properties.getBaseUrl() + "/v1/courier/serviceability";
-            var response = restTemplate.postForEntity(url, entity, JsonNode.class);
-
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                return DeliveryProvider.Quote.unserviceable("Xpressbees serviceability returned empty body");
-            }
-
-            var body = response.getBody();
-            boolean serviceable = body.path("status").asBoolean(true);
-            if (!serviceable) {
-                String reason = body.has("message") ? body.path("message").asText() : "Xpressbees declined route";
-                return DeliveryProvider.Quote.unserviceable(reason);
-            }
-
-            BigDecimal amount = null;
-            if (body.has("data") && body.path("data").has("rate")) {
-                amount = BigDecimal.valueOf(body.path("data").path("rate").asDouble()).setScale(2, RoundingMode.HALF_UP);
-            } else if (body.has("charges") && body.path("charges").has("total_amount")) {
-                amount = BigDecimal.valueOf(body.path("charges").path("total_amount").asDouble()).setScale(2, RoundingMode.HALF_UP);
-            } else if (body.has("rate")) {
-                amount = BigDecimal.valueOf(body.path("rate").asDouble()).setScale(2, RoundingMode.HALF_UP);
-            }
-
-            if (amount == null) {
-                throw new XpressbeesContractException("Xpressbees serviceability response missing fare");
-            }
-
-            int etaMinutes = 45;
-            if (body.has("data") && body.path("data").has("estimated_delivery_days")) {
-                etaMinutes = body.path("data").path("estimated_delivery_days").asInt(1) * 24 * 60;
-            }
-
-            return new DeliveryProvider.Quote(
-                    "xb_q_" + UUID.randomUUID(),
-                    true,
-                    amount,
-                    "INR",
-                    etaMinutes,
-                    distanceKm,
-                    Instant.now().plusSeconds(600),
-                    null,
-                    request.vehicleType()
-            );
-
-        } catch (HttpStatusCodeException ex) {
-            log.warn("Xpressbees serviceability HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("XPRESSBEES", "Xpressbees serviceability returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.warn("Xpressbees serviceability network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("XPRESSBEES", "Xpressbees serviceability timeout", true);
-        }
+        // No HTTP call: Xpressbees's fare field has not been verified against a live response, and a
+        // guessed or rate-card price is not a quote. A decline is honest (D-121).
+        return DeliveryProvider.Quote.unserviceable(
+                "Xpressbees fare contract not verified against a live response; a rate card is not a quote (D-121)");
     }
 
     // ── book ───────────────────────────────────────────────────────────────
@@ -183,86 +106,11 @@ public class XpressbeesApiClient {
             throw new DeliveryProviderException("XPRESSBEES", "Xpressbees credentials not configured for booking", false);
         }
 
-        if (request.pickupAddress() == null || request.pickupAddress().isBlank()) {
-            throw invalid("pickup address");
-        }
-        if (request.dropAddress() == null || request.dropAddress().isBlank()) {
-            throw invalid("drop address");
-        }
-        if (request.dropContactName() == null || request.dropContactName().isBlank()) {
-            throw invalid("drop contact name");
-        }
-
-        String pickupPin = request.pickupLocality() != null && request.pickupLocality().pincode() != null
-                ? request.pickupLocality().pincode()
-                : extractPincode(request.pickupAddress());
-        String dropPin = request.dropLocality() != null && request.dropLocality().pincode() != null
-                ? request.dropLocality().pincode()
-                : extractPincode(request.dropAddress());
-
-        if (pickupPin == null) throw invalid("pickup pincode");
-        if (dropPin == null) throw invalid("drop pincode");
-
-        String pickupPhone = requirePhone("pickup contact phone", request.pickupContactPhone());
-        String dropPhone = requirePhone("drop contact phone", request.dropContactPhone());
-        BigDecimal goodsValue = request.goodsValue() != null ? request.goodsValue() : new BigDecimal("500.00");
-
-        var payload = new LinkedHashMap<String, Object>();
-        payload.put("order_number", request.idempotencyKey());
-        payload.put("pickup_details", Map.of(
-                "name", request.pickupContactName() != null ? request.pickupContactName() : "Store Desk",
-                "phone", pickupPhone,
-                "address", request.pickupAddress(),
-                "pincode", pickupPin
-        ));
-        payload.put("delivery_details", Map.of(
-                "name", request.dropContactName(),
-                "phone", dropPhone,
-                "address", request.dropAddress(),
-                "pincode", dropPin
-        ));
-        payload.put("order_amount", goodsValue);
-        payload.put("payment_type", "prepaid");
-
-        try {
-            var entity = new HttpEntity<>(payload, headers());
-            String url = properties.getBaseUrl() + "/v1/shipments/create";
-            var response = restTemplate.postForEntity(url, entity, JsonNode.class);
-
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                throw new DeliveryProviderException("XPRESSBEES", "Xpressbees create-order returned no body", true);
-            }
-
-            var body = response.getBody();
-            String awb = request.idempotencyKey();
-
-            if (body.has("data") && body.path("data").has("awb_number")) {
-                awb = body.path("data").path("awb_number").asText();
-            } else if (body.has("awb_number")) {
-                awb = body.path("awb_number").asText();
-            }
-
-            BigDecimal amount = goodsValue;
-            if (body.has("data") && body.path("data").has("rate")) {
-                amount = BigDecimal.valueOf(body.path("data").path("rate").asDouble());
-            }
-
-            return new DeliveryProvider.Booking(
-                    awb,
-                    amount,
-                    "INR",
-                    45,
-                    Instant.now().plusSeconds(2700),
-                    "https://www.xpressbees.com/track?awb=" + awb
-            );
-
-        } catch (HttpStatusCodeException ex) {
-            log.warn("Xpressbees createOrder HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("XPRESSBEES", "Xpressbees create-order returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.warn("Xpressbees createOrder network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("XPRESSBEES", "Xpressbees create-order timeout", true);
-        }
+        // Refuses before any network call: failing after the carrier accepted an order would leave
+        // a live consignment nobody owns, and Booking.amount must be a verified fare (D-121).
+        throw new XpressbeesContractException(
+                "Xpressbees booking fare is not verified; refusing to book without a carrier fare "
+                        + "- a rate card is not a quote (D-121)");
     }
 
     // ── status ─────────────────────────────────────────────────────────────

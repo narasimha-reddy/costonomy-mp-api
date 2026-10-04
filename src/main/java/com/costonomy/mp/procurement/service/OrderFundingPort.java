@@ -77,7 +77,7 @@ public interface OrderFundingPort {
     /**
      * The goods are about to leave: settle the order's money to what it finally comes to (D-103, D-128).
      *
-     * <p>{@code finalPayable} is the accepted amount less any catch-weight shortfall. Called exactly once in
+     * <p>{@code finalPayable} is the accepted amount less any catch-weight shortfall, and {@code reductionAmount} is that shortfall (zero when the order weighed in full). Called exactly once in
      * effect, with the order locked, and idempotent: a repeat finds the money already settled.
      * <ul>
      *   <li><b>Card:</b> prepaid money is held from confirmation and taken here, at most what was
@@ -88,7 +88,8 @@ public interface OrderFundingPort {
      * </ul>
      * From here the money only moves down ({@link #reduceAfterDispatch}); weighing never touches it.
      */
-    default void onOrderDispatched(Long supplierOrderId, BigDecimal finalPayable) {
+    default Reduction onOrderDispatched(Long supplierOrderId, BigDecimal finalPayable, BigDecimal reductionAmount) {
+        return Reduction.applied(null);
     }
 
     /**
@@ -102,8 +103,8 @@ public interface OrderFundingPort {
      * @param newFinalPayable what the order now comes to in total, for a method that tracks a figure
      * @param key             makes a repeat a no-op
      */
-    default void reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
-                                     String key, Long actorId, String reason) {
+    default Reduction reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
+                                          String key, Long actorId, String reason) {
         throw new com.costonomy.mp.common.error.BusinessException(
                 com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR,
                 "This order's payment can't be adjusted after dispatch.");
@@ -190,6 +191,39 @@ public interface OrderFundingPort {
      * @param completedAt when the refund completed, or null while it is still on its way
      */
     record CancelRefund(BigDecimal amount, java.time.Instant completedAt) {
+    }
+
+    /**
+     * What a funding method did about a reduction (D-129).
+     *
+     * <p>{@code DEFERRED} is allowed only when the money exists but has not been taken yet: a card whose capture
+     * is still pending cannot be refunded until it is captured, so the reduction waits for it instead of
+     * failing the doorstep check-in.
+     *
+     * @param fundingReference where the money went, for the adjustment row: {@code refund:{id}},
+     *                         {@code wallet:{reference}}, {@code credit_invoice:{id}} or {@code payment:{id}}
+     * @param settledOutside   the part a credit invoice could not absorb because it was already repaid
+     */
+    record Reduction(Outcome outcome, String fundingReference, BigDecimal settledOutside) {
+
+        public enum Outcome { APPLIED, DEFERRED }
+
+        public static Reduction applied(String fundingReference) {
+            return new Reduction(Outcome.APPLIED, fundingReference, BigDecimal.ZERO);
+        }
+
+        public static Reduction applied(String fundingReference, BigDecimal settledOutside) {
+            return new Reduction(Outcome.APPLIED, fundingReference,
+                    settledOutside == null ? BigDecimal.ZERO : settledOutside.max(BigDecimal.ZERO));
+        }
+
+        public static Reduction deferred() {
+            return new Reduction(Outcome.DEFERRED, null, BigDecimal.ZERO);
+        }
+
+        public boolean isApplied() {
+            return outcome == Outcome.APPLIED;
+        }
     }
 
     /**

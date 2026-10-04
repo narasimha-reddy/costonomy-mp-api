@@ -32,9 +32,22 @@ public class TrustDirectory {
     }
 
     public OrderInfo order(Long supplierOrderId) {
+        return order(supplierOrderId, false);
+    }
+
+    /**
+     * The order, locked for the rest of the transaction. Receiving takes this first, as its very first statement,
+     * so a duplicate check-in queues behind the first and then sees it, and so the lock order is the same as the
+     * ready transition's (D-129): order, then adjustment, then wallet, then payment.
+     */
+    public OrderInfo orderForUpdate(Long supplierOrderId) {
+        return order(supplierOrderId, true);
+    }
+
+    private OrderInfo order(Long supplierOrderId, boolean lock) {
         var rows = jdbc.query("""
                 select id, order_number, status, outlet_id, supplier_store_id, delivery_mode
-                  from supplier_order where id = ?
+                  from supplier_order where id = ?""" + (lock ? " for update" : "") + """
                 """,
                 (rs, row) -> new OrderInfo(rs.getLong(1), rs.getString(2), rs.getString(3),
                         rs.getLong(4), rs.getLong(5),
@@ -128,32 +141,6 @@ public class TrustDirectory {
                        doorstep_refund_amount = ?
                  where id = ?
                 """, acceptedQty, rejectedQty, reason, refundAmount, supplierOrderItemId);
-    }
-
-    /**
-     * Record what a doorstep rejection takes off the order, and return what the order now comes to.
-     *
-     * <p>Guarded in the statement: the final payable may not go below zero, and exactly one row must change.
-     * A negative final would be clamped to zero downstream and the platform would fund the excess (D-128), so
-     * it is refused here, where the figure is written.
-     *
-     * @return the order's final payable after the rejection
-     */
-    public BigDecimal updateOrderFinancialReconciliation(Long supplierOrderId, BigDecimal doorstepRefundAmount) {
-        int updated = jdbc.update("""
-                update supplier_order
-                   set doorstep_refund_amount = ?,
-                       final_payable_amount = accepted_amount - coalesce(weight_adjustment_amount, 0) - ?
-                 where id = ?
-                   and accepted_amount - coalesce(weight_adjustment_amount, 0) - ? >= 0
-                """, doorstepRefundAmount, doorstepRefundAmount, supplierOrderId, doorstepRefundAmount);
-        if (updated != 1) {
-            throw new com.costonomy.mp.common.error.BusinessException(
-                    com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR,
-                    "The rejected goods are worth more than this order's payable amount.");
-        }
-        return jdbc.queryForObject("select final_payable_amount from supplier_order where id = ?",
-                BigDecimal.class, supplierOrderId);
     }
 
     /** The credit note raised for this order's doorstep rejection, or null when none exists (D-128). */

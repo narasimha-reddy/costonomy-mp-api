@@ -89,12 +89,13 @@ class PidgeWebhookServiceTest {
     }
 
     @Test
-    @DisplayName("When secret is unconfigured (local dev), signature check allows all")
-    void unconfiguredSecretAllowsLocalDev() {
+    @DisplayName("When the secret is unconfigured, every webhook is rejected (fail closed)")
+    void unconfiguredSecretRejectsEverything() {
         properties.setWebhookSecret(null);
-        assertThat(service.verifySignature("{}", "anysig")).isTrue();
+        assertThat(service.verifySignature("{}", "anysig")).isFalse();
+        assertThat(service.verifySignature("{}", null)).isFalse();
 
         properties.setWebhookSecret("");
-        assertThat(service.verifySignature("{}", null)).isTrue();
+        assertThat(service.verifySignature("{}", null)).isFalse();
     }
 }

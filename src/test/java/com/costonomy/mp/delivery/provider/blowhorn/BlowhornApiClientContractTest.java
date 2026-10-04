@@ -72,132 +72,6 @@ class BlowhornApiClientContractTest {
     }
 
     @Test
-    @DisplayName("calculates quote returning real carrier fare from Blowhorn serviceability check")
-    void calculateQuote_success() {
-        String serviceabilityJson = """
-                {
-                  "serviceable": true,
-                  "fare": {
-                    "amount": 65.00,
-                    "currency": "INR"
-                  },
-                  "estimated_delivery_time_minutes": 40,
-                  "distance_km": 5.2
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/serviceability"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("API_KEY", API_KEY))
-                .andExpect(header("Authorization", "Bearer " + API_KEY))
-                .andExpect(jsonPath("$.pickup_latitude").value(12.9716))
-                .andExpect(jsonPath("$.delivery_latitude").value(12.9352))
-                .andExpect(jsonPath("$.vehicle_type").value("2_WHEELER"))
-                .andRespond(withSuccess(serviceabilityJson, MediaType.APPLICATION_JSON));
-
-        var quote = client.calculateQuote(quoteRequest());
-
-        assertThat(quote.serviceable()).isTrue();
-        assertThat(quote.amount()).isEqualByComparingTo("65.00");
-        assertThat(quote.currency()).isEqualTo("INR");
-        assertThat(quote.distanceKm()).isEqualTo(5.2);
-        assertThat(quote.etaMinutes()).isEqualTo(40);
-        assertThat(quote.providerQuoteId()).startsWith("bh_q_");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit (D-120)")
-    void calculateQuote_exceeds30Km() {
-        var longRouteRequest = new DeliveryProvider.QuoteRequest(
-                101L,
-                new BigDecimal("12.9716"), new BigDecimal("77.5946"),
-                new BigDecimal("12.7409"), new BigDecimal("77.8253"),
-                new BigDecimal("500.00"), new BigDecimal("2500"), 45,
-                "Indiranagar, Bengaluru, 560038",
-                "Hosur, 635109");
-
-        var quote = client.calculateQuote(longRouteRequest);
-
-        assertThat(quote.serviceable()).isFalse();
-        assertThat(quote.declineReason()).contains("Exceeds 30 km intra-city radius limit");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("declines quote when Blowhorn serviceability returns serviceable=false")
-    void calculateQuote_unserviceableFromCarrier() {
-        String unserviceableJson = """
-                {
-                  "serviceable": false,
-                  "reason": "Vehicle fleet unavailable in pickup zone"
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/serviceability"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("API_KEY", API_KEY))
-                .andRespond(withSuccess(unserviceableJson, MediaType.APPLICATION_JSON));
-
-        var quote = client.calculateQuote(quoteRequest());
-
-        assertThat(quote.serviceable()).isFalse();
-        assertThat(quote.declineReason()).contains("Vehicle fleet unavailable in pickup zone");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("throws BlowhornContractException when serviceability response is missing fare")
-    void calculateQuote_missingFareThrowsContractException() {
-        String noFareJson = """
-                {
-                  "serviceable": true
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/serviceability"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("API_KEY", API_KEY))
-                .andRespond(withSuccess(noFareJson, MediaType.APPLICATION_JSON));
-
-        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
-                .isInstanceOf(BlowhornContractException.class)
-                .hasMessageContaining("missing fare value");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("creates order with Blowhorn and returns Booking")
-    void createOrder_success() {
-        String createResponseJson = """
-                {
-                  "order_id": "BH-ORD-777",
-                  "awb_number": "BH-AWB-9999",
-                  "fare": {
-                    "amount": 65.00
-                  },
-                  "estimated_delivery_time_minutes": 40
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/orders"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("API_KEY", API_KEY))
-                .andExpect(jsonPath("$.reference_number").value("mp-bh-101"))
-                .andExpect(jsonPath("$.pickup_point.phone").value("+919876500000"))
-                .andExpect(jsonPath("$.delivery_point.phone").value("+919876511111"))
-                .andExpect(jsonPath("$.vehicle_type").value("2_WHEELER"))
-                .andRespond(withSuccess(createResponseJson, MediaType.APPLICATION_JSON));
-
-        var booking = client.createOrder(bookingRequest());
-
-        assertThat(booking.providerDeliveryId()).isEqualTo("BH-AWB-9999");
-        assertThat(booking.amount()).isEqualByComparingTo("65.00");
-        assertThat(booking.trackingUrl()).contains("BH-AWB-9999");
-        server.verify();
-    }
-
-    @Test
     @DisplayName("polls tracking status and maps current status and events")
     void getStatus_success() {
         String trackingJson = """
@@ -316,20 +190,6 @@ class BlowhornApiClientContractTest {
     }
 
     @Test
-    @DisplayName("throws retryable DeliveryProviderException on server 500 error")
-    void serverError_throwsRetryableException() {
-        server.expect(requestTo(BASE_URL + "/v1/serviceability"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("API_KEY", API_KEY))
-                .andRespond(withServerError());
-
-        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
-                .isInstanceOf(DeliveryProviderException.class)
-                .satisfies(ex -> assertThat(((DeliveryProviderException) ex).retryable()).isTrue());
-        server.verify();
-    }
-
-    @Test
     @DisplayName("throttles calls when rate limit RPS is exhausted")
     void throttlesWhenRateLimitExceeded() {
         properties.setRateLimitRps(0);
@@ -341,5 +201,25 @@ class BlowhornApiClientContractTest {
                 .isInstanceOf(DeliveryProviderException.class)
                 .hasMessageContaining("rate limit exceeded")
                 .satisfies(ex -> assertThat(((DeliveryProviderException) ex).retryable()).isTrue());
+    }
+
+    @Test
+    @DisplayName("quote is declined without any carrier call: the fare contract is unverified (D-121)")
+    void calculateQuote_failsClosedWithoutHttp() {
+        var quote = client.calculateQuote(quoteRequest());
+
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.amount()).isNull();
+        assertThat(quote.declineReason()).contains("not verified");
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("booking is refused before any carrier call: no invented fare, no orphan consignment (D-121)")
+    void createOrder_refusedWithoutHttp() {
+        assertThatThrownBy(() -> client.createOrder(bookingRequest()))
+                .isInstanceOf(DeliveryProviderException.class)
+                .hasMessageContaining("not verified");
+        server.verify();
     }
 }

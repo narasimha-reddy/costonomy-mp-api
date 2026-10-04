@@ -75,15 +75,55 @@ public class SettlementDirectory {
      * the first sign that a capture failed silently or a refund went unaccounted.
      */
     public BigDecimal capturedFor(List<Long> orderIds) {
+        return collectedFor(orderIds);
+    }
+
+    /**
+     * What the buyers actually paid for these orders, counted the way each order was funded:
+     * card orders from the payment table (captured minus refunded), wallet orders from the
+     * wallet ledger (debits minus credits), credit orders from the invoice. Counting only
+     * the payment table would call every wallet and credit order a mismatch.
+     */
+    public BigDecimal collectedFor(List<Long> orderIds) {
         if (orderIds.isEmpty()) {
             return BigDecimal.ZERO;
         }
-        String placeholders = String.join(",", java.util.Collections.nCopies(orderIds.size(), "?"));
-        var captured = jdbc.queryForObject("""
-                select coalesce(sum(captured_amount - refunded_amount), 0)
-                  from payment where supplier_order_id in (%s)
-                """.formatted(placeholders), BigDecimal.class, orderIds.toArray());
-        return captured == null ? BigDecimal.ZERO : captured;
+        String in = String.join(",", java.util.Collections.nCopies(orderIds.size(), "?"));
+        Object[] args = orderIds.toArray();
+        BigDecimal card = sum("""
+                select sum(p.captured_amount - p.refunded_amount)
+                  from payment p join supplier_order so on so.id = p.supplier_order_id
+                 where so.payment_method = 'PREPAID' and so.id in (%s)
+                """.formatted(in), args);
+        BigDecimal wallet = sum("""
+                select sum(case when t.direction = 'DEBIT' then t.amount else -t.amount end)
+                  from wallet_transaction t join supplier_order so on so.id = t.supplier_order_id
+                 where so.payment_method = 'WALLET' and so.id in (%s)
+                """.formatted(in), args);
+        BigDecimal credit = sum("""
+                select sum(i.amount)
+                  from credit_invoice i join supplier_order so on so.id = i.supplier_order_id
+                 where so.payment_method = 'CREDIT' and so.id in (%s)
+                """.formatted(in), args);
+        return card.add(wallet).add(credit);
+    }
+
+    /**
+     * Refunds already taken out of this settlement as REFUND debit lines (D-104). The restaurant got
+     * that money back and the payout is lower by exactly it, so collected is expected to be lower
+     * than gross by the same amount; anything beyond it is unaccounted.
+     */
+    public BigDecimal refundsDeductedFrom(Long settlementId) {
+        var total = jdbc.queryForObject("""
+                select sum(amount) from settlement_adjustment
+                 where settlement_id = ? and direction = 'DEBIT' and reason_code = 'REFUND'
+                """, BigDecimal.class, settlementId);
+        return total == null ? BigDecimal.ZERO : total;
+    }
+
+    private BigDecimal sum(String sql, Object[] args) {
+        var value = jdbc.queryForObject(sql, BigDecimal.class, args);
+        return value == null ? BigDecimal.ZERO : value;
     }
 
     /**

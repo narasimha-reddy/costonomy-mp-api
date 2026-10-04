@@ -87,94 +87,10 @@ public class BlowhornApiClient {
             return DeliveryProvider.Quote.unserviceable("Blowhorn provider API key not configured");
         }
 
-        Double distanceKm = Serviceability.distanceKm(
-                request.pickupLatitude(), request.pickupLongitude(),
-                request.dropLatitude(), request.dropLongitude());
-
-        if (distanceKm == null) {
-            return DeliveryProvider.Quote.unserviceable("No valid coordinates provided for Blowhorn quote");
-        }
-
-        if (distanceKm > 30.0) {
-            return DeliveryProvider.Quote.unserviceable(
-                    "Exceeds 30 km intra-city radius limit (%.1f km)".formatted(distanceKm));
-        }
-
-        if (request.pickupLatitude() == null || request.pickupLongitude() == null
-                || request.dropLatitude() == null || request.dropLongitude() == null) {
-            return DeliveryProvider.Quote.unserviceable("Missing coordinates for Blowhorn serviceability check");
-        }
-
-        String blowhornVehicle = mapVehicleType(request.vehicleType());
-        BigDecimal weightKg = request.weightKg() != null ? request.weightKg() : BigDecimal.valueOf(2.0);
-
-        var payload = new LinkedHashMap<String, Object>();
-        payload.put("pickup_latitude", request.pickupLatitude());
-        payload.put("pickup_longitude", request.pickupLongitude());
-        payload.put("delivery_latitude", request.dropLatitude());
-        payload.put("delivery_longitude", request.dropLongitude());
-        payload.put("pickup_address", request.pickupAddress() != null ? request.pickupAddress() : "Pickup Point");
-        payload.put("delivery_address", request.dropAddress() != null ? request.dropAddress() : "Delivery Point");
-        payload.put("weight_kg", weightKg);
-        payload.put("vehicle_type", blowhornVehicle);
-
-        try {
-            var entity = new HttpEntity<>(payload, headers());
-            String url = properties.getBaseUrl() + "/v1/serviceability";
-            var response = restTemplate.postForEntity(url, entity, JsonNode.class);
-
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                return DeliveryProvider.Quote.unserviceable("Blowhorn serviceability returned empty body");
-            }
-
-            var body = response.getBody();
-            boolean isServiceable = body.path("serviceable").asBoolean(true);
-            if (!isServiceable) {
-                String reason = body.has("reason") ? body.path("reason").asText() : "Blowhorn serviceability check declined route";
-                return DeliveryProvider.Quote.unserviceable(reason);
-            }
-
-            var fareNode = body.path("fare");
-            BigDecimal amount = null;
-            String currency = "INR";
-
-            if (fareNode.has("amount") && !fareNode.path("amount").isNull()) {
-                amount = BigDecimal.valueOf(fareNode.path("amount").asDouble()).setScale(2, RoundingMode.HALF_UP);
-                if (fareNode.has("currency")) {
-                    currency = fareNode.path("currency").asText("INR");
-                }
-            } else if (body.has("estimated_fare") && !body.path("estimated_fare").isNull()) {
-                amount = BigDecimal.valueOf(body.path("estimated_fare").asDouble()).setScale(2, RoundingMode.HALF_UP);
-            } else if (body.has("price") && !body.path("price").isNull()) {
-                amount = BigDecimal.valueOf(body.path("price").asDouble()).setScale(2, RoundingMode.HALF_UP);
-            }
-
-            if (amount == null) {
-                throw new BlowhornContractException("Blowhorn serviceability response missing fare value");
-            }
-
-            int etaMinutes = body.path("estimated_delivery_time_minutes").asInt(45);
-            Double reportedKm = body.has("distance_km") ? body.path("distance_km").asDouble() : distanceKm;
-
-            return new DeliveryProvider.Quote(
-                    "bh_q_" + UUID.randomUUID(),
-                    true,
-                    amount,
-                    currency,
-                    etaMinutes,
-                    reportedKm,
-                    Instant.now().plusSeconds(600),
-                    null,
-                    request.vehicleType()
-            );
-
-        } catch (HttpStatusCodeException ex) {
-            log.warn("Blowhorn checkServiceability HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("BLOWHORN", "Blowhorn serviceability returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.warn("Blowhorn checkServiceability network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("BLOWHORN", "Blowhorn serviceability timeout", true);
-        }
+        // No HTTP call: Blowhorn's fare field has not been verified against a live response, and a
+        // guessed or rate-card price is not a quote. A decline is honest (D-121).
+        return DeliveryProvider.Quote.unserviceable(
+                "Blowhorn fare contract not verified against a live response; a rate card is not a quote (D-121)");
     }
 
     // ── book ───────────────────────────────────────────────────────────────
@@ -186,86 +102,11 @@ public class BlowhornApiClient {
             throw new DeliveryProviderException("BLOWHORN", "Blowhorn credentials not configured for booking", false);
         }
 
-        if (request.pickupAddress() == null || request.pickupAddress().isBlank()) {
-            throw invalid("pickup address");
-        }
-        if (request.dropAddress() == null || request.dropAddress().isBlank()) {
-            throw invalid("drop address");
-        }
-        if (request.pickupLatitude() == null || request.pickupLongitude() == null) {
-            throw invalid("pickup coordinates");
-        }
-        if (request.dropLatitude() == null || request.dropLongitude() == null) {
-            throw invalid("drop coordinates");
-        }
-        if (request.dropContactName() == null || request.dropContactName().isBlank()) {
-            throw invalid("drop contact name");
-        }
-
-        String pickupPhone = requirePhone("pickup contact phone", request.pickupContactPhone());
-        String dropPhone = requirePhone("drop contact phone", request.dropContactPhone());
-        BigDecimal goodsValue = request.goodsValue() != null ? request.goodsValue() : new BigDecimal("500.00");
-        String vehicle = mapVehicleType(request.vehicleType());
-
-        var payload = new LinkedHashMap<String, Object>();
-        payload.put("reference_number", request.idempotencyKey());
-        payload.put("vehicle_type", vehicle);
-        payload.put("goods_value", goodsValue);
-        payload.put("pickup_point", Map.of(
-                "name", request.pickupContactName() != null ? request.pickupContactName() : "Store Desk",
-                "phone", pickupPhone,
-                "address", request.pickupAddress(),
-                "latitude", request.pickupLatitude(),
-                "longitude", request.pickupLongitude()
-        ));
-        payload.put("delivery_point", Map.of(
-                "name", request.dropContactName(),
-                "phone", dropPhone,
-                "address", request.dropAddress(),
-                "latitude", request.dropLatitude(),
-                "longitude", request.dropLongitude()
-        ));
-        payload.put("weight_kg", request.weightKg() != null ? request.weightKg() : BigDecimal.valueOf(2.0));
-
-        try {
-            var entity = new HttpEntity<>(payload, headers());
-            String url = properties.getBaseUrl() + "/v1/orders";
-            var response = restTemplate.postForEntity(url, entity, JsonNode.class);
-
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                throw new DeliveryProviderException("BLOWHORN", "Blowhorn create-order returned no body", true);
-            }
-
-            var body = response.getBody();
-            String providerOrderId = body.has("awb_number") && !body.path("awb_number").isNull()
-                    ? body.path("awb_number").asText()
-                    : body.path("order_id").asText(request.idempotencyKey());
-
-            BigDecimal amount = goodsValue;
-            if (body.has("fare") && body.path("fare").has("amount")) {
-                amount = BigDecimal.valueOf(body.path("fare").path("amount").asDouble());
-            } else if (body.has("total_amount")) {
-                amount = BigDecimal.valueOf(body.path("total_amount").asDouble());
-            }
-
-            int etaMinutes = body.path("estimated_delivery_time_minutes").asInt(45);
-
-            return new DeliveryProvider.Booking(
-                    providerOrderId,
-                    amount,
-                    "INR",
-                    etaMinutes,
-                    Instant.now().plusSeconds(etaMinutes * 60L),
-                    "https://blowhorn.com/track/" + providerOrderId
-            );
-
-        } catch (HttpStatusCodeException ex) {
-            log.warn("Blowhorn createOrder HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("BLOWHORN", "Blowhorn create-order returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.warn("Blowhorn createOrder network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("BLOWHORN", "Blowhorn create-order timeout", true);
-        }
+        // Refuses before any network call: failing after the carrier accepted an order would leave
+        // a live consignment nobody owns, and Booking.amount must be a verified fare (D-121).
+        throw new BlowhornContractException(
+                "Blowhorn booking fare is not verified; refusing to book without a carrier fare "
+                        + "- a rate card is not a quote (D-121)");
     }
 
     // ── status ─────────────────────────────────────────────────────────────

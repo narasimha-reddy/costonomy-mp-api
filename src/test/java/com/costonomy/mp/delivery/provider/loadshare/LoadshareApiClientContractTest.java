@@ -90,141 +90,6 @@ class LoadshareApiClientContractTest {
     }
 
     @Test
-    @DisplayName("calculates quote returning real carrier fare from checkServiceability")
-    void calculateQuote_success() throws Exception {
-        String serviceabilityJson = """
-                {
-                  "serviceable": true,
-                  "fare": {
-                    "value": 48.50,
-                    "unit": "INR"
-                  },
-                  "promisedSlaInEpoch": {
-                    "total": %d
-                  },
-                  "predictedDistanceInMetre": 4800
-                }
-                """.formatted(System.currentTimeMillis() + 1800000L);
-
-        String expectedCheckOrderId = "chk-101";
-
-        server.expect(requestTo(BASE_URL + "/hyperlocal/v2/order/checkServiceability"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("Customer-Code", CUSTOMER_CODE))
-                .andExpect(header("Checksum", expectedChecksum(expectedCheckOrderId)))
-                .andExpect(jsonPath("$.orderId").value(expectedCheckOrderId))
-                .andExpect(jsonPath("$.tasks[0].type").value("PICK_UP"))
-                .andExpect(jsonPath("$.tasks[1].type").value("DROP"))
-                .andRespond(withSuccess(serviceabilityJson, MediaType.APPLICATION_JSON));
-
-        var quote = client.calculateQuote(quoteRequest());
-
-        assertThat(quote.serviceable()).isTrue();
-        assertThat(quote.amount()).isEqualByComparingTo("48.50");
-        assertThat(quote.currency()).isEqualTo("INR");
-        assertThat(quote.distanceKm()).isEqualTo(4.8);
-        assertThat(quote.providerQuoteId()).startsWith("ls_q_");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit (D-120)")
-    void calculateQuote_exceeds30Km() {
-        var longRouteRequest = new DeliveryProvider.QuoteRequest(
-                101L,
-                new BigDecimal("12.9716"), new BigDecimal("77.5946"),
-                new BigDecimal("12.7409"), new BigDecimal("77.8253"),
-                new BigDecimal("500.00"), new BigDecimal("2500"), 45,
-                "Indiranagar, Bengaluru, 560038",
-                "Hosur, 635109");
-
-        var quote = client.calculateQuote(longRouteRequest);
-
-        assertThat(quote.serviceable()).isFalse();
-        assertThat(quote.declineReason()).contains("Exceeds 30 km intra-city radius limit");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("declines quote when LoadShare checkServiceability returns serviceable=false")
-    void calculateQuote_unserviceableFromCarrier() throws Exception {
-        String unserviceableJson = """
-                {
-                  "serviceable": false,
-                  "reason": "No rider available in area"
-                }
-                """;
-
-        String expectedCheckOrderId = "chk-101";
-
-        server.expect(requestTo(BASE_URL + "/hyperlocal/v2/order/checkServiceability"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("Customer-Code", CUSTOMER_CODE))
-                .andExpect(header("Checksum", expectedChecksum(expectedCheckOrderId)))
-                .andRespond(withSuccess(unserviceableJson, MediaType.APPLICATION_JSON));
-
-        var quote = client.calculateQuote(quoteRequest());
-
-        assertThat(quote.serviceable()).isFalse();
-        assertThat(quote.declineReason()).contains("declined route");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("throws LoadshareContractException when checkServiceability response is missing fare")
-    void calculateQuote_missingFareThrowsContractException() throws Exception {
-        String noFareJson = """
-                {
-                  "serviceable": true
-                }
-                """;
-
-        String expectedCheckOrderId = "chk-101";
-
-        server.expect(requestTo(BASE_URL + "/hyperlocal/v2/order/checkServiceability"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("Customer-Code", CUSTOMER_CODE))
-                .andExpect(header("Checksum", expectedChecksum(expectedCheckOrderId)))
-                .andRespond(withSuccess(noFareJson, MediaType.APPLICATION_JSON));
-
-        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
-                .isInstanceOf(LoadshareContractException.class)
-                .hasMessageContaining("missing fare value");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("creates order with LoadShare and returns Booking")
-    void createOrder_success() throws Exception {
-        String createResponseJson = """
-                {
-                  "orderId": "LS-ORDER-9999",
-                  "fare": {
-                    "value": 48.50
-                  }
-                }
-                """;
-
-        String expectedOrderId = "mp-ls-101";
-
-        server.expect(requestTo(BASE_URL + "/hyperlocal/v2/order"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("Customer-Code", CUSTOMER_CODE))
-                .andExpect(header("Checksum", expectedChecksum(expectedOrderId)))
-                .andExpect(jsonPath("$.orderId").value(expectedOrderId))
-                .andExpect(jsonPath("$.tasks[0].address.phoneNumber").value("+919876500000"))
-                .andExpect(jsonPath("$.tasks[1].address.phoneNumber").value("+919876511111"))
-                .andRespond(withSuccess(createResponseJson, MediaType.APPLICATION_JSON));
-
-        var booking = client.createOrder(bookingRequest());
-
-        assertThat(booking.providerDeliveryId()).isEqualTo("LS-ORDER-9999");
-        assertThat(booking.amount()).isEqualByComparingTo("48.50");
-        assertThat(booking.trackingUrl()).contains("LS-ORDER-9999");
-        server.verify();
-    }
-
-    @Test
     @DisplayName("polls tracking status and maps current status and status history events")
     void getStatus_success() throws Exception {
         String trackingJson = """
@@ -344,23 +209,6 @@ class LoadshareApiClientContractTest {
     }
 
     @Test
-    @DisplayName("throws retryable DeliveryProviderException on server 500 error")
-    void serverError_throwsRetryableException() throws Exception {
-        String expectedCheckOrderId = "chk-101";
-
-        server.expect(requestTo(BASE_URL + "/hyperlocal/v2/order/checkServiceability"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("Customer-Code", CUSTOMER_CODE))
-                .andExpect(header("Checksum", expectedChecksum(expectedCheckOrderId)))
-                .andRespond(withServerError());
-
-        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
-                .isInstanceOf(DeliveryProviderException.class)
-                .satisfies(ex -> assertThat(((DeliveryProviderException) ex).retryable()).isTrue());
-        server.verify();
-    }
-
-    @Test
     @DisplayName("throttles calls when rate limit RPS is exhausted")
     void throttlesWhenRateLimitExceeded() {
         properties.setRateLimitRps(0); // Immediately exhausted
@@ -372,5 +220,25 @@ class LoadshareApiClientContractTest {
                 .isInstanceOf(DeliveryProviderException.class)
                 .hasMessageContaining("rate limit exceeded")
                 .satisfies(ex -> assertThat(((DeliveryProviderException) ex).retryable()).isTrue());
+    }
+
+    @Test
+    @DisplayName("quote is declined without any carrier call: the fare contract is unverified (D-121)")
+    void calculateQuote_failsClosedWithoutHttp() {
+        var quote = client.calculateQuote(quoteRequest());
+
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.amount()).isNull();
+        assertThat(quote.declineReason()).contains("not verified");
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("booking is refused before any carrier call: no invented fare, no orphan consignment (D-121)")
+    void createOrder_refusedWithoutHttp() {
+        assertThatThrownBy(() -> client.createOrder(bookingRequest()))
+                .isInstanceOf(DeliveryProviderException.class)
+                .hasMessageContaining("not verified");
+        server.verify();
     }
 }

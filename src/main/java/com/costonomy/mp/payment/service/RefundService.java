@@ -112,7 +112,26 @@ public class RefundService {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "Enter an amount greater than zero.");
         }
-        return toWallet(actorId, paymentId, amount, reason, note, idempotencyKey);
+        return toWallet(actorId, paymentId, amount, reason, note, idempotencyKey, false);
+    }
+
+    /**
+     * As {@link #refundToWallet}, except that a payment still being captured is not an error (D-129).
+     *
+     * <p>The money exists but has not been taken, so there is nothing to give back yet. Returns {@code null}
+     * and writes nothing; the caller records the reduction as waiting for the capture and tries again once the
+     * payment is captured. A payment in any other state that cannot be refunded still throws, as before.
+     *
+     * @return the refund, or null while the payment's capture is pending
+     */
+    @Transactional
+    public Refund refundToWalletOnceCaptured(Long actorId, Long paymentId, BigDecimal amount,
+                                             RefundReason reason, String note, String idempotencyKey) {
+        if (amount == null || amount.signum() <= 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Enter an amount greater than zero.");
+        }
+        return toWallet(actorId, paymentId, amount, reason, note, idempotencyKey, true);
     }
 
     /**
@@ -125,12 +144,13 @@ public class RefundService {
     @Transactional
     public Refund refundCancelled(Payment payment, String note) {
         return toWallet(null, payment.getId(), null, RefundReason.CANCELLATION, note,
-                "cancel-order-" + payment.getSupplierOrderId());
+                "cancel-order-" + payment.getSupplierOrderId(), false);
     }
 
     /** @param amount what to refund, or null for everything still refundable */
     private Refund toWallet(Long actorId, Long paymentId, BigDecimal amount,
-                            RefundReason reason, String note, String idempotencyKey) {
+                            RefundReason reason, String note, String idempotencyKey,
+                            boolean deferWhileCapturePending) {
         var existing = refunds.findByIdempotencyKey(idempotencyKey);
         if (existing.isPresent()) {
             if (!existing.get().getPaymentId().equals(paymentId)) {
@@ -155,6 +175,11 @@ public class RefundService {
         if (payment.getStatus() != PaymentStatus.CAPTURED
                 && payment.getStatus() != PaymentStatus.PARTIALLY_REFUNDED) {
             if (amount == null) {
+                return null;
+            }
+            // Decided after both locks, on the state they protect: a capture that finishes between a caller's
+            // read and this point is then seen as captured, not deferred.
+            if (deferWhileCapturePending && payment.getStatus() == PaymentStatus.CAPTURE_PENDING) {
                 return null;
             }
             // Money merely held is released, not refunded.

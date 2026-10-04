@@ -39,17 +39,38 @@ public class JwtService {
     private final String issuer;
     private final Duration accessTokenTtl;
 
+    /**
+     * The service Spring builds. A blank secret is acceptable only under the local profile, where a
+     * fresh key per start means nothing secret is committed and tokens simply stop working on restart;
+     * under any other profile it fails to start, like a short one.
+     */
+    @org.springframework.beans.factory.annotation.Autowired
     public JwtService(
-            @Value("${costonomy.mp.jwt.secret}") String secret,
+            @Value("${costonomy.mp.jwt.secret:}") String secret,
             @Value("${costonomy.mp.jwt.issuer:costonomy-mp}") String issuer,
-            @Value("${costonomy.mp.jwt.access-token-ttl:15m}") Duration accessTokenTtl) {
+            @Value("${costonomy.mp.jwt.access-token-ttl:15m}") Duration accessTokenTtl,
+            org.springframework.core.env.Environment environment) {
+        this(secret.isBlank() && environment.acceptsProfiles(
+                        org.springframework.core.env.Profiles.of("local"))
+                ? randomLocalSecret() : secret,
+                issuer, accessTokenTtl);
+    }
+
+    private static String randomLocalSecret() {
+        byte[] bytes = new byte[32];
+        new java.security.SecureRandom().nextBytes(bytes);
+        return java.util.Base64.getEncoder().encodeToString(bytes);
+    }
+
+    public JwtService(String secret, String issuer, Duration accessTokenTtl) {
 
         byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
         if (keyBytes.length < 32) {
             // Fail at startup rather than signing with a weak key. HS256 needs
             // at least 256 bits; a shorter secret is a forgeable token.
             throw new IllegalStateException(
-                    "costonomy.mp.jwt.secret must be at least 32 bytes for HS256");
+                    "costonomy.mp.jwt.secret must be at least 32 bytes for HS256 "
+                            + "(set JWT_SECRET; only the local profile generates one)");
         }
         this.key = Keys.hmacShaKeyFor(keyBytes);
         this.issuer = issuer;

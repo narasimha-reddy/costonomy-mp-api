@@ -50,6 +50,7 @@ public class SupplierOrderTransitions {
     private final com.costonomy.mp.procurement.repository.SupplierOrderItemRepository orderItems;
     private final SupplierOrderMapper mapper;
     private final OrderFunding funding;
+    private final OrderAdjustmentService adjustments;
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
@@ -128,11 +129,9 @@ public class SupplierOrderTransitions {
             // The money is taken here, not at confirmation (D-103): from READY an
             // order can no longer be cancelled, so a cancellation before it only
             // ever drops a hold, and the two can never race.
-            // Settled to what the buyer finally owes (D-128): the accepted amount less any catch-weight
-            // shortfall, and the same figure for card, wallet and credit. Unweighed orders have no
-            // final payable yet, and owe what was accepted.
-            funding.onOrderDispatched(orderId, order.getFinalPayableAmount() != null
-                    ? order.getFinalPayableAmount() : order.getAcceptedAmount());
+            // Settled to what the buyer finally owes, once, and the shortfall recorded as a row (D-128, D-129):
+            // the same figure for card, wallet and credit. Unweighed orders owe what was accepted.
+            adjustments.settleAtReady(order, actorId);
         }
 
         auditService.record(actorId, null, "SUPPLIER_ORDER_" + target.name(), "SUPPLIER_ORDER",

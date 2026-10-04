@@ -602,6 +602,75 @@ class SettlementFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("an order that does not reconcile cannot be approved without an acknowledgement")
+        void approvalRefusedOnMismatch() throws Exception {
+            var order = completedOrder(10, "400");
+            generate();
+            String finance = operator("OPS_FINANCE");
+            long settlementId = settlementFor(order.seller()).get("id").asLong();
+
+            // No reconcile call first: approval checks for itself rather than trusting the last sweep.
+            jdbc.update("update payment set refunded_amount = 500.00 where supplier_order_id = ?",
+                    order.orderId());
+
+            int refused = api.postStatus(finance,
+                    "/api/v1/admin/settlements/" + settlementId + "/approve", Map.of("note", "ok"));
+
+            assertThat(refused).isEqualTo(409);
+            assertThat(jdbc.queryForObject("select status from settlement where id = ?",
+                    String.class, settlementId)).isEqualTo("CALCULATED");
+        }
+
+        @Test
+        @DisplayName("a mismatch can be approved with a written acknowledgement, and it is audited")
+        void approvalWithAcknowledgement() throws Exception {
+            var order = completedOrder(10, "400");
+            generate();
+            String finance = operator("OPS_FINANCE");
+            long settlementId = settlementFor(order.seller()).get("id").asLong();
+            jdbc.update("update payment set refunded_amount = 500.00 where supplier_order_id = ?",
+                    order.orderId());
+
+            var approved = api.post(finance, "/api/v1/admin/settlements/" + settlementId + "/approve",
+                    Map.of("note", "ok", "acknowledgeMismatchNote", "Refund booked offline, ticket 4411"))
+                    .at("/data");
+
+            assertThat(approved.get("status").asText()).isEqualTo("APPROVED");
+            var actions = new java.util.ArrayList<String>();
+            api.get(finance, "/api/v1/admin/audit?entityType=SETTLEMENT&entityId=" + settlementId)
+                    .at("/data").forEach(e -> actions.add(e.get("action").asText()));
+            assertThat(actions).contains("SETTLEMENT_APPROVED_WITH_MISMATCH", "SETTLEMENT_APPROVED");
+        }
+
+        @Test
+        @DisplayName("a wallet-paid order reconciles against the wallet ledger, not the payment table")
+        void walletOrderReconciles() throws Exception {
+            var order = completedOrder(10, "400");
+            generate();
+            String finance = operator("OPS_FINANCE");
+            long settlementId = settlementFor(order.seller()).get("id").asLong();
+
+            // Re-describe the order as wallet-funded: a 4000.00 debit and no payment row counted.
+            jdbc.update("insert ignore into wallet (outlet_id, balance) select outlet_id, 0 from supplier_order where id = ?",
+                    order.orderId());
+            Long walletId = jdbc.queryForObject("""
+                    select w.id from wallet w join supplier_order so on so.outlet_id = w.outlet_id
+                     where so.id = ?""", Long.class, order.orderId());
+            jdbc.update("update supplier_order set payment_method = 'WALLET' where id = ?", order.orderId());
+            jdbc.update("""
+                    insert into wallet_transaction (wallet_id, supplier_order_id, direction, amount,
+                                                    balance_after, reason, kind)
+                    values (?, ?, 'DEBIT', 4000.00, 0, 'test', 'ORDER_PAYMENT')
+                    """, walletId, order.orderId());
+
+            var result = api.post(finance,
+                    "/api/v1/admin/settlements/" + settlementId + "/reconcile", Map.of()).at("/data");
+
+            assertThat(result.get("matched").asBoolean()).isTrue();
+            assertThat(result.get("capturedGross").asDouble()).isEqualTo(4000.00);
+        }
+
+        @Test
         @DisplayName("reconciling repeatedly gives the same answer")
         void reconciliationIsIdempotent() throws Exception {
             var order = completedOrder(10, "400");

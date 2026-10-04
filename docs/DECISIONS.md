@@ -5805,3 +5805,26 @@ After ready, 0.1 kg of the 9.6 kg found missing at the door: Rs 10.50 less (10.0
 - **Subscriptions, tax invoices, and the mobile app** are separate follow-ups. Subscription order lines do not yet carry the catch-weight flag at creation (V67 backfills existing ones).
 - **Orders weighed under the old code and not yet ready** already carry a wallet adjustment and would also get a reduced capture. Before deploying, check `select supplier_order_id, direction, sum(amount) from wallet_transaction where kind = 'ORDER_ADJUSTMENT' group by 1, 2` against orders not yet COMPLETED or CANCELLED.
 - A legacy `ORDER_ADJUSTMENT` debit (the old over-weight surcharge) now raises what the wallet can give back for that order, and a credit lowers it; both are counted by direction.
+
+## D-129 — Post-dispatch reductions are order adjustments, applied through the funding port
+
+After READY money only goes down. Each reduction is one `order_adjustment` row (V68), unique per order and reason (`WEIGHT_SETTLEMENT`, `DOORSTEP_REJECTION`), carrying an idempotency key, the funding method and the funding reference.
+
+1. **Weight shortfall** is settled at READY by `OrderAdjustmentService.settleAtReady` (final payable written and flushed first, then the funding call), recorded as an `APPLIED` row when there is a shortfall.
+2. **Doorstep rejection** (`recordDoorstepRejection`) runs under the order lock, is idempotent by existing row, and computes the new final payable as accepted minus all adjustment rows minus the new amount. Receiving takes the order lock first.
+3. **Card orders whose capture is still pending** cannot be refunded yet. The row is written `PENDING_CAPTURE`, the order's final payable is already reduced, and `OrderAdjustmentJobs.applyPendingCaptures` (15 s, ShedLock) applies it once the capture lands. A refused capture keeps the row pending and alerts hourly. A pending refund does not block settlement approval.
+4. Costonomy never funds a refund: the supplier bears it through the lower final payable. Card refunds go to the wallet's withdrawable balance (D-104); wallet orders are credited back; credit invoices are reduced (`CREDIT_INVOICE_REPAID_BEYOND_CORRECTION` audit when the invoice was already paid past the new figure).
+5. V68 backfills final payable for READY+ orders and one row per existing weight shortfall and doorstep refund.
+
+## D-130 — Reconciliation counts collected money per funding method; approval re-checks
+
+`SettlementDirectory.collectedFor` sums card orders from `payment` (captured minus refunded), wallet orders from `wallet_transaction` (debits minus credits) and credit orders from `credit_invoice.amount`, and expects collected to equal gross minus the settlement's own `REFUND` debit lines (`refundsDeductedFrom`): a dispute refund lowers both. Approval reconciles after pending refunds are applied. Counting only `payment` made every wallet or credit order a mismatch.
+
+`SettlementService.approve` re-runs reconciliation inline, in its own transaction, under a settlement row lock (`SettlementRepository.lockById`). If it does not match, approval is refused with 409 `INVALID_STATE_TRANSITION` unless the request carries `acknowledgeMismatchNote`; with it the approval proceeds and `SETTLEMENT_APPROVED_WITH_MISMATCH` is audited. The refusal rolls back, so a refused attempt records nothing; the hourly sweep still records the mismatch. The sweep no longer wraps itself in one transaction.
+
+## D-131 — Unverified carriers fail closed; Pidge keeps working with nothing invented; no committed signing key
+
+1. **Shiprocket, LoadShare, Blowhorn, Delhivery and Xpressbees** behave as Shadowfax and Porter do (D-121): the quote is declined without a carrier call and booking is refused before any HTTP, because none of them has a fare field verified against a live response. A decline is honest; a guessed price is not. Their tracking, location and cancel paths for consignments that already exist are unchanged.
+2. **Pidge** stays live. Its quote and booking no longer default the fare (50.00), ETA, distance, weight, vehicle type, contacts or quote id: a missing response field or an incomplete request is a non-retryable error naming the field. A 30 km radius check is added. Its webhook rejects everything when no secret is configured, and the production guard refuses to start with Pidge enabled and no secret.
+3. **JWT signing key.** The key that was the default in `application.properties` is in repository history and is treated as leaked: the default is removed, the production guard refuses it (and a missing or short key), and `JwtService` generates a fresh key per start only under the `local` profile. Rotate `JWT_SECRET` wherever the old default was ever used.
+

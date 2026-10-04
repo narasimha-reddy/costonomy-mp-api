@@ -52,45 +52,60 @@ public class CreditInvoiceService {
 
     private final CreditLedger ledger;
 
-    /** What {@link #reduceTo} changed. */
-    public record Reduction(Long invoiceId, Long agreementId, BigDecimal reduced) {
+    /**
+     * What {@link #reduceTo} changed.
+     *
+     * @param reduced        how far the invoice came down
+     * @param settledOutside this adjustment's share the invoice could not absorb because it was already repaid
+     */
+    public record Reduction(Long invoiceId, Long agreementId, BigDecimal reduced, BigDecimal settledOutside) {
     }
 
     /**
-     * Bring an order's invoice down to what the order finally comes to (D-128).
+     * Bring an order's invoice down to what the order finally comes to (D-128, D-129).
      *
-     * <p>State-based, so it is naturally idempotent: it reduces by the difference between the invoice's
-     * current amount and the target, and a second call finds no difference. It never raises an invoice, and
-     * never takes it below what has already been repaid: when a restaurant has paid more than the corrected
-     * figure, the rest is a matter between the two parties and is left alone, with a log line.
+     * <p>State-based, so it is naturally idempotent: it reduces by the difference between the invoice's current
+     * amount and the target, and a second call finds no difference. It never raises an invoice, and never takes
+     * it below what has already been repaid. When the restaurant has repaid more than the corrected figure, the
+     * rest is {@code settledOutside}: money the supplier owes back directly, outside Mandi. It is this
+     * adjustment's own share of the difference, never the cumulative one, and it is audited.
      *
-     * @return what was reduced, or null when there is no invoice or nothing to reduce
+     * <p>The invoice is locked first, so a repayment recorded at the same moment queues behind the reduction
+     * instead of failing on the version check.
+     *
+     * @param adjustmentAmount how much this adjustment takes off the order, so the outside share is its own
+     * @return the reduction, or null when the order has no invoice
      */
     @Transactional
-    public Reduction reduceTo(Long supplierOrderId, BigDecimal finalPayable) {
-        var invoice = invoices.findBySupplierOrderId(supplierOrderId).orElse(null);
+    public Reduction reduceTo(Long supplierOrderId, BigDecimal finalPayable, BigDecimal adjustmentAmount) {
+        var invoice = invoices.lockBySupplierOrderId(supplierOrderId).orElse(null);
         if (invoice == null) {
             return null;
         }
         BigDecimal difference = invoice.getAmount().subtract(finalPayable);
         if (difference.signum() <= 0) {
-            return null;
+            return new Reduction(invoice.getId(), invoice.getCreditAgreementId(), BigDecimal.ZERO, BigDecimal.ZERO);
         }
         BigDecimal reduced = difference.min(invoice.outstanding());
-        if (reduced.compareTo(difference) < 0) {
-            log.warn("Invoice {} for order {} can come down by only {} of {}: the rest is already repaid",
-                    invoice.getId(), supplierOrderId, reduced.toPlainString(), difference.toPlainString());
+        BigDecimal settledOutside = adjustmentAmount.subtract(reduced).max(BigDecimal.ZERO).min(adjustmentAmount);
+
+        if (reduced.signum() > 0) {
+            invoice.setAmount(invoice.getAmount().subtract(reduced));
+            if (invoice.outstanding().signum() == 0 && !invoice.getStatus().isSettled()) {
+                invoice.setStatus(CreditInvoiceStatus.PAID);
+                invoice.setSettledAt(Instant.now());
+            }
+            invoices.save(invoice);
         }
-        if (reduced.signum() <= 0) {
-            return null;
+        if (settledOutside.signum() > 0) {
+            log.warn("Invoice {} for order {} cannot come down by {}: already repaid beyond the corrected amount",
+                    invoice.getId(), supplierOrderId, settledOutside.toPlainString());
+            auditService.record(null, null, "CREDIT_INVOICE_REPAID_BEYOND_CORRECTION", "CREDIT_INVOICE",
+                    invoice.getId(), invoice.getAmount().add(reduced).toPlainString(), finalPayable.toPlainString(),
+                    "%s already repaid beyond the corrected amount for order %d; settled directly between the restaurant and the supplier"
+                            .formatted(settledOutside.toPlainString(), supplierOrderId), "SYSTEM");
         }
-        invoice.setAmount(invoice.getAmount().subtract(reduced));
-        if (invoice.outstanding().signum() == 0 && !invoice.getStatus().isSettled()) {
-            invoice.setStatus(CreditInvoiceStatus.PAID);
-            invoice.setSettledAt(Instant.now());
-        }
-        invoices.save(invoice);
-        return new Reduction(invoice.getId(), invoice.getCreditAgreementId(), reduced);
+        return new Reduction(invoice.getId(), invoice.getCreditAgreementId(), reduced, settledOutside);
     }
 
     /** Raise the invoice for a drawn-down order. */
@@ -159,7 +174,7 @@ public class CreditInvoiceService {
             return toResponse(duplicate);
         }
 
-        var invoice = invoices.findById(invoiceId)
+        var invoice = invoices.lockById(invoiceId)
                 .orElseThrow(() -> new NotFoundException("CreditInvoice", invoiceId));
 
         // **The supplier records this, not the restaurant.** The money moved

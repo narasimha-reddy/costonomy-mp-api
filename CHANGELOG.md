@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [phase1/money-path-and-carriers] - Order adjustments and reconciliation (D-129, D-130)
+
+### Fixed
+- Wallet and credit orders no longer reconcile as mismatches against settlement: collected money is counted per funding method.
+- Settlement approval re-reconciles and refuses (409) a mismatch unless `acknowledgeMismatchNote` is supplied; the override is audited.
+- A doorstep rejection on a card order whose capture is pending no longer fails; it is recorded and applied when the capture lands.
+
+- Shiprocket, LoadShare, Blowhorn, Delhivery and Xpressbees decline quotes and refuse bookings until their fares are verified (D-131).
+- Pidge no longer invents fares, ETAs, weights, vehicle types or contacts; its webhook fails closed without a secret.
+- The JWT signing key is no longer committed as a default; production refuses the old key.
+
+### Added
+- `order_adjustment` (V68), `OrderAdjustmentService`/`OrderAdjustmentJobs`, `OrderFundingPort.Reduction`, `refundStatus` on the receiving response, `SettlementRepository.lockById`.
+
+---
+
 ## [fix/d124-catchweight-settle-at-dispatch] - Catch-weight settles at dispatch (D-128)
 
 ### Fixed

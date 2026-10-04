@@ -108,12 +108,16 @@ public class OrderFundingAdapter implements OrderFundingPort {
 
     @Override
     @Transactional
-    public void onOrderDispatched(Long supplierOrderId, BigDecimal amount) {
+    public Reduction onOrderDispatched(Long supplierOrderId, BigDecimal finalPayable, BigDecimal reductionAmount) {
         // Marks only. The provider call happens after this transaction commits —
         // see PaymentService.markForCapture for why that separation matters.
         try (var trace = TraceScope.of("order", supplierOrderId)) {
-            paymentService.markForCapture(supplierOrderId, amount);
+            paymentService.markForCapture(supplierOrderId, finalPayable);
         }
+        // Whatever was held beyond the final payable is released by the capture, never refunded, so a weight
+        // shortfall is already settled here (D-128).
+        return Reduction.applied(payments.findBySupplierOrderId(supplierOrderId)
+                .map(payment -> "payment:" + payment.getId()).orElse(null));
     }
 
     @Override
@@ -273,20 +277,25 @@ public class OrderFundingAdapter implements OrderFundingPort {
     }
 
     /**
-     * A doorstep rejection on a captured card payment (D-128): a refund to the wallet, withdrawable (D-104),
-     * keyed so a repeat refunds nothing more. A payment still being collected cannot be refunded yet and the
-     * refund service says so with a retryable conflict; nothing is written in that case.
+     * A doorstep rejection on a card payment (D-128, D-129): a refund to the wallet, withdrawable (D-104),
+     * keyed so a repeat refunds nothing more.
+     *
+     * <p>While the payment is still being captured there is nothing to give back yet, so this returns
+     * {@code DEFERRED} and writes nothing. The final payable is already reduced; the order adjustment job applies
+     * the refund once the payment is captured. Shrinking the pending capture instead would race the capture job,
+     * which reads the amount without a lock and calls the provider outside any transaction.
      */
     @Override
     @Transactional
-    public void reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
-                                    String key, Long actorId, String reason) {
+    public Reduction reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
+                                         String key, Long actorId, String reason) {
         var payment = payments.findBySupplierOrderId(supplierOrderId)
                 .orElseThrow(() -> new com.costonomy.mp.common.error.BusinessException(
                         com.costonomy.mp.common.error.ErrorCode.PAYMENT_STATE_CONFLICT,
                         "This order has no payment to refund."));
-        refundService.refundToWallet(actorId, payment.getId(), amount, RefundReason.DOORSTEP_REJECTION,
-                reason, key);
+        var refund = refundService.refundToWalletOnceCaptured(actorId, payment.getId(), amount,
+                RefundReason.DOORSTEP_REJECTION, reason, key);
+        return refund == null ? Reduction.deferred() : Reduction.applied("refund:" + refund.getId());
     }
 
     /**

@@ -53,7 +53,12 @@ public final class TrustDtos {
             String creditNoteNumber,
             String notes,
             Instant receivedAt,
-            List<ReceivingItemResponse> items) {
+            List<ReceivingItemResponse> items,
+            /**
+             * Where the doorstep refund stands: {@code APPLIED}, or {@code PENDING_CAPTURE} while a card payment
+             * is still being captured and the refund waits for it (D-129). Null when nothing was rejected.
+             */
+            String refundStatus) {
     }
 
     public record ReceivingItemResponse(

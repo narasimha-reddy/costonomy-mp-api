@@ -17,7 +17,7 @@ import com.costonomy.mp.trust.repository.ReceivingItemRepository;
 import com.costonomy.mp.trust.repository.ReceivingRepository;
 import com.costonomy.mp.trust.web.dto.TrustDtos;
 import com.costonomy.mp.procurement.domain.Pricing;
-import com.costonomy.mp.procurement.service.OrderFunding;
+import com.costonomy.mp.procurement.service.OrderAdjustmentService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -56,21 +56,23 @@ public class ReceivingService {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
-    private final OrderFunding orderFunding;
+    private final OrderAdjustmentService adjustments;
     private final com.costonomy.mp.billing.service.TaxInvoiceService taxInvoiceService;
 
     @Transactional
     public TrustDtos.ReceivingResponse receive(Long actorId, Long supplierOrderId,
                                                TrustDtos.ReceiveRequest request) {
 
-        var order = directory.order(supplierOrderId);
+        // The order is locked before anything else is read (D-129): a duplicate check-in, however it got a different
+        // idempotency key, queues here and then finds the first one's receiving below.
+        var order = directory.orderForUpdate(supplierOrderId);
         if (order == null) {
             throw new NotFoundException("SupplierOrder", supplierOrderId);
         }
         accessControl.requireScoped(actorId, Permissions.ORDER_RECEIVE,
                 ScopeType.OUTLET, order.outletId(), "SupplierOrder");
 
-        var existing = receivings.findBySupplierOrderId(supplierOrderId).orElse(null);
+        var existing = receivings.lockBySupplierOrderId(supplierOrderId).orElse(null);
         if (existing != null) {
             // A retry of a receiving that already landed. Returning it is the true
             // answer; a second would double every delivered quantity the fill rate
@@ -218,11 +220,11 @@ public class ReceivingService {
         // wallet, and a credit order's invoice comes down.
         String creditNoteNumber = null;
         if (totalRefundAmount.compareTo(BigDecimal.ZERO) > 0) {
-            BigDecimal newFinalPayable = directory.updateOrderFinancialReconciliation(supplierOrderId, totalRefundAmount);
             var creditNote = taxInvoiceService.generateCreditNoteForRejection(supplierOrderId, "DOORSTEP_REJECTION");
             creditNoteNumber = creditNote != null ? creditNote.creditNoteNumber() : null;
-            orderFunding.reduceAfterDispatch(supplierOrderId, totalRefundAmount, newFinalPayable,
-                    "doorstep-" + supplierOrderId, actorId,
+            // Recorded as an adjustment row, with the money returned by the order's funding method (D-129). On a
+            // card whose capture has not finished the refund waits for it and the check-in still completes.
+            adjustments.recordDoorstepRejection(supplierOrderId, totalRefundAmount, actorId,
                     "Doorstep rejection for " + order.orderNumber()
                             + (creditNoteNumber == null ? "" : " (" + creditNoteNumber + ")"));
         }
@@ -307,6 +309,7 @@ public class ReceivingService {
                 receiving.getTotalAcceptedQuantity(), receiving.getTotalReceivedQuantity(),
                 receiving.getTotalDamagedQuantity(), receiving.getTotalMissingQuantity(),
                 Pricing.money(totalRefund), cnNumber,
-                receiving.getNotes(), receiving.getReceivedAt(), items);
+                receiving.getNotes(), receiving.getReceivedAt(), items,
+                totalRefund.signum() > 0 ? adjustments.doorstepStatus(receiving.getSupplierOrderId()).orElse(null) : null);
     }
 }

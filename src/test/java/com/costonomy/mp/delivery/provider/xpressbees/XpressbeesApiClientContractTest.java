@@ -72,125 +72,6 @@ class XpressbeesApiClientContractTest {
     }
 
     @Test
-    @DisplayName("calculates quote returning real carrier fare from Xpressbees serviceability")
-    void calculateQuote_success() {
-        String serviceabilityJson = """
-                {
-                  "status": true,
-                  "data": {
-                    "rate": 68.00,
-                    "estimated_delivery_days": 1
-                  }
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/courier/serviceability"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("Authorization", "Bearer " + TOKEN))
-                .andExpect(jsonPath("$.origin").value("560038"))
-                .andExpect(jsonPath("$.destination").value("560034"))
-                .andRespond(withSuccess(serviceabilityJson, MediaType.APPLICATION_JSON));
-
-        var quote = client.calculateQuote(quoteRequest());
-
-        assertThat(quote.serviceable()).isTrue();
-        assertThat(quote.amount()).isEqualByComparingTo("68.00");
-        assertThat(quote.currency()).isEqualTo("INR");
-        assertThat(quote.distanceKm()).isNotNull();
-        assertThat(quote.providerQuoteId()).startsWith("xb_q_");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit (D-120)")
-    void calculateQuote_exceeds30Km() {
-        var longRouteRequest = new DeliveryProvider.QuoteRequest(
-                101L,
-                new BigDecimal("12.9716"), new BigDecimal("77.5946"),
-                new BigDecimal("12.7409"), new BigDecimal("77.8253"),
-                new BigDecimal("500.00"), new BigDecimal("2500"), 45,
-                "Indiranagar, Bengaluru, 560038",
-                "Hosur, 635109");
-
-        var quote = client.calculateQuote(longRouteRequest);
-
-        assertThat(quote.serviceable()).isFalse();
-        assertThat(quote.declineReason()).contains("Exceeds 30 km intra-city radius limit");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("declines quote when address has no 6-digit pincode")
-    void calculateQuote_missingPincode() {
-        var noPincodeRequest = new DeliveryProvider.QuoteRequest(
-                101L,
-                new BigDecimal("12.9716"), new BigDecimal("77.5946"),
-                new BigDecimal("12.9352"), new BigDecimal("77.6245"),
-                new BigDecimal("500.00"), new BigDecimal("2500"), 45,
-                "Indiranagar without pin",
-                "Koramangala without pin");
-
-        var quote = client.calculateQuote(noPincodeRequest);
-
-        assertThat(quote.serviceable()).isFalse();
-        assertThat(quote.declineReason()).contains("needs a pickup and drop pincode");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("throws XpressbeesContractException when serviceability response is missing rate/fare")
-    void calculateQuote_missingFareThrowsContractException() {
-        String noFareJson = """
-                {
-                  "status": true,
-                  "data": {
-                    "is_serviceable": true
-                  }
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/courier/serviceability"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("Authorization", "Bearer " + TOKEN))
-                .andRespond(withSuccess(noFareJson, MediaType.APPLICATION_JSON));
-
-        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
-                .isInstanceOf(XpressbeesContractException.class)
-                .hasMessageContaining("missing fare");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("creates order with Xpressbees and returns Booking")
-    void createOrder_success() {
-        String createResponseJson = """
-                {
-                  "status": true,
-                  "data": {
-                    "awb_number": "XB-AWB-887766",
-                    "rate": 68.00
-                  }
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/shipments/create"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("Authorization", "Bearer " + TOKEN))
-                .andExpect(jsonPath("$.order_number").value("mp-xb-101"))
-                .andExpect(jsonPath("$.pickup_details.pincode").value("560038"))
-                .andExpect(jsonPath("$.delivery_details.pincode").value("560034"))
-                .andExpect(jsonPath("$.delivery_details.phone").value("+919876511111"))
-                .andRespond(withSuccess(createResponseJson, MediaType.APPLICATION_JSON));
-
-        var booking = client.createOrder(bookingRequest());
-
-        assertThat(booking.providerDeliveryId()).isEqualTo("XB-AWB-887766");
-        assertThat(booking.amount()).isEqualByComparingTo("68.00");
-        assertThat(booking.trackingUrl()).contains("XB-AWB-887766");
-        server.verify();
-    }
-
-    @Test
     @DisplayName("polls tracking status and maps current status and history")
     void getStatus_success() {
         String trackingJson = """
@@ -275,20 +156,6 @@ class XpressbeesApiClientContractTest {
     }
 
     @Test
-    @DisplayName("throws retryable DeliveryProviderException on server 500 error")
-    void serverError_throwsRetryableException() {
-        server.expect(requestTo(BASE_URL + "/v1/courier/serviceability"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("Authorization", "Bearer " + TOKEN))
-                .andRespond(withServerError());
-
-        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
-                .isInstanceOf(DeliveryProviderException.class)
-                .satisfies(ex -> assertThat(((DeliveryProviderException) ex).retryable()).isTrue());
-        server.verify();
-    }
-
-    @Test
     @DisplayName("throttles calls when rate limit RPS is exhausted")
     void throttlesWhenRateLimitExceeded() {
         properties.setRateLimitRps(0);
@@ -300,5 +167,25 @@ class XpressbeesApiClientContractTest {
                 .isInstanceOf(DeliveryProviderException.class)
                 .hasMessageContaining("rate limit exceeded")
                 .satisfies(ex -> assertThat(((DeliveryProviderException) ex).retryable()).isTrue());
+    }
+
+    @Test
+    @DisplayName("quote is declined without any carrier call: the fare contract is unverified (D-121)")
+    void calculateQuote_failsClosedWithoutHttp() {
+        var quote = client.calculateQuote(quoteRequest());
+
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.amount()).isNull();
+        assertThat(quote.declineReason()).contains("not verified");
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("booking is refused before any carrier call: no invented fare, no orphan consignment (D-121)")
+    void createOrder_refusedWithoutHttp() {
+        assertThatThrownBy(() -> client.createOrder(bookingRequest()))
+                .isInstanceOf(DeliveryProviderException.class)
+                .hasMessageContaining("not verified");
+        server.verify();
     }
 }

@@ -110,113 +110,10 @@ public class LoadshareApiClient {
             return DeliveryProvider.Quote.unserviceable("LoadShare provider credentials not configured");
         }
 
-        Double distanceKm = Serviceability.distanceKm(
-                request.pickupLatitude(), request.pickupLongitude(),
-                request.dropLatitude(), request.dropLongitude());
-
-        if (distanceKm == null) {
-            return DeliveryProvider.Quote.unserviceable("No valid coordinates provided for LoadShare quote");
-        }
-
-        if (distanceKm > 30.0) {
-            return DeliveryProvider.Quote.unserviceable(
-                    "Exceeds 30 km intra-city radius limit (%.1f km)".formatted(distanceKm));
-        }
-
-        if (request.pickupLatitude() == null || request.pickupLongitude() == null
-                || request.dropLatitude() == null || request.dropLongitude() == null) {
-            return DeliveryProvider.Quote.unserviceable("Missing coordinates for LoadShare serviceability check");
-        }
-
-        String checkOrderId = "chk-" + (request.supplierOrderId() != null ? request.supplierOrderId() : UUID.randomUUID().toString().substring(0, 8));
-        BigDecimal goodsValue = request.orderValue() != null ? request.orderValue() : new BigDecimal("500.00");
-
-        var payload = new LinkedHashMap<String, Object>();
-        payload.put("orderId", checkOrderId);
-        payload.put("shipmentValue", Map.of("value", goodsValue, "unit", "INR"));
-        payload.put("shipmentType", "FOOD");
-        payload.put("tasks", List.of(
-                Map.of(
-                        "type", "PICK_UP",
-                        "capabilitiesRequired", List.of(),
-                        "address", Map.of(
-                                "outletName", "Store",
-                                "address", request.pickupAddress() != null ? request.pickupAddress() : "Pickup Location"
-                        ),
-                        "location", Map.of(
-                                "latitude", request.pickupLatitude(),
-                                "longitude", request.pickupLongitude()
-                        )
-                ),
-                Map.of(
-                        "type", "DROP",
-                        "capabilitiesRequired", List.of(),
-                        "address", Map.of(
-                                "address", request.dropAddress() != null ? request.dropAddress() : "Drop Location"
-                        ),
-                        "location", Map.of(
-                                "latitude", request.dropLatitude(),
-                                "longitude", request.dropLongitude()
-                        )
-                )
-        ));
-
-        try {
-            var entity = new HttpEntity<>(payload, headers(checkOrderId));
-            String url = properties.getBaseUrl() + "/hyperlocal/v2/order/checkServiceability";
-            var response = restTemplate.postForEntity(url, entity, JsonNode.class);
-
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                return DeliveryProvider.Quote.unserviceable("LoadShare serviceability returned no body");
-            }
-
-            var body = response.getBody();
-            boolean isServiceable = body.path("serviceable").asBoolean(false);
-            if (!isServiceable) {
-                return DeliveryProvider.Quote.unserviceable("LoadShare serviceability check declined route");
-            }
-
-            var fareNode = body.path("fare");
-            if (!fareNode.has("value") || fareNode.path("value").isNull()) {
-                throw new LoadshareContractException("LoadShare serviceability response missing fare value");
-            }
-
-            BigDecimal amount = BigDecimal.valueOf(fareNode.path("value").asDouble()).setScale(2, RoundingMode.HALF_UP);
-            String currency = fareNode.path("unit").asText("INR");
-
-            int etaMinutes = 45;
-            var slaNode = body.path("promisedSlaInEpoch");
-            if (slaNode.has("total") && slaNode.path("total").asLong(0) > 0) {
-                long slaEpochMillis = slaNode.path("total").asLong();
-                long nowMillis = System.currentTimeMillis();
-                if (slaEpochMillis > nowMillis) {
-                    etaMinutes = (int) Math.max(15, (slaEpochMillis - nowMillis) / 60000);
-                }
-            }
-
-            Double predictedKm = body.has("predictedDistanceInMetre")
-                    ? body.path("predictedDistanceInMetre").asDouble() / 1000.0
-                    : distanceKm;
-
-            return new DeliveryProvider.Quote(
-                    "ls_q_" + UUID.randomUUID(),
-                    true,
-                    amount,
-                    currency,
-                    etaMinutes,
-                    predictedKm,
-                    Instant.now().plusSeconds(600),
-                    null,
-                    request.vehicleType()
-            );
-
-        } catch (HttpStatusCodeException ex) {
-            log.warn("LoadShare checkServiceability HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("LOADSHARE", "LoadShare serviceability returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.warn("LoadShare checkServiceability network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("LOADSHARE", "LoadShare serviceability timeout", true);
-        }
+        // No HTTP call: LoadShare's fare field has not been verified against a live response, and a
+        // guessed or rate-card price is not a quote. A decline is honest (D-121).
+        return DeliveryProvider.Quote.unserviceable(
+                "LoadShare fare contract not verified against a live response; a rate card is not a quote (D-121)");
     }
 
     // ── book ───────────────────────────────────────────────────────────────
@@ -228,93 +125,11 @@ public class LoadshareApiClient {
             throw new DeliveryProviderException("LOADSHARE", "LoadShare credentials not configured for booking", false);
         }
 
-        if (request.pickupAddress() == null || request.pickupAddress().isBlank()) {
-            throw invalid("pickup address");
-        }
-        if (request.dropAddress() == null || request.dropAddress().isBlank()) {
-            throw invalid("drop address");
-        }
-        if (request.pickupLatitude() == null || request.pickupLongitude() == null) {
-            throw invalid("pickup coordinates");
-        }
-        if (request.dropLatitude() == null || request.dropLongitude() == null) {
-            throw invalid("drop coordinates");
-        }
-        if (request.dropContactName() == null || request.dropContactName().isBlank()) {
-            throw invalid("drop contact name");
-        }
-
-        String pickupPhone = requirePhone("pickup contact phone", request.pickupContactPhone());
-        String dropPhone = requirePhone("drop contact phone", request.dropContactPhone());
-        BigDecimal goodsValue = request.goodsValue() != null ? request.goodsValue() : new BigDecimal("500.00");
-
-        var payload = new LinkedHashMap<String, Object>();
-        payload.put("orderId", request.idempotencyKey());
-        payload.put("shipmentValue", Map.of("value", goodsValue, "unit", "INR"));
-        payload.put("shipmentType", "FOOD");
-        payload.put("tasks", List.of(
-                Map.of(
-                        "type", "PICK_UP",
-                        "capabilitiesRequired", List.of(),
-                        "address", Map.of(
-                                "outletName", request.pickupContactName() != null ? request.pickupContactName() : "Store Desk",
-                                "address", request.pickupAddress(),
-                                "phoneNumber", pickupPhone
-                        ),
-                        "location", Map.of(
-                                "latitude", request.pickupLatitude(),
-                                "longitude", request.pickupLongitude()
-                        )
-                ),
-                Map.of(
-                        "type", "DROP",
-                        "capabilitiesRequired", List.of(),
-                        "address", Map.of(
-                                "address", request.dropAddress(),
-                                "contactName", request.dropContactName(),
-                                "phoneNumber", dropPhone
-                        ),
-                        "location", Map.of(
-                                "latitude", request.dropLatitude(),
-                                "longitude", request.dropLongitude()
-                        )
-                )
-        ));
-
-        try {
-            var entity = new HttpEntity<>(payload, headers(request.idempotencyKey()));
-            String url = properties.getBaseUrl() + "/hyperlocal/v2/order";
-            var response = restTemplate.postForEntity(url, entity, JsonNode.class);
-
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                throw new DeliveryProviderException("LOADSHARE", "LoadShare create-order returned no body", true);
-            }
-
-            var body = response.getBody();
-            String providerOrderId = body.has("orderId") && !body.path("orderId").isNull()
-                    ? body.path("orderId").asText()
-                    : body.path("loadshareOrderId").asText(request.idempotencyKey());
-
-            BigDecimal amount = body.has("fare") && body.path("fare").has("value")
-                    ? BigDecimal.valueOf(body.path("fare").path("value").asDouble())
-                    : goodsValue;
-
-            return new DeliveryProvider.Booking(
-                    providerOrderId,
-                    amount,
-                    "INR",
-                    45,
-                    Instant.now().plusSeconds(2700),
-                    "https://track.loadshare.net/order/" + providerOrderId
-            );
-
-        } catch (HttpStatusCodeException ex) {
-            log.warn("LoadShare createOrder HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("LOADSHARE", "LoadShare create-order returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.warn("LoadShare createOrder network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("LOADSHARE", "LoadShare create-order timeout", true);
-        }
+        // Refuses before any network call: failing after the carrier accepted an order would leave
+        // a live consignment nobody owns, and Booking.amount must be a verified fare (D-121).
+        throw new LoadshareContractException(
+                "LoadShare booking fare is not verified; refusing to book without a carrier fare "
+                        + "- a rate card is not a quote (D-121)");
     }
 
     // ── status ─────────────────────────────────────────────────────────────

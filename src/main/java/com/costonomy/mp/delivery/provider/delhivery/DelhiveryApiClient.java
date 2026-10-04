@@ -90,78 +90,10 @@ public class DelhiveryApiClient {
             return DeliveryProvider.Quote.unserviceable("Delhivery provider API token not configured");
         }
 
-        Double distanceKm = Serviceability.distanceKm(
-                request.pickupLatitude(), request.pickupLongitude(),
-                request.dropLatitude(), request.dropLongitude());
-
-        if (distanceKm == null) {
-            return DeliveryProvider.Quote.unserviceable("No valid coordinates provided for Delhivery quote");
-        }
-
-        if (distanceKm > 30.0) {
-            return DeliveryProvider.Quote.unserviceable(
-                    "Exceeds 30 km intra-city radius limit (%.1f km)".formatted(distanceKm));
-        }
-
-        String originPin = extractPincode(request.pickupAddress());
-        String destPin = extractPincode(request.dropAddress());
-
-        if (originPin == null || destPin == null) {
-            return DeliveryProvider.Quote.unserviceable("Delhivery needs a pickup and drop pincode in the address");
-        }
-
-        long grams = request.weightGrams() != null ? request.weightGrams().longValue() : 2000L;
-
-        try {
-            String url = properties.getBaseUrl() + "/api/kinko/v1/invoice/charges.json?md=S&ss=Delivered&cgm="
-                    + grams + "&o_pin=" + originPin + "&d_pin=" + destPin;
-
-            var entity = new HttpEntity<>(headers());
-            var response = restTemplate.exchange(url, HttpMethod.GET, entity, JsonNode.class);
-
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                return DeliveryProvider.Quote.unserviceable("Delhivery charges returned empty body");
-            }
-
-            var body = response.getBody();
-            JsonNode chargeNode = body;
-            if (body.isArray() && !body.isEmpty()) {
-                chargeNode = body.get(0);
-            }
-
-            if (!chargeNode.has("total_amount") && !chargeNode.has("gross_amount")) {
-                throw new DelhiveryContractException("Delhivery charges response missing total amount");
-            }
-
-            double rawAmount = chargeNode.has("total_amount")
-                    ? chargeNode.path("total_amount").asDouble()
-                    : chargeNode.path("gross_amount").asDouble();
-
-            if (rawAmount <= 0) {
-                return DeliveryProvider.Quote.unserviceable("Delhivery returned zero or negative rate for route");
-            }
-
-            BigDecimal amount = BigDecimal.valueOf(rawAmount).setScale(2, RoundingMode.HALF_UP);
-
-            return new DeliveryProvider.Quote(
-                    "dlv_q_" + UUID.randomUUID(),
-                    true,
-                    amount,
-                    "INR",
-                    60,
-                    distanceKm,
-                    Instant.now().plusSeconds(600),
-                    null,
-                    request.vehicleType()
-            );
-
-        } catch (HttpStatusCodeException ex) {
-            log.warn("Delhivery invoice charges HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("DELHIVERY", "Delhivery pricing returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.warn("Delhivery invoice charges network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("DELHIVERY", "Delhivery pricing timeout", true);
-        }
+        // No HTTP call: Delhivery's fare field has not been verified against a live response, and a
+        // guessed or rate-card price is not a quote. A decline is honest (D-121).
+        return DeliveryProvider.Quote.unserviceable(
+                "Delhivery fare contract not verified against a live response; a rate card is not a quote (D-121)");
     }
 
     // ── book ───────────────────────────────────────────────────────────────
@@ -173,88 +105,11 @@ public class DelhiveryApiClient {
             throw new DeliveryProviderException("DELHIVERY", "Delhivery credentials not configured for booking", false);
         }
 
-        if (request.pickupAddress() == null || request.pickupAddress().isBlank()) {
-            throw invalid("pickup address");
-        }
-        if (request.dropAddress() == null || request.dropAddress().isBlank()) {
-            throw invalid("drop address");
-        }
-        if (request.dropContactName() == null || request.dropContactName().isBlank()) {
-            throw invalid("drop contact name");
-        }
-
-        String pickupPin = request.pickupLocality() != null && request.pickupLocality().pincode() != null
-                ? request.pickupLocality().pincode()
-                : extractPincode(request.pickupAddress());
-        String dropPin = request.dropLocality() != null && request.dropLocality().pincode() != null
-                ? request.dropLocality().pincode()
-                : extractPincode(request.dropAddress());
-
-        if (pickupPin == null) throw invalid("pickup pincode");
-        if (dropPin == null) throw invalid("drop pincode");
-
-        String pickupPhone = requirePhone("pickup contact phone", request.pickupContactPhone());
-        String dropPhone = requirePhone("drop contact phone", request.dropContactPhone());
-        BigDecimal goodsValue = request.goodsValue() != null ? request.goodsValue() : new BigDecimal("500.00");
-
-        var shipment = new LinkedHashMap<String, Object>();
-        shipment.put("order", request.idempotencyKey());
-        shipment.put("name", request.dropContactName());
-        shipment.put("add", request.dropAddress());
-        shipment.put("pin", dropPin);
-        shipment.put("phone", dropPhone);
-        shipment.put("payment_mode", "Pre-paid");
-        shipment.put("products_desc", "Restaurant Supplies");
-        shipment.put("total_amount", goodsValue);
-        shipment.put("weight", request.weightKg() != null ? request.weightKg().multiply(BigDecimal.valueOf(1000)).intValue() : 2000);
-
-        var payload = Map.of(
-                "shipments", List.of(shipment),
-                "pickup_location", Map.of(
-                        "name", request.pickupContactName() != null ? request.pickupContactName() : "Store Desk",
-                        "add", request.pickupAddress(),
-                        "pin", pickupPin,
-                        "phone", pickupPhone
-                )
-        );
-
-        try {
-            var entity = new HttpEntity<>(payload, headers());
-            String url = properties.getBaseUrl() + "/api/cmu/create.json";
-            var response = restTemplate.postForEntity(url, entity, JsonNode.class);
-
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                throw new DeliveryProviderException("DELHIVERY", "Delhivery create-order returned no body", true);
-            }
-
-            var body = response.getBody();
-            String waybill = request.idempotencyKey();
-
-            if (body.has("packages") && body.path("packages").isArray() && !body.path("packages").isEmpty()) {
-                var pkg = body.path("packages").get(0);
-                if (pkg.has("waybill")) {
-                    waybill = pkg.path("waybill").asText();
-                }
-            } else if (body.has("upload_wbn")) {
-                waybill = body.path("upload_wbn").asText();
-            }
-
-            return new DeliveryProvider.Booking(
-                    waybill,
-                    goodsValue,
-                    "INR",
-                    60,
-                    Instant.now().plusSeconds(3600),
-                    "https://www.delhivery.com/track/package/" + waybill
-            );
-
-        } catch (HttpStatusCodeException ex) {
-            log.warn("Delhivery createOrder HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("DELHIVERY", "Delhivery create-order returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.warn("Delhivery createOrder network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("DELHIVERY", "Delhivery create-order timeout", true);
-        }
+        // Refuses before any network call: failing after the carrier accepted an order would leave
+        // a live consignment nobody owns, and Booking.amount must be a verified fare (D-121).
+        throw new DelhiveryContractException(
+                "Delhivery booking fare is not verified; refusing to book without a carrier fare "
+                        + "- a rate card is not a quote (D-121)");
     }
 
     // ── status ─────────────────────────────────────────────────────────────

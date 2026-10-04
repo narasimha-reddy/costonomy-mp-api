@@ -44,6 +44,7 @@ class CatchWeightSettlementIT extends AbstractIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private MockPaymentProvider mockProvider;
     @Autowired private PaymentJobs paymentJobs;
+    @Autowired private com.costonomy.mp.procurement.service.OrderAdjustmentJobs adjustmentJobs;
     @Autowired private WalletService walletService;
 
     private ApiClient api;
@@ -621,6 +622,67 @@ class CatchWeightSettlementIT extends AbstractIntegrationTest {
             assertThat(orderFigure(p.orderId(), "final_payable_amount")).isEqualByComparingTo("0.00");
             assertThat(jdbc.queryForObject("select refunded_amount from payment where id = ?",
                     BigDecimal.class, p.created().paymentId())).isEqualByComparingTo("1008.00");
+        }
+    }
+
+    // ── order adjustments ────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("order adjustment records")
+    class Adjustments {
+
+        @Test
+        @DisplayName("a shortfall and a rejection are one row each, with the right amounts")
+        void rowsRecordEachReduction() throws Exception {
+            var p = walletOrder();
+            toPreparing(p);
+            assertThat(weighItem(p, "9.6").status()).isEqualTo(200);
+            assertThat(step(p, "ready").status()).isEqualTo(200);
+            assertThat(receive(p, "9.5", "0", "0.1").status()).isEqualTo(200);
+
+            var rows = jdbc.queryForList("""
+                    select reason, amount, status from order_adjustment
+                     where supplier_order_id = ? order by reason""", p.orderId());
+            assertThat(rows).hasSize(2);
+            assertThat(rows.get(0).get("reason")).isEqualTo("DOORSTEP_REJECTION");
+            assertThat((BigDecimal) rows.get(0).get("amount")).isEqualByComparingTo("10.50");
+            assertThat(rows.get(1).get("reason")).isEqualTo("WEIGHT_SETTLEMENT");
+            assertThat((BigDecimal) rows.get(1).get("amount")).isEqualByComparingTo("42.00");
+            assertThat(rows).allMatch(r -> "APPLIED".equals(r.get("status")));
+        }
+
+        @Test
+        @DisplayName("a card rejection before the capture lands is held, then refunded once by the job")
+        void rejectionBeforeCaptureIsDeferred() throws Exception {
+            var p = cardOrder(true);
+            toPreparing(p);
+            assertThat(weighItem(p, "9.6").status()).isEqualTo(200);
+            assertThat(step(p, "ready").status()).isEqualTo(200);   // capture still pending
+
+            assertThat(receive(p, "9.5", "0", "0.1").status()).isEqualTo(200);
+
+            assertThat(orderFigure(p.orderId(), "final_payable_amount")).isEqualByComparingTo("997.50");
+            assertThat(jdbc.queryForObject("""
+                    select status from order_adjustment
+                     where supplier_order_id = ? and reason = 'DOORSTEP_REJECTION'""",
+                    String.class, p.orderId())).isEqualTo("PENDING_CAPTURE");
+            assertThat(jdbc.queryForObject("select count(*) from refund where supplier_order_id = ?",
+                    Integer.class, p.orderId())).isZero();
+
+            paymentJobs.capturePending();
+            adjustmentJobs.applyPendingCaptures();
+            adjustmentJobs.applyPendingCaptures();   // a second sweep must not refund again
+
+            assertThat(jdbc.queryForObject("""
+                    select status from order_adjustment
+                     where supplier_order_id = ? and reason = 'DOORSTEP_REJECTION'""",
+                    String.class, p.orderId())).isEqualTo("APPLIED");
+            assertThat(jdbc.queryForObject("""
+                    select count(*) from refund where supplier_order_id = ? and reason = 'DOORSTEP_REJECTION'""",
+                    Integer.class, p.orderId())).isEqualTo(1);
+            assertThat(walletRows(p.orderId(), "REFUND")).isEqualTo(1);
+            assertThat(jdbc.queryForObject("select refunded_amount from payment where id = ?",
+                    BigDecimal.class, p.created().paymentId())).isEqualByComparingTo("10.50");
         }
     }
 

@@ -139,87 +139,10 @@ public class ShiprocketApiClient {
             return DeliveryProvider.Quote.unserviceable("Shiprocket provider credentials not configured");
         }
 
-        Double distanceKm = Serviceability.distanceKm(
-                request.pickupLatitude(), request.pickupLongitude(),
-                request.dropLatitude(), request.dropLongitude());
-
-        if (distanceKm == null) {
-            return DeliveryProvider.Quote.unserviceable("No valid coordinates provided for Shiprocket quote");
-        }
-
-        if (distanceKm > 30.0) {
-            return DeliveryProvider.Quote.unserviceable(
-                    "Exceeds 30 km intra-city radius limit (%.1f km)".formatted(distanceKm));
-        }
-
-        String pickupPincode = extractPincode(request.pickupAddress());
-        String dropPincode = extractPincode(request.dropAddress());
-
-        if (pickupPincode == null || dropPincode == null) {
-            return DeliveryProvider.Quote.unserviceable(
-                    "Shiprocket needs a pickup and drop pincode; none found in the address");
-        }
-
-        BigDecimal weight = request.weightKg() != null ? request.weightKg() : BigDecimal.valueOf(1.0);
-
-        try {
-            String url = "%s/v1/external/courier/serviceability/?pickup_postcode=%s&delivery_postcode=%s&weight=%s&cod=0"
-                    .formatted(properties.getBaseUrl(), pickupPincode, dropPincode, weight.toPlainString());
-
-            var response = restTemplate.exchange(url, HttpMethod.GET, new HttpEntity<>(headers()), JsonNode.class);
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                return DeliveryProvider.Quote.unserviceable("Shiprocket serviceability returned no body");
-            }
-
-            var body = response.getBody();
-            var dataNode = body.path("data");
-            var couriersNode = dataNode.path("available_courier_companies");
-
-            if (!couriersNode.isArray() || couriersNode.isEmpty()) {
-                return DeliveryProvider.Quote.unserviceable(
-                        "No Shiprocket courier serviceable for route %s -> %s".formatted(pickupPincode, dropPincode));
-            }
-
-            // Find the lowest rate courier
-            JsonNode bestCourier = null;
-            BigDecimal lowestRate = null;
-
-            for (var courier : couriersNode) {
-                if (courier.has("rate")) {
-                    BigDecimal rate = BigDecimal.valueOf(courier.path("rate").asDouble());
-                    if (lowestRate == null || rate.compareTo(lowestRate) < 0) {
-                        lowestRate = rate;
-                        bestCourier = courier;
-                    }
-                }
-            }
-
-            if (bestCourier == null || lowestRate == null) {
-                return DeliveryProvider.Quote.unserviceable("No courier rates available in Shiprocket serviceability response");
-            }
-
-            String courierId = bestCourier.path("courier_company_id").asText("unknown");
-            int etaDays = bestCourier.path("estimated_delivery_days").asInt(1);
-            int etaMinutes = Math.max(30, etaDays * 240); // intra-city daytime estimate
-
-            return new DeliveryProvider.Quote(
-                    "sr_q_" + courierId + "_" + UUID.randomUUID(),
-                    true,
-                    lowestRate.setScale(2, RoundingMode.HALF_UP),
-                    "INR",
-                    etaMinutes,
-                    distanceKm,
-                    Instant.now().plusSeconds(600),
-                    null,
-                    request.vehicleType());
-
-        } catch (HttpStatusCodeException ex) {
-            log.warn("Shiprocket calculateQuote HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("SHIPROCKET", "Shiprocket serviceability returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.warn("Shiprocket calculateQuote network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("SHIPROCKET", "Shiprocket serviceability timeout", true);
-        }
+        // No HTTP call: Shiprocket's fare field has not been verified against a live response, and a
+        // guessed or rate-card price is not a quote. A decline is honest (D-121).
+        return DeliveryProvider.Quote.unserviceable(
+                "Shiprocket fare contract not verified against a live response; a rate card is not a quote (D-121)");
     }
 
     // ── book ───────────────────────────────────────────────────────────────
@@ -231,87 +154,11 @@ public class ShiprocketApiClient {
             throw new DeliveryProviderException("SHIPROCKET", "Shiprocket credentials not configured for booking", false);
         }
 
-        String pickupPincode = extractPincode(request.pickupAddress());
-        String dropPincode = extractPincode(request.dropAddress());
-        if (pickupPincode == null || dropPincode == null) {
-            throw invalid("pickup or drop pincode");
-        }
-        if (request.dropContactName() == null || request.dropContactName().isBlank()) {
-            throw invalid("drop contact name");
-        }
-        if (request.dropAddress() == null || request.dropAddress().isBlank()) {
-            throw invalid("drop address");
-        }
-
-        String dropPhone = requirePhone("drop contact phone", request.dropContactPhone());
-        BigDecimal weight = request.weightKg() != null ? request.weightKg() : BigDecimal.valueOf(1.0);
-        BigDecimal goodsValue = request.goodsValue() != null ? request.goodsValue() : new BigDecimal("500.00");
-
-        var payload = new LinkedHashMap<String, Object>();
-        payload.put("order_id", request.idempotencyKey());
-        payload.put("order_date", DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").format(LocalDateTime.now()));
-        payload.put("pickup_location", "Primary");
-        payload.put("billing_customer_name", request.dropContactName());
-        payload.put("billing_last_name", "");
-        payload.put("billing_address", request.dropAddress());
-        payload.put("billing_city", request.dropLocality() != null && request.dropLocality().city() != null ? request.dropLocality().city() : "Bengaluru");
-        payload.put("billing_pincode", dropPincode);
-        payload.put("billing_state", request.dropLocality() != null && request.dropLocality().state() != null ? request.dropLocality().state() : "Karnataka");
-        payload.put("billing_country", "India");
-        payload.put("billing_email", "ops@costonomy.com");
-        payload.put("billing_phone", dropPhone);
-        payload.put("shipping_is_billing", true);
-        payload.put("order_items", List.of(Map.of(
-                "name", "Consignment " + request.idempotencyKey(),
-                "sku", "SO-" + request.supplierOrderId(),
-                "units", 1,
-                "selling_price", goodsValue.toPlainString()
-        )));
-        payload.put("payment_method", "Prepaid");
-        payload.put("sub_total", goodsValue);
-        payload.put("length", 10);
-        payload.put("breadth", 10);
-        payload.put("height", 10);
-        payload.put("weight", weight);
-
-        try {
-            var entity = new HttpEntity<>(payload, headers());
-            var response = restTemplate.postForEntity(
-                    properties.getBaseUrl() + "/v1/external/orders/create/adhoc", entity, JsonNode.class);
-
-            if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
-                throw new DeliveryProviderException("SHIPROCKET", "Shiprocket create-order returned no body", true);
-            }
-
-            var body = response.getBody();
-            String shipmentId = body.has("shipment_id") && !body.path("shipment_id").isNull()
-                    ? body.path("shipment_id").asText()
-                    : body.path("order_id").asText(null);
-
-            if (shipmentId == null || shipmentId.isBlank()) {
-                throw new ShiprocketContractException("Shiprocket create-order response missing shipment_id and order_id");
-            }
-
-            BigDecimal amount = body.has("total_amount") && !body.path("total_amount").isNull()
-                    ? BigDecimal.valueOf(body.path("total_amount").asDouble())
-                    : goodsValue;
-
-            return new DeliveryProvider.Booking(
-                    shipmentId,
-                    amount,
-                    "INR",
-                    120,
-                    Instant.now().plusSeconds(7200),
-                    "https://shiprocket.co/tracking/" + shipmentId
-            );
-
-        } catch (HttpStatusCodeException ex) {
-            log.warn("Shiprocket createOrder HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
-            throw new DeliveryProviderException("SHIPROCKET", "Shiprocket create-order returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
-        } catch (ResourceAccessException ex) {
-            log.warn("Shiprocket createOrder network timeout: {}", ex.getMessage());
-            throw new DeliveryProviderException("SHIPROCKET", "Shiprocket create-order timeout", true);
-        }
+        // Refuses before any network call: failing after the carrier accepted an order would leave
+        // a live consignment nobody owns, and Booking.amount must be a verified fare (D-121).
+        throw new ShiprocketContractException(
+                "Shiprocket booking fare is not verified; refusing to book without a carrier fare "
+                        + "- a rate card is not a quote (D-121)");
     }
 
     // ── status ─────────────────────────────────────────────────────────────

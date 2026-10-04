@@ -71,134 +71,6 @@ class ShiprocketApiClientContractTest {
     }
 
     @Test
-    @DisplayName("calculates quote selecting lowest available courier rate from Shiprocket serviceability")
-    void calculateQuote_success() {
-        String serviceabilityJson = """
-                {
-                  "status": 200,
-                  "data": {
-                    "available_courier_companies": [
-                      {
-                        "courier_company_id": 101,
-                        "courier_name": "Delhivery Local",
-                        "rate": 75.50,
-                        "estimated_delivery_days": 1
-                      },
-                      {
-                        "courier_company_id": 102,
-                        "courier_name": "Shadowfax Quick",
-                        "rate": 90.00,
-                        "estimated_delivery_days": 1
-                      }
-                    ]
-                  }
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/external/courier/serviceability/?pickup_postcode=560038&delivery_postcode=560034&weight=2.5000&cod=0"))
-                .andExpect(method(HttpMethod.GET))
-                .andExpect(header("Authorization", "Bearer test-shiprocket-token"))
-                .andRespond(withSuccess(serviceabilityJson, MediaType.APPLICATION_JSON));
-
-        var quote = client.calculateQuote(quoteRequest());
-
-        assertThat(quote.serviceable()).isTrue();
-        assertThat(quote.amount()).isEqualByComparingTo("75.50");
-        assertThat(quote.currency()).isEqualTo("INR");
-        assertThat(quote.distanceKm()).isNotNull();
-        assertThat(quote.providerQuoteId()).startsWith("sr_q_101_");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("declines quote when route exceeds 30 km intra-city radius limit (D-120)")
-    void declinesWhenExceeds30KmRadius() {
-        // Indiranagar, Bengaluru to Hosur (~45 km)
-        var longRouteRequest = new DeliveryProvider.QuoteRequest(
-                101L,
-                new BigDecimal("12.9716"), new BigDecimal("77.5946"),
-                new BigDecimal("12.7409"), new BigDecimal("77.8253"),
-                new BigDecimal("500.00"), new BigDecimal("2500"), 45,
-                "Indiranagar, Bengaluru, 560038",
-                "Hosur, 635109");
-
-        var quote = client.calculateQuote(longRouteRequest);
-
-        assertThat(quote.serviceable()).isFalse();
-        assertThat(quote.declineReason()).contains("Exceeds 30 km intra-city radius limit");
-        server.verify(); // No HTTP call
-    }
-
-    @Test
-    @DisplayName("declines quote when no couriers are serviceable for route")
-    void declinesWhenNoCouriersAvailable() {
-        String emptyServiceabilityJson = """
-                {
-                  "status": 200,
-                  "data": {
-                    "available_courier_companies": []
-                  }
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/external/courier/serviceability/?pickup_postcode=560038&delivery_postcode=560034&weight=2.5000&cod=0"))
-                .andExpect(method(HttpMethod.GET))
-                .andRespond(withSuccess(emptyServiceabilityJson, MediaType.APPLICATION_JSON));
-
-        var quote = client.calculateQuote(quoteRequest());
-
-        assertThat(quote.serviceable()).isFalse();
-        assertThat(quote.declineReason()).contains("No Shiprocket courier serviceable");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("declines quote when address has no 6-digit pincode")
-    void declinesWhenPincodeMissing() {
-        var noPincodeRequest = new DeliveryProvider.QuoteRequest(
-                101L,
-                new BigDecimal("12.9716"), new BigDecimal("77.5946"),
-                new BigDecimal("12.9352"), new BigDecimal("77.6245"),
-                new BigDecimal("500.00"), new BigDecimal("2500"), 45,
-                "Indiranagar without pincode",
-                "Koramangala without pincode");
-
-        var quote = client.calculateQuote(noPincodeRequest);
-
-        assertThat(quote.serviceable()).isFalse();
-        assertThat(quote.declineReason()).contains("needs a pickup and drop pincode");
-        server.verify();
-    }
-
-    @Test
-    @DisplayName("creates adhoc order with Shiprocket and returns Booking")
-    void createOrder_success() {
-        String createResponseJson = """
-                {
-                  "order_id": 123456,
-                  "shipment_id": 987654,
-                  "status": "NEW",
-                  "total_amount": 75.50
-                }
-                """;
-
-        server.expect(requestTo(BASE_URL + "/v1/external/orders/create/adhoc"))
-                .andExpect(method(HttpMethod.POST))
-                .andExpect(header("Authorization", "Bearer test-shiprocket-token"))
-                .andExpect(jsonPath("$.order_id").value("mp-sr-10-1"))
-                .andExpect(jsonPath("$.billing_pincode").value("560034"))
-                .andExpect(jsonPath("$.billing_phone").value("+919876511111"))
-                .andRespond(withSuccess(createResponseJson, MediaType.APPLICATION_JSON));
-
-        var booking = client.createOrder(bookingRequest());
-
-        assertThat(booking.providerDeliveryId()).isEqualTo("987654");
-        assertThat(booking.amount()).isEqualByComparingTo("75.50");
-        assertThat(booking.trackingUrl()).contains("987654");
-        server.verify();
-    }
-
-    @Test
     @DisplayName("polls tracking status and maps current_status with historic events")
     void getStatus_success() {
         String trackingJson = """
@@ -278,15 +150,22 @@ class ShiprocketApiClientContractTest {
     }
 
     @Test
-    @DisplayName("throws retryable DeliveryProviderException on server 500 error")
-    void throwsRetryableExceptionOnServerError() {
-        server.expect(requestTo(BASE_URL + "/v1/external/courier/serviceability/?pickup_postcode=560038&delivery_postcode=560034&weight=2.5000&cod=0"))
-                .andExpect(method(HttpMethod.GET))
-                .andRespond(withServerError());
+    @DisplayName("quote is declined without any carrier call: the fare contract is unverified (D-121)")
+    void calculateQuote_failsClosedWithoutHttp() {
+        var quote = client.calculateQuote(quoteRequest());
 
-        assertThatThrownBy(() -> client.calculateQuote(quoteRequest()))
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.amount()).isNull();
+        assertThat(quote.declineReason()).contains("not verified");
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("booking is refused before any carrier call: no invented fare, no orphan consignment (D-121)")
+    void createOrder_refusedWithoutHttp() {
+        assertThatThrownBy(() -> client.createOrder(bookingRequest()))
                 .isInstanceOf(DeliveryProviderException.class)
-                .satisfies(ex -> assertThat(((DeliveryProviderException) ex).retryable()).isTrue());
+                .hasMessageContaining("not verified");
         server.verify();
     }
 }
