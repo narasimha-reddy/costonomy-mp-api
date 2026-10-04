@@ -96,6 +96,7 @@ public class IntentOrderCreator {
     private final DeliveryFeeQuoteService deliveryQuotes;
     private final DeliveryDirectory deliveryPolicies;
     private final DeliveryCharges deliveryCharges;
+    private final com.costonomy.mp.procurement.service.OrderLineStamper lineStamper;
 
     /** What the caller asked to order, resolved against what was offered. */
     private record Plan(
@@ -308,7 +309,7 @@ public class IntentOrderCreator {
                     intent.getOutletId(), intent.getSupplierStoreId(), order.getId(), now);
         }
 
-        boolean orderRequiresColdChain = false;
+        var orderLines = new java.util.ArrayList<SupplierOrderItem>();
         for (PlannedLine line : plan.lines()) {
             if (line.quantity().signum() == 0) {
                 continue;
@@ -332,20 +333,13 @@ public class IntentOrderCreator {
             item.setLineGst(line.lineGst());
             item.setLineTotal(line.lineTotal());
             item.setStatus(OrderItemStatus.ACCEPTED);
-            boolean isColdChain = deliveryPolicies.skuRequiresColdChain(line.item().getSupplierSkuId());
-            item.setRequiresColdChain(isColdChain);
-            if (isColdChain) {
-                orderRequiresColdChain = true;
-            }
-            item.setCatchWeight(deliveryPolicies.skuIsCatchWeight(line.item().getSupplierSkuId()));
-            item.setHsnCode(deliveryPolicies.skuHsnCode(line.item().getSupplierSkuId()));
-            supplierOrderItems.save(item);
+            orderLines.add(item);
         }
 
-        if (orderRequiresColdChain) {
-            order.setHasColdChainItems(true);
-            supplierOrders.saveAndFlush(order);
-        }
+        // Cold chain, catch-weight and HSN come from one place for every path that creates lines (D-134).
+        lineStamper.stamp(order, orderLines);
+        supplierOrderItems.saveAll(orderLines);
+        supplierOrders.saveAndFlush(order);
 
         var link = new IntentOrderLink();
         link.setIntentId(intent.getId());

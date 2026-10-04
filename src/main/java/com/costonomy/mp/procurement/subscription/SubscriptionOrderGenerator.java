@@ -5,7 +5,6 @@ import com.costonomy.mp.catalog.repository.SupplierOfferRepository;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.delivery.service.DeliveryCharges;
-import com.costonomy.mp.delivery.service.DeliveryDirectory;
 import com.costonomy.mp.delivery.slot.DeliverySlotRepository;
 import com.costonomy.mp.procurement.domain.DeliveryMode;
 import com.costonomy.mp.procurement.domain.OrderItemStatus;
@@ -58,7 +57,7 @@ public class SubscriptionOrderGenerator {
     private final OrderFunding orderFunding;
     private final OrderReleaseService orderRelease;
     private final DeliveryCharges deliveryCharges;
-    private final DeliveryDirectory deliveryPolicies;
+    private final com.costonomy.mp.procurement.service.OrderLineStamper lineStamper;
     private final SubscriptionRunWriter runWriter;
     private final AuditService auditService;
     private final JdbcTemplate jdbc;
@@ -145,14 +144,9 @@ public class SubscriptionOrderGenerator {
         item.setLineGst(lineGst);
         item.setLineTotal(lineTotal);
         item.setStatus(OrderItemStatus.ACCEPTED);
-        boolean coldChain = deliveryPolicies.skuRequiresColdChain(sub.getSupplierSkuId());
-        item.setRequiresColdChain(coldChain);
-        item.setCatchWeight(deliveryPolicies.skuIsCatchWeight(sub.getSupplierSkuId()));
-        item.setHsnCode(deliveryPolicies.skuHsnCode(sub.getSupplierSkuId()));
+        // Cold chain, catch-weight and HSN come from one place for every path that creates lines (D-134).
+        lineStamper.stamp(order, java.util.List.of(item));
         supplierOrderItems.save(item);
-        if (coldChain) {
-            order.setHasColdChainItems(true);
-        }
         supplierOrders.saveAndFlush(order);
 
         try {

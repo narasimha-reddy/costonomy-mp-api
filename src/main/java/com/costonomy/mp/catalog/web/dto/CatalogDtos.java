@@ -204,6 +204,17 @@ public final class CatalogDtos {
      * to price, GST or availability supersedes the current offer rather than
      * editing it.
      */
+    /**
+     * Change how a SKU must be handled. Superseding, not editing: the reason is required and kept, and the change
+     * never touches an order already placed (D-134). A field left out is left as it is.
+     */
+    public record HandlingDeclarationRequest(
+            Boolean requiresColdChain,
+            Boolean isCatchWeight,
+            @jakarta.validation.constraints.NotBlank(message = "Say why the handling is changing")
+            @Size(max = 500) String reason) {
+    }
+
     public record UpdateSkuRequest(
             Long canonicalProductId,
             @Size(max = 120) String skuCode,

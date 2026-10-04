@@ -54,6 +54,7 @@ public class SupplierCatalogService {
     private final CatalogDirectory directory;
     private final AccessControlService accessControl;
     private final AuditService auditService;
+    private final SkuHandlingService skuHandling;
 
     @Transactional(readOnly = true)
     public List<CatalogDtos.SkuResponse> listSkus(Long actorId, Long storeId, String status,
@@ -91,8 +92,8 @@ public class SupplierCatalogService {
         sku.setName(request.name());
         sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
         sku.setGrade(blankToNull(request.grade()));
-        sku.setCatchWeight(Boolean.TRUE.equals(request.isCatchWeight()));
-        sku.setRequiresColdChain(Boolean.TRUE.equals(request.requiresColdChain()));
+        // Handling (cold chain, catch-weight) is declared below, once the SKU has an id, through the one service that
+        // writes it (D-134): the first declaration, raised to the product's own cold-chain floor.
         sku.setPackSize(request.packSize());
 
         var pack = Unit.parse(request.packUnit(), "Pack unit");
@@ -112,6 +113,9 @@ public class SupplierCatalogService {
             throw new BusinessException(ErrorCode.DUPLICATE_SKU_CODE);
         }
 
+        skuHandling.declareInitial(sku, request.requiresColdChain(),
+                Boolean.TRUE.equals(request.isCatchWeight()), actorId);
+
         openOffer(sku, request.sellingPrice(), zeroToNull(request.mrp()), request.gstRate(),
                 request.availability() == null ? SupplierOffer.Availability.AVAILABLE : request.availability(),
                 request.availableQuantity(), actorId);
@@ -121,6 +125,15 @@ public class SupplierCatalogService {
         auditService.record(actorId, null, "SKU_CREATED", "SUPPLIER_SKU",
                 sku.getId(), null, "ACTIVE", null, "API");
 
+        return toResponse(sku);
+    }
+
+    /** Supersede a SKU's cold-chain and catch-weight declaration (D-134). */
+    @Transactional
+    public CatalogDtos.SkuResponse declareHandling(Long actorId, Long skuId,
+                                                   CatalogDtos.HandlingDeclarationRequest request) {
+        var sku = skuHandling.declare(actorId, skuId, request.requiresColdChain(), request.isCatchWeight(),
+                request.reason());
         return toResponse(sku);
     }
 
@@ -140,14 +153,24 @@ public class SupplierCatalogService {
                 throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                         "That product isn't in the Mandi catalog.");
             }
+            if (!sku.isRequiresColdChain() && skuHandling.productRequiresColdChain(request.canonicalProductId())) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "That product always needs cold chain, so this item must be declared as chilled first.");
+            }
             sku.setCanonicalProductId(request.canonicalProductId());
         }
         if (request.skuCode() != null) sku.setSkuCode(blankToNull(request.skuCode()));
         if (request.name() != null) sku.setName(request.name());
         if (request.brandName() != null) sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
         if (request.grade() != null) sku.setGrade(blankToNull(request.grade()));
-        if (request.isCatchWeight() != null) sku.setCatchWeight(request.isCatchWeight());
-        if (request.requiresColdChain() != null) sku.setRequiresColdChain(request.requiresColdChain());
+        // Handling is not edited in place (D-134). A save that passes the current values back (a rate sheet, a batch
+        // variant) changes nothing; a different value has to go through the handling declaration, with a reason.
+        if ((request.isCatchWeight() != null && request.isCatchWeight() != sku.isCatchWeight())
+                || (request.requiresColdChain() != null && request.requiresColdChain() != sku.isRequiresColdChain())) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Cold chain and catch-weight are changed with a handling declaration, which needs a reason. "
+                            + "Use PUT /supplier-skus/{id}/handling.");
+        }
         if (request.packSize() != null) sku.setPackSize(request.packSize());
         // The pack unit and its measure are validated together even when only one
         // of them was sent: changing KG to PKT without saying what is in the

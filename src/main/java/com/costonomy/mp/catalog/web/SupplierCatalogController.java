@@ -69,6 +69,20 @@ public class SupplierCatalogController {
                 ActorContext.requireUserId(), skuId, request));
     }
 
+    @PutMapping("/supplier-skus/{skuId}/handling")
+    @Operation(
+            summary = "Declare how a SKU must be handled (cold chain, catch-weight)",
+            description = """
+                    Superseding, never an in-place edit: the current declaration is closed and a new one opened,
+                    with who declared it and why, and the change is audited with before and after. Orders already
+                    placed keep what they were placed with. A chilled product's SKU cannot be declared as not chilled.
+                    """)
+    public ApiResponse<CatalogDtos.SkuResponse> declareHandling(
+            @PathVariable Long skuId,
+            @Valid @RequestBody CatalogDtos.HandlingDeclarationRequest request) {
+        return ApiResponse.ok(supplierCatalog.declareHandling(ActorContext.requireUserId(), skuId, request));
+    }
+
     @GetMapping("/supplier-skus/{skuId}/price-history")
     @Operation(summary = "Price and availability history for a SKU")
     public ApiResponse<List<CatalogDtos.PriceHistoryEntry>> priceHistory(@PathVariable Long skuId) {
