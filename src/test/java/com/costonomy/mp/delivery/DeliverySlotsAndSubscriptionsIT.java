@@ -128,10 +128,20 @@ class DeliverySlotsAndSubscriptionsIT extends AbstractIntegrationTest {
         assertThat(manifestRes.at("/data/aggregatedItems").size()).isGreaterThanOrEqualTo(1);
         assertThat(manifestRes.at("/data/deliveries").size()).isGreaterThanOrEqualTo(1);
 
+        // The subscription pays from the wallet, so the wallet has to hold the money: an order is generated
+        // only when it can be funded (guardrail 16).
+        api.post(buyerToken, "/api/v1/outlets/" + outletId + "/wallet/top-up", Map.of("amount", "1000.00"));
+
         // 7. Supplier triggers daily replenishment order generation for tomorrow
         JsonNode genRes = api.post(sellerToken, "/api/v1/supplier-stores/" + storeId + "/subscriptions/generate-orders?date=" + tomorrow, Map.of());
         assertThat(genRes.at("/data/ordersGenerated").asInt()).isEqualTo(1);
         long orderId = genRes.at("/data/orderIds/0").asLong();
+        // 10 LTR at Rs 60 + 5% GST = Rs 630, taken from the wallet, and the order confirmed behind it.
+        assertThat(jdbc.queryForObject("select status from supplier_order where id = ?", String.class, orderId))
+                .isEqualTo("CONFIRMED");
+        assertThat(jdbc.queryForObject("""
+                select amount from wallet_transaction where supplier_order_id = ? and kind = 'ORDER_PAYMENT'""",
+                java.math.BigDecimal.class, orderId)).isEqualByComparingTo("630.00");
 
         // 8. Verify generated order has is_subscription_order = 1 and delivery_slot_id
         JsonNode orderRes = api.get(buyerToken, "/api/v1/supplier-orders/" + orderId);

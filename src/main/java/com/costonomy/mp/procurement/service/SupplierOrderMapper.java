@@ -109,7 +109,7 @@ public class SupplierOrderMapper {
                                 descriptors.get(item.getSupplierSkuId()),
                                 item.getRequestedQuantity(), item.getAcceptedQuantity(),
                                 item.getFulfilledQuantity(),
-                                item.getDispatchedWeight(), item.getWeighedAt(), item.getWeightDeltaAmount(),
+                                item.getDispatchedWeight(), item.getBillableQuantity(), item.getWeighedAt(), item.getWeightDeltaAmount(),
                                 item.getDoorstepAcceptedQty(), item.getDoorstepRejectedQty(),
                                 item.getDoorstepRejectionReason(), item.getDoorstepRefundAmount(),
                                 item.isRequiresColdChain(),

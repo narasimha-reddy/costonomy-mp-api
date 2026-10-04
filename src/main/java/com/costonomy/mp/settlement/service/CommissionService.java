@@ -96,8 +96,14 @@ public class CommissionService {
         // lives on the delivery record — but subtracting it is what keeps this
         // correct if it is ever folded into the order total.
         BigDecimal gross = order.acceptedAmount()
-                .subtract(order.deliveryFee() == null ? BigDecimal.ZERO : order.deliveryFee())
-                .max(BigDecimal.ZERO);
+                .subtract(order.deliveryFee() == null ? BigDecimal.ZERO : order.deliveryFee());
+        if (gross.signum() < 0) {
+            // Clamping it to zero would pay the supplier nothing and quietly make the platform whole for a
+            // figure that is simply wrong (D-124). The figures are guarded where they are written; if one
+            // still gets here, stop and let a person look.
+            throw new IllegalStateException("Commission base for order %d is negative (%s)"
+                    .formatted(order.orderId(), gross.toPlainString()));
+        }
 
         var configuration = resolve(order.supplierStoreId(), order.supplierOrganizationId());
         BigDecimal rate = configuration

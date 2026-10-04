@@ -87,4 +87,20 @@ public class CreditLedger {
         record(agreementId, CreditTransactionType.REPAYMENT, amount,
                 null, null, invoiceId, "Repayment against invoice " + invoiceId, actorId);
     }
+
+    /**
+     * An order's invoice came down (D-124), so what is drawn comes down with it: the debt and the exposure
+     * move together, as they do for a repayment, but this is a correction of what was owed, not money
+     * received, so it is an ADJUSTMENT and not a REPAYMENT.
+     */
+    @Transactional
+    public void reduceDrawn(Long agreementId, Long reservationId, Long supplierOrderId, Long invoiceId,
+                            BigDecimal amount, String description) {
+        if (!exposure.repay(agreementId, amount)) {
+            throw new BusinessException(ErrorCode.CONCURRENT_MODIFICATION,
+                    "Credit balances changed while this order's invoice was being adjusted.");
+        }
+        record(agreementId, CreditTransactionType.ADJUSTMENT, amount,
+                reservationId, supplierOrderId, invoiceId, description, null);
+    }
 }

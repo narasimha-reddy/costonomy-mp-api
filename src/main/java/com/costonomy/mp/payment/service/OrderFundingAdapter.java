@@ -273,6 +273,23 @@ public class OrderFundingAdapter implements OrderFundingPort {
     }
 
     /**
+     * A doorstep rejection on a captured card payment (D-124): a refund to the wallet, withdrawable (D-104),
+     * keyed so a repeat refunds nothing more. A payment still being collected cannot be refunded yet and the
+     * refund service says so with a retryable conflict; nothing is written in that case.
+     */
+    @Override
+    @Transactional
+    public void reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
+                                    String key, Long actorId, String reason) {
+        var payment = payments.findBySupplierOrderId(supplierOrderId)
+                .orElseThrow(() -> new com.costonomy.mp.common.error.BusinessException(
+                        com.costonomy.mp.common.error.ErrorCode.PAYMENT_STATE_CONFLICT,
+                        "This order has no payment to refund."));
+        refundService.refundToWallet(actorId, payment.getId(), amount, RefundReason.DOORSTEP_REJECTION,
+                reason, key);
+    }
+
+    /**
      * The provider's publishable key.
      *
      * <p>Read from the adapter rather than configuration so there is no property a

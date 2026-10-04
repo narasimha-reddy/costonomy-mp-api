@@ -71,6 +71,14 @@ public class SupplierOrderItem extends BaseEntity {
     @Column(name = "dispatched_weight", precision = 19, scale = 4)
     private BigDecimal dispatchedWeight;
 
+    /**
+     * The quantity the buyer is billed for on a weighed catch-weight line: the scale reading, capped at
+     * what was accepted (D-124). Null until weighed. This, not {@code dispatchedWeight}, is the basis for
+     * the line's figures and for what receiving checks against.
+     */
+    @Column(name = "billable_quantity", precision = 19, scale = 4)
+    private BigDecimal billableQuantity;
+
     @Column(name = "weighed_at")
     private Instant weighedAt;
 

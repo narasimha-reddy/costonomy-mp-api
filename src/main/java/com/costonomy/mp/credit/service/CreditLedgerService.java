@@ -175,6 +175,32 @@ public class CreditLedgerService {
                 null);
     }
 
+    /**
+     * Bring a drawn order down to what it finally comes to (D-124): the invoice, what is drawn against the
+     * limit, and the reservation's record of it, together. Idempotent: it acts only on the difference.
+     */
+    @Transactional
+    public void reduceDrawnTo(Long supplierOrderId, BigDecimal finalPayable, String reason) {
+        var reservation = reservations.findBySupplierOrderId(supplierOrderId).orElse(null);
+        if (reservation == null || reservation.getStatus() != CreditReservationStatus.UTILIZED) {
+            // Not a credit order, or not drawn yet (nothing to bring down).
+            return;
+        }
+        var reduction = invoices.reduceTo(supplierOrderId, finalPayable);
+        if (reduction == null) {
+            return;
+        }
+        ledger.reduceDrawn(reduction.agreementId(), reservation.getId(), supplierOrderId,
+                reduction.invoiceId(), reduction.reduced(), reason);
+        reservation.setUtilizedAmount(reservation.getUtilizedAmount().subtract(reduction.reduced()));
+        reservations.save(reservation);
+
+        outbox.publish("CreditAdjusted", "CREDIT_AGREEMENT", reduction.agreementId(),
+                Map.of("supplierOrderId", supplierOrderId,
+                        "reduced", reduction.reduced().toPlainString()),
+                null);
+    }
+
     /** The order will never be supplied. Give the whole hold back. */
     @Transactional
     public void release(Long supplierOrderId, String reason) {

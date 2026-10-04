@@ -182,34 +182,6 @@ public class WalletService {
                 debit.getAmount(), reason, null, null);
     }
 
-    /**
-     * Credit or debit adjustment for catch-weight reconciliation or doorstep line rejection.
-     * Returns true if applied, false if a debit could not be covered by wallet balance.
-     */
-    @Transactional
-    public boolean recordAdjustment(Long outletId, Long supplierOrderId, WalletDirection direction,
-                                    BigDecimal amount, String reason) {
-        if (amount == null || amount.signum() <= 0) {
-            return true;
-        }
-        var wallet = forOutlet(outletId);
-        if (direction == WalletDirection.CREDIT) {
-            wallets.credit(wallet.getId(), amount);
-        } else {
-            if (wallets.debit(wallet.getId(), amount) == 0) {
-                log.warn("Wallet {} could not cover adjustment debit {} for order {}",
-                        wallet.getId(), amount, supplierOrderId);
-                return false;
-            }
-        }
-        wallets.flush();
-
-        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
-        record(refreshed, supplierOrderId, direction, WalletEntryKind.ORDER_ADJUSTMENT,
-                amount, reason, null, null);
-        return true;
-    }
-
     /** Whether this order's money has been taken and not given back. */
     @Transactional(readOnly = true)
     public boolean isPaid(Long supplierOrderId) {
@@ -298,7 +270,13 @@ public class WalletService {
         var returned = entries.findBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.ORDER_REFUND)
                 .map(WalletTransaction::getAmount).orElse(BigDecimal.ZERO);
         var refunded = entries.sumBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.DISPUTE_REFUND);
-        return paid.subtract(returned).subtract(refunded).max(BigDecimal.ZERO);
+        // An adjustment credit has already given part of the order's money back; an adjustment debit took more.
+        var adjustedBack = entries.sumBySupplierOrderIdAndKindAndDirection(
+                supplierOrderId, WalletEntryKind.ORDER_ADJUSTMENT, WalletDirection.CREDIT);
+        var adjustedMore = entries.sumBySupplierOrderIdAndKindAndDirection(
+                supplierOrderId, WalletEntryKind.ORDER_ADJUSTMENT, WalletDirection.DEBIT);
+        return paid.add(adjustedMore).subtract(returned).subtract(refunded).subtract(adjustedBack)
+                .max(BigDecimal.ZERO);
     }
 
     /**
@@ -342,14 +320,94 @@ public class WalletService {
     private static BigDecimal refundableFrom(List<WalletTransactionRepository.LedgerLine> ledger) {
         var paid = sumOf(ledger, WalletEntryKind.ORDER_PAYMENT);
         var returned = sumOf(ledger, WalletEntryKind.ORDER_REFUND);
-        var refunded = sumOf(ledger, WalletEntryKind.DISPUTE_REFUND);
-        return paid.subtract(returned).subtract(refunded).max(BigDecimal.ZERO);
+        var refunded = sumOf(ledger, WalletEntryKind.DISPUTE_REFUND, null);
+        var adjustedBack = sumOf(ledger, WalletEntryKind.ORDER_ADJUSTMENT, WalletDirection.CREDIT);
+        var adjustedMore = sumOf(ledger, WalletEntryKind.ORDER_ADJUSTMENT, WalletDirection.DEBIT);
+        return paid.add(adjustedMore).subtract(returned).subtract(refunded).subtract(adjustedBack)
+                .max(BigDecimal.ZERO);
     }
 
     private static BigDecimal sumOf(List<WalletTransactionRepository.LedgerLine> ledger, WalletEntryKind kind) {
-        return ledger.stream().filter(line -> kind.name().equals(line.getKind()))
+        return sumOf(ledger, kind, null);
+    }
+
+    /** @param direction restrict to credits or debits, or null for either */
+    private static BigDecimal sumOf(List<WalletTransactionRepository.LedgerLine> ledger, WalletEntryKind kind,
+                                    WalletDirection direction) {
+        return ledger.stream()
+                .filter(line -> kind.name().equals(line.getKind()))
+                .filter(line -> direction == null || direction.name().equals(line.getDirection()))
                 .map(WalletTransactionRepository.LedgerLine::getAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /**
+     * The order is ready: give back what it was paid beyond what it finally comes to (D-124).
+     *
+     * <p>The wallet paid the accepted total when the order was created. A catch-weight shortfall made the
+     * final payable smaller, and this returns the difference in one credit, once: the reference is unique per
+     * order, so a repeated ready (a retry, a duplicate event) credits nothing. A wallet order that weighed in
+     * full, or has no catch-weight lines, owes nothing back and this writes nothing.
+     */
+    @Transactional
+    public void settleOrder(Long supplierOrderId, BigDecimal finalPayable) {
+        var debit = entries.findBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.ORDER_PAYMENT)
+                .orElse(null);
+        if (debit == null) {
+            return;
+        }
+        String reference = "order-settle-" + supplierOrderId;
+        lock(wallets.outletIdOf(debit.getWalletId()));
+        var ledger = entries.lockedLedgerOf(supplierOrderId);
+        if (ledger.stream().anyMatch(line -> reference.equals(line.getReference()))) {
+            return;
+        }
+        BigDecimal owedBack = debit.getAmount().subtract(finalPayable);
+        if (owedBack.signum() < 0) {
+            // The buyer would owe more than the wallet took. Weighing never raises a price, so this is a
+            // wrong figure upstream: refusing is better than a credit nobody can explain.
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "This order's final amount exceeds what the wallet paid for it.");
+        }
+        if (owedBack.signum() == 0) {
+            return;
+        }
+        creditOrderAdjustmentLocked(debit.getWalletId(), supplierOrderId, ledger, owedBack, reference,
+                "Order weighed lighter than ordered");
+    }
+
+    /**
+     * A reduction after the goods left (a doorstep rejection) on a wallet-paid order: back into the wallet,
+     * once per reference, never more than the order can still give back (D-124).
+     */
+    @Transactional
+    public void creditOrderAdjustment(Long supplierOrderId, BigDecimal amount, String reference, String reason) {
+        var debit = entries.findBySupplierOrderIdAndKind(supplierOrderId, WalletEntryKind.ORDER_PAYMENT)
+                .orElseThrow(() -> new BusinessException(ErrorCode.PAYMENT_STATE_CONFLICT,
+                        "This order wasn't paid from the wallet."));
+        lock(wallets.outletIdOf(debit.getWalletId()));
+        var ledger = entries.lockedLedgerOf(supplierOrderId);
+        if (ledger.stream().anyMatch(line -> reference.equals(line.getReference()))) {
+            return;
+        }
+        creditOrderAdjustmentLocked(debit.getWalletId(), supplierOrderId, ledger, amount, reference, reason);
+    }
+
+    /** The credit itself, with the wallet locked and the order's ledger read under that lock. */
+    private void creditOrderAdjustmentLocked(Long walletId, Long supplierOrderId,
+                                             List<WalletTransactionRepository.LedgerLine> ledger,
+                                             BigDecimal amount, String reference, String reason) {
+        BigDecimal refundable = refundableFrom(ledger);
+        if (amount.compareTo(refundable) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "At most ₹%s of this order can be refunded.".formatted(Rupees.of(refundable)));
+        }
+        wallets.credit(walletId, amount);
+        wallets.flush();
+
+        var refreshed = wallets.findById(walletId).orElseThrow();
+        record(refreshed, supplierOrderId, WalletDirection.CREDIT, WalletEntryKind.ORDER_ADJUSTMENT,
+                amount, reason, reference, null);
     }
 
     /**

@@ -52,6 +52,47 @@ public class CreditInvoiceService {
 
     private final CreditLedger ledger;
 
+    /** What {@link #reduceTo} changed. */
+    public record Reduction(Long invoiceId, Long agreementId, BigDecimal reduced) {
+    }
+
+    /**
+     * Bring an order's invoice down to what the order finally comes to (D-124).
+     *
+     * <p>State-based, so it is naturally idempotent: it reduces by the difference between the invoice's
+     * current amount and the target, and a second call finds no difference. It never raises an invoice, and
+     * never takes it below what has already been repaid: when a restaurant has paid more than the corrected
+     * figure, the rest is a matter between the two parties and is left alone, with a log line.
+     *
+     * @return what was reduced, or null when there is no invoice or nothing to reduce
+     */
+    @Transactional
+    public Reduction reduceTo(Long supplierOrderId, BigDecimal finalPayable) {
+        var invoice = invoices.findBySupplierOrderId(supplierOrderId).orElse(null);
+        if (invoice == null) {
+            return null;
+        }
+        BigDecimal difference = invoice.getAmount().subtract(finalPayable);
+        if (difference.signum() <= 0) {
+            return null;
+        }
+        BigDecimal reduced = difference.min(invoice.outstanding());
+        if (reduced.compareTo(difference) < 0) {
+            log.warn("Invoice {} for order {} can come down by only {} of {}: the rest is already repaid",
+                    invoice.getId(), supplierOrderId, reduced.toPlainString(), difference.toPlainString());
+        }
+        if (reduced.signum() <= 0) {
+            return null;
+        }
+        invoice.setAmount(invoice.getAmount().subtract(reduced));
+        if (invoice.outstanding().signum() == 0 && !invoice.getStatus().isSettled()) {
+            invoice.setStatus(CreditInvoiceStatus.PAID);
+            invoice.setSettledAt(Instant.now());
+        }
+        invoices.save(invoice);
+        return new Reduction(invoice.getId(), invoice.getCreditAgreementId(), reduced);
+    }
+
     /** Raise the invoice for a drawn-down order. */
     @Transactional
     public CreditInvoice issueFor(CreditReservation reservation, BigDecimal amount) {

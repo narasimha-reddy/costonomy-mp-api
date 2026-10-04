@@ -17,8 +17,7 @@ import com.costonomy.mp.trust.repository.ReceivingItemRepository;
 import com.costonomy.mp.trust.repository.ReceivingRepository;
 import com.costonomy.mp.trust.web.dto.TrustDtos;
 import com.costonomy.mp.procurement.domain.Pricing;
-import com.costonomy.mp.wallet.domain.WalletDirection;
-import com.costonomy.mp.wallet.service.WalletService;
+import com.costonomy.mp.procurement.service.OrderFunding;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -57,7 +56,7 @@ public class ReceivingService {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
-    private final WalletService walletService;
+    private final OrderFunding orderFunding;
     private final com.costonomy.mp.billing.service.TaxInvoiceService taxInvoiceService;
 
     @Transactional
@@ -136,21 +135,25 @@ public class ReceivingService {
                         "That line isn't part of this order.");
             }
 
-            BigDecimal accepted = line.acceptedQuantity() == null
-                    ? BigDecimal.ZERO : line.acceptedQuantity();
+            // What was billed and so what the buyer has to account for: the weighed quantity on a weighed
+            // catch-weight line, the accepted quantity otherwise (D-124). The accepted quantity stays on the
+            // order as committed; this is only what the three counts must add up to.
+            BigDecimal accepted = line.receivableQuantity();
             BigDecimal counted = answer.receivedQuantity()
                     .add(answer.damagedQuantity())
                     .add(answer.missingQuantity());
 
             if (counted.compareTo(accepted) != 0) {
                 // Refused rather than reconciled for them. Over-delivery included:
-                // the restaurant paid for the accepted quantity, and quietly
+                // the restaurant paid for the billed quantity, and quietly
                 // recording more would put stock on the books that nobody priced.
                 throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                        ("Received, damaged and missing must add up to the %s %s accepted "
+                        ("Received, damaged and missing must add up to the %s %s %s "
                                 + "for %s — you entered %s.")
                                 .formatted(accepted.stripTrailingZeros().toPlainString(),
-                                        line.unit(), line.productName(),
+                                        line.unit(), line.catchWeight() && line.billableQuantity() != null
+                                                ? "weighed" : "accepted",
+                                        line.productName(),
                                         counted.stripTrailingZeros().toPlainString()));
             }
 
@@ -179,11 +182,20 @@ public class ReceivingService {
             BigDecimal rejectedQty = answer.damagedQuantity().add(answer.missingQuantity());
             BigDecimal lineRefund = BigDecimal.ZERO;
             if (rejectedQty.compareTo(BigDecimal.ZERO) > 0) {
-                BigDecimal unitPrice = line.unitPrice() != null ? line.unitPrice() : BigDecimal.ZERO;
-                BigDecimal gstRate = line.gstRate() != null ? line.gstRate() : BigDecimal.ZERO;
-                BigDecimal val = Pricing.lineItemValue(unitPrice, rejectedQty);
-                BigDecimal gst = Pricing.lineGst(val, gstRate);
-                lineRefund = Pricing.lineTotal(val, gst);
+                if (rejectedQty.compareTo(accepted) == 0 && line.lineTotal() != null) {
+                    // The whole line: exactly what it was billed at, so rounding can never refund a paisa
+                    // more than was charged.
+                    lineRefund = line.lineTotal();
+                } else {
+                    BigDecimal unitPrice = line.unitPrice() != null ? line.unitPrice() : BigDecimal.ZERO;
+                    BigDecimal gstRate = line.gstRate() != null ? line.gstRate() : BigDecimal.ZERO;
+                    BigDecimal val = Pricing.lineItemValue(unitPrice, rejectedQty);
+                    BigDecimal gst = Pricing.lineGst(val, gstRate);
+                    lineRefund = Pricing.lineTotal(val, gst);
+                    if (line.lineTotal() != null) {
+                        lineRefund = lineRefund.min(line.lineTotal());
+                    }
+                }
                 totalRefundAmount = totalRefundAmount.add(lineRefund);
             }
             String rejectionReason = answer.rejectionReason() != null ? answer.rejectionReason()
@@ -200,14 +212,19 @@ public class ReceivingService {
         receiving.setHasDiscrepancy(discrepancy);
         receivings.save(receiving);
 
-        // Process instant doorstep refund & statutory credit note if items were rejected
+        // A doorstep rejection takes money off what the buyer pays, and the supplier bears it through the final
+        // payable (D-124). It goes back by the funding method the order was paid with, through the one port,
+        // never straight into the wallet: card money returns as a withdrawable refund, wallet money to the
+        // wallet, and a credit order's invoice comes down.
         String creditNoteNumber = null;
         if (totalRefundAmount.compareTo(BigDecimal.ZERO) > 0) {
-            directory.updateOrderFinancialReconciliation(supplierOrderId, totalRefundAmount);
+            BigDecimal newFinalPayable = directory.updateOrderFinancialReconciliation(supplierOrderId, totalRefundAmount);
             var creditNote = taxInvoiceService.generateCreditNoteForRejection(supplierOrderId, "DOORSTEP_REJECTION");
-            creditNoteNumber = creditNote != null ? creditNote.creditNoteNumber() : ("CN-" + order.orderNumber() + "-01");
-            walletService.recordAdjustment(order.outletId(), supplierOrderId, WalletDirection.CREDIT,
-                    totalRefundAmount, "Doorstep rejection refund for " + order.orderNumber() + " (" + creditNoteNumber + ")");
+            creditNoteNumber = creditNote != null ? creditNote.creditNoteNumber() : null;
+            orderFunding.reduceAfterDispatch(supplierOrderId, totalRefundAmount, newFinalPayable,
+                    "doorstep-" + supplierOrderId, actorId,
+                    "Doorstep rejection for " + order.orderNumber()
+                            + (creditNoteNumber == null ? "" : " (" + creditNoteNumber + ")"));
         }
 
         // → COMPLETED. The order is finished because the restaurant says the goods
@@ -280,7 +297,9 @@ public class ReceivingService {
         BigDecimal totalRefund = items.stream()
                 .map(item -> item.refundAmount() != null ? item.refundAmount() : BigDecimal.ZERO)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        String cnNumber = totalRefund.signum() > 0 ? "CN-" + order.orderNumber() + "-01" : null;
+        // The number the credit note was actually issued under, or none: a made-up one on a response is a document
+        // reference that does not exist.
+        String cnNumber = totalRefund.signum() > 0 ? directory.creditNoteNumberFor(receiving.getSupplierOrderId()) : null;
 
         return new TrustDtos.ReceivingResponse(
                 receiving.getId(), receiving.getSupplierOrderId(), order.orderNumber(),
