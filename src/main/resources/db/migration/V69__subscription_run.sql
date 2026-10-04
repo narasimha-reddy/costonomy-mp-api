@@ -43,6 +43,7 @@ CREATE TABLE subscription_run (
     attempts          INT           NOT NULL DEFAULT 1,
     created_at        TIMESTAMP(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     updated_at        TIMESTAMP(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    version           BIGINT        NOT NULL DEFAULT 0,
     CONSTRAINT fk_subscription_run_subscription FOREIGN KEY (subscription_id) REFERENCES subscription (id),
     CONSTRAINT fk_subscription_run_order FOREIGN KEY (supplier_order_id) REFERENCES supplier_order (id),
     CONSTRAINT uk_subscription_run UNIQUE (subscription_id, delivery_date),
