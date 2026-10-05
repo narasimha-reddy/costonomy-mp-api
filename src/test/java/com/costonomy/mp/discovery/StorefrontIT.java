@@ -188,19 +188,22 @@ class StorefrontIT extends AbstractIntegrationTest {
         @DisplayName("lists who delivers here with no search term at all")
         void listsWithoutATerm() throws Exception {
             var outlet = newOutlet();
-            // Named to sort first. The directory takes the first 100 suppliers by
-            // name before it sorts by distance (StorefrontService, "limit 100"), and
-            // the suite shares one database — so a store named later in the
-            // alphabet falls off the page once enough other tests have run, and a
-            // doesNotContain below would then pass without checking anything.
-            // That cap is a product question, recorded in D-101; this keeps the
-            // test about what it is about.
+            // The suite shares one database, so many stores sit at the same distance and this one may not be on the
+            // first page. Read every page (D-139) rather than depend on where it sorts.
             String run = "000 " + System.nanoTime();
             newStore(run + " ABC Foods", NEARBY_LAT, NEARBY_LON);
             newStore(run + " Chennai Foods", FAR_LAT, FAR_LON);
 
-            var page = directory(outlet, "");
-            var names = page.get("suppliers").findValuesAsText("supplierName");
+            var names = new java.util.ArrayList<String>();
+            int offset = 0;
+            while (true) {
+                var page = directory(outlet, "&limit=100&offset=" + offset);
+                names.addAll(page.get("suppliers").findValuesAsText("supplierName"));
+                if (page.get("nextOffset").isNull()) {
+                    break;
+                }
+                offset = page.get("nextOffset").asInt();
+            }
 
             assertThat(names).contains(run + " ABC Foods");
             // Five hundred kilometres away is not a supplier of yours.
