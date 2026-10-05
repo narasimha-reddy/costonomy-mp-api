@@ -5511,3 +5511,27 @@ claiming anything. Wallet money must not be taken before the payout to the suppl
 
 **Tests.** `CreditWalletRepayIT` (side effects of every path and refusal, concurrency, lock order, status rules, history and
 detail), `CreditWalletRepayDisabledIT`, `NotificationRulesTest`, `ErrorContractTest`.
+
+## D-124 — Restaurant credit reads: attention, due states, invoice detail and a statement
+
+**Decision.** The restaurant's Credit screens get what they need from the server, read-only and additive. The app does no
+date or money arithmetic: it shows states and numbers, in India time (`creditClock`).
+
+- `GET /outlets/{id}/credit/attention` returns `{overdue, dueSoon}` and no amounts (Home shows a dot, not a balance).
+  `overdue` is any invoice of the outlet with status OVERDUE; `dueSoon` is any ISSUED or PARTIALLY_PAID invoice due on or
+  before today + 3, so an overdue one is never also "due soon". Two `exists` queries on `ix_credit_invoice_outlet_status`.
+- Every invoice carries `dueState` (PAID, WRITTEN_OFF, OVERDUE, IN_GRACE, DUE_TODAY, DUE_SOON, DUE_LATER) and `daysToDue`
+  (negative once past due, null when settled), from one pure class, `CreditDueState`. IN_GRACE is past the due date and
+  not past `overdue_after`; an invoice past `overdue_after` that the sweep has not marked yet already reads OVERDUE.
+- The summary adds, per agreement, `nextDueDate`, `nextDueAmount` (outstanding on that date) and `openInvoices`, and
+  `walletRepayEnabled` (D-123's flag) at the top so the app can hide "Pay from wallet". Nothing existing changed.
+- `GET /credit/invoices/{id}`: the invoice, its order number, supplier and store, and its payments newest first, with
+  `walletEntryId` for a wallet payment. Either side (CREDIT_VIEW at the outlet, or CREDIT_VIEW / CREDIT_REQUEST_VIEW at the
+  store); anyone else gets 404.
+- `GET /credit/agreements/{id}/statement?from&to`: India calendar days, both inclusive, default the last 90 days, at most
+  366 days. Each line's `amount` is the change in what is owed, taken from the ledger's `balance_utilized_after`, so
+  `openingOwed + sum(amount) = closingOwed` always holds. RESERVE rows, a RELEASE of a hold and a LIMIT_CHANGE change nothing
+  owed and are left out (a RELEASE would otherwise break the sum); labels are "Order on credit", "Repayment", "Released",
+  "Adjustment".
+
+**Tests.** `CreditDueStateTest`, `CreditRestaurantReadsIT`, `CreditWalletRepayDisabledIT`.

@@ -82,7 +82,11 @@ final class CreditWalletSupport {
 
     /** A restaurant and a supplier with a live line between them (supplier offers credit, approves as asked). */
     Line creditLine(String limit, Map<String, Object> approval) throws Exception {
-        var buyer = newBuyer();
+        return creditLine(newBuyer(), limit, approval);
+    }
+
+    /** A new supplier's live line to an existing buyer's outlet. */
+    Line creditLine(Buyer buyer, String limit, Map<String, Object> approval) throws Exception {
         var seller = newSeller();
         mvc.perform(MockMvcRequestBuilders
                 .put("/api/v1/supplier-stores/" + seller.storeId() + "/credit-policy")

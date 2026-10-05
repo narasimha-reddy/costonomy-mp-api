@@ -53,6 +53,19 @@ class CreditWalletRepayDisabledIT extends AbstractIntegrationTest {
     }
 
     @Test
+    @DisplayName("the summary tells the app to hide 'Pay from wallet' while the flag is off")
+    void summaryReportsFlagOff() throws Exception {
+        var s = new CreditWalletSupport(mvc, json, jdbc);
+        var line = s.creditLine("200000");
+        var json = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/api/v1/outlets/" + line.buyer().outletId() + "/credit/summary")
+                        .header("Authorization", "Bearer " + line.buyer().token()))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(this.json.readTree(json).at("/data/walletRepayEnabled").isMissingNode()).isFalse();
+        assertThat(this.json.readTree(json).at("/data/walletRepayEnabled").asBoolean()).isFalse();
+    }
+
+    @Test
     @DisplayName("the flag defaults to off outside the tests that turn it on")
     void flagDefaultsOff() {
         assertThat(flag).isFalse();

@@ -4,6 +4,7 @@ import com.costonomy.mp.common.api.ApiResponse;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.credit.service.CreditAgreementService;
+import com.costonomy.mp.credit.service.CreditReadService;
 import com.costonomy.mp.credit.service.CreditRepaymentService;
 import com.costonomy.mp.credit.service.CreditWalletRepaymentService;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
@@ -34,6 +35,7 @@ public class CreditController {
     private final CreditAgreementService agreements;
     private final CreditRepaymentService repayments;
     private final CreditWalletRepaymentService walletRepayments;
+    private final CreditReadService reads;
 
     // ── Restaurant ───────────────────────────────────────────────────────
 
@@ -97,6 +99,18 @@ public class CreditController {
     @Operation(summary = "An outlet's credit agreements")
     public ApiResponse<List<CreditDtos.AgreementResponse>> forOutlet(@PathVariable Long outletId) {
         return ApiResponse.ok(agreements.forOutlet(ActorContext.requireUserId(), outletId));
+    }
+
+    @GetMapping("/outlets/{outletId}/credit/attention")
+    @Operation(summary = "Whether the Home Credit tile needs attention",
+            description = """
+                    `{overdue, dueSoon}` and nothing else: Home shows a dot, never a balance. `overdue` is any
+                    invoice of this outlet marked overdue; `dueSoon` is any open invoice due within the next
+                    three days (India time, grace-period invoices included) that is not already overdue.
+                    Needs `CREDIT_VIEW` on the outlet; another outlet's id is a 404.
+                    """)
+    public ApiResponse<CreditDtos.AttentionResponse> attention(@PathVariable Long outletId) {
+        return ApiResponse.ok(reads.attention(ActorContext.requireUserId(), outletId));
     }
 
     // ── Supplier ─────────────────────────────────────────────────────────
@@ -172,6 +186,36 @@ public class CreditController {
     @Operation(summary = "Invoices raised against this credit line")
     public ApiResponse<List<CreditDtos.InvoiceResponse>> invoices(@PathVariable Long id) {
         return ApiResponse.ok(agreements.invoicesFor(ActorContext.requireUserId(), id));
+    }
+
+    @GetMapping("/credit/invoices/{id}")
+    @Operation(summary = "One invoice with its payments",
+            description = """
+                    The invoice with `dueState` and `daysToDue` worked out here in India time, the supplier order's
+                    number, who it is from, and every payment against it newest first. A payment made from the
+                    wallet carries `walletEntryId`, the wallet ledger entry that paid it. Either side may read it;
+                    anyone else gets a 404.
+                    """)
+    public ApiResponse<CreditDtos.InvoiceDetailResponse> invoice(@PathVariable Long id) {
+        return ApiResponse.ok(reads.invoice(ActorContext.requireUserId(), id));
+    }
+
+    @GetMapping("/credit/agreements/{id}/statement")
+    @Operation(summary = "A statement of what was owed on this credit line",
+            description = """
+                    Orders on credit, repayments, releases and adjustments between two India calendar days, both
+                    inclusive (`from`/`to` as YYYY-MM-DD, default the last 90 days), newest first. Each line has a
+                    signed `amount` and `owedAfter`; `openingOwed + sum(amount) = closingOwed`. Holds and other
+                    movements that change nothing owed are left out. More than 366 days, or `to` before `from`,
+                    is a validation error. Same access as the agreement's ledger.
+                    """)
+    public ApiResponse<CreditDtos.StatementResponse> statement(
+            @PathVariable Long id,
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(
+                    iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate from,
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(
+                    iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate to) {
+        return ApiResponse.ok(reads.statement(ActorContext.requireUserId(), id, from, to));
     }
 
     @PostMapping("/credit/invoices/{id}/payments")

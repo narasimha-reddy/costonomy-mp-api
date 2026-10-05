@@ -64,4 +64,14 @@ public interface CreditInvoiceRepository extends JpaRepository<CreditInvoice, Lo
             """)
     List<CreditInvoice> findNewlyOverdue(@Param("openStatuses") List<CreditInvoiceStatus> openStatuses,
                                          @Param("today") LocalDate today);
+
+    /** Does the outlet have an invoice in this status? Matches ix_credit_invoice_outlet_status (outlet_id, status). */
+    boolean existsByOutletIdAndStatus(Long outletId, CreditInvoiceStatus status);
+
+    /**
+     * Is any open invoice of the outlet due on or before {@code latestDue}? The caller passes only the open,
+     * not-yet-overdue statuses, so the same index (outlet_id, status) narrows it before the date is looked at.
+     */
+    boolean existsByOutletIdAndStatusInAndDueDateLessThanEqual(Long outletId, List<CreditInvoiceStatus> statuses,
+                                                              LocalDate latestDue);
 }

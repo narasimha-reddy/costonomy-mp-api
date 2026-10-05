@@ -11,4 +11,8 @@ public interface CreditPaymentRepository extends JpaRepository<CreditPayment, Lo
     Optional<CreditPayment> findByIdempotencyKey(String idempotencyKey);
 
     List<CreditPayment> findByCreditInvoiceIdOrderByPaidAtAsc(Long creditInvoiceId);
+
+    List<CreditPayment> findByCreditInvoiceIdOrderByIdAsc(Long creditInvoiceId);
+
+    List<CreditPayment> findByCreditInvoiceIdOrderByPaidAtDescIdDesc(Long creditInvoiceId);
 }

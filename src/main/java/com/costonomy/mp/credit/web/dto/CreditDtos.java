@@ -1,7 +1,9 @@
 package com.costonomy.mp.credit.web.dto;
 
 import com.costonomy.mp.credit.domain.CreditAgreementStatus;
+import com.costonomy.mp.credit.domain.CreditDueState;
 import com.costonomy.mp.credit.domain.CreditInvoiceStatus;
+import com.costonomy.mp.credit.domain.CreditPaymentSource;
 import com.costonomy.mp.credit.domain.CreditRequestStatus;
 import com.costonomy.mp.credit.domain.CreditReservationStatus;
 import com.costonomy.mp.credit.domain.CreditTransactionType;
@@ -116,7 +118,13 @@ public final class CreditDtos {
             String suspensionReason,
             boolean canFund,
             Instant activatedAt,
-            RequestResponse latestRequest) {
+            RequestResponse latestRequest,
+            /** The earliest due date among open invoices, or null when nothing is owed. */
+            LocalDate nextDueDate,
+            /** The outstanding total of the open invoices due on {@code nextDueDate}, or null. */
+            BigDecimal nextDueAmount,
+            /** How many invoices are still open. */
+            int openInvoices) {
     }
 
     public record RequestResponse(
@@ -143,7 +151,9 @@ public final class CreditDtos {
             BigDecimal available,
             BigDecimal due,
             BigDecimal overdue,
-            List<AgreementResponse> agreements) {
+            List<AgreementResponse> agreements,
+            /** Whether repaying from the wallet is switched on; the app hides 'Pay from wallet' when false. */
+            boolean walletRepayEnabled) {
     }
 
     public record LedgerEntryResponse(
@@ -183,7 +193,78 @@ public final class CreditDtos {
             LocalDate dueDate,
             LocalDate overdueAfter,
             Instant issuedAt,
-            Instant settledAt) {
+            Instant settledAt,
+            /** What to show about the due date; computed here in India time, never by the app. */
+            CreditDueState dueState,
+            /** Days until the due date (negative once past it); null for a settled invoice. */
+            Integer daysToDue) {
+    }
+
+    /** One payment against an invoice. */
+    public record InvoicePaymentResponse(
+            Long id,
+            BigDecimal amount,
+            CreditPaymentSource source,
+            String method,
+            String reference,
+            Instant paidAt,
+            /** The wallet ledger entry that funded it, for a WALLET payment; null otherwise. */
+            Long walletEntryId) {
+    }
+
+    /** An invoice with who it is from, which order it is for, and what has been paid against it. */
+    public record InvoiceDetailResponse(
+            Long id,
+            String invoiceNumber,
+            Long agreementId,
+            Long supplierOrderId,
+            CreditInvoiceStatus status,
+            BigDecimal amount,
+            BigDecimal paidAmount,
+            BigDecimal outstanding,
+            LocalDate dueDate,
+            LocalDate overdueAfter,
+            Instant issuedAt,
+            Instant settledAt,
+            CreditDueState dueState,
+            Integer daysToDue,
+            String orderNumber,
+            String supplierName,
+            String storeName,
+            List<InvoicePaymentResponse> payments) {
+    }
+
+    /** What the Home Credit tile needs: whether to show the attention dot. No amounts. */
+    public record AttentionResponse(boolean overdue, boolean dueSoon) {
+    }
+
+    /**
+     * One line of a statement. {@code amount} is the signed change to what is owed (+ an order, - a repayment),
+     * and {@code owedAfter} what was owed once it was applied.
+     */
+    public record StatementLine(
+            Instant at,
+            CreditTransactionType type,
+            String label,
+            BigDecimal amount,
+            BigDecimal owedAfter,
+            Long supplierOrderId,
+            String orderNumber,
+            Long creditInvoiceId,
+            String invoiceNumber,
+            CreditPaymentSource source,
+            String method,
+            String reference,
+            Long walletEntryId) {
+    }
+
+    public record StatementResponse(
+            Long agreementId,
+            LocalDate from,
+            LocalDate to,
+            BigDecimal openingOwed,
+            BigDecimal closingOwed,
+            List<StatementLine> lines) {
     }
 
     // ── Repayment ────────────────────────────────────────────────────────

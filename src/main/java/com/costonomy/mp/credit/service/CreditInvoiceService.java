@@ -304,10 +304,22 @@ public class CreditInvoiceService {
     public Dues duesFor(Long agreementId) {
         BigDecimal due = BigDecimal.ZERO;
         BigDecimal overdue = BigDecimal.ZERO;
+        LocalDate nextDueDate = null;
+        BigDecimal nextDueAmount = null;
+        int open = 0;
 
+        // Ascending due date, so the first open invoice is the earliest and the ones sharing its date follow it.
         for (CreditInvoice invoice : invoices.findByCreditAgreementIdOrderByDueDateAsc(agreementId)) {
             if (invoice.getStatus().isSettled()) {
                 continue;
+            }
+            open++;
+            if (nextDueDate == null) {
+                nextDueDate = invoice.getDueDate();
+                nextDueAmount = BigDecimal.ZERO;
+            }
+            if (invoice.getDueDate().equals(nextDueDate)) {
+                nextDueAmount = nextDueAmount.add(invoice.outstanding());
             }
             due = due.add(invoice.outstanding());
             if (invoice.getStatus() == CreditInvoiceStatus.OVERDUE) {
@@ -318,10 +330,40 @@ public class CreditInvoiceService {
         // separately because they answer different questions — "what do I owe" and
         // "what am I late on" — and a restaurant reading them as disjoint would
         // think they owed the sum of the two.
-        return new Dues(due, overdue);
+        return new Dues(due, overdue, nextDueDate, nextDueAmount, open);
     }
 
-    public record Dues(BigDecimal due, BigDecimal overdue) {
+    /**
+     * @param nextDueDate   the earliest due date among open invoices, null when nothing is owed
+     * @param nextDueAmount what is outstanding on that date, null when nothing is owed
+     */
+    public record Dues(BigDecimal due, BigDecimal overdue, LocalDate nextDueDate, BigDecimal nextDueAmount,
+                       int openInvoices) {
+        public Dues(BigDecimal due, BigDecimal overdue) {
+            this(due, overdue, null, null, 0);
+        }
+    }
+
+    /** An invoice as the app reads it, with the due state worked out against today's India date. */
+    public CreditDtos.InvoiceResponse toInvoiceResponse(CreditInvoice invoice) {
+        LocalDate today = LocalDate.now(clock);
+        return new CreditDtos.InvoiceResponse(
+                invoice.getId(), invoice.getInvoiceNumber(),
+                invoice.getCreditAgreementId(), invoice.getSupplierOrderId(),
+                invoice.getStatus(), invoice.getAmount(), invoice.getPaidAmount(),
+                invoice.outstanding(), invoice.getDueDate(), invoice.getOverdueAfter(),
+                invoice.getIssuedAt(), invoice.getSettledAt(),
+                CreditDueState.of(invoice.getStatus(), invoice.getDueDate(), invoice.getOverdueAfter(), today),
+                CreditDueState.daysToDue(invoice.getStatus(), invoice.getDueDate(), today));
+    }
+
+    /** Today in India, the day every due state is measured against. */
+    public LocalDate today() {
+        return LocalDate.now(clock);
+    }
+
+    public java.time.ZoneId zone() {
+        return clock.getZone();
     }
 
     private CreditDtos.PaymentResponse toResponse(CreditPayment payment) {

@@ -57,6 +57,9 @@ public class CreditAgreementService {
     private final AuditService auditService;
     private final OutboxService outbox;
 
+    @org.springframework.beans.factory.annotation.Value("${costonomy.mp.credit.wallet-repay.enabled:false}")
+    private boolean walletRepayEnabled;
+
     // ── The restaurant's side ────────────────────────────────────────────
 
     /** Ask a supplier store for credit at an outlet. Doc 04 §13. */
@@ -488,7 +491,7 @@ public class CreditAgreementService {
 
         return new CreditDtos.SummaryResponse(outletId,
                 total.approvedLimit(), total.reserved(), total.utilized(), total.available(),
-                total.due(), total.overdue(), responses);
+                total.due(), total.overdue(), responses, walletRepayEnabled);
     }
 
     @Transactional(readOnly = true)
@@ -507,12 +510,7 @@ public class CreditAgreementService {
     public List<CreditDtos.InvoiceResponse> invoicesFor(Long actorId, Long agreementId) {
         loadForEitherSide(actorId, agreementId);
         return invoices.findByCreditAgreementIdOrderByDueDateAsc(agreementId).stream()
-                .map(invoice -> new CreditDtos.InvoiceResponse(
-                        invoice.getId(), invoice.getInvoiceNumber(),
-                        invoice.getCreditAgreementId(), invoice.getSupplierOrderId(),
-                        invoice.getStatus(), invoice.getAmount(), invoice.getPaidAmount(),
-                        invoice.outstanding(), invoice.getDueDate(), invoice.getOverdueAfter(),
-                        invoice.getIssuedAt(), invoice.getSettledAt()))
+                .map(invoiceService::toInvoiceResponse)
                 .toList();
     }
 
@@ -589,7 +587,7 @@ public class CreditAgreementService {
      * let a caller walk ids and map which restaurants have credit with which
      * suppliers, which is commercially sensitive in a way order ids are not.
      */
-    private CreditAgreement loadForEitherSide(Long actorId, Long agreementId) {
+    public CreditAgreement loadForEitherSide(Long actorId, Long agreementId) {
         var agreement = agreements.findById(agreementId)
                 .orElseThrow(() -> new NotFoundException("CreditAgreement", agreementId));
 
@@ -655,6 +653,7 @@ public class CreditAgreementService {
                         request.getSupplierStoreId(), request.getRequestedLimit(),
                         request.getRequestedPeriodDays(), request.getPurpose(), request.getNote(),
                         request.getStatus(), request.getResponseNote(),
-                        request.getRespondedAt(), request.getCreatedAt()));
+                        request.getRespondedAt(), request.getCreatedAt()),
+                dues.nextDueDate(), dues.nextDueAmount(), dues.openInvoices());
     }
 }
