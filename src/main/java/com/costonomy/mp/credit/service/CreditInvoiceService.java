@@ -163,6 +163,7 @@ public class CreditInvoiceService {
         payment.setPaidAt(request.paidAt() == null ? Instant.now() : request.paidAt());
         payment.setRecordedBy(actorId);
         payment.setIdempotencyKey(idempotencyKey);
+        payment.setSource(CreditPaymentSource.SUPPLIER_RECORDED);
         payments.save(payment);
 
         invoice.setPaidAmount(invoice.getPaidAmount().add(request.amount()));

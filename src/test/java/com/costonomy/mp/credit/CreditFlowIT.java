@@ -868,6 +868,21 @@ class CreditFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("a payment the supplier records is marked SUPPLIER_RECORDED, with no repayment or claim behind it")
+        void supplierRecordedPaymentKeepsItsSource() throws Exception {
+            var line = creditLine("200000");
+            orderOnCredit(line, "400", 100);
+            long invoiceId = firstInvoiceId(line);
+            recordPayment(line.seller(), invoiceId, "15000", UUID.randomUUID().toString());
+
+            var row = jdbc.queryForMap("select source, credit_repayment_id, claim_id "
+                    + "from credit_payment where credit_invoice_id = ?", invoiceId);
+            assertThat(row.get("source")).isEqualTo("SUPPLIER_RECORDED");
+            assertThat(row.get("credit_repayment_id")).isNull();
+            assertThat(row.get("claim_id")).isNull();
+        }
+
+        @Test
         @DisplayName("a system suspension lifts itself once the overdue is paid down to the maximum")
         void systemSuspensionLiftsWhenOverdueClears() throws Exception {
             var line = lineWithMaxOverdue("10000");

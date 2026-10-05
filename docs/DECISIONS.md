@@ -5416,3 +5416,31 @@ never notified about a payment they recorded themselves.
 
 **Tests.** `NotificationRulesTest.Catalogue` (coverage and shape), `CreditFlowIT.RestaurantNotifications` (in-app and push
 rows, no SMS row, for each event).
+
+## D-121 — Credit repayments: the tables and the CREDIT_REPAY permission
+
+**Problem.** A restaurant can only see its credit invoices; the supplier alone records that they were paid. Letting the
+restaurant repay, from its wallet now and by UPI, card or a claim later, needs somewhere to record the money movement and a
+permission to gate it, before any endpoint exists.
+
+**Decision (V54, groundwork only).** `credit_repayment` is one parent row per money movement: agreement, outlet, supplier
+store, amount (`CHECK amount > 0`), source (`WALLET`; `UPI` and `CARD` reserved), the funding `wallet_transaction_id` and
+`provider_payment_id` (each unique, so one debit or one provider payment backs one repayment) and a unique idempotency key.
+One repayment may settle several invoices, so the per-invoice rows stay in `credit_payment`, which gains `source`
+(`SUPPLIER_RECORDED` default, `WALLET`, `CLAIM_CONFIRMED`; 32 wide because `SUPPLIER_RECORDED` does not fit 16),
+`credit_repayment_id` (FK) and `claim_id` (no FK: the claims table arrives in V55). `UNIQUE (credit_repayment_id,
+credit_invoice_id)` stops one repayment paying an invoice twice; MySQL allows many NULLs, so the supplier's manual payments
+are unaffected and existing rows become `SUPPLIER_RECORDED` through the default. The supplier `recordPayment` path now sets
+that source explicitly.
+
+**Permission.** `CREDIT_REPAY` (scope RESTAURANT) goes to the roles that hold `QUICKSCAN_PAY` (D-106): `REST_OWNER`,
+`REST_ADMIN`, `REST_PURCHASE_MANAGER`, `REST_FINANCE_STAFF`, the roles that already handle the outlet's money. Never to
+supplier or operations roles: they cannot spend a restaurant's wallet.
+
+**Credit stays the supplier's.** Mandi never funds or guarantees credit; a repayment is the restaurant paying its own debt.
+
+**Not here.** No endpoint, service behaviour or notification rule; nothing is user-visible. `CreditRepaymentStatus` has only
+`COMPLETED` until asynchronous UPI and card repayments need more.
+
+**Tests.** `CreditRepaymentSchemaIT` (grants, CHECK, unique keys, NULL behaviour), `CreditFlowIT.Safety`
+(`supplierRecordedPaymentKeepsItsSource`), `PermissionCatalogIT` (the new constant).

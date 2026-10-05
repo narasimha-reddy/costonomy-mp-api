@@ -5,6 +5,8 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -57,6 +59,20 @@ public class CreditPayment {
     /** Doc 04 §21: a repeated recording must not reduce the debt twice. */
     @Column(name = "idempotency_key", nullable = false, length = 200)
     private String idempotencyKey;
+
+    /** Who produced this payment: the supplier recording it, a wallet repayment, or a confirmed claim. D-121. */
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(name = "source", nullable = false, length = 16)
+    private CreditPaymentSource source = CreditPaymentSource.SUPPLIER_RECORDED;
+
+    /** The repayment this row belongs to; null for a payment the supplier recorded. */
+    @Column(name = "credit_repayment_id")
+    private Long creditRepaymentId;
+
+    /** The claim this payment confirmed, if any. No foreign key until the claims table exists. */
+    @Column(name = "claim_id")
+    private Long claimId;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

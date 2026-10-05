@@ -39,6 +39,8 @@ public final class Permissions {
     public static final String WALLET_WITHDRAW = "WALLET_WITHDRAW";
     /** Pay a shop by QR from the wallet. D-106, V40. */
     public static final String QUICKSCAN_PAY = "QUICKSCAN_PAY";
+    /** Repay a supplier's credit invoice from the restaurant side. D-121, V54. */
+    public static final String CREDIT_REPAY = "CREDIT_REPAY";
 
     // Supplier
     public static final String SUPPLIER_VIEW = "SUPPLIER_VIEW";
