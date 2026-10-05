@@ -55,6 +55,7 @@ public class CreditReadService {
     private final CreditTransactionRepository transactions;
     private final CreditAgreementService agreements;
     private final CreditInvoiceService invoiceService;
+    private final CreditClaimService claimService;
     private final CreditDirectory directory;
     private final AccessControlService accessControl;
 
@@ -99,7 +100,8 @@ public class CreditReadService {
                 order == null ? null : order.orderNumber(),
                 store == null ? null : store.supplierName(),
                 store == null ? null : store.storeName(),
-                paymentResponses);
+                paymentResponses,
+                claimService.forInvoice(invoice));
     }
 
     /** Either party may read it; nobody else may learn it exists (404, like the agreement endpoints). */

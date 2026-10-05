@@ -124,6 +124,13 @@ public enum ErrorCode {
     CREDIT_OVERPAYMENT(HttpStatus.UNPROCESSABLE_ENTITY,
             "That's more than you owe."),
 
+    /**
+     * A claim that "I paid" is not in a state that allows this (D-125): it was already confirmed, rejected or
+     * withdrawn, or the invoice it points at is already settled. Nothing was changed.
+     */
+    CREDIT_CLAIM_STATE(HttpStatus.CONFLICT,
+            "This payment claim has already been dealt with."),
+
     // ── Payments (422, 409) ──────────────────────────────────────────────
     PAYMENT_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
             "The payment didn't go through."),

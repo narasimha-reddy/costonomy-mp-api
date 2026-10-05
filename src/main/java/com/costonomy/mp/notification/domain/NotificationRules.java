@@ -328,6 +328,25 @@ public final class NotificationRules {
                 "Payment received",
                 "{restaurantName} paid {amount} through Mandi.", "CREDIT_AGREEMENT"));
 
+        // "I paid" claims (D-125). The supplier is asked to check; the restaurant is told the answer. Never SMS and
+        // never critical: nothing here is owed today. A confirmation is told once, here, and not also as
+        // CreditRepaymentRecorded, whose text would say the same thing twice.
+        add(rules, new NotificationRule(CreditEvents.CLAIM_SUBMITTED, SUPPLIER_STORE, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment to confirm",
+                "{restaurantName} says it paid {amount}. Check and confirm the payment against invoice {invoiceNumber}.",
+                "CREDIT_INVOICE"));
+
+        add(rules, new NotificationRule(CreditEvents.CLAIM_CONFIRMED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment confirmed",
+                "{supplierName} confirmed your payment of {amount}.", "CREDIT_INVOICE"));
+
+        add(rules, new NotificationRule(CreditEvents.CLAIM_REJECTED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment not confirmed",
+                "{supplierName} could not confirm your payment of {amount}. {reason}", "CREDIT_INVOICE"));
+
         add(rules, new NotificationRule(CreditEvents.REINSTATED, OUTLET, CREDIT, false,
                 List.of(IN_APP, PUSH),
                 "Credit available again",

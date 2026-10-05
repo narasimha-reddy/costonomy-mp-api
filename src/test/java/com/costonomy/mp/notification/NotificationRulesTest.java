@@ -144,6 +144,39 @@ class NotificationRulesTest {
         }
 
         @Test
+        @DisplayName("an \"I paid\" claim tells the supplier, its answer tells the restaurant: in-app and push, never SMS, never critical (D-125)")
+        void claimRules() {
+            var submitted = NotificationRules.forEvent("CreditClaimSubmitted");
+            assertThat(submitted).hasSize(1);
+            var rule = submitted.get(0);
+            assertThat(rule.audience()).isEqualTo(NotificationRule.Audience.SUPPLIER_STORE);
+            assertThat(rule.category()).isEqualTo(NotificationCategory.CREDIT);
+            assertThat(rule.critical()).isFalse();
+            assertThat(rule.channels()).containsExactlyInAnyOrder(NotificationChannel.IN_APP, NotificationChannel.PUSH);
+            assertThat(rule.render(Map.of("restaurantName", "Paradise", "amount", "₹2,500.00",
+                    "invoiceNumber", "INV-1"))).isEqualTo("Paradise says it paid ₹2,500.00. Check and confirm the payment against invoice INV-1.");
+            assertThat(rule.targetType()).isEqualTo("CREDIT_INVOICE");
+
+            for (String event : List.of("CreditClaimConfirmed", "CreditClaimRejected")) {
+                var rules = NotificationRules.forEvent(event);
+                assertThat(rules).as(event).hasSize(1);
+                assertThat(rules.get(0).audience()).as(event).isEqualTo(NotificationRule.Audience.OUTLET);
+                assertThat(rules.get(0).category()).as(event).isEqualTo(NotificationCategory.CREDIT);
+                assertThat(rules.get(0).critical()).as(event).isFalse();
+                assertThat(rules.get(0).channels()).as(event)
+                        .containsExactlyInAnyOrder(NotificationChannel.IN_APP, NotificationChannel.PUSH);
+            }
+            assertThat(NotificationRules.forEvent("CreditClaimConfirmed").get(0)
+                    .render(Map.of("supplierName", "ABC Foods", "amount", "₹2,000.00")))
+                    .isEqualTo("ABC Foods confirmed your payment of ₹2,000.00.");
+            assertThat(NotificationRules.forEvent("CreditClaimRejected").get(0)
+                    .render(Map.of("supplierName", "ABC Foods", "amount", "₹2,000.00", "reason", "Not received.")))
+                    .isEqualTo("ABC Foods could not confirm your payment of ₹2,000.00. Not received.");
+            // A confirmed claim must not also produce the "supplier recorded your payment" text.
+            assertThat(CreditEvents.ALL).contains("CreditClaimSubmitted", "CreditClaimConfirmed", "CreditClaimRejected");
+        }
+
+        @Test
         @DisplayName("everything doc 08 §4 calls critical is critical")
         void criticalEventsAreMarkedCritical() {
             // Doc 08 §4's list, and the reason it matters: doc 08 §5 lets a user

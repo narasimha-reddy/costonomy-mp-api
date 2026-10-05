@@ -51,6 +51,7 @@ public class CreditAgreementService {
     private final CreditLimitHistoryRepository limitHistory;
     private final CreditTransactionRepository transactions;
     private final CreditInvoiceRepository invoices;
+    private final CreditPaymentClaimRepository claims;
     private final CreditInvoiceService invoiceService;
     private final CreditDirectory directory;
     private final AccessControlService accessControl;
@@ -491,7 +492,9 @@ public class CreditAgreementService {
 
         return new CreditDtos.SummaryResponse(outletId,
                 total.approvedLimit(), total.reserved(), total.utilized(), total.available(),
-                total.due(), total.overdue(), responses, walletRepayEnabled);
+                total.due(), total.overdue(), responses, walletRepayEnabled,
+                responses.stream().map(CreditDtos.AgreementResponse::openClaimsAmount)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add));
     }
 
     @Transactional(readOnly = true)
@@ -654,6 +657,9 @@ public class CreditAgreementService {
                         request.getRequestedPeriodDays(), request.getPurpose(), request.getNote(),
                         request.getStatus(), request.getResponseNote(),
                         request.getRespondedAt(), request.getCreatedAt()),
-                dues.nextDueDate(), dues.nextDueAmount(), dues.openInvoices());
+                dues.nextDueDate(), dues.nextDueAmount(), dues.openInvoices(),
+                // What the restaurant says it paid and the supplier has not answered. It changes no figure above.
+                agreement.getId() == null ? BigDecimal.ZERO
+                        : claims.sumByAgreementAndStatus(agreement.getId(), CreditClaimStatus.SUBMITTED));
     }
 }
