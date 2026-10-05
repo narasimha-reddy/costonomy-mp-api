@@ -1,5 +1,6 @@
 package com.costonomy.mp.credit.service;
 
+import com.costonomy.mp.credit.domain.CreditEvents;
 import com.costonomy.mp.common.outbox.OutboxService;
 import com.costonomy.mp.credit.domain.CreditInvoice;
 import com.costonomy.mp.credit.domain.CreditInvoiceStatus;
@@ -45,7 +46,7 @@ public class CreditOverdueMarker {
         invoice.setMarkedOverdueAt(Instant.now());
         invoices.save(invoice);
 
-        outbox.publish("CreditOverdue", "CREDIT_INVOICE", invoice.getId(),
+        outbox.publish(CreditEvents.OVERDUE, "CREDIT_INVOICE", invoice.getId(),
                 Map.of("creditAgreementId", invoice.getCreditAgreementId(),
                         "outletId", invoice.getOutletId(),
                         "outstanding", invoice.outstanding().toPlainString(),

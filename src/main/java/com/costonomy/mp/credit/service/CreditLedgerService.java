@@ -1,5 +1,6 @@
 package com.costonomy.mp.credit.service;
 
+import com.costonomy.mp.credit.domain.CreditEvents;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.outbox.OutboxService;
@@ -104,7 +105,7 @@ public class CreditLedgerService {
         ledger.record(agreementId, CreditTransactionType.RESERVE, amount, reservation.getId(),
                 supplierOrderId, null, "Reserved for order " + supplierOrderId, null);
 
-        outbox.publish("CreditReserved", "CREDIT_AGREEMENT", agreementId,
+        outbox.publish(CreditEvents.RESERVED, "CREDIT_AGREEMENT", agreementId,
                 Map.of("supplierOrderId", supplierOrderId,
                         "amount", amount.toPlainString()),
                 null);
@@ -168,7 +169,7 @@ public class CreditLedgerService {
             invoices.issueFor(reservation, drawn);
         }
 
-        outbox.publish("CreditUtilized", "CREDIT_AGREEMENT", reservation.getCreditAgreementId(),
+        outbox.publish(CreditEvents.UTILIZED, "CREDIT_AGREEMENT", reservation.getCreditAgreementId(),
                 Map.of("supplierOrderId", supplierOrderId,
                         "amount", drawn.toPlainString(),
                         "released", returned.toPlainString()),
@@ -198,7 +199,7 @@ public class CreditLedgerService {
         ledger.record(reservation.getCreditAgreementId(), CreditTransactionType.RELEASE, held,
                 reservation.getId(), supplierOrderId, null, reason, null);
 
-        outbox.publish("CreditReleased", "CREDIT_AGREEMENT", reservation.getCreditAgreementId(),
+        outbox.publish(CreditEvents.RELEASED, "CREDIT_AGREEMENT", reservation.getCreditAgreementId(),
                 Map.of("supplierOrderId", supplierOrderId,
                         "amount", held.toPlainString(), "reason", reason),
                 null);

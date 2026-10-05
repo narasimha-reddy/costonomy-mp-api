@@ -1,5 +1,6 @@
 package com.costonomy.mp.credit.service;
 
+import com.costonomy.mp.credit.domain.CreditEvents;
 import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
@@ -99,8 +100,11 @@ public class CreditInvoiceService {
                 "Order " + (order == null ? reservation.getSupplierOrderId() : order.orderNumber()),
                 "SYSTEM");
 
-        outbox.publish("CreditInvoiceIssued", "CREDIT_INVOICE", invoice.getId(),
+        outbox.publish(CreditEvents.INVOICE_ISSUED, "CREDIT_INVOICE", invoice.getId(),
                 Map.of("creditAgreementId", agreement.getId(),
+                        "outletId", agreement.getOutletId(),
+                        "supplierStoreId", agreement.getSupplierStoreId(),
+                        "invoiceNumber", invoice.getInvoiceNumber(),
                         "supplierOrderId", reservation.getSupplierOrderId(),
                         "amount", amount.toPlainString(),
                         "dueDate", due.toString()),
@@ -184,8 +188,12 @@ public class CreditInvoiceService {
                 invoiceId, null, invoice.getStatus().name(),
                 request.amount().toPlainString() + " via " + request.method(), "API");
 
-        outbox.publish("CreditRepaymentRecorded", "CREDIT_INVOICE", invoiceId,
+        outbox.publish(CreditEvents.REPAYMENT_RECORDED, "CREDIT_INVOICE", invoiceId,
                 Map.of("creditAgreementId", invoice.getCreditAgreementId(),
+                        "outletId", invoice.getOutletId(),
+                        "supplierStoreId", invoice.getSupplierStoreId(),
+                        "supplierName", supplierNameOf(invoice.getSupplierStoreId()),
+                        "invoiceNumber", invoice.getInvoiceNumber(),
                         "amount", request.amount().toPlainString(),
                         "status", invoice.getStatus().name()),
                 actorId);
@@ -220,11 +228,17 @@ public class CreditInvoiceService {
                 CreditAgreementStatus.SUSPENDED.name(), CreditAgreementStatus.ACTIVE.name(),
                 "Overdue balance cleared", "SYSTEM");
 
-        outbox.publish("CreditReinstated", "CREDIT_AGREEMENT", agreementId,
+        outbox.publish(CreditEvents.REINSTATED, "CREDIT_AGREEMENT", agreementId,
                 Map.of("creditAgreementId", agreementId,
                         "outletId", agreement.getOutletId(),
-                        "supplierStoreId", agreement.getSupplierStoreId()),
+                        "supplierStoreId", agreement.getSupplierStoreId(),
+                        "supplierName", supplierNameOf(agreement.getSupplierStoreId())),
                 null);
+    }
+
+    private String supplierNameOf(Long supplierStoreId) {
+        var store = directory.store(supplierStoreId);
+        return store == null || store.supplierName() == null ? "" : store.supplierName();
     }
 
     /**

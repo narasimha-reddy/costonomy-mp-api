@@ -1,5 +1,6 @@
 package com.costonomy.mp.credit.service;
 
+import com.costonomy.mp.credit.domain.CreditEvents;
 import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
@@ -137,7 +138,7 @@ public class CreditAgreementService {
                 agreement.getId(), null, CreditAgreementStatus.REQUESTED.name(),
                 "%s for %d days".formatted(body.requestedLimit(), body.requestedDays()), "API");
 
-        outbox.publish("CreditRequested", "CREDIT_AGREEMENT", agreement.getId(),
+        outbox.publish(CreditEvents.REQUESTED, "CREDIT_AGREEMENT", agreement.getId(),
                 Map.of("supplierStoreId", body.supplierStoreId(),
                         "outletId", body.outletId(),
                         "requestedLimit", body.requestedLimit().toPlainString()),
@@ -241,7 +242,7 @@ public class CreditAgreementService {
         if (modified) {
             agreement.setStatus(CreditAgreementStatus.APPROVED);
             agreements.save(agreement);
-            outbox.publish("CreditModified", "CREDIT_AGREEMENT", agreement.getId(),
+            outbox.publish(CreditEvents.MODIFIED, "CREDIT_AGREEMENT", agreement.getId(),
                     Map.of("outletId", agreement.getOutletId(),
                             "approvedLimit", limit.toPlainString(),
                             "creditPeriodDays", periodDays),
@@ -290,8 +291,14 @@ public class CreditAgreementService {
                 agreementId, CreditAgreementStatus.REQUESTED.name(),
                 CreditAgreementStatus.REJECTED.name(), body.reason(), "API");
 
-        outbox.publish("CreditRejected", "CREDIT_AGREEMENT", agreementId,
-                Map.of("outletId", agreement.getOutletId(), "reason", body.reason()),
+        // outletId and supplierStoreId scope the notification to the restaurant (D-120); the
+        // supplier's name and reason are what its text says.
+        var store = directory.store(agreement.getSupplierStoreId());
+        outbox.publish(CreditEvents.REJECTED, "CREDIT_AGREEMENT", agreementId,
+                Map.of("outletId", agreement.getOutletId(),
+                        "supplierStoreId", agreement.getSupplierStoreId(),
+                        "supplierName", store == null ? "" : store.supplierName(),
+                        "reason", body.reason()),
                 actorId);
 
         return toResponse(agreement, request);
@@ -351,7 +358,7 @@ public class CreditAgreementService {
                 agreementId, previousLimit.toPlainString(),
                 body.approvedLimit().toPlainString(), body.reason(), "API");
 
-        outbox.publish("CreditModified", "CREDIT_AGREEMENT", agreementId,
+        outbox.publish(CreditEvents.MODIFIED, "CREDIT_AGREEMENT", agreementId,
                 Map.of("outletId", agreement.getOutletId(),
                         "approvedLimit", body.approvedLimit().toPlainString(),
                         "reason", body.reason()),
@@ -425,7 +432,7 @@ public class CreditAgreementService {
                 CreditAgreementStatus.SUSPENDED.name(), reason,
                 actorId == null ? "SYSTEM" : "API");
 
-        outbox.publish("CreditSuspended", "CREDIT_AGREEMENT", agreement.getId(),
+        outbox.publish(CreditEvents.SUSPENDED, "CREDIT_AGREEMENT", agreement.getId(),
                 Map.of("outletId", agreement.getOutletId(), "reason", reason), actorId);
     }
 
@@ -527,7 +534,7 @@ public class CreditAgreementService {
                 agreement.getId(), CreditAgreementStatus.APPROVED.name(),
                 CreditAgreementStatus.ACTIVE.name(), reason, "API");
 
-        outbox.publish("CreditApproved", "CREDIT_AGREEMENT", agreement.getId(),
+        outbox.publish(CreditEvents.APPROVED, "CREDIT_AGREEMENT", agreement.getId(),
                 Map.of("outletId", agreement.getOutletId(),
                         "supplierStoreId", agreement.getSupplierStoreId(),
                         "approvedLimit", agreement.getApprovedLimit().toPlainString(),

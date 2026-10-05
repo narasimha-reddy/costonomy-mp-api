@@ -1,5 +1,6 @@
 package com.costonomy.mp.notification;
 
+import com.costonomy.mp.credit.domain.CreditEvents;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import com.costonomy.mp.notification.domain.NotificationCategory;
 import com.costonomy.mp.notification.domain.NotificationChannel;
@@ -90,6 +91,39 @@ class NotificationRulesTest {
     @Nested
     @DisplayName("the catalogue")
     class Catalogue {
+
+        /**
+         * Credit events that are exposure-ledger bookkeeping. Nobody needs telling that a hold was
+         * placed, drawn down or released; the order and invoice events say it in terms people read.
+         */
+        private static final List<String> CREDIT_INTENTIONALLY_SILENT = List.of(
+                CreditEvents.RESERVED, CreditEvents.UTILIZED, CreditEvents.RELEASED);
+
+        @Test
+        @DisplayName("every credit event has a rule or is deliberately silent (D-120)")
+        void everyCreditEventIsAccountedFor() {
+            for (String event : CreditEvents.ALL) {
+                if (CREDIT_INTENTIONALLY_SILENT.contains(event)) {
+                    assertThat(NotificationRules.forEvent(event))
+                            .describedAs("%s is on the silent list but has a rule", event).isEmpty();
+                } else {
+                    assertThat(NotificationRules.forEvent(event))
+                            .describedAs("%s is published but notifies nobody", event).isNotEmpty();
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("the new credit rules reach the restaurant, never by SMS (D-041)")
+        void newCreditRulesShape() {
+            for (String event : List.of(CreditEvents.REJECTED, CreditEvents.INVOICE_ISSUED,
+                    CreditEvents.REPAYMENT_RECORDED, CreditEvents.REINSTATED)) {
+                for (var rule : NotificationRules.forEvent(event)) {
+                    assertThat(rule.audience()).isEqualTo(NotificationRule.Audience.OUTLET);
+                    assertThat(rule.channels()).doesNotContain(NotificationChannel.SMS);
+                }
+            }
+        }
 
         @Test
         @DisplayName("everything doc 08 §4 calls critical is critical")

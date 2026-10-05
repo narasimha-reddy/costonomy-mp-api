@@ -1,5 +1,6 @@
 package com.costonomy.mp.notification.domain;
 
+import com.costonomy.mp.credit.domain.CreditEvents;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -272,34 +273,61 @@ public final class NotificationRules {
                         + "you paid from.", "SUPPLIER_ORDER", "supplierOrderId"));
 
         // ── Credit ───────────────────────────────────────────────────────
-        add(rules, new NotificationRule("CreditRequested", SUPPLIER_STORE, CREDIT, true,
+        add(rules, new NotificationRule(CreditEvents.REQUESTED, SUPPLIER_STORE, CREDIT, true,
                 List.of(IN_APP, PUSH),
                 "Credit request",
                 "A restaurant has asked you for {requestedLimit} of credit.",
                 "CREDIT_AGREEMENT"));
 
-        add(rules, new NotificationRule("CreditApproved", OUTLET, CREDIT, true,
+        add(rules, new NotificationRule(CreditEvents.APPROVED, OUTLET, CREDIT, true,
                 List.of(IN_APP, PUSH),
                 "Credit approved",
                 "You have {approvedLimit} of credit, payable in {creditPeriodDays} days.",
                 "CREDIT_AGREEMENT"));
 
-        add(rules, new NotificationRule("CreditModified", OUTLET, CREDIT, true,
+        add(rules, new NotificationRule(CreditEvents.MODIFIED, OUTLET, CREDIT, true,
                 // Terms changed under a restaurant's feet is exactly the thing they
                 // must not discover at a checkout.
                 List.of(IN_APP, PUSH),
                 "Credit terms changed",
                 "Your credit limit is now {approvedLimit}. {reason}", "CREDIT_AGREEMENT"));
 
-        add(rules, new NotificationRule("CreditSuspended", OUTLET, CREDIT, true,
+        add(rules, new NotificationRule(CreditEvents.SUSPENDED, OUTLET, CREDIT, true,
                 List.of(IN_APP, PUSH),
                 "Credit suspended",
                 "Credit with this supplier is suspended. {reason}", "CREDIT_AGREEMENT"));
 
-        add(rules, new NotificationRule("CreditOverdue", OUTLET, CREDIT, true,
+        add(rules, new NotificationRule(CreditEvents.OVERDUE, OUTLET, CREDIT, true,
                 List.of(IN_APP, PUSH, SMS),
                 "Payment overdue",
                 "{outstanding} was due on {dueDate}.", "CREDIT_INVOICE"));
+
+        // The restaurant is told about the rest of the credit lifecycle too (D-120). SMS stays
+        // for critical events only (D-041), and none of these is worth one: the overdue notice
+        // above is the credit event that is.
+        add(rules, new NotificationRule(CreditEvents.REJECTED, OUTLET, CREDIT, true,
+                List.of(IN_APP, PUSH),
+                "Credit request declined",
+                "{supplierName} declined your credit request. {reason}", "CREDIT_AGREEMENT"));
+
+        add(rules, new NotificationRule(CreditEvents.INVOICE_ISSUED, OUTLET, CREDIT, false,
+                List.of(IN_APP),
+                "Credit invoice issued",
+                "Invoice {invoiceNumber} for {amount} issued.", "CREDIT_INVOICE"));
+
+        add(rules, new NotificationRule(CreditEvents.REPAYMENT_RECORDED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment recorded",
+                "{supplierName} recorded your payment of {amount} against invoice {invoiceNumber}.",
+                "CREDIT_INVOICE"));
+
+        add(rules, new NotificationRule(CreditEvents.REINSTATED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit available again",
+                "Your credit with {supplierName} is available again.", "CREDIT_AGREEMENT"));
+
+        // CreditReserved, CreditUtilized and CreditReleased are exposure bookkeeping and stay
+        // silent on purpose; NotificationRulesTest keeps that list explicit.
 
         // ── Delivery ─────────────────────────────────────────────────────
         add(rules, new NotificationRule("DriverAssigned", OUTLET, DELIVERY, true,

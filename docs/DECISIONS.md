@@ -5392,3 +5392,27 @@ suspension never lifts itself; only the supplier's manual reinstate does. Notifi
 else `SUPPLIER`) and adds `ix_credit_invoice_outlet_status (outlet_id, status)`.
 
 **Tests.** `CreditFlowIT.Safety`, `CreditAgreementStatusTest`.
+
+## D-120 — Credit notifications: rejected, invoice issued, repayment recorded and reinstated now reach the restaurant
+
+**Problem.** The credit module published `CreditRejected`, `CreditInvoiceIssued`, `CreditRepaymentRecorded` and (D-119)
+`CreditReinstated`, but the catalogue had no rule for them, so a restaurant was never told its request was declined, never saw
+an invoice appear, and was never told a supplier had recorded its payment or that a suspension had lifted.
+
+**Rules** (all audience `OUTLET`, none sent by SMS, D-041). `CreditRejected`: critical, in-app + push, "Credit request
+declined", supplier name and the supplier's reason. `CreditInvoiceIssued`: not critical, in-app only, "Invoice {number} for
+{amount} issued". `CreditRepaymentRecorded`: not critical, in-app + push, "{supplier} recorded your payment of {amount} against
+invoice {number}". `CreditReinstated`: not critical, in-app + push, "Credit available again". The publish sites now carry
+`outletId` and `supplierStoreId` (the relay needs one to find recipients) plus `supplierName` and `invoiceNumber` where the
+text uses them; `CreditReinstated` gains `supplierName`. No new PII beyond the supplier names other credit payloads carry.
+`CreditReserved`, `CreditUtilized` and `CreditReleased` are exposure bookkeeping and stay silent.
+
+**Event names (D-044).** `CreditEvents` lists every event name the module publishes; publish sites and rules use the
+constants and no string value changed. `NotificationRulesTest` fails if a published credit event has neither a rule nor a
+place on its explicit silent list.
+
+**Not here.** A `CreditRepaymentReceived` event for wallet repayments ships with the wallet-repayment change; a supplier is
+never notified about a payment they recorded themselves.
+
+**Tests.** `NotificationRulesTest.Catalogue` (coverage and shape), `CreditFlowIT.RestaurantNotifications` (in-app and push
+rows, no SMS row, for each event).

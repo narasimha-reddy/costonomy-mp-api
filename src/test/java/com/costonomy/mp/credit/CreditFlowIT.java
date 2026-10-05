@@ -1,5 +1,6 @@
 package com.costonomy.mp.credit;
 
+import com.costonomy.mp.common.outbox.OutboxPublisher;
 import com.costonomy.mp.credit.service.CreditInvoiceService;
 import com.costonomy.mp.credit.service.CreditJobs;
 import com.costonomy.mp.support.AbstractIntegrationTest;
@@ -61,6 +62,7 @@ class CreditFlowIT extends AbstractIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private CreditJobs creditJobs;
     @Autowired private CreditInvoiceService invoiceService;
+    @Autowired private com.costonomy.mp.notification.NotificationRelayAccess relay;
 
     /** The credit module's India-time clock, replaced so a test can put "now" on a day boundary. */
     @MockBean(name = "creditClock") private Clock creditClock;
@@ -925,6 +927,141 @@ class CreditFlowIT extends AbstractIntegrationTest {
             // Mark overdue without suspending: the supplier suspends by hand instead.
             jdbc.update("update credit_invoice set status = 'OVERDUE' where id = ?", invoiceId);
             return invoiceId;
+        }
+    }
+
+    @Nested
+    @DisplayName("notifications reach the restaurant (D-120)")
+    class RestaurantNotifications {
+
+        private void registerDevice(Buyer buyer) throws Exception {
+            api.post(buyer.token(), "/api/v1/devices", Map.of(
+                    "platform", "ANDROID", "pushToken", "tok-" + UUID.randomUUID(),
+                    "appVersion", "1.0.0", "deviceModel", "Pixel"));
+        }
+
+        /** This aggregate's outbox events of one type, handed to the relay as the outbox would. */
+        private void relayEvents(String type, long aggregateId) {
+            for (var event : jdbc.queryForList("select event_id, event_type, aggregate_type, aggregate_id, "
+                    + "payload_version, payload, actor_id, correlation_id, occurred_at from outbox_event "
+                    + "where event_type = ? and aggregate_id = ? order by id", type, aggregateId)) {
+                relay.publish(new OutboxPublisher.DomainEventEnvelope(
+                        (String) event.get("event_id"), (String) event.get("event_type"),
+                        (String) event.get("aggregate_type"), ((Number) event.get("aggregate_id")).longValue(),
+                        ((Number) event.get("payload_version")).intValue(), String.valueOf(event.get("payload")),
+                        null, (String) event.get("correlation_id"), Instant.now()));
+            }
+        }
+
+        private List<Map<String, Object>> notificationsFor(String type, long targetId) {
+            return jdbc.queryForList("select id, body, title, critical, audience from notification "
+                    + "where event_type = ? and target_id = ?", type, targetId);
+        }
+
+        private int deliveries(String type, long targetId, String channel) {
+            return jdbc.queryForObject("select count(*) from notification_delivery d "
+                    + "join notification n on n.id = d.notification_id "
+                    + "where n.event_type = ? and n.target_id = ? and d.channel = ?",
+                    Integer.class, type, targetId, channel);
+        }
+
+        private void assertNoSms(String type, long targetId) {
+            assertThat(deliveries(type, targetId, "SMS")).isZero();
+        }
+
+        @Test
+        @DisplayName("a rejected request tells the restaurant, with the supplier's reason")
+        void rejectionNotifiesTheRestaurant() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller();
+            offerCredit(seller);
+            registerDevice(buyer);
+            long agreementId = api.post(buyer.token(), "/api/v1/credit/requests", Map.of(
+                    "supplierStoreId", seller.storeId(), "outletId", buyer.outletId(),
+                    "requestedLimit", "200000", "requestedDays", 30)).at("/data/id").asLong();
+            api.post(seller.token(), "/api/v1/credit/agreements/" + agreementId + "/reject",
+                    Map.of("reason", "Send us three months of trading history first."));
+
+            relayEvents("CreditRejected", agreementId);
+
+            var sent = notificationsFor("CreditRejected", agreementId);
+            assertThat(sent).hasSize(1);
+            assertThat((String) sent.get(0).get("title")).isEqualTo("Credit request declined");
+            assertThat((String) sent.get(0).get("body"))
+                    .contains("ABC Foods").contains("three months of trading history");
+            assertThat(sent.get(0).get("audience")).isEqualTo("OUTLET");
+            assertThat(deliveries("CreditRejected", agreementId, "PUSH")).isEqualTo(1);
+            assertNoSms("CreditRejected", agreementId);
+        }
+
+        @Test
+        @DisplayName("an invoice raised for a credit order tells the restaurant, in-app only")
+        void invoiceIssuedNotifiesTheRestaurant() throws Exception {
+            var line = creditLine("200000");
+            registerDevice(line.buyer());
+            orderOnCredit(line, "400", 100);
+            long invoiceId = firstInvoiceId(line);
+            String number = jdbc.queryForObject("select invoice_number from credit_invoice where id = ?",
+                    String.class, invoiceId);
+
+            relayEvents("CreditInvoiceIssued", invoiceId);
+
+            var sent = notificationsFor("CreditInvoiceIssued", invoiceId);
+            assertThat(sent).hasSize(1);
+            assertThat((String) sent.get(0).get("body")).contains(number).contains("40,000");
+            assertThat(deliveries("CreditInvoiceIssued", invoiceId, "PUSH")).isZero();
+            assertNoSms("CreditInvoiceIssued", invoiceId);
+        }
+
+        @Test
+        @DisplayName("a repayment the supplier records tells the restaurant, in-app and push")
+        void repaymentNotifiesTheRestaurant() throws Exception {
+            var line = creditLine("200000");
+            registerDevice(line.buyer());
+            orderOnCredit(line, "400", 100);
+            long invoiceId = firstInvoiceId(line);
+            String number = jdbc.queryForObject("select invoice_number from credit_invoice where id = ?",
+                    String.class, invoiceId);
+            recordPayment(line.seller(), invoiceId, "15000", UUID.randomUUID().toString());
+
+            relayEvents("CreditRepaymentRecorded", invoiceId);
+
+            var sent = notificationsFor("CreditRepaymentRecorded", invoiceId);
+            assertThat(sent).hasSize(1);
+            assertThat((String) sent.get(0).get("body"))
+                    .contains("ABC Foods").contains("15,000").contains(number);
+            assertThat(deliveries("CreditRepaymentRecorded", invoiceId, "PUSH")).isEqualTo(1);
+            assertNoSms("CreditRepaymentRecorded", invoiceId);
+        }
+
+        @Test
+        @DisplayName("a system suspension that lifts tells the restaurant")
+        void reinstatementNotifiesTheRestaurant() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller();
+            offerCredit(seller);
+            registerDevice(buyer);
+            long agreementId = api.post(buyer.token(), "/api/v1/credit/requests", Map.of(
+                    "supplierStoreId", seller.storeId(), "outletId", buyer.outletId(),
+                    "requestedLimit", "200000", "requestedDays", 30)).at("/data/id").asLong();
+            api.post(seller.token(), "/api/v1/credit/agreements/" + agreementId + "/approve",
+                    Map.of("maxOverdueAmount", "10000"));
+            var line = new CreditLine(buyer, seller, agreementId);
+            orderOnCredit(line, "400", 100);
+            long invoiceId = firstInvoiceId(line);
+            jdbc.update("update credit_invoice set due_date = date_sub(curdate(), interval 10 day), "
+                    + "overdue_after = date_sub(curdate(), interval 5 day) where id = ?", invoiceId);
+            creditJobs.sweepOverdue();
+            recordPayment(seller, invoiceId, "40000", UUID.randomUUID().toString());
+
+            relayEvents("CreditReinstated", agreementId);
+
+            var sent = notificationsFor("CreditReinstated", agreementId);
+            assertThat(sent).hasSize(1);
+            assertThat((String) sent.get(0).get("title")).isEqualTo("Credit available again");
+            assertThat((String) sent.get(0).get("body")).contains("ABC Foods");
+            assertThat(deliveries("CreditReinstated", agreementId, "PUSH")).isEqualTo(1);
+            assertNoSms("CreditReinstated", agreementId);
         }
     }
 
