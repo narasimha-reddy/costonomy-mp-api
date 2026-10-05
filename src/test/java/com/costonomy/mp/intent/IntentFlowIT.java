@@ -778,6 +778,78 @@ class IntentFlowIT extends AbstractIntegrationTest {
     }
 
     @Nested
+    @DisplayName("delivery slots and as soon as possible (D-142)")
+    class DeliverySlots {
+
+        private long slot(Seller seller, String name, String start, String end) throws Exception {
+            var created = api.post(seller.token(), "/api/v1/supplier-stores/" + seller.storeId() + "/delivery-slots",
+                    Map.of("slotName", name, "startTime", start, "endTime", end,
+                            "orderCutoffTime", "23:59:59", "maxOrdersPerDay", 5));
+            assertThat(created.at("/error").isMissingNode() || created.at("/error").isNull())
+                    .as(created.toString()).isTrue();
+            return created.at("/data/id").asLong();
+        }
+
+        private OpenRequest answeredRequest() throws Exception {
+            var open = sendRequest(6);
+            answer(open, 6);
+            return open;
+        }
+
+        private String day(int plus) {
+            return java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).plusDays(plus).toString();
+        }
+
+        @Test
+        @DisplayName("no slot and no day is as soon as possible, and is accepted")
+        void asap() throws Exception {
+            var open = answeredRequest();
+
+            var created = createOrder(open.buyer().token(), open.intentId(), Map.of());
+
+            long orderId = created.at("/data/supplierOrderId").asLong();
+            assertThat(orderId).as(created.toString()).isPositive();
+            assertThat(jdbc.queryForObject("select delivery_slot_id from supplier_order where id = ?",
+                    Long.class, orderId)).isNull();
+            assertThat(jdbc.queryForObject("select scheduled_delivery_date from supplier_order where id = ?",
+                    java.sql.Date.class, orderId)).isNull();
+        }
+
+        @Test
+        @DisplayName("a slot that has already started today is not offered, and cannot be booked; tomorrow's can")
+        void startedSlot() throws Exception {
+            var open = answeredRequest();
+            long early = slot(open.seller(), "Early", "00:00:01", "23:59:58");
+
+            var today = api.get(open.buyer().token(), "/api/v1/supplier-stores/" + open.seller().storeId()
+                    + "/available-slots?date=" + day(0));
+            assertThat(today.at("/data/0/available").asBoolean()).isFalse();
+            assertThat(today.at("/data/0/unavailableReason").asText()).contains("already started");
+
+            var refused = createOrder(open.buyer().token(), open.intentId(),
+                    Map.of("deliverySlotId", early, "scheduledDeliveryDate", day(0)));
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+
+            var booked = createOrder(open.buyer().token(), open.intentId(),
+                    Map.of("deliverySlotId", early, "scheduledDeliveryDate", day(1)));
+            assertThat(booked.at("/data/supplierOrderId").asLong()).as(booked.toString()).isPositive();
+        }
+
+        @Test
+        @DisplayName("another store's slot cannot be booked")
+        void otherStoresSlot() throws Exception {
+            var open = answeredRequest();
+            var elsewhere = newSeller("Nandini");
+            long foreign = slot(elsewhere, "Morning", "06:00:00", "07:00:00");
+
+            var refused = createOrder(open.buyer().token(), open.intentId(),
+                    Map.of("deliverySlotId", foreign, "scheduledDeliveryDate", day(1)));
+
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+        }
+    }
+
+    @Nested
     @DisplayName("the order window")
     class Window {
 

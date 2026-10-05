@@ -71,12 +71,16 @@ public class DeliverySlotService {
 
                     boolean pastDate = date.isBefore(today);
                     boolean cutoffPassed = date.isEqual(today) && nowTime.isAfter(slot.getOrderCutoffTime());
+                    // A slot that has already started today is not offered: it cannot be met (D-142).
+                    boolean started = date.isEqual(today) && nowTime.isAfter(slot.getStartTime());
                     boolean capacityFull = remaining <= 0;
 
-                    boolean isAvailable = !pastDate && !cutoffPassed && !capacityFull;
+                    boolean isAvailable = !pastDate && !cutoffPassed && !started && !capacityFull;
                     String reason = null;
                     if (pastDate) {
                         reason = "Delivery date is in the past";
+                    } else if (started) {
+                        reason = "This slot has already started today";
                     } else if (cutoffPassed) {
                         reason = "Order cutoff (" + slot.getOrderCutoffTime() + ") has passed for today";
                     } else if (capacityFull) {
@@ -97,6 +101,28 @@ public class DeliverySlotService {
                     );
                 })
                 .toList();
+    }
+
+    /**
+     * Refuse a slot the buyer cannot have (D-142): one that is not this store's, is switched off, or is not available
+     * on that date (past, started, past its cutoff, or full). Order creation calls it, so the picker is not the only
+     * thing standing between a buyer and a slot that cannot be met.
+     */
+    @Transactional(readOnly = true)
+    public void requireBookable(Long supplierStoreId, Long slotId, LocalDate date) {
+        if (date == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "Choose a delivery day for that slot.");
+        }
+        var slot = getAvailableSlots(supplierStoreId, date).stream()
+                .filter(candidate -> candidate.id().equals(slotId))
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "That delivery slot isn't offered by this supplier."));
+        if (!slot.available()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    slot.unavailableReason() == null ? "That delivery slot is not available."
+                            : slot.unavailableReason() + ". Choose another slot.");
+        }
     }
 
     @Transactional

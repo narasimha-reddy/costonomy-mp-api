@@ -95,6 +95,7 @@ public class IntentOrderCreator {
     /** What a Costonomy delivery costs, and what the store is willing to carry. */
     private final DeliveryFeeQuoteService deliveryQuotes;
     private final DeliveryDirectory deliveryPolicies;
+    private final com.costonomy.mp.delivery.slot.DeliverySlotService deliverySlots;
     private final DeliveryCharges deliveryCharges;
     private final com.costonomy.mp.procurement.service.OrderLineStamper lineStamper;
 
@@ -304,6 +305,11 @@ public class IntentOrderCreator {
         order.setGstAmount(Pricing.money(plan.gst()));
         order.setDeliveryMode(mode);
         order.setDeliveryFee(Pricing.money(deliveryFee));
+        // A slot is checked here as well as offered by the picker (D-142); no slot and no day means as soon as possible.
+        if (request.deliverySlotId() != null) {
+            deliverySlots.requireBookable(intent.getSupplierStoreId(), request.deliverySlotId(),
+                    request.scheduledDeliveryDate());
+        }
         order.setDeliverySlotId(request.deliverySlotId());
         order.setScheduledDeliveryDate(request.scheduledDeliveryDate());
         // The goods plus the carriage. What the restaurant pays is one figure, and

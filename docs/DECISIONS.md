@@ -5974,3 +5974,14 @@ Verified before changing: the buyer chose the delivery mode at order creation an
 6. **The charge can be set per request, up to the store's fee.** With `SELF` the answer may carry `deliveryFee`: absent means the store's own fee; lower (zero is free) is the supplier's call for this order; higher than the store's fee is refused (422). That amount is what the buyer is shown and charged (`acceptance.delivery_fee`), not the store's standing fee. A supplier who finds delivery not viable chooses Costonomy riders instead.
 7. **Tests** (`IntentFlowIT$DeliveryOffer`): free delivery is shown as free and charged nothing; a lower charge for one order is shown and charged, and a higher one is refused; own delivery at the store's fee is shown and charged; the buyer can choose only what was offered; an offer the store has turned off is refused. Each mutation-checked.
 
+## D-142 — As soon as possible is a delivery time, and a slot is checked when it is booked
+
+Verified before changing: order creation stored `deliverySlotId` and `scheduledDeliveryDate` exactly as sent, with no check that the slot belonged to the store, was active, was free, or had not already started; the app's picker was the only guard. The app always sent a day (tomorrow by default), so "Immediate" chosen in the cart (D-140) became tomorrow's first slot at review, and the picker's day buttons used UTC dates, which are yesterday in India early in the morning.
+
+1. **As soon as possible is no slot and no day.** The order stores both as null. The picker offers it as its own choice, selected when the request was sent as immediate; a request sent for a day starts on that day's first available slot.
+2. **A started slot is not offered.** Today's slots are unavailable once their start time has passed ("This slot has already started today"), as well as past cutoff, past date or full.
+3. **The slot is checked at booking.** `DeliverySlotService.requireBookable`, called by order creation, refuses a slot that is not this store's, is switched off, needs a day that is missing, or is unavailable on that date (422). The picker is no longer the only guard. Subscriptions generate orders from a preferred slot and are not changed.
+4. **Days are India's** in the picker (`istDay`), as on the server.
+5. **Not done.** A supplier who does not take same-day orders cannot hide as-soon-as-possible: there is no such setting. Slots are not checked against the store's opening hours (a product decision). Capacity counts orders, not quantity.
+6. **Tests:** `IntentFlowIT$DeliverySlots` (as soon as possible is accepted with no slot or day; a started slot is unavailable and refused, tomorrow's is booked; another store's slot is refused), and `tests/deliverySlotPicker.test.tsx` in the app. Mutation-checked.
+
