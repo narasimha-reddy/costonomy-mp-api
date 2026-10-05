@@ -5620,3 +5620,39 @@ restaurant paying two suppliers saw two identical rows.
 - The reference `credit-repayment-<id>` is unchanged. Older rows keep the text they were written with; nothing is rewritten.
 - The statement's label column stays the kind's wording ("Credit repayment"); the reason column carries the name.
 - No schema change.
+
+## D-129 — Credit idempotency: canonical hashing, a code for a failed attempt, tenant-scoped supplier keys, an on-hold code
+
+An edge-case review of credit found retries that could debit twice or answer wrongly, and one tenant able to read or
+break another's keys.
+
+- **The request hash is canonical.** `IdempotencyService.hash` serialises with a copy of the app mapper that sorts bean
+  properties and map entries. Callers pass `Map.of(...)`, whose order is salted per JVM, so the same request hashed
+  differently after a restart or on another instance, a retry was refused as `IDEMPOTENCY_KEY_REUSE`, and the app (which
+  treats that as definitive) dropped its key and debited again. Lists keep their order. The money payloads already write
+  the amount as scaled plain text, so `1e3`, `1000`, `1000.0` and `"1000.00"` are one request; the supplier-recorded
+  payment's payload now does the same (it passed a raw `BigDecimal`). The hash of an in-flight record written before the
+  deploy differs, so a retry across the deploy of a request still running is treated as before: key reuse. Acceptable.
+- **A failed attempt has its own code.** A FAILED record replayed as `IDEMPOTENT_REQUEST_IN_PROGRESS`, which the app
+  answers by keeping the key, so Retry looped for the whole retention. It is now `IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED`
+  (409, "The previous attempt did not go through. Please try again."): definitive, the client must use a NEW key.
+  `IDEMPOTENT_REQUEST_IN_PROGRESS` stays for the genuinely in-progress case.
+- **Supplier-recorded payment keys are the supplier's own.** `credit_payment.idempotency_key` is unique across every
+  tenant, and the lookup ran before the access check, so a supplier could read another's payment by sending its key, or
+  pre-squat `claim:<id>` / `wallet-repayment:<id>:<invoice>` so another tenant's confirm or repayment failed. A user key
+  is now stored as `supplier:<actorId>:<key>` (one helper), looked up the same way, and only after the access check. The
+  system's own keys never start with `supplier:`, so they cannot collide. Payments stored with a raw key keep it: a replay
+  of an old raw key after the deploy is treated as a new request (the per-actor idempotency record still answers it for
+  the retention window, so in practice only an exact retry across the deploy of a call that failed before storing).
+- **A supplier-recorded payment's `paidAt`** is an India calendar day that is not in the future and not before the
+  invoice's issue day (a claim's `paidOn` rule); otherwise `VALIDATION_ERROR`.
+- **Withdrawing or rejecting a claim is idempotent for the same final state.** Withdrawing a WITHDRAWN claim, or rejecting
+  a REJECTED one with the same reason, returns 200 and the claim, with no second audit row or event. Any other state, or a
+  different reason, is still `CREDIT_CLAIM_STATE` 409.
+- **Two first credit requests for one (outlet, store)** no longer surface the unique-constraint violation's generic
+  message: the loser gets 409 `CONCURRENT_MODIFICATION` "A request to this supplier is already waiting for a response."
+  (It was already a 409, not a 500.)
+- **`WALLET_ON_HOLD`** (403, "Your wallet is on hold. Please contact support.") replaces `FORBIDDEN` for an on-hold wallet
+  in a wallet repayment, so the app can tell it from the feature being off (still 403 `FORBIDDEN`). QuickScan and
+  withdrawals are unchanged.
+- No schema change.

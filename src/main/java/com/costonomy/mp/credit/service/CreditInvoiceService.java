@@ -121,16 +121,17 @@ public class CreditInvoiceService {
      * <p>Idempotent on the caller's key, enforced by {@code uk_credit_payment_key}
      * rather than by a preceding lookup — doc 04 §21, and a check-then-insert
      * would race with the retry it exists to catch.
+     *
+     * <p>The stored key is {@link #supplierKey}: the caller's key under the actor's own namespace (D-129).
+     * {@code credit_payment.idempotency_key} is unique across every tenant, so a raw user key could be another
+     * supplier's (a lookup would hand its payment back) or one the system itself writes ({@code claim:<id>},
+     * {@code wallet-repayment:...}, which a squatter would make fail with a unique-key error). User keys always begin
+     * with {@code supplier:}, and the system's never do.
      */
     @Transactional
     public CreditDtos.PaymentResponse recordPayment(Long actorId, Long invoiceId,
                                                     CreditDtos.RecordPaymentRequest request,
                                                     String idempotencyKey) {
-
-        var duplicate = payments.findByIdempotencyKey(idempotencyKey).orElse(null);
-        if (duplicate != null) {
-            return toResponse(duplicate);
-        }
 
         // Locked before it is read for the arithmetic below: a wallet repayment can be settling the same invoice
         // at this moment, and both must see the other's result, not the row as it was a moment ago (D-123).
@@ -143,6 +144,14 @@ public class CreditInvoiceService {
         // the balance and free the credit again on nothing but their say-so.
         accessControl.requireScoped(actorId, Permissions.CREDIT_MODIFY,
                 ScopeType.SUPPLIER_STORE, invoice.getSupplierStoreId(), "CreditInvoice");
+
+        // After the access check, and under the actor's own namespace: a key is looked up only among this
+        // supplier's own payments, never another tenant's.
+        String storedKey = supplierKey(actorId, idempotencyKey);
+        var duplicate = payments.findByIdempotencyKey(storedKey).orElse(null);
+        if (duplicate != null) {
+            return toResponse(duplicate);
+        }
 
         if (invoice.getStatus().isSettled()) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
@@ -157,9 +166,24 @@ public class CreditInvoiceService {
                             .formatted(invoice.outstanding().toPlainString()));
         }
 
+        // A date the supplier gives is held to the same rule as a claim's paidOn: an India calendar day, not in the
+        // future, not before the invoice existed. A future date would sort first in the invoice's payments and read as
+        // the latest event. Left out, it is "now" and needs no check.
+        Instant paidAt = request.paidAt() == null ? Instant.now() : request.paidAt();
+        if (request.paidAt() != null) {
+            LocalDate paidOn = LocalDate.ofInstant(paidAt, zone());
+            if (paidOn.isAfter(today())) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR, "The payment date can't be in the future.");
+            }
+            LocalDate issuedOn = LocalDate.ofInstant(invoice.getIssuedAt(), zone());
+            if (paidOn.isBefore(issuedOn)) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "The payment date can't be before the invoice was issued on %s.".formatted(issuedOn));
+            }
+        }
+
         var payment = applyPayment(invoice, request.amount(), request.method(), request.reference(),
-                request.note(), request.paidAt() == null ? Instant.now() : request.paidAt(), actorId,
-                idempotencyKey, CreditPaymentSource.SUPPLIER_RECORDED, null);
+                request.note(), paidAt, actorId, storedKey, CreditPaymentSource.SUPPLIER_RECORDED, null);
 
         auditService.record(actorId, null, "CREDIT_PAYMENT_RECORDED", "CREDIT_INVOICE",
                 invoiceId, null, invoice.getStatus().name(),
@@ -176,6 +200,11 @@ public class CreditInvoiceService {
                 actorId);
 
         return toResponse(payment);
+    }
+
+    /** The key a supplier-recorded payment is stored under: the caller's own, in its own namespace (D-129). */
+    static String supplierKey(Long actorId, String idempotencyKey) {
+        return "supplier:" + actorId + ":" + idempotencyKey;
     }
 
     /**

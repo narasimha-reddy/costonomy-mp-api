@@ -47,6 +47,8 @@ class CreditWalletRepayIT extends AbstractIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private CreditJobs creditJobs;
     @Autowired private NotificationRelayAccess relay;
+    @Autowired private com.costonomy.mp.common.idempotency.IdempotencyService idempotency;
+    @org.springframework.boot.test.mock.mockito.SpyBean private com.costonomy.mp.credit.service.CreditRepaymentPayoutWriter payoutWriter;
 
     private CreditWalletSupport s;
     private ExecutorService pool;
@@ -59,6 +61,7 @@ class CreditWalletRepayIT extends AbstractIntegrationTest {
 
     @AfterEach
     void tearDown() {
+        org.mockito.Mockito.reset(payoutWriter);
         pool.shutdownNow();
     }
 
@@ -323,7 +326,10 @@ class CreditWalletRepayIT extends AbstractIntegrationTest {
         var reply = pay(line, "1000.00");
 
         assertThat(reply.status()).isEqualTo(403);
-        assertThat(reply.code()).isEqualTo("FORBIDDEN");
+        // D-129: its own code, so the app can say "contact support" instead of "not available yet" (the flag-off
+        // refusal stays FORBIDDEN: CreditWalletRepayDisabledIT).
+        assertThat(reply.code()).isEqualTo("WALLET_ON_HOLD");
+        assertThat(reply.body().at("/error/message").asText()).isEqualTo("Your wallet is on hold. Please contact support.");
         assertNothingMoved(line, before);
     }
 
@@ -440,6 +446,115 @@ class CreditWalletRepayIT extends AbstractIntegrationTest {
         assertThat(again.code()).isEqualTo("IDEMPOTENCY_KEY_REUSE");
         assertThat(s.balance(line.buyer())).isEqualByComparingTo("17500.00");
         assertThat(walletRows(line, "CREDIT_REPAYMENT")).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("two logically equal payloads built in different map orders are ONE request for the service (B1)")
+    void equalPayloadsInAnyMapOrderReplay() throws Exception {
+        var buyer = s.newBuyer();
+        var first = new java.util.LinkedHashMap<String, Object>();
+        first.put("agreementId", 7L);
+        first.put("amount", "1000.00");
+        first.put("invoiceIds", List.of(3L, 9L));
+        var second = new java.util.LinkedHashMap<String, Object>();
+        second.put("invoiceIds", List.of(3L, 9L));
+        second.put("amount", "1000.00");
+        second.put("agreementId", 7L);
+        var runs = new java.util.concurrent.atomic.AtomicInteger();
+        String key = UUID.randomUUID().toString();
+
+        String one = idempotency.execute(buyer.outletId(), "credit.test-order", key, first, String.class,
+                () -> "run-" + runs.incrementAndGet());
+        String two = idempotency.execute(buyer.outletId(), "credit.test-order", key, second, String.class,
+                () -> "run-" + runs.incrementAndGet());
+
+        assertThat(runs.get()).describedAs("the retry must replay, not run again").isEqualTo(1);
+        assertThat(two).isEqualTo(one);
+    }
+
+    @Test
+    @DisplayName("a failed attempt: the same key is answered IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED, a NEW key succeeds, one debit in all (B3)")
+    void failedAttemptNeedsANewKey() throws Exception {
+        var fx = fx("20000.00");
+        var line = fx.line();
+        String key = UUID.randomUUID().toString();
+        org.mockito.Mockito.doThrow(new IllegalStateException("payout writer down"))
+                .doCallRealMethod().when(payoutWriter).record(org.mockito.ArgumentMatchers.any());
+
+        var failed = pay(line, key, "2500.00");
+        var again = pay(line, key, "2500.00");
+        var before = s.snapshot(line);
+        var fresh = pay(line, UUID.randomUUID().toString(), "2500.00");
+
+        assertThat(failed.status()).isGreaterThanOrEqualTo(500);
+        assertThat(before.wallet()).describedAs("the failed attempt rolled back").isEqualByComparingTo("20000.00");
+        assertThat(again.status()).isEqualTo(409);
+        assertThat(again.code()).isEqualTo("IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED");
+        assertThat(again.body().at("/error/message").asText())
+                .isEqualTo("The previous attempt did not go through. Please try again.");
+        assertThat(fresh.status()).describedAs(fresh.body().toString()).isEqualTo(201);
+        assertThat(s.balance(line.buyer())).isEqualByComparingTo("17500.00");
+        assertThat(walletRows(line, "CREDIT_REPAYMENT")).hasSize(1);
+        assertThat(jdbc.queryForObject("select count(*) from credit_repayment where outlet_id = ?", Integer.class,
+                line.buyer().outletId())).isEqualTo(1);
+    }
+
+    // ── number formats and the edges of the balance ──────────────────────
+
+    @Test
+    @DisplayName("1000, 1000.0, '1000.00' and '1e3' with one key are one debit and replays; 'NaN' is refused (M07)")
+    void numberFormatsAreOneRequest() throws Exception {
+        var fx = fx("20000.00");
+        var line = fx.line();
+        String key = UUID.randomUUID().toString();
+        Object[] forms = {1000, 1000.0, "1000.00", "1e3", "1000"};
+
+        Reply first = null;
+        for (Object form : forms) {
+            var reply = s.repay(line.buyer().token(), line.agreementId(), key, Map.of("amount", form));
+            if (first == null) {
+                first = reply;
+                assertThat(reply.status()).describedAs(String.valueOf(form) + " " + reply.body()).isEqualTo(201);
+            }
+            assertThat(reply.status()).describedAs(String.valueOf(form)).isEqualTo(201);
+            assertThat(reply.data()).describedAs(String.valueOf(form)).isEqualTo(first.data());
+        }
+        var nan = s.repay(line.buyer().token(), line.agreementId(), key, Map.of("amount", "NaN"));
+
+        assertThat(nan.status()).isEqualTo(400);
+        assertThat(s.balance(line.buyer())).isEqualByComparingTo("19000.00");
+        assertThat(walletRows(line, "CREDIT_REPAYMENT")).hasSize(1);
+        assertThat(jdbc.queryForObject("select count(*) from credit_repayment where outlet_id = ?", Integer.class,
+                line.buyer().outletId())).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a wallet holding exactly the amount: 201 and a balance of 0.00 (M27)")
+    void exactBalanceSucceeds() throws Exception {
+        var fx = fx("1000.00");
+        var line = fx.line();
+
+        var reply = pay(line, "1000.00");
+
+        assertThat(reply.status()).describedAs(reply.body().toString()).isEqualTo(201);
+        assertThat(s.balance(line.buyer())).isEqualByComparingTo("0.00");
+        assertThat(walletRows(line, "CREDIT_REPAYMENT")).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("a wallet one paisa short: 422 WALLET_INSUFFICIENT_BALANCE, shortBy 0.01, nothing moves (M28)")
+    void onePaisaShortRefused() throws Exception {
+        var fx = fx("999.99");
+        var line = fx.line();
+        var before = s.snapshot(line);
+
+        var reply = pay(line, "1000.00");
+
+        assertThat(reply.status()).isEqualTo(422);
+        assertThat(reply.code()).isEqualTo("WALLET_INSUFFICIENT_BALANCE");
+        assertThat(reply.body().at("/error/details/shortBy").decimalValue()).isEqualByComparingTo("0.01");
+        assertNothingMoved(line, before);
+        assertThat(s.balance(line.buyer())).isEqualByComparingTo("999.99");
     }
 
     // ── concurrency and locks ────────────────────────────────────────────

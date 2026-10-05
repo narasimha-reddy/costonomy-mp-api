@@ -91,13 +91,7 @@ public class CreditClaimService {
                     "The payment date can't be before the invoice was issued on %s.".formatted(issuedOn));
         }
 
-        var payload = new HashMap<String, Object>();
-        payload.put("invoiceId", invoiceId);
-        payload.put("amount", amount.toPlainString());
-        payload.put("method", method.name());
-        payload.put("reference", reference == null ? "" : reference);
-        payload.put("paidOn", request.paidOn().toString());
-        payload.put("note", note == null ? "" : note);
+        var payload = payload(invoiceId, amount, method, reference, request.paidOn(), note);
 
         try (var trace = TraceScope.of("credit-invoice", invoiceId)) {
             return idempotency.execute(actorId, "credit.claim", idempotencyKey, payload,
@@ -105,6 +99,19 @@ public class CreditClaimService {
                     () -> txTemplate.execute(status -> doSubmit(actorId, invoiceId, amount, method, reference,
                             request.paidOn(), note, idempotencyKey)));
         }
+    }
+
+    /** What identifies "the same claim" for the idempotency hash; the amount is scaled to 2 places, as plain text. */
+    public static Map<String, Object> payload(Long invoiceId, BigDecimal amount, CreditPaymentMethod method,
+                                              String reference, LocalDate paidOn, String note) {
+        var payload = new HashMap<String, Object>();
+        payload.put("invoiceId", invoiceId);
+        payload.put("amount", amount.toPlainString());
+        payload.put("method", method.name());
+        payload.put("reference", reference == null ? "" : reference);
+        payload.put("paidOn", paidOn.toString());
+        payload.put("note", note == null ? "" : note);
+        return payload;
     }
 
     private CreditDtos.ClaimResponse doSubmit(Long actorId, Long invoiceId, BigDecimal amount,
@@ -165,6 +172,10 @@ public class CreditClaimService {
 
         return txTemplate.execute(status -> {
             var claim = claims.lockById(claimId).orElseThrow(() -> new NotFoundException("CreditPaymentClaim", claimId));
+            if (claim.getStatus() == CreditClaimStatus.WITHDRAWN) {
+                // A retry after a lost response: already in the state asked for, so answer, change and publish nothing (D-129).
+                return respond(claim);
+            }
             requireSubmitted(claim);
             claim.setStatus(CreditClaimStatus.WITHDRAWN);
             claim.setDecidedAt(Instant.now());
@@ -264,6 +275,11 @@ public class CreditClaimService {
 
         return txTemplate.execute(status -> {
             var claim = claims.lockById(claimId).orElseThrow(() -> new NotFoundException("CreditPaymentClaim", claimId));
+            if (claim.getStatus() == CreditClaimStatus.REJECTED && reason.trim().equals(claim.getDecisionNote())) {
+                // The same rejection again (a retry after a lost response): answer it, change and publish nothing.
+                // Another reason is a different decision, and a claim in any other state is still refused (D-129).
+                return respond(claim);
+            }
             requireSubmitted(claim);
             claim.setStatus(CreditClaimStatus.REJECTED);
             claim.setDecisionNote(reason.trim());
