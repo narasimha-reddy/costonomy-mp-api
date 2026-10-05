@@ -37,10 +37,19 @@ public class DeliveryCharges {
      */
     public BigDecimal supplierCarriedFee(DeliveryDirectory.DeliveryPolicy policy, DeliveryMode mode,
                                          BigDecimal subtotal) {
+        return supplierCarriedFee(policy, mode, subtotal, false);
+    }
+
+    /**
+     * As above. {@code offeredOnAnswer} is true when the supplier offered to deliver on this very request (D-141):
+     * that is their decision for this order and does not depend on the store's standing own-delivery switch.
+     */
+    public BigDecimal supplierCarriedFee(DeliveryDirectory.DeliveryPolicy policy, DeliveryMode mode,
+                                         BigDecimal subtotal, boolean offeredOnAnswer) {
         return switch (mode) {
             case PICKUP -> BigDecimal.ZERO;
             case SUPPLIER_DELIVERY -> {
-                if (!policy.ownDeliveryEnabled()) {
+                if (!policy.ownDeliveryEnabled() && !offeredOnAnswer) {
                     throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                             "This supplier doesn't deliver. Choose pickup or our delivery.");
                 }

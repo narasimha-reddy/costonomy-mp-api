@@ -448,10 +448,8 @@ public class IntentResponder {
         }
         switch (offer) {
             case "SELF_FREE", "SELF" -> {
-                if (!deliveryPolicy.ownDeliveryEnabled()) {
-                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                            "Turn on your own delivery in your delivery settings before offering it.");
-                }
+                // Offering to deliver on this request is the supplier's own decision and needs no standing setting. What
+                // they may charge is capped by the store's own fee, which is nothing if none is set.
                 acceptance.setDeliveryModes("PICKUP,SUPPLIER_DELIVERY");
                 BigDecimal storeFee = deliveryPolicy.ownDeliveryFee() == null
                         ? BigDecimal.ZERO : deliveryPolicy.ownDeliveryFee();

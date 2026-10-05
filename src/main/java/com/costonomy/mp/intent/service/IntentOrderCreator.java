@@ -560,7 +560,9 @@ public class IntentOrderCreator {
         // before the free-delivery threshold: waiving the fee must not also waive whether delivery is offered.
         return switch (mode) {
             case PICKUP, SUPPLIER_DELIVERY -> {
-                BigDecimal fee = deliveryCharges.supplierCarriedFee(policy, mode, subtotal);
+                boolean offeredOnAnswer = mode == DeliveryMode.SUPPLIER_DELIVERY && acceptance != null
+                        && acceptance.getDeliveryOffer() != null && !"COSTONOMY".equals(acceptance.getDeliveryOffer());
+                BigDecimal fee = deliveryCharges.supplierCarriedFee(policy, mode, subtotal, offeredOnAnswer);
                 // A supplier who offered free delivery on this answer (D-141) charges nothing, after the same
                 // refusals as any other supplier delivery.
                 boolean offered = mode == DeliveryMode.SUPPLIER_DELIVERY && acceptance != null

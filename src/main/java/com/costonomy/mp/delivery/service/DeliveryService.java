@@ -278,11 +278,15 @@ public class DeliveryService {
                                      DeliveryDirectory.DeliveryPolicy policy) {
 
         DeliveryMode asked = parseMode(requested);
+        boolean agreedOnOrder = false;
         if (asked == null) {
             asked = fromOrder(onOrder);
+            agreedOnOrder = asked != null;
         }
 
-        if (asked == DeliveryMode.SUPPLIER_OWN && !policy.ownDeliveryEnabled()) {
+        // A supplier who offered to deliver this order themselves (D-141) agreed to it when they answered, whatever the
+        // store's standing switch says now; only a mode picked at dispatch is checked against it.
+        if (asked == DeliveryMode.SUPPLIER_OWN && !agreedOnOrder && !policy.ownDeliveryEnabled()) {
             throw new BusinessException(ErrorCode.DELIVERY_UNAVAILABLE,
                     "This supplier doesn't deliver orders themselves.");
         }
