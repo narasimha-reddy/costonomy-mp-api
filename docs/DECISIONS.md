@@ -5372,3 +5372,23 @@ auto-suspend still runs after marking.
 `partlyPaidThenLateGoesOverdueOnce`, `issuedJustAfterMidnightIstDatesToday`, `markOverdueUsesIstToday`,
 `oneBadInvoiceDoesNotBlockTheSweep`. Mutations: the unconditional `PARTIALLY_PAID` fails the first two; UTC for the issue date
 fails the midnight test; `REQUIRED` with a transactional sweep fails the bad-invoice test.
+
+## D-119 — Credit: a suspended or approved line cannot be re-requested; a system suspension lifts itself when the overdue is paid
+
+**Problem.** `CreditAgreementService.request()` refused only `ACTIVE` and `REQUESTED`. A restaurant could re-request a
+`SUSPENDED` line (wiping the suspension reason and the status, bypassing `canTransitionTo`) or an `APPROVED` one (discarding
+terms awaiting its acceptance), and a closed or expired line that still carried debt. Separately, nothing lifted a suspension
+the overdue sweep had imposed once the debt was repaid, and nothing recorded who suspended.
+
+**Rule.** `CreditAgreementStatus.canReRequest()` is true only for `REJECTED`, `EXPIRED`, `CLOSED`. Any other existing status
+is refused with `INVALID_STATE_TRANSITION` (409); `EXPIRED` and `CLOSED` also need `reserved + utilized = 0`. A new column
+`credit_agreement.suspension_source` (`SYSTEM` from the sweep, `SUPPLIER` from the suspend endpoint) is set on suspension and
+cleared on any exit from it. After every repayment, in the same transaction, `CreditInvoiceService.reinstateIfOverdueCleared`
+returns a `SYSTEM`-suspended line to `ACTIVE` when overdue is at or below `max_overdue_amount` (or no maximum is set), writes a
+`CREDIT_REINSTATED` audit row and publishes `CreditReinstated {creditAgreementId, outletId, supplierStoreId}`. A supplier's own
+suspension never lifts itself; only the supplier's manual reinstate does. Notification rules for the event are a later change.
+
+**Existing data.** V53 backfills `suspension_source` for suspended rows (`SYSTEM` where the reason starts "Overdue balance",
+else `SUPPLIER`) and adds `ix_credit_invoice_outlet_status (outlet_id, status)`.
+
+**Tests.** `CreditFlowIT.Safety`, `CreditAgreementStatusTest`.

@@ -178,6 +178,7 @@ public class CreditInvoiceService {
         // without the other would leave the restaurant's available credit wrong in
         // whichever direction the missing half pointed.
         ledger.repay(invoice.getCreditAgreementId(), invoiceId, request.amount(), actorId);
+        reinstateIfOverdueCleared(invoice.getCreditAgreementId());
 
         auditService.record(actorId, null, "CREDIT_PAYMENT_RECORDED", "CREDIT_INVOICE",
                 invoiceId, null, invoice.getStatus().name(),
@@ -190,6 +191,40 @@ public class CreditInvoiceService {
                 actorId);
 
         return toResponse(payment);
+    }
+
+    /**
+     * Lift a suspension the overdue sweep imposed, once what is overdue is back within the supplier's tolerance.
+     * Call it in the same transaction as any repayment. A suspension by a supplier user is never lifted here.
+     */
+    public void reinstateIfOverdueCleared(Long agreementId) {
+        var agreement = agreements.findById(agreementId).orElse(null);
+        if (agreement == null
+                || agreement.getStatus() != CreditAgreementStatus.SUSPENDED
+                || agreement.getSuspensionSource() != SuspensionSource.SYSTEM
+                || !agreement.getStatus().canTransitionTo(CreditAgreementStatus.ACTIVE)) {
+            return;
+        }
+        BigDecimal max = agreement.getMaxOverdueAmount();
+        if (max != null && duesFor(agreementId).overdue().compareTo(max) > 0) {
+            return;
+        }
+
+        agreement.setStatus(CreditAgreementStatus.ACTIVE);
+        agreement.setSuspendedAt(null);
+        agreement.setSuspensionReason(null);
+        agreement.setSuspensionSource(null);
+        agreements.save(agreement);
+
+        auditService.record(null, null, "CREDIT_REINSTATED", "CREDIT_AGREEMENT", agreementId,
+                CreditAgreementStatus.SUSPENDED.name(), CreditAgreementStatus.ACTIVE.name(),
+                "Overdue balance cleared", "SYSTEM");
+
+        outbox.publish("CreditReinstated", "CREDIT_AGREEMENT", agreementId,
+                Map.of("creditAgreementId", agreementId,
+                        "outletId", agreement.getOutletId(),
+                        "supplierStoreId", agreement.getSupplierStoreId()),
+                null);
     }
 
     /**

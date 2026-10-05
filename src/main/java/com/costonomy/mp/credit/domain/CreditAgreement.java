@@ -94,6 +94,12 @@ public class CreditAgreement extends BaseEntity {
     @Column(name = "suspension_reason", length = 500)
     private String suspensionReason;
 
+    /** Who suspended the line; null unless SUSPENDED. */
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(name = "suspension_source", length = 16)
+    private SuspensionSource suspensionSource;
+
     @Column(name = "closed_at")
     private Instant closedAt;
 

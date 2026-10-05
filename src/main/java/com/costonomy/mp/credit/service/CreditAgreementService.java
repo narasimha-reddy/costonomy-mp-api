@@ -101,8 +101,25 @@ public class CreditAgreementService {
                     "A request to this supplier is already waiting for a response.");
         }
 
+        if (agreement.getId() != null) {
+            if (!agreement.getStatus().canReRequest()) {
+                // SUSPENDED and APPROVED: re-asking would wipe a suspension or terms awaiting acceptance.
+                throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "This credit line is " + agreement.getStatus()
+                                + " and can't be requested again.");
+            }
+            boolean owes = agreement.getStatus() != CreditAgreementStatus.REJECTED
+                    && (agreement.getUtilizedAmount().signum() != 0
+                    || agreement.getReservedAmount().signum() != 0);
+            if (owes) {
+                throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "This credit line still has an amount owed or held and can't be requested again.");
+            }
+        }
+
         agreement.setStatus(CreditAgreementStatus.REQUESTED);
         agreement.setSuspensionReason(null);
+        agreement.setSuspensionSource(null);
         agreements.save(agreement);
 
         var request = new CreditRequest();
@@ -376,6 +393,7 @@ public class CreditAgreementService {
         agreement.setStatus(CreditAgreementStatus.ACTIVE);
         agreement.setSuspendedAt(null);
         agreement.setSuspensionReason(null);
+        agreement.setSuspensionSource(null);
         agreements.save(agreement);
 
         auditService.recordTransition(actorId, "CREDIT_REINSTATED", "CREDIT_AGREEMENT",
@@ -399,6 +417,7 @@ public class CreditAgreementService {
         agreement.setStatus(CreditAgreementStatus.SUSPENDED);
         agreement.setSuspendedAt(Instant.now());
         agreement.setSuspensionReason(reason);
+        agreement.setSuspensionSource(actorId == null ? SuspensionSource.SYSTEM : SuspensionSource.SUPPLIER);
         agreements.save(agreement);
 
         auditService.record(actorId, null, "CREDIT_SUSPENDED", "CREDIT_AGREEMENT",

@@ -743,6 +743,192 @@ class CreditFlowIT extends AbstractIntegrationTest {
     // ── Invoices, dues and repayment ─────────────────────────────────────
 
     @Nested
+    @DisplayName("credit safety: re-requests and auto-reinstate")
+    class Safety {
+
+        private long requestAgreement(Buyer buyer, Seller seller) throws Exception {
+            return api.post(buyer.token(), "/api/v1/credit/requests", Map.of(
+                    "supplierStoreId", seller.storeId(), "outletId", buyer.outletId(),
+                    "requestedLimit", "200000", "requestedDays", 30)).at("/data/id").asLong();
+        }
+
+        private int reRequest(CreditLine line) throws Exception {
+            return api.postStatus(line.buyer().token(), "/api/v1/credit/requests", Map.of(
+                    "supplierStoreId", line.seller().storeId(), "outletId", line.buyer().outletId(),
+                    "requestedLimit", "100000", "requestedDays", 30));
+        }
+
+        private String statusOf(CreditLine line) {
+            return jdbc.queryForObject("select status from credit_agreement where id = ?",
+                    String.class, line.agreementId());
+        }
+
+        private CreditLine lineWithMaxOverdue(String maxOverdue) throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller();
+            offerCredit(seller);
+            long agreementId = requestAgreement(buyer, seller);
+            api.post(seller.token(), "/api/v1/credit/agreements/" + agreementId + "/approve",
+                    Map.of("maxOverdueAmount", maxOverdue));
+            return new CreditLine(buyer, seller, agreementId);
+        }
+
+        private int events(String type, long agreementId) {
+            return jdbc.queryForObject("select count(*) from outbox_event where event_type = ? "
+                    + "and aggregate_type = 'CREDIT_AGREEMENT' and aggregate_id = ?",
+                    Integer.class, type, agreementId);
+        }
+
+        private int reinstatedAudits(long agreementId) {
+            return jdbc.queryForObject("select count(*) from audit_log where action = 'CREDIT_REINSTATED' "
+                    + "and entity_type = 'CREDIT_AGREEMENT' and entity_id = ?", Integer.class, agreementId);
+        }
+
+        /** An order of 40000, overdue and swept; the line is then suspended by the system. */
+        private long systemSuspended(CreditLine line) throws Exception {
+            orderOnCredit(line, "400", 100);
+            long invoiceId = firstInvoiceId(line);
+            jdbc.update("update credit_invoice set due_date = date_sub(curdate(), interval 10 day), "
+                    + "overdue_after = date_sub(curdate(), interval 5 day) where id = ?", invoiceId);
+            creditJobs.sweepOverdue();
+            assertThat(statusOf(line)).isEqualTo("SUSPENDED");
+            return invoiceId;
+        }
+
+        @Test
+        @DisplayName("a suspended line cannot be re-requested to wipe the suspension")
+        void suspendedLineCannotBeReRequested() throws Exception {
+            var line = creditLine("200000");
+            api.post(line.seller().token(), "/api/v1/credit/agreements/" + line.agreementId() + "/suspend",
+                    Map.of("reason", "Late on three invoices"));
+
+            assertThat(reRequest(line)).isEqualTo(409);
+
+            assertThat(statusOf(line)).isEqualTo("SUSPENDED");
+            assertThat(jdbc.queryForObject("select suspension_reason from credit_agreement where id = ?",
+                    String.class, line.agreementId())).isEqualTo("Late on three invoices");
+        }
+
+        @Test
+        @DisplayName("terms awaiting acceptance cannot be re-requested")
+        void approvedTermsCannotBeReRequested() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller();
+            offerCredit(seller);
+            long agreementId = requestAgreement(buyer, seller);
+            api.post(seller.token(), "/api/v1/credit/agreements/" + agreementId + "/approve",
+                    Map.of("approvedLimit", "100000"));
+            var line = new CreditLine(buyer, seller, agreementId);
+            assertThat(statusOf(line)).isEqualTo("APPROVED");
+
+            assertThat(reRequest(line)).isEqualTo(409);
+            assertThat(statusOf(line)).isEqualTo("APPROVED");
+        }
+
+        @Test
+        @DisplayName("a closed or expired line with debt cannot be re-requested")
+        void closedLineWithDebtCannotBeReRequested() throws Exception {
+            for (String status : List.of("CLOSED", "EXPIRED")) {
+                var line = creditLine("200000");
+                orderOnCredit(line, "400", 100);
+                jdbc.update("update credit_agreement set status = ? where id = ?", status, line.agreementId());
+
+                assertThat(reRequest(line)).as(status).isEqualTo(409);
+                assertThat(statusOf(line)).isEqualTo(status);
+            }
+        }
+
+        @Test
+        @DisplayName("a closed or expired line with nothing owed can be re-requested")
+        void closedLineWithNothingOwedCanBeReRequested() throws Exception {
+            for (String status : List.of("CLOSED", "EXPIRED")) {
+                var line = creditLine("200000");
+                jdbc.update("update credit_agreement set status = ? where id = ?", status, line.agreementId());
+
+                assertThat(reRequest(line)).as(status).isEqualTo(200);
+                assertThat(statusOf(line)).isEqualTo("REQUESTED");
+            }
+        }
+
+        @Test
+        @DisplayName("a rejected request can still be re-requested")
+        void rejectedCanBeReRequested() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller();
+            offerCredit(seller);
+            long agreementId = requestAgreement(buyer, seller);
+            api.post(seller.token(), "/api/v1/credit/agreements/" + agreementId + "/reject",
+                    Map.of("reason", "Send history first"));
+            var line = new CreditLine(buyer, seller, agreementId);
+
+            assertThat(reRequest(line)).isEqualTo(200);
+            assertThat(statusOf(line)).isEqualTo("REQUESTED");
+        }
+
+        @Test
+        @DisplayName("a system suspension lifts itself once the overdue is paid down to the maximum")
+        void systemSuspensionLiftsWhenOverdueClears() throws Exception {
+            var line = lineWithMaxOverdue("10000");
+            long invoiceId = systemSuspended(line);
+            assertThat(jdbc.queryForObject("select suspension_source from credit_agreement where id = ?",
+                    String.class, line.agreementId())).isEqualTo("SYSTEM");
+
+            // 40000 overdue, pay 20000: 20000 is still above 10000.
+            recordPayment(line.seller(), invoiceId, "20000", UUID.randomUUID().toString());
+            assertThat(statusOf(line)).isEqualTo("SUSPENDED");
+            assertThat(events("CreditReinstated", line.agreementId())).isZero();
+
+            // Pay 10000 more: 10000 overdue is at the maximum, not above it.
+            recordPayment(line.seller(), invoiceId, "10000", UUID.randomUUID().toString());
+
+            assertThat(statusOf(line)).isEqualTo("ACTIVE");
+            var row = jdbc.queryForMap("select suspension_reason, suspension_source, suspended_at "
+                    + "from credit_agreement where id = ?", line.agreementId());
+            assertThat(row.values()).containsOnly((Object) null);
+            assertThat(reinstatedAudits(line.agreementId())).isEqualTo(1);
+            assertThat(events("CreditReinstated", line.agreementId())).isEqualTo(1);
+            var payload = jdbc.queryForObject("select payload from outbox_event where event_type = "
+                    + "'CreditReinstated' and aggregate_id = ?", String.class, line.agreementId());
+            var node = json.readTree(payload);
+            assertThat(node.get("creditAgreementId").asLong()).isEqualTo(line.agreementId());
+            assertThat(node.get("outletId").asLong()).isEqualTo(line.buyer().outletId());
+            assertThat(node.get("supplierStoreId").asLong()).isEqualTo(line.seller().storeId());
+        }
+
+        @Test
+        @DisplayName("a supplier's suspension never lifts itself; the supplier can still reinstate")
+        void supplierSuspensionNeverAutoLifts() throws Exception {
+            var line = lineWithMaxOverdue("10000");
+            long invoiceId = overdueInvoiceFor(line);
+            api.post(line.seller().token(), "/api/v1/credit/agreements/" + line.agreementId() + "/suspend",
+                    Map.of("reason", "Account under review"));
+            assertThat(jdbc.queryForObject("select suspension_source from credit_agreement where id = ?",
+                    String.class, line.agreementId())).isEqualTo("SUPPLIER");
+
+            recordPayment(line.seller(), invoiceId, "40000", UUID.randomUUID().toString());
+
+            assertThat(statusOf(line)).isEqualTo("SUSPENDED");
+            assertThat(events("CreditReinstated", line.agreementId())).isZero();
+
+            api.post(line.seller().token(), "/api/v1/credit/agreements/" + line.agreementId() + "/reinstate",
+                    Map.of());
+            assertThat(statusOf(line)).isEqualTo("ACTIVE");
+            assertThat(jdbc.queryForObject("select suspension_source from credit_agreement where id = ?",
+                    String.class, line.agreementId())).isNull();
+        }
+
+        private long overdueInvoiceFor(CreditLine line) throws Exception {
+            orderOnCredit(line, "400", 100);
+            long invoiceId = firstInvoiceId(line);
+            jdbc.update("update credit_invoice set due_date = date_sub(curdate(), interval 10 day), "
+                    + "overdue_after = date_sub(curdate(), interval 5 day) where id = ?", invoiceId);
+            // Mark overdue without suspending: the supplier suspends by hand instead.
+            jdbc.update("update credit_invoice set status = 'OVERDUE' where id = ?", invoiceId);
+            return invoiceId;
+        }
+    }
+
+    @Nested
     @DisplayName("invoices and repayment")
     class InvoicesAndRepayment {
 
