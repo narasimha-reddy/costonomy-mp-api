@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - A truly simultaneous duplicate order no longer returns a 500: the intent is locked first, the loser gets the first order back, and a lock conflict that still occurs answers 409. Replaying an order key with a different delivery mode is now refused as a reused key (D-135).
 - The Razorpay checkout is opened after the order commits, not inside its transaction. If the gateway fails the caller is told nothing was charged, the unpaid order stays, and a retry opens the checkout; a payment never set up is ended after 30 minutes (D-136).
 - A basket can no longer end up with two drafts for one supplier, and adding, removing and sending now take turns on the draft, so a simultaneous add and send, or removal and add, loses no line. Removed lines and emptied drafts are audited (D-137).
+
+### Added
+- A buyer can send a request as immediate or for a day (today to 30 days ahead). The supplier sees it, and the buyer's slot picker starts on it at order review. A preference, not a booking (D-140).
 - Supplier and popular lists now consistently filter by serviceability using a unified ServiceabilityPolicy (pincode list wins > store radius > default radius fallback; missing coordinates serviceable). Popular suppliers filter before applying the limit (clamped to at most 100). Credit request search supports reach=all. Unscoped outletId on discovery endpoints returns 404 (D-138).
 - The supplier directory no longer caps candidates alphabetically at 100 via SQL before sorting by distance: suppliers are sorted nearest first (null distance last, tie-breaker store ID) and paginated with offset and limit (default 50, max 100), returning total and nextOffset (D-139).
 

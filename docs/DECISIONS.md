@@ -5951,3 +5951,14 @@ Verified against the code before changing: `StorefrontService.searchSuppliers` e
 4. **Pagination metadata.** `DiscoveryDtos.SupplierSearchPage` includes `total` (the count of serviceable suppliers matching filters) and `nextOffset` (`Integer`, null when on the last page). `reach=all` parameter continues to bypass serviceability filtering.
 5. **Tests.** Integration test `paginationAndNearestSorting` in `StorefrontIT$Suppliers`: verifies that with 100 "AAA" stores at 2–5 km and one "ZZZ" store at 0.5 km, "ZZZ" is returned first on page 1; disjoint pages cover all stores without repeats; limit is clamped to 100; and `nextOffset` is null on the final page. Mutation-checked by re-introducing the `order by o.display_name limit 100` cap, which caused the test to fail.
 
+## D-140 — A buyer can ask for immediate or a day when sending a request
+
+Before this, the delivery slot was chosen only at order review, after the supplier had answered. The buyer could not say, when sending, whether they wanted the goods now or on a particular day, and the supplier had no way to plan for it.
+
+1. **A preference, not a booking.** `intent.preferred_delivery_date` (V73, nullable `DATE`). Null means immediate. The slot is still chosen and booked when the order is created; the preference only tells the supplier what is wanted and starts the buyer's slot picker on that day.
+2. **Day, not slot.** One choice applies to a whole basket send, and slots belong to each supplier, so the choice is a day (today, tomorrow, in two days in the app; the API accepts today to 30 days ahead). `SendRequest` and `SendBasketRequest` take `preferredDeliveryDate`; `IntentResponse` returns it, so the supplier sees it.
+3. **Validated on send.** A day before today or more than 30 days ahead is refused (422 `VALIDATION_ERROR`), and nothing in the basket is sent. Days are India's calendar days (`Asia/Kolkata`).
+4. **Immediate is the default.** Leaving it out is what every client did before, and means "as soon as the supplier can".
+5. **Not done.** Direct orders (`/direct-order`) skip the request, so they carry no preference and the slot is chosen at review as before. The existing `requestedDeliveryTime` (an exact moment, shown to the supplier as "Wanted by") is unchanged and still not sent by the app.
+6. **Tests** (`IntentFlowIT$Basket`): immediate by default and the supplier sees both; one day applies to every request in a basket send; past and too-far days are refused and the draft stays a draft. Mutation-checked: not storing the day, and not validating it.
+

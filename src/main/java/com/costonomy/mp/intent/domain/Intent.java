@@ -68,6 +68,10 @@ public class Intent extends BaseEntity {
     @Column(name = "requested_delivery_time")
     private Instant requestedDeliveryTime;
 
+    /** The day the buyer would like it delivered; null is "immediate". A preference, not a booking (D-140). */
+    @Column(name = "preferred_delivery_date")
+    private java.time.LocalDate preferredDeliveryDate;
+
     @Column(name = "notes", length = 1000)
     private String notes;
 

@@ -123,7 +123,7 @@ public class IntentController {
             @Valid @RequestBody(required = false) IntentDtos.SendBasketRequest request) {
         return ApiResponse.ok(intents.sendAll(ActorContext.requireUserId(), outletId,
                 request == null
-                        ? new IntentDtos.SendBasketRequest(false, null, null, null)
+                        ? new IntentDtos.SendBasketRequest(false, null, null, null, null)
                         : request));
     }
 

@@ -259,6 +259,7 @@ public class IntentMapper {
                     intent.getSource(),
                     intent.getClonedFromId(),
                     intent.getRequestedDeliveryTime(),
+                    intent.getPreferredDeliveryDate(),
                     intent.getNotes(),
                     intent.getSentAt(),
                     intent.getResponseDeadline(),

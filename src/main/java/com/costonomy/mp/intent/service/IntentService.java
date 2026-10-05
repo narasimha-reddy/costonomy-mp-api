@@ -364,6 +364,8 @@ public class IntentService {
                             : "This supplier isn't taking requests right now.");
         }
 
+        requireSensibleDeliveryDate(request.preferredDeliveryDate());
+
         Instant now = Instant.now();
         int windowSeconds = policy.responseWindowSecondsFor(store.responseSlaSeconds());
 
@@ -375,6 +377,7 @@ public class IntentService {
         intent.setResponseWindowSeconds(windowSeconds);
         intent.setResponseDeadline(policy.responseDeadline(now, windowSeconds));
         intent.setRequestedDeliveryTime(request.requestedDeliveryTime());
+        intent.setPreferredDeliveryDate(request.preferredDeliveryDate());
         if (request.notes() != null) {
             intent.setNotes(request.notes());
         }
@@ -458,7 +461,8 @@ public class IntentService {
             // Agreed, so the line now carries the price it will be answered at.
             lines.forEach(this::lockPrice);
             sent.add(send(actorId, draft.getId(),
-                    new IntentDtos.SendRequest(request.requestedDeliveryTime(), request.notes())));
+                    new IntentDtos.SendRequest(request.requestedDeliveryTime(),
+                            request.preferredDeliveryDate(), request.notes())));
         }
 
         return new IntentDtos.SendBasketResponse(sent, held);
@@ -611,6 +615,7 @@ public class IntentService {
                 source.directOrdersEnabled(),
                 source.status(), source.fulfilment(),
                 source.source(), source.clonedFromId(), source.requestedDeliveryTime(),
+                source.preferredDeliveryDate(),
                 source.notes(), source.sentAt(), source.responseDeadline(),
                 source.responseWindowSeconds(), source.acceptedAt(),
                 source.orderCreationDeadline(), source.orderCreationWindowSeconds(),
@@ -739,6 +744,22 @@ public class IntentService {
         accessControl.requireScoped(actorId, permission,
                 ScopeType.OUTLET, intent.getOutletId(), "Intent");
         return intent;
+    }
+
+    /** India's calendar day, which is the day a kitchen means by "today". */
+    private static final java.time.ZoneId BUSINESS_ZONE = java.time.ZoneId.of("Asia/Kolkata");
+    private static final int MAX_DAYS_AHEAD = 30;
+
+    /** A day wanted for delivery must be today or later, and not further out than a month (D-140). */
+    private void requireSensibleDeliveryDate(java.time.LocalDate wanted) {
+        if (wanted == null) {
+            return;
+        }
+        var today = LocalDate.now(BUSINESS_ZONE);
+        if (wanted.isBefore(today) || wanted.isAfter(today.plusDays(MAX_DAYS_AHEAD))) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Choose a delivery day from today to %d days ahead.".formatted(MAX_DAYS_AHEAD));
+        }
     }
 
     private void requireEditable(Intent intent) {

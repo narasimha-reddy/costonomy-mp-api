@@ -71,6 +71,8 @@ public final class IntentDtos {
     /** Send a draft to the supplier. */
     public record SendRequest(
             Instant requestedDeliveryTime,
+            /** The day it is wanted; absent means immediate (D-140). */
+            java.time.LocalDate preferredDeliveryDate,
             @Size(max = 1000) String notes) {
     }
 
@@ -270,6 +272,8 @@ public final class IntentDtos {
             String source,
             Long clonedFromId,
             Instant requestedDeliveryTime,
+            /** The day the buyer asked for; null is immediate (D-140). */
+            java.time.LocalDate preferredDeliveryDate,
             String notes,
             Instant sentAt,
             /**
@@ -462,6 +466,8 @@ public final class IntentDtos {
              */
             boolean acceptPriceChanges,
             Instant requestedDeliveryTime,
+            /** The day it is wanted, for every request sent; absent means immediate (D-140). */
+            java.time.LocalDate preferredDeliveryDate,
             @Size(max = 1000) String notes,
             /**
              * Send only this draft, rather than every draft in the outlet.

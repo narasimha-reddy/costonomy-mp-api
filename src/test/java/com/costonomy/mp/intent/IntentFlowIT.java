@@ -470,6 +470,67 @@ class IntentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("a request is immediate unless the buyer names a day, and the supplier sees which (D-140)")
+        void immediateOrScheduled() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long paneer = listSku(seller, "paneer", "410");
+            long intentId = addItem(buyer, paneer, 2).at("/data/id").asLong();
+
+            var sent = api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send", Map.of());
+            assertThat(sent.at("/data/status").asText()).isEqualTo("OPEN");
+            assertThat(sent.at("/data/preferredDeliveryDate").isNull()).isTrue();
+
+            var other = newBuyer();
+            long second = addItem(other, paneer, 1).at("/data/id").asLong();
+            String day = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).plusDays(1).toString();
+            var scheduled = api.post(other.token(), "/api/v1/intents/" + second + "/send",
+                    Map.of("preferredDeliveryDate", day));
+            assertThat(scheduled.at("/data/preferredDeliveryDate").asText()).isEqualTo(day);
+
+            var seen = api.get(seller.token(), "/api/v1/supplier-stores/" + seller.storeId() + "/intents");
+            var days = new java.util.ArrayList<String>();
+            seen.at("/data").forEach(i -> days.add(i.at("/preferredDeliveryDate").asText("immediate")));
+            assertThat(days).contains(day, "immediate");
+        }
+
+        @Test
+        @DisplayName("sending the whole basket applies one day to every request")
+        void basketDayAppliesToEveryRequest() throws Exception {
+            var buyer = newBuyer();
+            var first = newSeller("Metro");
+            var second = newSeller("Nandini");
+            addItem(buyer, listSku(first, "paneer", "410"), 1);
+            addItem(buyer, listSku(second, "rice", "120"), 1);
+            String day = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).plusDays(2).toString();
+
+            var response = api.post(buyer.token(),
+                    "/api/v1/outlets/" + buyer.outletId() + "/intent-drafts/send",
+                    Map.of("acceptPriceChanges", true, "preferredDeliveryDate", day));
+
+            assertThat(response.at("/data/sent").size()).isEqualTo(2);
+            response.at("/data/sent").forEach(i ->
+                    assertThat(i.at("/preferredDeliveryDate").asText()).isEqualTo(day));
+        }
+
+        @Test
+        @DisplayName("refuses a day in the past or more than a month away, and sends nothing")
+        void refusesASillyDay() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long intentId = addItem(buyer, listSku(seller, "paneer", "410"), 1).at("/data/id").asLong();
+            var today = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata"));
+
+            for (var day : List.of(today.minusDays(1), today.plusDays(31))) {
+                var refused = api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send",
+                        Map.of("preferredDeliveryDate", day.toString()));
+                assertThat(refused.at("/error/code").asText()).as(day.toString()).isEqualTo("VALIDATION_ERROR");
+            }
+            assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, intentId))
+                    .isEqualTo("DRAFT");
+        }
+
+        @Test
         @DisplayName("carries the price it was sent at, before any reply")
         void sentCarriesItsPrice() throws Exception {
             var open = sendRequest(3);
