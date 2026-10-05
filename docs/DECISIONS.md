@@ -5444,3 +5444,32 @@ supplier or operations roles: they cannot spend a restaurant's wallet.
 
 **Tests.** `CreditRepaymentSchemaIT` (grants, CHECK, unique keys, NULL behaviour), `CreditFlowIT.Safety`
 (`supplierRecordedPaymentKeepsItsSource`), `PermissionCatalogIT` (the new constant).
+
+## D-122 — A credit repayment from the wallet is its own ledger kind
+
+**Problem.** Repaying a supplier's credit invoice from the wallet moves the restaurant's own cash out. None of the
+existing kinds says that: `ORDER_PAYMENT` and `QUICKSCAN_PAYMENT` ask for a bill and name an order or a payee, and a
+statement or details page that called a repayment either would mislead.
+
+**Decision.** `CREDIT_REPAYMENT` is a new `WalletEntryKind`, a DEBIT, reference `credit-repayment-<repaymentId>` (unique,
+so one repayment debits once), no supplier order, reason "Credit repayment". `WalletService.debitCreditRepayment` is
+modelled on `debitQuickScan`: the caller locks the wallet first, the debit is the conditional update (a short balance is
+`VALIDATION_ERROR`, nothing written), and it also refuses a wallet on hold and a repeated repayment (`INVALID_STATE_TRANSITION`
+before anything moves). No audit or outbox event here: like the template, those belong to the caller.
+
+**Never a bill.** The bill allow-lists (`BillStatuses.KINDS` and `ELIGIBLE`, `WalletInvoiceService.BILLABLE`) stay at the two
+payment kinds, so a repayment has no bill chip, no "Add bill", no "No bill needed", and is in no pending count. The credit
+invoice it settles is the supplier's document, not a shop bill.
+
+**Details page.** The supplier store is the counterparty; `counterpartyDetail` lists the invoice numbers it settled (from
+`credit_payment.credit_repayment_id`); references are "Credit invoice" (one per invoice), "Credit line" (the agreement id)
+and "Credit repayment" (its id). The repayment is found from the entry's reference and the outlet, in SQL, so the wallet
+module holds no credit entities and another outlet's repayment is never shown. The statement label is "Credit repayment".
+
+**Spent.** Totals are by direction, so a repayment counts in a month's "spent" and the statement's "Total spent" like any
+debit. The History's kind filter accepts it.
+
+**Not here.** No endpoint and no caller: the pay-from-wallet endpoint, which writes the repayment and `credit_payment` rows
+and links `wallet_transaction_id`, is the next change. Credit stays the supplier's; this is only the restaurant's money moving.
+
+**Tests.** `CreditRepaymentLedgerIT` (the method, history, statement, details), `WalletEntryCopyTest`, `BillStatusesTest`.

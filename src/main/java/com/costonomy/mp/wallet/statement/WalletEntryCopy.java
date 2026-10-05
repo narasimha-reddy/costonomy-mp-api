@@ -26,6 +26,7 @@ public final class WalletEntryCopy {
             case WITHDRAWAL -> "Sent back to your card or bank";
             case QUICKSCAN_PAYMENT -> "Paid a shop (QuickScan)";
             case QUICKSCAN_RETURN -> "QuickScan payment returned";
+            case CREDIT_REPAYMENT -> "Credit repayment";
             case WITHDRAWAL_REVERSAL -> "Withdrawal returned to your wallet";
         };
     }

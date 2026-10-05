@@ -43,5 +43,11 @@ public enum WalletEntryKind {
      * A QuickScan payment's money given back — the payout was refused or
      * reversed. No card behind it, like an order's return.
      */
-    QUICKSCAN_RETURN
+    QUICKSCAN_RETURN,
+    /**
+     * Money leaving the wallet to repay a supplier-funded credit invoice (D-122). A debit that settles
+     * credit invoices; it never takes a bill. Unique per repayment (reference
+     * {@code credit-repayment-{repaymentId}}).
+     */
+    CREDIT_REPAYMENT
 }

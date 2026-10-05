@@ -370,6 +370,39 @@ public class WalletService {
     }
 
     /**
+     * Take the money of a credit repayment (D-122): the restaurant's own cash moving to a supplier that
+     * funded the credit. Called with the wallet already locked by the caller ({@link #lock}), inside the
+     * caller's transaction, like {@link #debitQuickScan}. No caller yet.
+     *
+     * <p>The reference {@code credit-repayment-{repaymentId}} is unique, so a repayment debits once: a second
+     * call is refused before anything moves, rather than relying on the unique key to roll it back.
+     *
+     * @throws BusinessException FORBIDDEN if the wallet is on hold, VALIDATION_ERROR if the balance is short,
+     *                           INVALID_STATE_TRANSITION if this repayment was already debited
+     */
+    @Transactional
+    public void debitCreditRepayment(Long outletId, Long repaymentId, BigDecimal amount) {
+        String reference = "credit-repayment-" + repaymentId;
+        if (entries.existsByReference(reference)) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "This repayment has already been taken from the wallet.");
+        }
+        var wallet = forOutlet(outletId);
+        if (!wallet.isUsable()) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "This wallet is on hold. Please contact support.");
+        }
+        if (wallets.debit(wallet.getId(), amount) == 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Your wallet doesn't have ₹%s.".formatted(Rupees.of(amount)));
+        }
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.CREDIT_REPAYMENT, amount,
+                "Credit repayment", reference, null);
+    }
+
+    /**
      * Give a QuickScan payment's money back — the payout was refused or reversed
      * (D-106). Idempotent on the reference, so a payment failing once and a
      * REVERSED arriving for it later cannot return the money twice.
