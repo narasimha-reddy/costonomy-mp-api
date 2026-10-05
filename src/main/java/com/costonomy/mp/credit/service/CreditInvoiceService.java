@@ -44,6 +44,9 @@ import java.util.Map;
 @Slf4j
 public class CreditInvoiceService {
 
+    /** Why a claim was closed by the system because its invoice was settled first (D-130). */
+    static final String SUPERSEDED_NOTE = "Invoice was settled before this was confirmed";
+
     private final CreditInvoiceRepository invoices;
     private final CreditPaymentRepository payments;
     private final com.costonomy.mp.credit.repository.CreditPaymentClaimRepository claims;
@@ -227,6 +230,14 @@ public class CreditInvoiceService {
             invoice.setSettledAt(Instant.now());
         }
         invoices.save(invoice);
+        if (settled) {
+            // Nothing is owed any more, so no other claim on it can be confirmed (D-130): close them in this
+            // transaction, quietly. The claim being confirmed right now is finished by its own caller.
+            var others = claims.lockFreeSubmittedIds(invoice.getId(), claimId == null ? -1L : claimId);
+            if (!others.isEmpty()) {
+                claims.supersede(others, SUPERSEDED_NOTE, Instant.now());
+            }
+        }
 
         // The debt and the exposure move together. A repayment that reduced one
         // without the other would leave the restaurant's available credit wrong in

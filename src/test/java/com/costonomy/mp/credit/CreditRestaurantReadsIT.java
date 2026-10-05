@@ -192,6 +192,61 @@ class CreditRestaurantReadsIT extends AbstractIntegrationTest {
     }
 
     @Nested
+    @DisplayName("attention follows the one overdue rule (B18)")
+    class AttentionFollowsDueState {
+
+        @Test
+        @DisplayName("past overdue_after but not yet marked by the sweep: overdue is already true")
+        void unmarkedPastGraceIsOverdue() throws Exception {
+            var line = s.creditLine("200000");
+            invoiceDue(line, "65", -10, 5, "ISSUED");
+            var d = attention(line.buyer());
+            assertThat(d.get("overdue").asBoolean()).isTrue();
+            assertThat(d.get("dueSoon").asBoolean()).describedAs("an overdue one is not also due soon").isFalse();
+        }
+
+        @Test
+        @DisplayName("on the boundary day (overdue_after == today) it is still in grace: overdue false")
+        void boundaryDayIsNotOverdue() throws Exception {
+            var line = s.creditLine("200000");
+            invoiceDue(line, "65", -5, 5, "ISSUED");
+            assertThat(attention(line.buyer()).get("overdue").asBoolean()).isFalse();
+        }
+
+        @Test
+        @DisplayName("marked OVERDUE: true; paid: false")
+        void markedAndPaid() throws Exception {
+            var marked = s.creditLine("200000");
+            invoiceDue(marked, "65", -1, 5, "OVERDUE");
+            assertThat(attention(marked.buyer()).get("overdue").asBoolean()).isTrue();
+            var paid = s.creditLine("200000");
+            invoiceDue(paid, "65", -30, 5, "PAID");
+            assertThat(attention(paid.buyer()).get("overdue").asBoolean()).isFalse();
+        }
+
+        @Test
+        @DisplayName("the SQL predicate agrees with CreditDueState.of for every status and a window of dates")
+        void predicateMatchesDueState() throws Exception {
+            var line = s.creditLine("200000");
+            long id = invoiceDue(line, "65", 0, 0, "ISSUED");
+            for (String status : List.of("ISSUED", "PARTIALLY_PAID", "OVERDUE", "PAID", "WRITTEN_OFF")) {
+                for (int dueIn = -12; dueIn <= 3; dueIn++) {
+                    for (int grace : new int[]{0, 2, 5}) {
+                        LocalDate due = TODAY.plusDays(dueIn);
+                        jdbc.update("update credit_invoice set due_date = ?, overdue_after = ?, status = ? where id = ?",
+                                due, due.plusDays(grace), status, id);
+                        boolean rule = com.costonomy.mp.credit.domain.CreditDueState.of(
+                                com.costonomy.mp.credit.domain.CreditInvoiceStatus.valueOf(status), due,
+                                due.plusDays(grace), TODAY) == com.costonomy.mp.credit.domain.CreditDueState.OVERDUE;
+                        assertThat(attention(line.buyer()).get("overdue").asBoolean())
+                                .describedAs("%s due in %d grace %d", status, dueIn, grace).isEqualTo(rule);
+                    }
+                }
+            }
+        }
+    }
+
+    @Nested
     class DueStatesAndSummary {
 
         // ── 2. due state on invoices ─────────────────────────────────────────

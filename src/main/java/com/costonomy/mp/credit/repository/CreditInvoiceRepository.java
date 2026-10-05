@@ -69,6 +69,28 @@ public interface CreditInvoiceRepository extends JpaRepository<CreditInvoice, Lo
     boolean existsByOutletIdAndStatus(Long outletId, CreditInvoiceStatus status);
 
     /**
+     * Is any invoice of the outlet overdue by the rule {@code CreditDueState.of} applies (D-130)? Marked OVERDUE, or
+     * still open with both its due date and its grace period behind {@code today}.
+     */
+    @Query("""
+            select count(i) > 0 from CreditInvoice i
+             where i.outletId = :outletId
+               and (i.status = com.costonomy.mp.credit.domain.CreditInvoiceStatus.OVERDUE
+                    or (i.status in :open and i.dueDate < :today and i.overdueAfter < :today))
+            """)
+    boolean existsOverdueByRule(@Param("outletId") Long outletId, @Param("open") List<CreditInvoiceStatus> open,
+                                @Param("today") LocalDate today);
+
+    /** Open, not yet overdue by the same rule, and due on or before {@code latestDue}. */
+    @Query("""
+            select count(i) > 0 from CreditInvoice i
+             where i.outletId = :outletId and i.status in :open and i.dueDate <= :latestDue
+               and not (i.dueDate < :today and i.overdueAfter < :today)
+            """)
+    boolean existsDueSoonByRule(@Param("outletId") Long outletId, @Param("open") List<CreditInvoiceStatus> open,
+                                @Param("latestDue") LocalDate latestDue, @Param("today") LocalDate today);
+
+    /**
      * Is any open invoice of the outlet due on or before {@code latestDue}? The caller passes only the open,
      * not-yet-overdue statuses, so the same index (outlet_id, status) narrows it before the date is looked at.
      */

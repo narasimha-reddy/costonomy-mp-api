@@ -463,7 +463,8 @@ class CreditClaimIT extends AbstractIntegrationTest {
             assertThat(reply.status()).isEqualTo(409);
             assertThat(reply.code()).isEqualTo("CREDIT_CLAIM_STATE");
             assertThat(reply.body().at("/error/message").asText()).isNotBlank();
-            assertThat(claimRow(claimId).get("status")).isEqualTo("SUBMITTED");
+            // Settling the invoice closed the claim for it (D-130); it is no longer SUBMITTED.
+            assertThat(claimRow(claimId).get("status")).isEqualTo("SUPERSEDED");
             assertThat(payments(invoice)).hasSize(1);
         }
 
@@ -1362,6 +1363,196 @@ class CreditClaimIT extends AbstractIntegrationTest {
             assertThat(reply.code()).isEqualTo("VALIDATION_ERROR");
             assertThat(payments(invoice)).isEmpty();
             assertThat(record(line, invoice, Map.of("amount", "10.05", "method", "CASH")).status()).isEqualTo(200);
+        }
+    }
+
+    // ── H2: sub-rupee residuals and superseded claims ────────────────────
+
+    @Nested
+    @DisplayName("an exact sub-rupee claim is allowed (M03/B5)")
+    class SubRupeeClaims {
+
+        private long paidDownTo50p(Line line) throws Exception {
+            long invoice = s.invoice(line, "10", 100);
+            s.topUp(line.buyer(), "5000.00");
+            var paid = s.repay(line.buyer().token(), line.agreementId(), UUID.randomUUID().toString(),
+                    Map.of("amount", "999.50"));
+            assertThat(paid.status()).describedAs(paid.body().toString()).isEqualTo(201);
+            return invoice;
+        }
+
+        @Test
+        @DisplayName("a claim of exactly the 0.50 remaining is accepted; 0.40 is refused")
+        void exactResidual() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = paidDownTo50p(line);
+
+            var partial = claim(line, invoice, "0.40");
+            assertThat(partial.status()).isIn(400, 422);
+            assertThat(partial.code()).isEqualTo("VALIDATION_ERROR");
+            assertThat(partial.body().toString()).contains("Enter at least ₹1, or the exact remaining amount");
+            assertThat(claimCount(invoice)).isZero();
+
+            var exact = claim(line, invoice, "0.50");
+            assertThat(exact.status()).describedAs(exact.body().toString()).isEqualTo(201);
+            assertThat(exact.data().get("amount").decimalValue()).isEqualByComparingTo("0.50");
+        }
+
+        @Test
+        @DisplayName("0.50 on a fresh 1000 invoice, 0.00 and a negative amount are refused")
+        void others() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "10", 100);
+            assertThat(claim(line, invoice, "0.50").status()).isIn(400, 422);
+            assertThat(claim(line, invoice, "0.00").status()).isIn(400, 422);
+            assertThat(claim(line, invoice, "-1.00").status()).isIn(400, 422);
+            assertThat(claimCount(invoice)).isZero();
+        }
+
+        @Test
+        @DisplayName("when a claim already covers the rest, a sub-rupee claim is judged against reportable, not outstanding")
+        void reportableNotOutstanding() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = paidDownTo50p(line);
+            assertThat(claim(line, invoice, "0.50").status()).isEqualTo(201);
+            // Nothing more can be claimed: 0.50 no longer equals the (zero) reportable amount.
+            assertThat(claim(line, invoice, "0.50").status()).isIn(400, 422);
+        }
+    }
+
+    @Nested
+    @DisplayName("a claim on an invoice that gets settled is SUPERSEDED (S38/X07/B10)")
+    class SupersededClaims {
+
+        private static final String NOTE = "Invoice was settled before this was confirmed";
+
+        private JsonNodeHolder agreementAfter(Line line) throws Exception {
+            return new JsonNodeHolder(s.api.get(line.buyer().token(),
+                    "/api/v1/credit/agreements/" + line.agreementId()).at("/data"));
+        }
+
+        private record JsonNodeHolder(com.fasterxml.jackson.databind.JsonNode n) {
+            BigDecimal open() {
+                return n.get("openClaimsAmount").decimalValue();
+            }
+
+            BigDecimal reportable() {
+                return n.get("reportableAmount").decimalValue();
+            }
+        }
+
+        private void assertSuperseded(long claimId) {
+            var row = claimRow(claimId);
+            assertThat(row.get("status")).isEqualTo("SUPERSEDED");
+            assertThat(row.get("decision_note")).isEqualTo(NOTE);
+            assertThat(row.get("decided_at")).isNotNull();
+            assertThat(row.get("decided_by")).isNull();
+        }
+
+        @Test
+        @DisplayName("the wallet pays the whole invoice: the claim is SUPERSEDED, open claims 0, reportable 0, nobody told")
+        void walletSettles() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "10", 100);
+            s.topUp(line.buyer(), "5000.00");
+            long claimId = submitted(line, invoice, "500.00");
+            assertThat(agreementAfter(line).open()).isEqualByComparingTo("500.00");
+            int outboxBefore = jdbc.queryForObject("select count(*) from outbox_event", Integer.class);
+
+            var paid = s.repay(line.buyer().token(), line.agreementId(), UUID.randomUUID().toString(),
+                    Map.of("amount", "1000.00"));
+            assertThat(paid.status()).describedAs(paid.body().toString()).isEqualTo(201);
+
+            assertThat(invoiceStatus(invoice)).isEqualTo("PAID");
+            assertSuperseded(claimId);
+            var agreement = agreementAfter(line);
+            assertThat(agreement.open()).isEqualByComparingTo("0");
+            assertThat(agreement.reportable()).isEqualByComparingTo("0");
+            // Only the supplier's CreditRepaymentReceived is new: nothing about the superseded claim.
+            assertThat(jdbc.queryForObject("select count(*) from outbox_event", Integer.class))
+                    .isEqualTo(outboxBefore + 1);
+
+            // The claim list shows it as history with the note; the supplier inbox (SUBMITTED) does not.
+            var list = s.api.get(line.buyer().token(), "/api/v1/credit/agreements/" + line.agreementId() + "/claims");
+            assertThat(list.at("/data/0/status").asText()).isEqualTo("SUPERSEDED");
+            assertThat(list.at("/data/0/decisionNote").asText()).isEqualTo(NOTE);
+            var inbox = s.api.get(line.seller().token(), "/api/v1/supplier-stores/" + line.seller().storeId()
+                    + "/credit/claims?status=SUBMITTED");
+            assertThat(inbox.at("/data")).isEmpty();
+            var inboxAll = s.api.get(line.seller().token(), "/api/v1/supplier-stores/" + line.seller().storeId()
+                    + "/credit/claims");
+            assertThat(inboxAll.at("/data")).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("a supplier-recorded payment that clears the invoice supersedes its claim")
+        void supplierRecordedSettles() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "10", 100);
+            long claimId = submitted(line, invoice, "500.00");
+
+            var recorded = s.recordPayment(line.seller(), invoice, "1000.00");
+            assertThat(recorded.status()).describedAs(recorded.body().toString()).isEqualTo(200);
+
+            assertSuperseded(claimId);
+            assertThat(agreementAfter(line).open()).isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("a different claim confirmed to full supersedes the others, but not itself")
+        void otherClaimConfirmedToFull() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "10", 100);
+            s.topUp(line.buyer(), "5000.00");
+            long small = submitted(line, invoice, "500.00");
+            long full = submitted(line, invoice, "500.00");
+            assertThat(s.repay(line.buyer().token(), line.agreementId(), UUID.randomUUID().toString(),
+                    Map.of("amount", "500.00")).status()).isEqualTo(201);
+            assertThat(claimRow(small).get("status")).isEqualTo("SUBMITTED");
+
+            var confirmed = confirm(line, full, null);
+            assertThat(confirmed.status()).describedAs(confirmed.body().toString()).isEqualTo(200);
+
+            assertThat(invoiceStatus(invoice)).isEqualTo("PAID");
+            assertThat(claimRow(full).get("status")).isEqualTo("CONFIRMED");
+            assertThat(claimRow(full).get("decided_by")).isNotNull();
+            assertSuperseded(small);
+        }
+
+        @Test
+        @DisplayName("partial payments leave claims SUBMITTED, even when the claim now exceeds what is outstanding")
+        void partialPaymentLeavesClaims() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "10", 100);
+            s.topUp(line.buyer(), "5000.00");
+            long claimId = submitted(line, invoice, "800.00");
+
+            assertThat(s.repay(line.buyer().token(), line.agreementId(), UUID.randomUUID().toString(),
+                    Map.of("amount", "500.00")).status()).isEqualTo(201);
+
+            assertThat(claimRow(claimId).get("status")).isEqualTo("SUBMITTED");
+            assertThat(invoiceStatus(invoice)).isEqualTo("PARTIALLY_PAID");
+            var confirmed = confirm(line, claimId, null);
+            assertThat(confirmed.status()).isEqualTo(200);
+            assertThat(confirmed.data().get("confirmedAmount").decimalValue()).isEqualByComparingTo("500.00");
+        }
+
+        @Test
+        @DisplayName("confirm, reject and withdraw on a SUPERSEDED claim are 409 CREDIT_CLAIM_STATE")
+        void finalLikeTheOthers() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "10", 100);
+            long claimId = submitted(line, invoice, "500.00");
+            assertThat(s.recordPayment(line.seller(), invoice, "1000.00").status()).isEqualTo(200);
+
+            var confirm = confirm(line, claimId, null);
+            assertThat(confirm.status()).isEqualTo(409);
+            assertThat(confirm.code()).isEqualTo("CREDIT_CLAIM_STATE");
+            var withdraw = withdraw(line.buyer().token(), claimId);
+            assertThat(withdraw.status()).isEqualTo(409);
+            assertThat(withdraw.code()).isEqualTo("CREDIT_CLAIM_STATE");
+            assertThat(reject(line.seller().token(), claimId, "Not received in our account").status()).isEqualTo(409);
+            assertSuperseded(claimId);
         }
     }
 }

@@ -73,6 +73,13 @@ public final class CreditDtos {
             @NotBlank(message = "Give a reason for the change") @Size(max = 500) String reason) {
     }
 
+    /**
+     * What the restaurant accepts. {@code termsVersion} is optional: the version of the terms it was shown. When
+     * present and no longer current the accept is refused with {@code CREDIT_TERMS_CHANGED}.
+     */
+    public record AcceptRequest(Integer termsVersion) {
+    }
+
     public record SuspendRequest(
             @NotBlank(message = "Give a reason") @Size(max = 500) String reason) {
     }
@@ -306,7 +313,7 @@ public final class CreditDtos {
      */
     public record WalletRepaymentRequest(
             @NotNull(message = "Enter an amount")
-            @DecimalMin(value = "1.00", message = "The smallest repayment is ₹1.00")
+            @DecimalMin(value = "0.01", message = "Enter at least ₹1, or the exact remaining amount")
             @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
             BigDecimal amount,
             @Size(min = 1, message = "Choose at least one invoice, or leave the list out")
@@ -354,7 +361,7 @@ public final class CreditDtos {
      */
     public record ClaimRequest(
             @NotNull(message = "Enter an amount")
-            @DecimalMin(value = "1.00", message = "The smallest payment is ₹1.00")
+            @DecimalMin(value = "0.01", message = "Enter at least ₹1, or the exact remaining amount")
             @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
             BigDecimal amount,
             @NotBlank(message = "Choose how you paid")

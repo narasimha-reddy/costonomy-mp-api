@@ -65,11 +65,13 @@ public class CreditReadService {
     @Transactional(readOnly = true)
     public CreditDtos.AttentionResponse attention(Long actorId, Long outletId) {
         accessControl.requireScoped(actorId, Permissions.CREDIT_VIEW, ScopeType.OUTLET, outletId, "Outlet");
-        LocalDate soonest = invoiceService.today().plusDays(com.costonomy.mp.credit.domain.CreditDueState.SOON_DAYS);
-        boolean overdue = invoices.existsByOutletIdAndStatus(outletId, CreditInvoiceStatus.OVERDUE);
-        // Only ISSUED and PARTIALLY_PAID: an OVERDUE invoice is already reported as overdue, not as due soon.
-        boolean dueSoon = invoices.existsByOutletIdAndStatusInAndDueDateLessThanEqual(
-                outletId, OPEN_NOT_OVERDUE, soonest);
+        LocalDate today = invoiceService.today();
+        LocalDate soonest = today.plusDays(com.costonomy.mp.credit.domain.CreditDueState.SOON_DAYS);
+        // The same rule as an invoice's dueState (D-130): marked OVERDUE, or open and past its grace period already,
+        // whether or not the hourly sweep has marked it.
+        boolean overdue = invoices.existsOverdueByRule(outletId, OPEN_NOT_OVERDUE, today);
+        // Only open ones that are not overdue by that rule: an overdue invoice is reported as overdue, not as due soon.
+        boolean dueSoon = invoices.existsDueSoonByRule(outletId, OPEN_NOT_OVERDUE, soonest, today);
         return new CreditDtos.AttentionResponse(overdue, dueSoon);
     }
 
