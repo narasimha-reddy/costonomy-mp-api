@@ -132,7 +132,7 @@ class CreditRepaymentLedgerIT extends AbstractIntegrationTest {
     private void debit(long repaymentId, String amount) {
         new TransactionTemplate(txManager).executeWithoutResult(s -> {
             wallet.lock(buyer.outletId());
-            wallet.debitCreditRepayment(buyer.outletId(), repaymentId, new BigDecimal(amount));
+            wallet.debitCreditRepayment(buyer.outletId(), repaymentId, new BigDecimal(amount), "Anand Wholesale");
         });
     }
 
@@ -162,7 +162,7 @@ class CreditRepaymentLedgerIT extends AbstractIntegrationTest {
         assertThat(row.get("reference")).isEqualTo("credit-repayment-" + id);
         assertThat(row.get("supplier_order_id")).isNull();
         assertThat(row.get("refund_id")).isNull();
-        assertThat((String) row.get("reason")).contains("Credit repayment");
+        assertThat((String) row.get("reason")).isEqualTo("Credit repayment to Anand Wholesale");
         assertThat((BigDecimal) row.get("balance_after")).isEqualByComparingTo("749.50");
         assertThat(balance()).isEqualByComparingTo("749.50");
         assertThat(t.ledgerSum(buyer)).isEqualByComparingTo("749.50");
@@ -244,6 +244,7 @@ class CreditRepaymentLedgerIT extends AbstractIntegrationTest {
         assertThat(item.get("bill").isNull()).isTrue();
         assertThat(item.get("status").asText()).isEqualTo("COMPLETED");
         assertThat(item.get("supplierOrderId").isNull()).isTrue();
+        assertThat(item.get("reason").asText()).isEqualTo("Credit repayment to Anand Wholesale");
         assertThat(data.get("monthTotals").get(0).get("spent").decimalValue()).isEqualByComparingTo("250.00");
         // The bill counts: the order payment is waiting for a bill, the repayment is not.
         assertThat(data.get("monthTotals").get(0).get("billsPending").asInt()).isEqualTo(1);
@@ -256,6 +257,16 @@ class CreditRepaymentLedgerIT extends AbstractIntegrationTest {
         assertThat(history("kinds=credit_repayment,ORDER_PAYMENT").get("items")).hasSize(2);
         // A bill filter does not find it either.
         assertThat(history("bills=PENDING&kinds=CREDIT_REPAYMENT").get("items")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("history: an older row with the plain reason is shown as it was written")
+    void oldRowKeepsPlainReason() throws Exception {
+        seed.debit("2026-09-02 10:00:00.000000", CREDIT_REPAYMENT, "40.00", "Credit repayment");
+
+        var only = history("kinds=CREDIT_REPAYMENT").get("items");
+        assertThat(only).hasSize(1);
+        assertThat(only.get(0).get("reason").asText()).isEqualTo("Credit repayment");
     }
 
     // ── the statement ────────────────────────────────────────────────────
@@ -276,7 +287,7 @@ class CreditRepaymentLedgerIT extends AbstractIntegrationTest {
         var body = response.getContentAsString(StandardCharsets.UTF_8);
 
         assertThat(response.getStatus()).describedAs(body).isEqualTo(200);
-        assertThat(body).contains(",Credit repayment,,Debit,125.00,875.00,");
+        assertThat(body).contains(",Credit repayment,,Debit,125.00,875.00,Credit repayment to Anand Wholesale,");
         assertThat(body).containsPattern("Total spent \\(INR\\),125\\.00,");
         assertThat(csv("range=LAST_30&format=PDF").getStatus()).isEqualTo(200);
     }

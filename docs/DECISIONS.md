@@ -5606,3 +5606,17 @@ when everything owed is already reported, and it must not do money arithmetic. S
   reports as `details.outstanding` (`CREDIT_OVERPAYMENT`) is exactly the `reportableAmount` the reads showed.
 - Lists use one grouped query per agreement for the claim totals, not one per invoice.
 - No schema change.
+
+## D-128 — The wallet row for a credit repayment names the supplier
+
+The History row title is the ledger entry's `reason`. A credit repayment (D-122) wrote the plain "Credit repayment", so a
+restaurant paying two suppliers saw two identical rows.
+
+- The reason is now `Credit repayment to <supplier>`, using the supplier store's name, the same name the details page
+  shows as the counterparty. The credit side passes the name in (`debitCreditRepayment(..., counterpartyName)`); the wallet
+  module imports nothing from credit.
+- A blank or unknown name falls back to the plain "Credit repayment". The reason column is 200 characters: a long name is
+  cut (never splitting an emoji), the prefix never is.
+- The reference `credit-repayment-<id>` is unchanged. Older rows keep the text they were written with; nothing is rewritten.
+- The statement's label column stays the kind's wording ("Credit repayment"); the reason column carries the name.
+- No schema change.

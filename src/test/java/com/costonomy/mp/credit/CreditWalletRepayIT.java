@@ -155,6 +155,7 @@ class CreditWalletRepayIT extends AbstractIntegrationTest {
         assertThat(rows.get(0).get("reference")).isEqualTo("credit-repayment-" + repaymentId);
         assertThat(rows.get(0).get("direction")).isEqualTo("DEBIT");
         assertThat(d.get("walletEntryId").asLong()).isEqualTo(((Number) rows.get(0).get("id")).longValue());
+        assertThat(rows.get(0).get("reason")).isEqualTo("Credit repayment to ABC store");
 
         var repayment = jdbc.queryForMap("select * from credit_repayment where id = ?", repaymentId);
         assertThat(repayment.get("wallet_transaction_id")).isEqualTo(rows.get(0).get("id"));
@@ -654,6 +655,7 @@ class CreditWalletRepayIT extends AbstractIntegrationTest {
         assertThat(history.get(0).get("key").asText()).isEqualTo("L" + entry);
         assertThat(history.get(0).get("direction").asText()).isEqualTo("DEBIT");
         assertThat(history.get(0).get("bill").isNull()).isTrue();
+        assertThat(history.get(0).get("reason").asText()).isEqualTo("Credit repayment to ABC store");
 
         var detail = s.api.get(token, base + "/" + entry).at("/data");
         assertThat(detail.get("kind").asText()).isEqualTo("CREDIT_REPAYMENT");

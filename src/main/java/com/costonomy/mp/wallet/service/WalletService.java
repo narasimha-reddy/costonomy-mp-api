@@ -377,12 +377,14 @@ public class WalletService {
      * <p>The reference {@code credit-repayment-{repaymentId}} is unique, so a repayment debits once: a second
      * call is refused before anything moves, rather than relying on the unique key to roll it back.
      *
+     * @param counterpartyName the supplier's name, so the row reads "Credit repayment to X" (D-128); blank
+     *                         or null leaves the plain "Credit repayment"
      * @return the id of the ledger entry it wrote
      * @throws BusinessException FORBIDDEN if the wallet is on hold, VALIDATION_ERROR if the balance is short,
      *                           INVALID_STATE_TRANSITION if this repayment was already debited
      */
     @Transactional
-    public Long debitCreditRepayment(Long outletId, Long repaymentId, BigDecimal amount) {
+    public Long debitCreditRepayment(Long outletId, Long repaymentId, BigDecimal amount, String counterpartyName) {
         String reference = "credit-repayment-" + repaymentId;
         if (entries.existsByReference(reference)) {
             throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
@@ -400,7 +402,32 @@ public class WalletService {
 
         var refreshed = wallets.findById(wallet.getId()).orElseThrow();
         return record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.CREDIT_REPAYMENT, amount,
-                "Credit repayment", reference, null);
+                creditRepaymentReason(counterpartyName), reference, null);
+    }
+
+    private static final String CREDIT_REPAYMENT_REASON = "Credit repayment";
+    /** wallet_transaction.reason is VARCHAR(200) (V31). */
+    private static final int REASON_MAX = 200;
+
+    /**
+     * The ledger text of a credit repayment (D-128): "Credit repayment to {name}". A blank name leaves the
+     * plain text. A name too long for the column is cut, never the prefix.
+     */
+    public static String creditRepaymentReason(String counterpartyName) {
+        String name = counterpartyName == null ? "" : counterpartyName.strip();
+        if (name.isEmpty()) {
+            return CREDIT_REPAYMENT_REASON;
+        }
+        String prefix = CREDIT_REPAYMENT_REASON + " to ";
+        int room = REASON_MAX - prefix.length();
+        if (name.length() > room) {
+            int end = room;
+            if (Character.isHighSurrogate(name.charAt(end - 1))) {
+                end--; // never leave half of a surrogate pair
+            }
+            name = name.substring(0, end).stripTrailing();
+        }
+        return prefix + name;
     }
 
     /**

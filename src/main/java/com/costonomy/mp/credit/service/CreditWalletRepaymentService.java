@@ -176,7 +176,9 @@ public class CreditWalletRepaymentService {
 
         // e. The debit (its own conditional update stays the last line of defence), then the link to its entry.
         // The debit clears the persistence context, so the row is read again before it is changed.
-        Long entryId = wallet.debitCreditRepayment(outletId, repaymentId, amount);
+        var supplierStore = directory.store(storeId);
+        Long entryId = wallet.debitCreditRepayment(outletId, repaymentId, amount,
+                supplierStore == null ? null : supplierStore.storeName());
         var linked = repayments.findById(repaymentId).orElseThrow();
         linked.setWalletTransactionId(entryId);
         repayments.saveAndFlush(linked);
