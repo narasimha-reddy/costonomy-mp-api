@@ -96,6 +96,11 @@ public final class SettlementDtos {
      * @param difference      settlement gross minus captured. Non-zero is the first
      *                        sign a capture failed silently or a refund went
      *                        unaccounted for.
+     * @param creditRepaymentsMatched whether, for the settlement's period, the wallet money repaid
+     *                        as credit equals what is recorded as owed to suppliers for it (D-126).
+     *                        Separate from {@code matched}, which stays about the gross.
+     * @param repaymentWalletDebits    the wallet CREDIT_REPAYMENT debits in the period
+     * @param repaymentPayoutsOwed     the payouts recorded for those repayments
      */
     public record ReconciliationResponse(
             Long settlementId,
@@ -104,6 +109,9 @@ public final class SettlementDtos {
             BigDecimal capturedGross,
             BigDecimal difference,
             String note,
-            Instant reconciledAt) {
+            Instant reconciledAt,
+            boolean creditRepaymentsMatched,
+            BigDecimal repaymentWalletDebits,
+            BigDecimal repaymentPayoutsOwed) {
     }
 }

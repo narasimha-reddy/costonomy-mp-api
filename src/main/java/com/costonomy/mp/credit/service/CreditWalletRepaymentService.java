@@ -53,6 +53,7 @@ import java.util.Map;
  *       more than is owed, or as {@link ErrorCode#WALLET_INSUFFICIENT_BALANCE} if the wallet cannot cover it;</li>
  *   <li>the {@code credit_repayment} row is inserted and flushed;</li>
  *   <li>the wallet is debited, and the row is linked to the ledger entry;</li>
+ *   <li>the {@code credit_repayment_payout} row (D-126): what Mandi now owes the supplier, with the commission snapshot;</li>
  *   <li>each allocation goes through {@link CreditInvoiceService#applyPayment}, the same method a payment the
  *       supplier records goes through;</li>
  *   <li>the audit row, and one {@code CreditRepaymentReceived} event for the supplier.</li>
@@ -60,8 +61,9 @@ import java.util.Map;
  * The wallet comes first and the invoices second, always: every taker locks in that order, so two repayments
  * cannot wait on each other. Both refusals come before anything is written.
  *
- * <p><b>Why the flag stays off.</b> The wallet money is taken now, but the matching payout to the supplier is a
- * later change; until that exists, taking wallet money would leave it with nobody. The flag is on only in tests.
+ * <p><b>Why the flag stays off.</b> The payout to the supplier now exists (D-126): a pending row, applied by the
+ * next settlement. The flag stays off until the business decision on commission for wallet repayments is confirmed.
+ * It is on only in tests.
  */
 @Service
 @RequiredArgsConstructor
@@ -75,6 +77,7 @@ public class CreditWalletRepaymentService {
     private final CreditRepaymentRepository repayments;
     private final CreditInvoiceService invoiceService;
     private final CreditExposureStore exposure;
+    private final CreditRepaymentPayoutWriter payoutWriter;
     private final CreditDirectory directory;
     private final WalletService wallet;
     private final AccessControlService accessControl;
@@ -177,6 +180,11 @@ public class CreditWalletRepaymentService {
         var linked = repayments.findById(repaymentId).orElseThrow();
         linked.setWalletTransactionId(entryId);
         repayments.saveAndFlush(linked);
+
+        // e2. What Mandi now owes the supplier (D-126). Right after the debit, because the debit is what put the
+        // restaurant's money in Mandi's hands; in this same transaction, so the payout exists if and only if the
+        // debit does, and a refusal anywhere after it rolls back both.
+        payoutWriter.record(linked);
 
         // f. Each allocation through the one shared method, once per invoice.
         String reference = "credit-repayment-" + repaymentId;
