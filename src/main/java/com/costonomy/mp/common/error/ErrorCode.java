@@ -117,6 +117,12 @@ public enum ErrorCode {
             "You don't have an active credit agreement with this supplier."),
     CREDIT_SINGLE_ORDER_CAP_EXCEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
             "This order is larger than the per-order credit limit."),
+    /**
+     * A repayment of more than the chosen invoices (or the whole line) still owe (D-123). Refused rather than kept as a
+     * balance. The details carry {@code outstanding}, what can be repaid right now.
+     */
+    CREDIT_OVERPAYMENT(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That's more than you owe."),
 
     // ── Payments (422, 409) ──────────────────────────────────────────────
     PAYMENT_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
@@ -140,6 +146,12 @@ public enum ErrorCode {
      */
     WALLET_LIMIT_EXCEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
             "That would take your wallet over its limit."),
+    /**
+     * The wallet holds less than a repayment from it (D-123). The details carry {@code shortBy}, the amount missing,
+     * so the app can say "You're ₹X short" and offer to add money.
+     */
+    WALLET_INSUFFICIENT_BALANCE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "Your wallet doesn't have enough for that."),
     /**
      * A wallet statement for the period would run to more rows than a file can
      * reasonably hold (D-108). The customer's fix is a shorter period.

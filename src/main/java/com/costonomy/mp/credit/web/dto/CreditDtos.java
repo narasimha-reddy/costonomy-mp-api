@@ -199,6 +199,43 @@ public final class CreditDtos {
             Instant paidAt) {
     }
 
+    /**
+     * Repay from the wallet (D-123). {@code invoiceIds} is optional: left out, the amount settles the agreement's open
+     * invoices oldest due date first.
+     */
+    public record WalletRepaymentRequest(
+            @NotNull(message = "Enter an amount")
+            @DecimalMin(value = "1.00", message = "The smallest repayment is ₹1.00")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
+            BigDecimal amount,
+            @Size(min = 1, message = "Choose at least one invoice, or leave the list out")
+            List<@NotNull(message = "Choose an invoice") Long> invoiceIds) {
+
+        @AssertTrue(message = "Each invoice can be chosen only once")
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isInvoiceIdsDistinct() {
+            return invoiceIds == null || invoiceIds.stream().distinct().count() == invoiceIds.size();
+        }
+    }
+
+    public record WalletRepaymentAllocation(
+            Long invoiceId, String invoiceNumber, BigDecimal amount, CreditInvoiceStatus statusAfter) {
+    }
+
+    /** The agreement as it stands after a repayment: what is still owed, what is late, what can be drawn. */
+    public record RepaymentAgreementState(
+            BigDecimal due, BigDecimal overdue, BigDecimal available, CreditAgreementStatus status) {
+    }
+
+    public record WalletRepaymentResponse(
+            Long repaymentId,
+            BigDecimal amount,
+            Long walletEntryId,
+            BigDecimal walletBalanceAfter,
+            List<WalletRepaymentAllocation> allocations,
+            RepaymentAgreementState agreement) {
+    }
+
     public record PaymentResponse(
             Long id,
             Long creditInvoiceId,

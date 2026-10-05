@@ -372,16 +372,17 @@ public class WalletService {
     /**
      * Take the money of a credit repayment (D-122): the restaurant's own cash moving to a supplier that
      * funded the credit. Called with the wallet already locked by the caller ({@link #lock}), inside the
-     * caller's transaction, like {@link #debitQuickScan}. No caller yet.
+     * caller's transaction, like {@link #debitQuickScan}; the caller is the pay-from-wallet endpoint (D-123).
      *
      * <p>The reference {@code credit-repayment-{repaymentId}} is unique, so a repayment debits once: a second
      * call is refused before anything moves, rather than relying on the unique key to roll it back.
      *
+     * @return the id of the ledger entry it wrote
      * @throws BusinessException FORBIDDEN if the wallet is on hold, VALIDATION_ERROR if the balance is short,
      *                           INVALID_STATE_TRANSITION if this repayment was already debited
      */
     @Transactional
-    public void debitCreditRepayment(Long outletId, Long repaymentId, BigDecimal amount) {
+    public Long debitCreditRepayment(Long outletId, Long repaymentId, BigDecimal amount) {
         String reference = "credit-repayment-" + repaymentId;
         if (entries.existsByReference(reference)) {
             throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
@@ -398,7 +399,7 @@ public class WalletService {
         wallets.flush();
 
         var refreshed = wallets.findById(wallet.getId()).orElseThrow();
-        record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.CREDIT_REPAYMENT, amount,
+        return record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.CREDIT_REPAYMENT, amount,
                 "Credit repayment", reference, null);
     }
 
@@ -447,7 +448,7 @@ public class WalletService {
                 wallet.getId(), amount.toPlainString(), refundId, refreshed.getBalance().toPlainString());
     }
 
-    private void record(Wallet wallet, Long supplierOrderId, WalletDirection direction,
+    private Long record(Wallet wallet, Long supplierOrderId, WalletDirection direction,
                         WalletEntryKind kind, BigDecimal amount, String reason,
                         String reference, Long refundId) {
         var entry = new WalletTransaction();
@@ -460,6 +461,6 @@ public class WalletService {
         entry.setAmount(amount);
         entry.setBalanceAfter(wallet.getBalance());
         entry.setReason(reason);
-        entries.save(entry);
+        return entries.save(entry).getId();
     }
 }

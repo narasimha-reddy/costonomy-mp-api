@@ -67,6 +67,9 @@ class ErrorContractTest {
                     Map.entry(ErrorCode.CREDIT_LIMIT_EXCEEDED, HttpStatus.UNPROCESSABLE_ENTITY),
                     Map.entry(ErrorCode.CREDIT_SUSPENDED, HttpStatus.UNPROCESSABLE_ENTITY),
                     Map.entry(ErrorCode.PAYMENT_FAILED, HttpStatus.UNPROCESSABLE_ENTITY),
+                    // D-123: repaying credit from the wallet. The app branches on these two and reads their details.
+                    Map.entry(ErrorCode.CREDIT_OVERPAYMENT, HttpStatus.UNPROCESSABLE_ENTITY),
+                    Map.entry(ErrorCode.WALLET_INSUFFICIENT_BALANCE, HttpStatus.UNPROCESSABLE_ENTITY),
                     Map.entry(ErrorCode.DELIVERY_UNAVAILABLE, HttpStatus.UNPROCESSABLE_ENTITY),
                     Map.entry(ErrorCode.DELIVERY_REASSIGNMENT_FAILED,
                             HttpStatus.UNPROCESSABLE_ENTITY),

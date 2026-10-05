@@ -1,13 +1,18 @@
 package com.costonomy.mp.credit.web;
 
 import com.costonomy.mp.common.api.ApiResponse;
+import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.credit.service.CreditAgreementService;
 import com.costonomy.mp.credit.service.CreditRepaymentService;
+import com.costonomy.mp.credit.service.CreditWalletRepaymentService;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
 import com.costonomy.mp.identity.security.ActorContext;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import io.swagger.v3.oas.annotations.Parameter;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
@@ -28,6 +33,7 @@ public class CreditController {
 
     private final CreditAgreementService agreements;
     private final CreditRepaymentService repayments;
+    private final CreditWalletRepaymentService walletRepayments;
 
     // ── Restaurant ───────────────────────────────────────────────────────
 
@@ -48,6 +54,32 @@ public class CreditController {
             description = "APPROVED → ACTIVE. Credit on terms nobody agreed to is not credit.")
     public ApiResponse<CreditDtos.AgreementResponse> accept(@PathVariable Long id) {
         return ApiResponse.ok(agreements.accept(ActorContext.requireUserId(), id));
+    }
+
+    @PostMapping("/credit/agreements/{id}/wallet-repayments")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Repay credit from the wallet",
+            description = """
+                    Takes the amount from the outlet's wallet and settles invoices of this agreement with it:
+                    the ones in `invoiceIds`, or the open ones oldest due date first. Needs `CREDIT_REPAY` on
+                    the outlet and an `Idempotency-Key`. Allowed whatever the status of the line.
+
+                    Refused with `CREDIT_OVERPAYMENT` (details: `outstanding`) when the amount is more than is
+                    owed, and with `WALLET_INSUFFICIENT_BALANCE` (details: `shortBy`) when the wallet cannot
+                    cover it; in both cases nothing moves. Off (403) until the supplier payout exists.
+                    """)
+    public ApiResponse<CreditDtos.WalletRepaymentResponse> repayFromWallet(
+            @PathVariable Long id,
+            @Valid @RequestBody CreditDtos.WalletRepaymentRequest body,
+            @Parameter(description = "Client-generated key, required for this operation, 1 to 100 characters")
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+
+        // Checked by hand: a @Size on a header parameter surfaces as a 500 on this stack, not the validation error.
+        if (idempotencyKey.isBlank() || idempotencyKey.length() > 100) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "The Idempotency-Key must be 1 to 100 characters.");
+        }
+        return ApiResponse.ok(walletRepayments.repay(
+                ActorContext.requireUserId(), id, body.amount(), body.invoiceIds(), idempotencyKey));
     }
 
     @GetMapping("/outlets/{outletId}/credit/summary")

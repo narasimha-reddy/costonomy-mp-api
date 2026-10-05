@@ -321,6 +321,13 @@ public final class NotificationRules {
                 "{supplierName} recorded your payment of {amount} against invoice {invoiceNumber}.",
                 "CREDIT_INVOICE"));
 
+        // A restaurant repaid from its own wallet (D-123): the supplier is told, the restaurant already saw the
+        // result on screen. Not CreditRepaymentRecorded, whose text says the supplier recorded it.
+        add(rules, new NotificationRule(CreditEvents.REPAYMENT_RECEIVED, SUPPLIER_STORE, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment received",
+                "{restaurantName} paid {amount} through Mandi.", "CREDIT_AGREEMENT"));
+
         add(rules, new NotificationRule(CreditEvents.REINSTATED, OUTLET, CREDIT, false,
                 List.of(IN_APP, PUSH),
                 "Credit available again",

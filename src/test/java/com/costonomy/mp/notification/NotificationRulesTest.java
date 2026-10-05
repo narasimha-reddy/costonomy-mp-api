@@ -126,6 +126,24 @@ class NotificationRulesTest {
         }
 
         @Test
+        @DisplayName("a wallet repayment tells the supplier store, in-app and push, never by SMS, and is not critical (D-123)")
+        void repaymentReceivedTellsTheSupplier() {
+            var rules = NotificationRules.forEvent(CreditEvents.REPAYMENT_RECEIVED);
+            assertThat(rules).hasSize(1);
+            var rule = rules.get(0);
+            assertThat(rule.audience()).isEqualTo(NotificationRule.Audience.SUPPLIER_STORE);
+            assertThat(rule.category()).isEqualTo(NotificationCategory.CREDIT);
+            assertThat(rule.critical()).isFalse();
+            assertThat(rule.channels()).containsExactlyInAnyOrder(NotificationChannel.IN_APP, NotificationChannel.PUSH);
+            assertThat(rule.title()).isEqualTo("Payment received");
+            assertThat(rule.render(Map.of("restaurantName", "Paradise", "amount", "₹6,500.00")))
+                    .isEqualTo("Paradise paid ₹6,500.00 through Mandi.");
+            // The restaurant is not sent the "supplier recorded your payment" text for its own repayment.
+            assertThat(NotificationRules.forEvent(CreditEvents.REPAYMENT_RECORDED))
+                    .allMatch(r -> r.audience() == NotificationRule.Audience.OUTLET);
+        }
+
+        @Test
         @DisplayName("everything doc 08 §4 calls critical is critical")
         void criticalEventsAreMarkedCritical() {
             // Doc 08 §4's list, and the reason it matters: doc 08 §5 lets a user

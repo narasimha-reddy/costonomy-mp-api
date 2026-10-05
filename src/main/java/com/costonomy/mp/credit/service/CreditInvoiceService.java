@@ -54,6 +54,7 @@ public class CreditInvoiceService {
     private final OutboxService outbox;
 
     private final CreditLedger ledger;
+    private final jakarta.persistence.EntityManager entityManager;
     private final CreditOverdueMarker overdueMarker;
     // Field-injected: Lombok's constructor would drop the @Qualifier, and there must be no unqualified Clock here.
     @Autowired
@@ -130,7 +131,9 @@ public class CreditInvoiceService {
             return toResponse(duplicate);
         }
 
-        var invoice = invoices.findById(invoiceId)
+        // Locked before it is read for the arithmetic below: a wallet repayment can be settling the same invoice
+        // at this moment, and both must see the other's result, not the row as it was a moment ago (D-123).
+        var invoice = invoices.lockById(invoiceId)
                 .orElseThrow(() -> new NotFoundException("CreditInvoice", invoiceId));
 
         // **The supplier records this, not the restaurant.** The money moved
@@ -153,37 +156,9 @@ public class CreditInvoiceService {
                             .formatted(invoice.outstanding().toPlainString()));
         }
 
-        var payment = new CreditPayment();
-        payment.setCreditInvoiceId(invoiceId);
-        payment.setCreditAgreementId(invoice.getCreditAgreementId());
-        payment.setAmount(request.amount());
-        payment.setMethod(request.method());
-        payment.setReference(request.reference());
-        payment.setNote(request.note());
-        payment.setPaidAt(request.paidAt() == null ? Instant.now() : request.paidAt());
-        payment.setRecordedBy(actorId);
-        payment.setIdempotencyKey(idempotencyKey);
-        payment.setSource(CreditPaymentSource.SUPPLIER_RECORDED);
-        payments.save(payment);
-
-        invoice.setPaidAmount(invoice.getPaidAmount().add(request.amount()));
-        boolean settled = invoice.outstanding().signum() == 0;
-        if (settled) {
-            invoice.setStatus(CreditInvoiceStatus.PAID);
-        } else if (invoice.getStatus() != CreditInvoiceStatus.OVERDUE) {
-            // A part payment does not cure lateness: an overdue invoice stays overdue until it is paid.
-            invoice.setStatus(CreditInvoiceStatus.PARTIALLY_PAID);
-        }
-        if (settled) {
-            invoice.setSettledAt(Instant.now());
-        }
-        invoices.save(invoice);
-
-        // The debt and the exposure move together. A repayment that reduced one
-        // without the other would leave the restaurant's available credit wrong in
-        // whichever direction the missing half pointed.
-        ledger.repay(invoice.getCreditAgreementId(), invoiceId, request.amount(), actorId);
-        reinstateIfOverdueCleared(invoice.getCreditAgreementId());
+        var payment = applyPayment(invoice, request.amount(), request.method(), request.reference(),
+                request.note(), request.paidAt() == null ? Instant.now() : request.paidAt(), actorId,
+                idempotencyKey, CreditPaymentSource.SUPPLIER_RECORDED, null);
 
         auditService.record(actorId, null, "CREDIT_PAYMENT_RECORDED", "CREDIT_INVOICE",
                 invoiceId, null, invoice.getStatus().name(),
@@ -203,11 +178,66 @@ public class CreditInvoiceService {
     }
 
     /**
+     * The one place a payment reduces a debt: the credit_payment row, the invoice's paid amount and status, the
+     * exposure ledger, and the auto-reinstate hook, all in the caller's transaction (D-118, D-119, D-123).
+     * Both the supplier recording a payment and a restaurant repaying from its wallet come through here, so the
+     * status rule and the exposure arithmetic cannot drift between them.
+     *
+     * <p>The invoice must already be locked ({@code CreditInvoiceRepository.lockById} or one of the
+     * agreement locks) and the amount already checked against what is outstanding. Audit and the outbox event
+     * stay with the caller, because who is told differs: the restaurant for a supplier-recorded payment, the
+     * supplier for a wallet repayment.
+     */
+    public CreditPayment applyPayment(CreditInvoice invoice, BigDecimal amount, String method, String reference,
+                                      String note, Instant paidAt, Long actorId, String idempotencyKey,
+                                      CreditPaymentSource source, Long repaymentId) {
+        var payment = new CreditPayment();
+        payment.setCreditInvoiceId(invoice.getId());
+        payment.setCreditAgreementId(invoice.getCreditAgreementId());
+        payment.setAmount(amount);
+        payment.setMethod(method);
+        payment.setReference(reference);
+        payment.setNote(note);
+        payment.setPaidAt(paidAt);
+        payment.setRecordedBy(actorId);
+        payment.setIdempotencyKey(idempotencyKey);
+        payment.setSource(source);
+        payment.setCreditRepaymentId(repaymentId);
+        payments.save(payment);
+
+        invoice.setPaidAmount(invoice.getPaidAmount().add(amount));
+        boolean settled = invoice.outstanding().signum() == 0;
+        if (settled) {
+            invoice.setStatus(CreditInvoiceStatus.PAID);
+        } else if (invoice.getStatus() != CreditInvoiceStatus.OVERDUE) {
+            // A part payment does not cure lateness: an overdue invoice stays overdue until it is paid.
+            invoice.setStatus(CreditInvoiceStatus.PARTIALLY_PAID);
+        }
+        if (settled) {
+            invoice.setSettledAt(Instant.now());
+        }
+        invoices.save(invoice);
+
+        // The debt and the exposure move together. A repayment that reduced one
+        // without the other would leave the restaurant's available credit wrong in
+        // whichever direction the missing half pointed.
+        ledger.repay(invoice.getCreditAgreementId(), invoice.getId(), amount, actorId);
+        reinstateIfOverdueCleared(invoice.getCreditAgreementId());
+        return payment;
+    }
+
+    /**
      * Lift a suspension the overdue sweep imposed, once what is overdue is back within the supplier's tolerance.
      * Call it in the same transaction as any repayment. A suspension by a supplier user is never lifted here.
      */
     public void reinstateIfOverdueCleared(Long agreementId) {
         var agreement = agreements.findById(agreementId).orElse(null);
+        if (agreement != null) {
+            // The exposure columns and the version move by SQL (CreditExposureStore), so an instance this
+            // transaction loaded earlier, for an earlier invoice of the same repayment, is stale: saving it
+            // would fail on its version. Read it again.
+            entityManager.refresh(agreement);
+        }
         if (agreement == null
                 || agreement.getStatus() != CreditAgreementStatus.SUSPENDED
                 || agreement.getSuspensionSource() != SuspensionSource.SYSTEM

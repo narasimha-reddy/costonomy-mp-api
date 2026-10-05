@@ -5473,3 +5473,41 @@ debit. The History's kind filter accepts it.
 and links `wallet_transaction_id`, is the next change. Credit stays the supplier's; this is only the restaurant's money moving.
 
 **Tests.** `CreditRepaymentLedgerIT` (the method, history, statement, details), `WalletEntryCopyTest`, `BillStatusesTest`.
+
+## D-123 — A restaurant can repay a credit invoice from its wallet
+
+**Problem.** Credit is the supplier's: Mandi never funds or guarantees it, so a restaurant normally cannot say "I paid". The
+wallet is the exception: Mandi itself sees the money leave the restaurant's own wallet (D-121, D-122), so the restaurant may
+start that repayment itself. It must never take wallet money twice, overpay an invoice, or leave a debt and the exposure
+out of step.
+
+**Decision.** `POST /api/v1/credit/agreements/{id}/wallet-repayments`, needing `CREDIT_REPAY` on the agreement's outlet
+(anyone else, supplier included, gets the usual 404) and an `Idempotency-Key`. Body: `amount` (at least 1.00, at most two
+decimals) and optional `invoiceIds`. It is allowed on any agreement status: paying a debt is never blocked, and a suspended,
+expired or closed line is exactly where the debt is.
+
+**Order, in one transaction.** (1) Lock the wallet, as QuickScan does, and refuse a wallet on hold. (2) Lock the target
+invoices `FOR UPDATE` in ascending id order, this agreement's open ones only; an id that is not this agreement's or not open
+is "not found" whoever's it is, so another tenant's invoice is never confirmed. (3) Allocate oldest due date first, then id,
+each invoice taking `min(outstanding, remaining)` in whole paise. (4) Insert `credit_repayment` (source WALLET, key
+`wallet:<outletId>:<key>`) and flush. (5) Debit the wallet (`credit-repayment-<id>`) and link `wallet_transaction_id` to the
+entry. (6) Per invoice, the one shared `CreditInvoiceService.applyPayment`: the status rule (D-118), the `credit_payment`
+row (source WALLET, method WALLET), the exposure ledger and the auto-reinstate hook (D-119), once each. (7) Audit, and one
+event. The wallet is always locked before the invoices and the invoices in ascending id, so two repayments, or a repayment and
+a supplier-recorded payment, cannot wait on each other. `recordPayment` now locks its invoice and uses the same shared method.
+
+**Refused before anything moves.** More than is owed is `CREDIT_OVERPAYMENT` (422, details `outstanding`); more than the
+wallet holds is `WALLET_INSUFFICIENT_BALANCE` (422, details `shortBy`, so the app can say "You're ₹X short" and offer Add
+money). Both are explicit checks made after the locks, so they are decided on the truth; `debitCreditRepayment`'s own guard
+stays as the last line of defence. A second repayment racing the first for the same invoice finds nothing left and gets the
+overpayment refusal.
+
+**Who is told.** The supplier, with the new `CreditRepaymentReceived` ("Payment received": "{restaurant} paid {amount}
+through Mandi.", in-app and push, not critical, no SMS, D-041). `CreditRepaymentRecorded` is not published: its text says the
+supplier recorded your payment, which would be false, and the restaurant sees the result on screen.
+
+**Why the flag stays off.** `costonomy.mp.credit.wallet-repay.enabled` defaults to false and answers 403 without reading or
+claiming anything. Wallet money must not be taken before the payout to the supplier exists; that is the next change. On only in tests.
+
+**Tests.** `CreditWalletRepayIT` (side effects of every path and refusal, concurrency, lock order, status rules, history and
+detail), `CreditWalletRepayDisabledIT`, `NotificationRulesTest`, `ErrorContractTest`.
