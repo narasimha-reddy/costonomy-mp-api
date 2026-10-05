@@ -5333,3 +5333,19 @@ History's item for the same entry; a second outlet's own), `recentTrackingStart`
 before it, a returned QuickScan payment, a cancelled order, a dispute; tracking off), `recentOneQuery` (equal statement counts
 for 2 and 10 entries). Mutations: one query per entry fails `recentOneQuery` (9 statements became 17); the full rule instead of
 the list's fails `recentCarriesBill` (a waived payment showed `NOT_REQUIRED`).
+
+## D-117 — Settlement pays only PREPAID orders
+
+**Problem.** Settlement picked up every `COMPLETED` supplier order, whatever funded it. A credit order (stored with
+`supplier_order.payment_method = 'CREDIT'`) is funded and collected by the supplier: Costonomy took no money for it, yet
+settlement would have paid the supplier for it and charged commission on it.
+
+**Rule.** `SettlementDirectory.settleableOrders` and `storesWithSettleableOrders` select only `payment_method = 'PREPAID'`
+(the funding kind of both card/UPI and wallet orders). A credit order gets no commission calculation, is not counted in a
+settlement, and a store with only credit orders gets no settlement.
+
+**Why an allow-list.** "Not CREDIT" would silently include any funding method added later. With `= 'PREPAID'` a new method is
+left out of payouts until someone decides, deliberately, how it is paid. No schema change; no migration.
+
+**Tests.** `SettlementFlowIT.CreditOrders`: a credit and a prepaid order in one store settle as one order with only the
+prepaid gross and no commission row for the credit one; a store with only credit orders gets no settlement.

@@ -42,6 +42,12 @@ public class SettlementDirectory {
      * has checked it in: that is the last moment a shortfall can surface, and
      * paying a supplier before anyone has counted the goods would mean clawing it
      * back through an adjustment in the common case rather than the rare one.
+     *
+     * <p><b>PREPAID only (D-117).</b> Credit is funded and collected by the
+     * supplier: Costonomy took no money for it, so it owes the supplier no payout
+     * and earns no commission on it. An allow-list rather than "not CREDIT", so a
+     * funding method added later stays out of settlement until someone decides,
+     * deliberately, how it is paid out.
      */
     public List<SettleableOrder> settleableOrders(Instant from, Instant to) {
         List<SettleableOrder> orders = new ArrayList<>();
@@ -52,6 +58,7 @@ public class SettlementDirectory {
                   join supplier_store ss on ss.id = so.supplier_store_id
              left join commission_calculation c on c.supplier_order_id = so.id
                  where so.status = 'COMPLETED'
+                   and so.payment_method = 'PREPAID'
                    and so.updated_at >= ? and so.updated_at < ?
                    and c.id is null
                  order by so.id
@@ -124,7 +131,7 @@ public class SettlementDirectory {
                 """, String.class, settlementId);
     }
 
-    /** Stores with unsettled completed orders. */
+    /** Stores with unsettled completed PREPAID orders (credit is never settled, D-117). */
     public List<Long> storesWithSettleableOrders(Instant from, Instant to) {
         List<Long> stores = new ArrayList<>();
         jdbc.query("""
@@ -132,6 +139,7 @@ public class SettlementDirectory {
                   from supplier_order so
              left join commission_calculation c on c.supplier_order_id = so.id
                  where so.status = 'COMPLETED'
+                   and so.payment_method = 'PREPAID'
                    and so.updated_at >= ? and so.updated_at < ?
                    and c.id is null
                 """,
