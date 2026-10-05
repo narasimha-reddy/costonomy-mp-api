@@ -22,6 +22,12 @@ public final class CreditEvents {
     public static final String REPAYMENT_RECORDED = "CreditRepaymentRecorded";
     /** A restaurant repaid from its own wallet; the supplier is told (D-123). */
     public static final String REPAYMENT_RECEIVED = "CreditRepaymentReceived";
+    /** A restaurant says it paid a supplier directly; the supplier is asked to confirm (D-125). */
+    public static final String CLAIM_SUBMITTED = "CreditClaimSubmitted";
+    /** The supplier confirmed a claim; the restaurant is told, instead of CreditRepaymentRecorded (D-125). */
+    public static final String CLAIM_CONFIRMED = "CreditClaimConfirmed";
+    /** The supplier could not confirm a claim; the restaurant is told why (D-125). */
+    public static final String CLAIM_REJECTED = "CreditClaimRejected";
     // Bookkeeping on the exposure ledger; nobody is told.
     public static final String RESERVED = "CreditReserved";
     public static final String UTILIZED = "CreditUtilized";
@@ -30,7 +36,8 @@ public final class CreditEvents {
     /** Every event the module publishes. Add a new constant here too. */
     public static final List<String> ALL = List.of(
             REQUESTED, APPROVED, REJECTED, MODIFIED, SUSPENDED, REINSTATED, OVERDUE,
-            INVOICE_ISSUED, REPAYMENT_RECORDED, REPAYMENT_RECEIVED, RESERVED, UTILIZED, RELEASED);
+            INVOICE_ISSUED, REPAYMENT_RECORDED, REPAYMENT_RECEIVED, CLAIM_SUBMITTED, CLAIM_CONFIRMED,
+            CLAIM_REJECTED, RESERVED, UTILIZED, RELEASED);
 
     private CreditEvents() {
     }

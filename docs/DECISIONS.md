@@ -5535,3 +5535,18 @@ date or money arithmetic: it shows states and numbers, in India time (`creditClo
   "Adjustment".
 
 **Tests.** `CreditDueStateTest`, `CreditRestaurantReadsIT`, `CreditWalletRepayDisabledIT`.
+
+
+## D-125 — "I paid" claims: a restaurant reports, the supplier confirms
+
+**Context.** A restaurant often pays a supplier directly (bank transfer, UPI, cash, cheque, card), outside Mandi. Credit is the supplier's money, so only the supplier can say it arrived. Mandi must never let a restaurant clear its own debt on its say-so.
+
+**Decision.**
+- A claim (`credit_payment_claim`, V55) is only a statement. It changes nothing (not the invoice, the exposure, the status, the overdue sweep or auto-suspend) until the supplier confirms. A claim must be at most the invoice's outstanding less its other open (SUBMITTED) claims, so two claims cannot together exceed what is owed. A refused claim creates nothing.
+- Confirming goes through the shared `CreditInvoiceService.applyPayment` (source `CLAIM_CONFIRMED`, `claim_id` set), so the status rule (D-118) and auto-reinstate (D-119) behave as for any payment. The claim is locked first, then the invoice, always in that order; a second confirm finds the claim no longer SUBMITTED, so one claim writes one payment.
+- Confirm is capped at `min(claimed, outstanding now)`. Another payment may have reduced the invoice since the claim was made, and confirming past zero would hand out credit nobody repaid. More than that is `CREDIT_OVERPAYMENT`; a claim whose invoice is already settled is `CREDIT_CLAIM_STATE` (409, new). A supplier may confirm less than claimed.
+- Confirming publishes `CreditClaimConfirmed` and not also `CreditRepaymentRecorded`, whose text would tell the restaurant the same thing twice. Rejecting needs a reason and has no money effect. Withdrawing is the restaurant's, only while SUBMITTED. None of the claim notifications is SMS or critical (nothing is owed today).
+- No proof photo yet: uploading proof is a later PR, so there is no column for it.
+- The supplier-recorded payment endpoint is tightened: `method` must be one of `CreditPaymentMethod` (BANK_TRANSFER, UPI, CASH, CHEQUE, CARD, ADJUSTMENT) and `amount` has at most two decimals. A restaurant can claim only the first five.
+
+**Tests.** `CreditClaimIT`, `NotificationRulesTest`, `ErrorContractTest`.

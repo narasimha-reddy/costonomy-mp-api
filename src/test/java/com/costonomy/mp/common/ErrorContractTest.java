@@ -70,6 +70,8 @@ class ErrorContractTest {
                     // D-123: repaying credit from the wallet. The app branches on these two and reads their details.
                     Map.entry(ErrorCode.CREDIT_OVERPAYMENT, HttpStatus.UNPROCESSABLE_ENTITY),
                     Map.entry(ErrorCode.WALLET_INSUFFICIENT_BALANCE, HttpStatus.UNPROCESSABLE_ENTITY),
+                    // D-125: an "I paid" claim that was already confirmed, rejected or withdrawn.
+                    Map.entry(ErrorCode.CREDIT_CLAIM_STATE, HttpStatus.CONFLICT),
                     Map.entry(ErrorCode.DELIVERY_UNAVAILABLE, HttpStatus.UNPROCESSABLE_ENTITY),
                     Map.entry(ErrorCode.DELIVERY_REASSIGNMENT_FAILED,
                             HttpStatus.UNPROCESSABLE_ENTITY),

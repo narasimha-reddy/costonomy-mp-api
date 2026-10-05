@@ -191,6 +191,14 @@ public class CreditInvoiceService {
     public CreditPayment applyPayment(CreditInvoice invoice, BigDecimal amount, String method, String reference,
                                       String note, Instant paidAt, Long actorId, String idempotencyKey,
                                       CreditPaymentSource source, Long repaymentId) {
+        return applyPayment(invoice, amount, method, reference, note, paidAt, actorId, idempotencyKey, source,
+                repaymentId, null);
+    }
+
+    /** As above, for a payment that confirms a restaurant's claim ({@code claimId}, D-125). */
+    public CreditPayment applyPayment(CreditInvoice invoice, BigDecimal amount, String method, String reference,
+                                      String note, Instant paidAt, Long actorId, String idempotencyKey,
+                                      CreditPaymentSource source, Long repaymentId, Long claimId) {
         var payment = new CreditPayment();
         payment.setCreditInvoiceId(invoice.getId());
         payment.setCreditAgreementId(invoice.getCreditAgreementId());
@@ -203,6 +211,7 @@ public class CreditInvoiceService {
         payment.setIdempotencyKey(idempotencyKey);
         payment.setSource(source);
         payment.setCreditRepaymentId(repaymentId);
+        payment.setClaimId(claimId);
         payments.save(payment);
 
         invoice.setPaidAmount(invoice.getPaidAmount().add(amount));

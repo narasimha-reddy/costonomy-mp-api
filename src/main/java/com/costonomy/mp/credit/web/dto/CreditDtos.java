@@ -3,6 +3,8 @@ package com.costonomy.mp.credit.web.dto;
 import com.costonomy.mp.credit.domain.CreditAgreementStatus;
 import com.costonomy.mp.credit.domain.CreditDueState;
 import com.costonomy.mp.credit.domain.CreditInvoiceStatus;
+import com.costonomy.mp.credit.domain.CreditClaimStatus;
+import com.costonomy.mp.credit.domain.CreditPaymentMethod;
 import com.costonomy.mp.credit.domain.CreditPaymentSource;
 import com.costonomy.mp.credit.domain.CreditRequestStatus;
 import com.costonomy.mp.credit.domain.CreditReservationStatus;
@@ -124,7 +126,9 @@ public final class CreditDtos {
             /** The outstanding total of the open invoices due on {@code nextDueDate}, or null. */
             BigDecimal nextDueAmount,
             /** How many invoices are still open. */
-            int openInvoices) {
+            int openInvoices,
+            /** What the restaurant says it has paid and the supplier has not answered yet (D-125); 0 when none. */
+            BigDecimal openClaimsAmount) {
     }
 
     public record RequestResponse(
@@ -153,7 +157,9 @@ public final class CreditDtos {
             BigDecimal overdue,
             List<AgreementResponse> agreements,
             /** Whether repaying from the wallet is switched on; the app hides 'Pay from wallet' when false. */
-            boolean walletRepayEnabled) {
+            boolean walletRepayEnabled,
+            /** The sum of the agreements' open "I paid" claims (D-125); 0 when none. */
+            BigDecimal openClaimsAmount) {
     }
 
     public record LedgerEntryResponse(
@@ -231,7 +237,9 @@ public final class CreditDtos {
             String orderNumber,
             String supplierName,
             String storeName,
-            List<InvoicePaymentResponse> payments) {
+            List<InvoicePaymentResponse> payments,
+            /** Every "I paid" claim on this invoice, newest first (D-125). */
+            List<ClaimResponse> claims) {
     }
 
     /** What the Home Credit tile needs: whether to show the attention dot. No amounts. */
@@ -272,8 +280,12 @@ public final class CreditDtos {
     public record RecordPaymentRequest(
             @NotNull(message = "Enter an amount")
             @DecimalMin(value = "0.01", message = "The payment must be more than zero")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
             BigDecimal amount,
-            @NotBlank(message = "Choose how it was paid") String method,
+            @NotBlank(message = "Choose how it was paid")
+            @Pattern(regexp = CreditPaymentMethod.ALL_PATTERN,
+                    message = "Choose BANK_TRANSFER, UPI, CASH, CHEQUE, CARD or ADJUSTMENT")
+            String method,
             @Size(max = 200) String reference,
             @Size(max = 500) String note,
             /** When the money actually moved, which may not be now. */
@@ -324,5 +336,65 @@ public final class CreditDtos {
             String method,
             String reference,
             Instant paidAt) {
+    }
+
+    // ── "I paid" claims (D-125) ──────────────────────────────────────────
+
+    /**
+     * A restaurant says it paid a supplier directly. {@code reference} is required unless the method is CASH.
+     * Nothing changes until the supplier confirms.
+     */
+    public record ClaimRequest(
+            @NotNull(message = "Enter an amount")
+            @DecimalMin(value = "1.00", message = "The smallest payment is ₹1.00")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
+            BigDecimal amount,
+            @NotBlank(message = "Choose how you paid")
+            @Pattern(regexp = CreditPaymentMethod.CLAIMABLE_PATTERN,
+                    message = "Choose BANK_TRANSFER, UPI, CASH, CHEQUE or CARD")
+            String method,
+            @Size(max = 200) String reference,
+            @NotNull(message = "Enter the date you paid") LocalDate paidOn,
+            @Size(max = 500) String note) {
+
+        @AssertTrue(message = "Enter the payment reference")
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isReferenceGiven() {
+            return "CASH".equals(method) || (reference != null && !reference.isBlank());
+        }
+    }
+
+    /** The supplier confirms a claim. Leave {@code amount} out to confirm what was claimed, capped at what is owed. */
+    public record ConfirmClaimRequest(
+            @DecimalMin(value = "0.01", message = "The amount must be more than zero")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
+            BigDecimal amount) {
+    }
+
+    public record RejectClaimRequest(
+            @NotBlank(message = "Give a reason") @Size(min = 3, max = 500, message = "Give a reason of 3 to 500 characters")
+            String reason) {
+    }
+
+    /** One claim, as either side reads it. {@code creditPaymentId} is set once it is confirmed. */
+    public record ClaimResponse(
+            Long id,
+            Long invoiceId,
+            String invoiceNumber,
+            Long agreementId,
+            Long outletId,
+            String outletName,
+            String restaurantName,
+            BigDecimal amount,
+            CreditPaymentMethod method,
+            String reference,
+            LocalDate paidOn,
+            String note,
+            CreditClaimStatus status,
+            String decisionNote,
+            BigDecimal confirmedAmount,
+            Long creditPaymentId,
+            Instant createdAt,
+            Instant decidedAt) {
     }
 }
