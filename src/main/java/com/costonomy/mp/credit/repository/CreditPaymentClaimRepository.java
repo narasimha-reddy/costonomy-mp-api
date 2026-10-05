@@ -5,6 +5,7 @@ import com.costonomy.mp.credit.domain.CreditPaymentClaim;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -44,6 +45,28 @@ public interface CreditPaymentClaimRepository extends JpaRepository<CreditPaymen
             """)
     List<Object[]> sumsByInvoiceForAgreement(@Param("agreementId") Long agreementId,
                                              @Param("status") CreditClaimStatus status);
+
+    /**
+     * The ids of an invoice's SUBMITTED claims that nobody holds right now, taken for update. A claim being confirmed
+     * or withdrawn holds its own row, and that transaction then wants the invoice the caller already holds, so
+     * waiting for it here would be a deadlock (the order is claim, then invoice): such a claim is skipped, and its
+     * own transaction finds the invoice settled and refuses with CREDIT_CLAIM_STATE.
+     */
+    @Query(value = """
+            select id from credit_payment_claim
+             where credit_invoice_id = :invoiceId and status = 'SUBMITTED' and id <> :exceptId
+               for update skip locked
+            """, nativeQuery = true)
+    List<Long> lockFreeSubmittedIds(@Param("invoiceId") Long invoiceId, @Param("exceptId") Long exceptId);
+
+    /** Close the given claims as superseded (D-130): the invoice they point at is settled. */
+    @Modifying(flushAutomatically = true)
+    @Query("""
+            update CreditPaymentClaim c set c.status = com.costonomy.mp.credit.domain.CreditClaimStatus.SUPERSEDED,
+                   c.decisionNote = :note, c.decidedAt = :now
+             where c.id in :ids
+            """)
+    int supersede(@Param("ids") List<Long> ids, @Param("note") String note, @Param("now") java.time.Instant now);
 
     List<CreditPaymentClaim> findByCreditInvoiceIdOrderByIdDesc(Long creditInvoiceId);
 

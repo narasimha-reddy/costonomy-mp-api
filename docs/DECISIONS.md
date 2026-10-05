@@ -5620,3 +5620,22 @@ restaurant paying two suppliers saw two identical rows.
 - The reference `credit-repayment-<id>` is unchanged. Older rows keep the text they were written with; nothing is rewritten.
 - The statement's label column stays the kind's wording ("Credit repayment"); the reason column carries the name.
 - No schema change.
+
+## D-130 — Credit rules: exact sub-₹1 residuals, terms version on accept, manual reinstate event, one overdue rule, superseded claims
+
+Five rule gaps found by the credit edge-case review. No schema change (claim status and event names are VARCHAR).
+
+- **Sub-₹1 residuals.** The minimum stays ₹1.00 for wallet repayments and claims, except that an amount below ₹1 is accepted when it
+  exactly clears what it targets: for a wallet repayment, the sum outstanding of the target invoices (the whole agreement, or the
+  `invoiceIds` given); for a claim, the invoice's `reportableAmount`. Anything else below ₹1 is a `VALIDATION_ERROR`, "Enter at least
+  ₹1, or the exact remaining amount". The DTO now only requires 0.01 or more, and the services enforce the rule before anything moves.
+- **Terms version on accept.** `POST /credit/agreements/{id}/accept` takes an optional `{termsVersion}`. When present and not the
+  agreement's current `termsVersion`: 409 `CREDIT_TERMS_CHANGED`, nothing changes. Absent: unchanged behaviour. A supplier `modify` on a
+  REQUESTED or APPROVED agreement stays allowed ("approve on my terms") and, like every change of terms, bumps `termsVersion`.
+- **Manual reinstate** publishes `CreditReinstated` with the same payload as the system reinstate, so the restaurant hears about it.
+- **One overdue rule.** `attention.overdue` is true when any invoice of the outlet is OVERDUE by `CreditDueState.of`'s rule (marked
+  OVERDUE, or open with due date and grace both before today in India), whether or not the hourly sweep has run; `dueSoon` excludes those.
+- **Superseded claims.** When an invoice reaches PAID by any means, its other SUBMITTED claims become `SUPERSEDED` in the same
+  transaction (note "Invoice was settled before this was confirmed", no actor, no notification). They no longer count in
+  `openClaimsAmount`/`reportableAmount`, are not in the supplier's SUBMITTED inbox, and stay in the claim lists as history. Confirm,
+  reject and withdraw on one are 409 `CREDIT_CLAIM_STATE`. A claim larger than the new outstanding but not settled stays SUBMITTED.

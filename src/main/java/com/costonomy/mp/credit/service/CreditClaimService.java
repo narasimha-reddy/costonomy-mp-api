@@ -124,6 +124,11 @@ public class CreditClaimService {
                     Map.of("outstanding", claimable));
         }
 
+        // Below ₹1 only when it is exactly what can still be claimed on the invoice (D-130).
+        if (amount.compareTo(CreditWalletRepaymentService.MIN_AMOUNT) < 0 && amount.compareTo(claimable) != 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, CreditWalletRepaymentService.MIN_AMOUNT_MESSAGE);
+        }
+
         var claim = new CreditPaymentClaim();
         claim.setCreditInvoiceId(invoiceId);
         claim.setCreditAgreementId(invoice.getCreditAgreementId());

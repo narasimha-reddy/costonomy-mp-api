@@ -131,6 +131,11 @@ public enum ErrorCode {
     CREDIT_CLAIM_STATE(HttpStatus.CONFLICT,
             "This payment claim has already been dealt with."),
 
+    // ── Credit rules hardening (D-130) ───────────────────────────────────
+    /** The restaurant accepted a terms version that is no longer the agreement's current one. Nothing changed. */
+    CREDIT_TERMS_CHANGED(HttpStatus.CONFLICT,
+            "The supplier changed the terms. Please review them again."),
+
     // ── Payments (422, 409) ──────────────────────────────────────────────
     PAYMENT_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
             "The payment didn't go through."),

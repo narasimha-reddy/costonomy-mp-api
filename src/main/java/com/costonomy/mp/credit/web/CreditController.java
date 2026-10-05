@@ -57,8 +57,10 @@ public class CreditController {
     @PostMapping("/credit/agreements/{id}/accept")
     @Operation(summary = "Accept terms the supplier changed",
             description = "APPROVED → ACTIVE. Credit on terms nobody agreed to is not credit.")
-    public ApiResponse<CreditDtos.AgreementResponse> accept(@PathVariable Long id) {
-        return ApiResponse.ok(agreements.accept(ActorContext.requireUserId(), id));
+    public ApiResponse<CreditDtos.AgreementResponse> accept(
+            @PathVariable Long id, @RequestBody(required = false) CreditDtos.AcceptRequest body) {
+        return ApiResponse.ok(agreements.accept(ActorContext.requireUserId(), id,
+                body == null ? null : body.termsVersion()));
     }
 
     @PostMapping("/credit/agreements/{id}/wallet-repayments")

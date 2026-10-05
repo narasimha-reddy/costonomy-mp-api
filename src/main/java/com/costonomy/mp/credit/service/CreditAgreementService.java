@@ -163,6 +163,15 @@ public class CreditAgreementService {
      */
     @Transactional
     public CreditDtos.AgreementResponse accept(Long actorId, Long agreementId) {
+        return accept(actorId, agreementId, null);
+    }
+
+    /**
+     * As above, for a restaurant that says which terms version it saw (D-130). When it differs from the current
+     * one the supplier changed the terms after the restaurant looked, so nothing is activated.
+     */
+    @Transactional
+    public CreditDtos.AgreementResponse accept(Long actorId, Long agreementId, Integer termsVersion) {
         var agreement = loadForRestaurant(actorId, agreementId, Permissions.CREDIT_REQUEST);
 
         if (agreement.getStatus().canFund()) {
@@ -171,6 +180,10 @@ public class CreditAgreementService {
         if (agreement.getStatus() != CreditAgreementStatus.APPROVED) {
             throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
                     "There are no approved terms to accept.");
+        }
+        if (termsVersion != null && !termsVersion.equals(agreement.getTermsVersion())) {
+            throw new BusinessException(ErrorCode.CREDIT_TERMS_CHANGED,
+                    "The supplier changed the terms. Please review them again.");
         }
 
         activate(agreement, actorId, "Terms accepted by the restaurant");
@@ -411,7 +424,20 @@ public class CreditAgreementService {
                 agreementId, CreditAgreementStatus.SUSPENDED.name(),
                 CreditAgreementStatus.ACTIVE.name());
 
+        // The same event the overdue sweep's reinstate publishes, so the restaurant hears about this one too (D-130).
+        outbox.publish(CreditEvents.REINSTATED, "CREDIT_AGREEMENT", agreementId,
+                Map.of("creditAgreementId", agreementId,
+                        "outletId", agreement.getOutletId(),
+                        "supplierStoreId", agreement.getSupplierStoreId(),
+                        "supplierName", supplierNameOf(agreement.getSupplierStoreId())),
+                actorId);
+
         return toResponse(agreement, latestRequest(agreementId));
+    }
+
+    private String supplierNameOf(Long supplierStoreId) {
+        var store = directory.store(supplierStoreId);
+        return store == null || store.supplierName() == null ? "" : store.supplierName();
     }
 
     /** Used by the overdue sweep, which has no actor. */

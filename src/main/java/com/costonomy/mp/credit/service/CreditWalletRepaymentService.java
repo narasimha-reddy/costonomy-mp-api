@@ -70,6 +70,9 @@ import java.util.Map;
 @Slf4j
 public class CreditWalletRepaymentService {
 
+    static final BigDecimal MIN_AMOUNT = new BigDecimal("1.00");
+    static final String MIN_AMOUNT_MESSAGE = "Enter at least ₹1, or the exact remaining amount";
+
     private static final List<CreditInvoiceStatus> SETTLED = List.of(CreditInvoiceStatus.PAID, CreditInvoiceStatus.WRITTEN_OFF);
 
     private final CreditAgreementRepository agreements;
@@ -140,6 +143,11 @@ public class CreditWalletRepaymentService {
             throw new BusinessException(ErrorCode.CREDIT_OVERPAYMENT,
                     "That's more than the ₹%s you owe.".formatted(Rupees.of(owed)),
                     Map.of("outstanding", owed));
+        }
+        // Below ₹1 only when it clears exactly what it targets (D-130): otherwise a part payment could leave a
+        // residual the restaurant can never pay. Still before anything moves.
+        if (amount.compareTo(MIN_AMOUNT) < 0 && amount.compareTo(owed) != 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, MIN_AMOUNT_MESSAGE);
         }
         BigDecimal balance = walletRow.getBalance();
         if (amount.compareTo(balance) > 0) {
