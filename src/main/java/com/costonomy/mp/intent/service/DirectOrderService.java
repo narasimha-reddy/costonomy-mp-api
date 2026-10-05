@@ -158,8 +158,10 @@ public class DirectOrderService {
         acceptance.setSubmittedAt(now);
         acceptance.setExpiresAt(deadline);
         acceptance.setDeliveryModes(modesFor(intent.getSupplierStoreId()));
-        // Quoted when a courier is assigned, never invented here. Doc 06 §4.
-        acceptance.setDeliveryFee(null);
+        // A courier's fee is quoted when asked for (Doc 06 §4). The store's own fee is known, so a buyer is shown it
+        // rather than "Free" (D-141).
+        var ownPolicy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
+        acceptance.setDeliveryFee(ownPolicy.ownDeliveryEnabled() ? ownPolicy.ownDeliveryFee() : null);
         acceptances.saveAndFlush(acceptance);
 
         BigDecimal value = BigDecimal.ZERO;

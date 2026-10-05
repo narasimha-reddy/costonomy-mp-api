@@ -311,6 +311,7 @@ public class IntentMapper {
                 acceptance.getDeliveryFee(),
                 acceptance.getEtaMinutes(),
                 acceptance.getDeliveryModes(),
+                acceptance.getDeliveryOffer(),
                 acceptance.getNotes(),
                 acceptance.getSubmittedAt(),
                 acceptance.getExpiresAt());

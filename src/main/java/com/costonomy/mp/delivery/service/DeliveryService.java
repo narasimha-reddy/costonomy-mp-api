@@ -128,8 +128,8 @@ public class DeliveryService {
             // theirs — usually zero, which doc 01 §20 says the restaurant then
             // pays. The delivery goes straight to the state where someone is
             // expected to collect it.
-            delivery.setFee(policy.ownDeliveryFee() == null
-                    ? BigDecimal.ZERO : policy.ownDeliveryFee());
+            // What the order was charged, which is zero when the supplier offered free delivery (D-141).
+            delivery.setFee(order.deliveryFee() == null ? BigDecimal.ZERO : order.deliveryFee());
             delivery.setStatus(DeliveryStatus.DRIVER_ASSIGNED);
             delivery.setAssignedAt(Instant.now());
             delivery.setDriverName(pickup.contactName());
@@ -210,7 +210,7 @@ public class DeliveryService {
                 "Automated dispatch initiated");
 
         if (mode == DeliveryMode.SUPPLIER_OWN) {
-            delivery.setFee(policy.ownDeliveryFee() == null ? BigDecimal.ZERO : policy.ownDeliveryFee());
+            delivery.setFee(order.deliveryFee() == null ? BigDecimal.ZERO : order.deliveryFee());
             delivery.setStatus(DeliveryStatus.DRIVER_ASSIGNED);
             delivery.setAssignedAt(Instant.now());
             delivery.setDriverName(pickup.contactName());

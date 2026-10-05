@@ -191,8 +191,10 @@ public class IntentOrderCreator {
         // order itself will need.
         BigDecimal deliveryFee = BigDecimal.ZERO;
         if (request != null && request.deliveryMode() != null) {
+            requireOffered(request.deliveryMode(), plan.acceptance());
             deliveryFee = deliveryFeeFor(
-                    request.deliveryMode(), plan.intent(), request, Instant.now(), false, plan.subtotal());
+                    request.deliveryMode(), plan.intent(), request, Instant.now(), false, plan.subtotal(),
+                    plan.acceptance());
         }
 
         return new IntentDtos.OrderPreviewResponse(
@@ -280,7 +282,9 @@ public class IntentOrderCreator {
                     "Choose how this order should reach you.");
         }
         DeliveryMode mode = request.deliveryMode();
-        BigDecimal deliveryFee = deliveryFeeFor(mode, intent, request, now, true, plan.subtotal());
+        requireOffered(mode, plan.acceptance());
+        BigDecimal deliveryFee = deliveryFeeFor(mode, intent, request, now, true, plan.subtotal(),
+                plan.acceptance());
 
         var order = new SupplierOrder();
         // No procurement: the intent was the basket. The link to where this came
@@ -533,9 +537,22 @@ public class IntentOrderCreator {
      *       showed it and the charge that collected it.</li>
      * </ul>
      */
+    /** The buyer may choose only what the supplier offered on this answer (D-141); pickup is always offered. */
+    private void requireOffered(DeliveryMode mode, IntentAcceptance acceptance) {
+        if (mode == DeliveryMode.PICKUP || acceptance == null || acceptance.getDeliveryOffer() == null) {
+            return;
+        }
+        boolean self = "SELF_FREE".equals(acceptance.getDeliveryOffer()) || "SELF".equals(acceptance.getDeliveryOffer());
+        if ((mode == DeliveryMode.SUPPLIER_DELIVERY) != self) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, self
+                    ? "This supplier will deliver it themselves. Choose their delivery, or pickup."
+                    : "This supplier is using Costonomy delivery. Choose that, or pickup.");
+        }
+    }
+
     private BigDecimal deliveryFeeFor(DeliveryMode mode, com.costonomy.mp.intent.domain.Intent intent,
                                       IntentDtos.CreateOrderRequest request, Instant now,
-                                      boolean requireQuote, BigDecimal subtotal) {
+                                      boolean requireQuote, BigDecimal subtotal, IntentAcceptance acceptance) {
 
         var policy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
 
@@ -544,6 +561,15 @@ public class IntentOrderCreator {
         return switch (mode) {
             case PICKUP, SUPPLIER_DELIVERY -> {
                 BigDecimal fee = deliveryCharges.supplierCarriedFee(policy, mode, subtotal);
+                // A supplier who offered free delivery on this answer (D-141) charges nothing, after the same
+                // refusals as any other supplier delivery.
+                boolean offered = mode == DeliveryMode.SUPPLIER_DELIVERY && acceptance != null
+                        && acceptance.getDeliveryOffer() != null && acceptance.getDeliveryFee() != null;
+                // On a supplier's own delivery the amount they offered on this answer (zero when free, at most the
+                // store's fee) is what is charged, not the store's standing fee.
+                if (offered) {
+                    fee = acceptance.getDeliveryFee();
+                }
                 yield DeliveryCharges.waivedByThreshold(policy, subtotal) ? BigDecimal.ZERO : fee;
             }
 

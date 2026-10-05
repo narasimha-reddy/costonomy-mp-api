@@ -78,6 +78,7 @@ public class IntentResponder {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
+    private final com.costonomy.mp.delivery.service.DeliveryDirectory deliveryPolicies;
 
     @Transactional
     public IntentDtos.IntentResponse respond(
@@ -154,15 +155,14 @@ public class IntentResponder {
         acceptance.setStatus(IntentAcceptanceStatus.SUBMITTED);
         acceptance.setEtaMinutes(request.etaMinutes());
         acceptance.setDeliveryModes(request.deliveryModes());
+        applyDeliveryOffer(acceptance, intent.getSupplierStoreId(), request.deliveryOffer(), request.deliveryFee());
         acceptance.setNotes(request.notes());
         acceptance.setSubmittedAt(now);
         // The same instant as the order-creation deadline, deliberately: an offer
         // stands for exactly as long as it can be ordered against. See IntentPolicy.
         acceptance.setExpiresAt(deadline);
-        // Delivery is quoted when a courier is assigned, not here. Doc 06 §4 and
-        // OPEN-005: a figure invented now would appear on the restaurant's total
-        // and then change.
-        acceptance.setDeliveryFee(null);
+        // A courier's fee is quoted when the restaurant asks for it (Doc 06 §4, OPEN-005), so it is not set here. The
+        // supplier's own fee is known and is set by applyDeliveryOffer.
         acceptances.saveAndFlush(acceptance);
 
         var priced = priceLines(intent, lines, answers);
@@ -432,5 +432,50 @@ public class IntentResponder {
 
         var found = intents.findForStore(storeId, statuses);
         return mapper.toResponses(found.size() > limit ? found.subList(0, limit) : found);
+    }
+
+    /**
+     * What this answer says about delivery (D-141). The supplier chooses, bounded by their store's delivery policy:
+     * deliver themselves free, deliver themselves at their own fee, or use Costonomy riders. Pickup is always offered.
+     * The buyer then sees only what was offered, and a free offer is stated as free. Without a choice the answer
+     * offers whatever the policy enables, as before.
+     */
+    private void applyDeliveryOffer(IntentAcceptance acceptance, Long storeId, String offer, BigDecimal chosenFee) {
+        var deliveryPolicy = deliveryPolicies.deliveryPolicy(storeId);
+        if (offer == null) {
+            acceptance.setDeliveryFee(null);
+            return;
+        }
+        switch (offer) {
+            case "SELF_FREE", "SELF" -> {
+                if (!deliveryPolicy.ownDeliveryEnabled()) {
+                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                            "Turn on your own delivery in your delivery settings before offering it.");
+                }
+                acceptance.setDeliveryModes("PICKUP,SUPPLIER_DELIVERY");
+                BigDecimal storeFee = deliveryPolicy.ownDeliveryFee() == null
+                        ? BigDecimal.ZERO : deliveryPolicy.ownDeliveryFee();
+                BigDecimal fee = "SELF_FREE".equals(offer) ? BigDecimal.ZERO
+                        : chosenFee == null ? storeFee : chosenFee;
+                // Lower or free for this request is the supplier's call; higher than the store's own fee is not.
+                if (fee.compareTo(storeFee) > 0) {
+                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                            "Your delivery charge can't be more than your store's delivery fee of %s."
+                                    .formatted(storeFee.stripTrailingZeros().toPlainString()));
+                }
+                acceptance.setDeliveryFee(Pricing.money(fee));
+            }
+            case "COSTONOMY" -> {
+                if (!deliveryPolicy.costonomyDeliveryEnabled()) {
+                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                            "Costonomy delivery is turned off for this store.");
+                }
+                acceptance.setDeliveryModes("PICKUP,COSTONOMY_DELIVERY");
+                acceptance.setDeliveryFee(null);
+            }
+            default -> throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Delivery must be SELF_FREE, SELF or COSTONOMY.");
+        }
+        acceptance.setDeliveryOffer(offer);
     }
 }

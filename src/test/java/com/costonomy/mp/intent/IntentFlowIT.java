@@ -619,6 +619,138 @@ class IntentFlowIT extends AbstractIntegrationTest {
     }
 
     @Nested
+    @DisplayName("what the supplier offers for delivery (D-141)")
+    class DeliveryOffer {
+
+        private void policy(Seller seller, int own, int costonomy) {
+            jdbc.update("""
+                    insert into supplier_delivery_policy
+                        (supplier_store_id, own_delivery_enabled, costonomy_delivery_enabled,
+                         own_delivery_fee, created_at, updated_at, version)
+                    values (?, ?, ?, 30, now(6), now(6), 0)
+                    on duplicate key update own_delivery_enabled = ?, costonomy_delivery_enabled = ?,
+                         own_delivery_fee = 30
+                    """, seller.storeId(), own, costonomy, own, costonomy);
+        }
+
+        /** A sent request for 6 paneer, answered in full with the given delivery offer (null leaves it out). */
+        private OpenRequest answered(String offer, int own, int costonomy) throws Exception {
+            return answered(offer, null, own, costonomy);
+        }
+
+        private OpenRequest answered(String offer, String fee, int own, int costonomy) throws Exception {
+            var open = sendRequest(6);
+            policy(open.seller(), own, costonomy);
+            var body = new java.util.HashMap<String, Object>();
+            body.put("lines", List.of(Map.of("intentItemId", open.itemId(), "offeredQuantity", 6)));
+            if (offer != null) {
+                body.put("deliveryOffer", offer);
+            }
+            if (fee != null) {
+                body.put("deliveryFee", fee);
+            }
+            var response = respond(open.seller().token(), open.intentId(), body);
+            assertThat(response.at("/error").isMissingNode() || response.at("/error").isNull())
+                    .as(response.toString()).isTrue();
+            return open;
+        }
+
+        private JsonNode orderWith(OpenRequest open, String mode) throws Exception {
+            return createOrder(open.buyer().token(), open.intentId(), Map.of("deliveryMode", mode));
+        }
+
+        @Test
+        @DisplayName("free delivery is stated as free and charged as nothing")
+        void freeDelivery() throws Exception {
+            var open = answered("SELF_FREE", 1, 1);
+
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryOffer").asText()).isEqualTo("SELF_FREE");
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).isZero();
+            assertThat(shown.at("/data/acceptance/deliveryModes").asText()).isEqualTo("PICKUP,SUPPLIER_DELIVERY");
+
+            var created = orderWith(open, "SUPPLIER_DELIVERY");
+            long orderId = created.at("/data/supplierOrderId").asLong();
+            assertThat(orderId).as(created.toString()).isPositive();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("0");
+            assertThat(jdbc.queryForObject("select delivery_mode from supplier_order where id = ?",
+                    String.class, orderId)).isEqualTo("SUPPLIER_DELIVERY");
+        }
+
+        @Test
+        @DisplayName("the supplier's own delivery at their fee is shown and charged at that fee")
+        void paidSelfDelivery() throws Exception {
+            var open = answered("SELF", 1, 1);
+
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).isEqualTo(30.0);
+
+            long orderId = orderWith(open, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("30");
+        }
+
+        @Test
+        @DisplayName("a supplier can charge less than their store fee for one order, and that is what the buyer pays")
+        void lowerChargeForOneOrder() throws Exception {
+            var open = answered("SELF", "20", 1, 1);
+
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).isEqualTo(20.0);
+
+            long orderId = orderWith(open, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("20");
+        }
+
+        @Test
+        @DisplayName("a supplier cannot charge more than their store's delivery fee")
+        void chargeIsCapped() throws Exception {
+            var open = sendRequest(6);
+            policy(open.seller(), 1, 1);
+
+            var refused = respond(open.seller().token(), open.intentId(), Map.of(
+                    "lines", List.of(Map.of("intentItemId", open.itemId(), "offeredQuantity", 6)),
+                    "deliveryOffer", "SELF", "deliveryFee", "31"));
+
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+            assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, open.intentId()))
+                    .isEqualTo("OPEN");
+        }
+
+        @Test
+        @DisplayName("the buyer can choose only what was offered")
+        void onlyWhatWasOffered() throws Exception {
+            var selfOffered = answered("SELF_FREE", 1, 1);
+            var refused = orderWith(selfOffered, "COSTONOMY_DELIVERY");
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+
+            var ridersOffered = answered("COSTONOMY", 1, 1);
+            var alsoRefused = orderWith(ridersOffered, "SUPPLIER_DELIVERY");
+            assertThat(alsoRefused.at("/error/code").asText()).as(alsoRefused.toString())
+                    .isEqualTo("VALIDATION_ERROR");
+            // Pickup is always there.
+            assertThat(orderWith(ridersOffered, "PICKUP").at("/data/supplierOrderId").asLong()).isPositive();
+        }
+
+        @Test
+        @DisplayName("a supplier cannot offer a delivery their store has turned off")
+        void bounded() throws Exception {
+            var open = sendRequest(6);
+            policy(open.seller(), 0, 1);
+
+            var refused = respond(open.seller().token(), open.intentId(), Map.of(
+                    "lines", List.of(Map.of("intentItemId", open.itemId(), "offeredQuantity", 6)),
+                    "deliveryOffer", "SELF_FREE"));
+
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+            assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, open.intentId()))
+                    .isEqualTo("OPEN");
+        }
+    }
+
+    @Nested
     @DisplayName("the order window")
     class Window {
 

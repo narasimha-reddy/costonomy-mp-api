@@ -115,6 +115,20 @@ public final class IntentDtos {
              * the restaurant pays the delivery fee.
              */
             @Size(max = 120) String deliveryModes,
+            /**
+             * How this supplier will deliver this request: SELF_FREE (they deliver, no charge to the buyer), SELF
+             * (they deliver at their own fee) or COSTONOMY (Costonomy riders, requested at Ready for Pickup). Pickup
+             * is always offered. Absent keeps what the store's policy enables (D-141).
+             */
+            @jakarta.validation.constraints.Pattern(regexp = "SELF_FREE|SELF|COSTONOMY",
+                    message = "Delivery must be SELF_FREE, SELF or COSTONOMY.")
+            String deliveryOffer,
+            /**
+             * With {@code SELF}: what this supplier charges the restaurant to deliver this request. Absent means the
+             * store's own delivery fee; it may be lower (zero is free) but never higher (D-141).
+             */
+            @jakarta.validation.constraints.DecimalMin(value = "0", message = "A delivery fee cannot be negative.")
+            BigDecimal deliveryFee,
             @Size(max = 1000) String notes) {
     }
 
@@ -417,6 +431,8 @@ public final class IntentDtos {
             BigDecimal deliveryFee,
             Integer etaMinutes,
             String deliveryModes,
+            /** SELF_FREE, SELF or COSTONOMY; null on an older answer (D-141). */
+            String deliveryOffer,
             String notes,
             Instant submittedAt,
             Instant expiresAt) {
