@@ -111,12 +111,20 @@ public class CreditWalletRepaymentService {
 
         try (var trace = TraceScope.of("credit-agreement", agreementId)) {
             return idempotency.execute(actorId, "credit.wallet-repay", idempotencyKey,
-                    Map.of("agreementId", agreementId, "amount", amount.toPlainString(),
-                            "invoiceIds", ids == null ? List.of() : ids),
+                    payload(agreementId, amount, ids),
                     CreditDtos.WalletRepaymentResponse.class,
                     () -> txTemplate.execute(status -> work(actorId, agreementId, outletId, storeId, amount, ids,
                             idempotencyKey)));
         }
+    }
+
+    /**
+     * What identifies "the same request" for the idempotency hash. The amount is already scaled to 2 places and written
+     * as plain text, so 1e3, 1000, 1000.0 and "1000.00" are one request; the ids are sorted by the caller.
+     */
+    public static Map<String, Object> payload(Long agreementId, BigDecimal amount, List<Long> ids) {
+        return Map.of("agreementId", agreementId, "amount", amount.toPlainString(),
+                "invoiceIds", ids == null ? List.of() : ids);
     }
 
     private CreditDtos.WalletRepaymentResponse work(Long actorId, Long agreementId, Long outletId, Long storeId,
@@ -124,7 +132,7 @@ public class CreditWalletRepaymentService {
         // a. The wallet first, like QuickScan: nothing else is read before this lock is held.
         var walletRow = wallet.lock(outletId);
         if (!walletRow.isUsable()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN, "This wallet is on hold. Please contact support.");
+            throw new BusinessException(ErrorCode.WALLET_ON_HOLD);
         }
 
         // b. The invoices, ascending id. One that is not this agreement's, or not open, is absent from the result,

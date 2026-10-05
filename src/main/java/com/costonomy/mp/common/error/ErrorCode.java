@@ -36,6 +36,9 @@ public enum ErrorCode {
             "Your session has expired. Please sign in again."),
     FORBIDDEN(HttpStatus.FORBIDDEN,
             "You don't have permission to do that."),
+    /** The outlet's wallet is on hold, so money cannot leave it (D-129). Not the same as a feature that is off. */
+    WALLET_ON_HOLD(HttpStatus.FORBIDDEN,
+            "Your wallet is on hold. Please contact support."),
     /**
      * The actor holds the permission but the resource belongs to a different
      * restaurant, outlet, supplier or store. Kept separate from FORBIDDEN so
@@ -66,6 +69,12 @@ public enum ErrorCode {
             "This request was already made with different details."),
     IDEMPOTENT_REQUEST_IN_PROGRESS(HttpStatus.CONFLICT,
             "That request is still being processed."),
+    /**
+     * The first attempt with this key ran and failed (D-129). Definitive: the key will never run again, so the client
+     * must use a NEW key to try again. Unlike {@link #IDEMPOTENT_REQUEST_IN_PROGRESS}, waiting changes nothing.
+     */
+    IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED(HttpStatus.CONFLICT,
+            "The previous attempt did not go through. Please try again."),
 
     // ── Requests (409) ───────────────────────────────────────────────────
     //

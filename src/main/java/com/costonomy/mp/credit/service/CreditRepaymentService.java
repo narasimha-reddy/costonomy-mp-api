@@ -32,7 +32,7 @@ public class CreditRepaymentService {
                                              String idempotencyKey) {
 
         return idempotency.execute(actorId, "credit.repayment", idempotencyKey,
-                Map.of("invoiceId", invoiceId, "amount", request.amount()),
+                Map.of("invoiceId", invoiceId, "amount", request.amount().setScale(2).toPlainString()),
                 CreditDtos.PaymentResponse.class,
                 () -> invoices.recordPayment(actorId, invoiceId, request, idempotencyKey));
     }

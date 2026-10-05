@@ -54,6 +54,7 @@ class CreditClaimIT extends AbstractIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private CreditJobs creditJobs;
     @Autowired private NotificationRelayAccess relay;
+    @org.springframework.boot.test.mock.mockito.SpyBean private com.costonomy.mp.credit.service.CreditDirectory directorySpy;
 
     private CreditWalletSupport s;
     private ExecutorService pool;
@@ -606,10 +607,11 @@ class CreditClaimIT extends AbstractIntegrationTest {
             assertThat(after.creditPayments()).isEqualTo(before.creditPayments());
             // The room it held is free again.
             assertThat(claim(line, invoice, "6500.00").status()).isEqualTo(201);
-            // And it cannot be withdrawn twice.
+            // Withdrawing again is the same final state, so a retry after a lost response is answered, not refused
+            // (D-129); a claim in any OTHER state still is (confirmedCannotBeWithdrawn).
             var twice = withdraw(line.buyer().token(), claimId);
-            assertThat(twice.status()).isEqualTo(409);
-            assertThat(twice.code()).isEqualTo("CREDIT_CLAIM_STATE");
+            assertThat(twice.status()).isEqualTo(200);
+            assertThat(twice.data().get("status").asText()).isEqualTo("WITHDRAWN");
         }
 
         @Test
@@ -1553,6 +1555,223 @@ class CreditClaimIT extends AbstractIntegrationTest {
             assertThat(withdraw.code()).isEqualTo("CREDIT_CLAIM_STATE");
             assertThat(reject(line.seller().token(), claimId, "Not received in our account").status()).isEqualTo(409);
             assertSuperseded(claimId);
+        }
+    }
+
+    // ── D-129: retries, and keys that belong to one tenant ───────────────
+
+    @Nested
+    @DisplayName("idempotency and key safety (D-129)")
+    class IdempotencyAndKeySafety {
+
+        private Reply record(Line line, long invoice, String key, Map<String, Object> body) throws Exception {
+            return call("POST", line.seller().token(), "/api/v1/credit/invoices/" + invoice + "/payments", key, body);
+        }
+
+        private Map<String, Object> pay(String amount) {
+            return new HashMap<>(Map.of("amount", amount, "method", "BANK_TRANSFER", "reference", "UTR12345678"));
+        }
+
+        private int auditRows(String action, long claimId) {
+            return jdbc.queryForObject("select count(*) from audit_log where action = ? and entity_id = ?",
+                    Integer.class, action, claimId);
+        }
+
+        @Test
+        @DisplayName("supplier A sending supplier B's key gets A's own payment, never B's")
+        void anotherTenantsKeyLeaksNothing() throws Exception {
+            var a = s.creditLine("200000");
+            var b = s.creditLine("200000");
+            long invoiceA = s.invoice(a, "65", 100);
+            long invoiceB = s.invoice(b, "65", 100);
+            String key = UUID.randomUUID().toString();
+            var theirs = record(b, invoiceB, key, pay("100.00"));
+            assertThat(theirs.status()).isEqualTo(200);
+
+            var mine = record(a, invoiceA, key, pay("200.00"));
+
+            assertThat(mine.status()).isEqualTo(200);
+            assertThat(mine.data().get("creditInvoiceId").asLong()).describedAs("not B's payment").isEqualTo(invoiceA);
+            assertThat(mine.data().get("id").asLong()).isNotEqualTo(theirs.data().get("id").asLong());
+            assertThat(paid(invoiceA)).isEqualByComparingTo("200.00");
+            assertThat(paid(invoiceB)).isEqualByComparingTo("100.00");
+        }
+
+        @Test
+        @DisplayName("two suppliers using the same key string each record their own payment")
+        void sameKeyStringTwoTenantsTwoPayments() throws Exception {
+            var a = s.creditLine("200000");
+            var b = s.creditLine("200000");
+            long invoiceA = s.invoice(a, "65", 100);
+            long invoiceB = s.invoice(b, "65", 100);
+            String key = "shared-key-string";
+
+            assertThat(record(a, invoiceA, key, pay("100.00")).status()).isEqualTo(200);
+            assertThat(record(b, invoiceB, key, pay("300.00")).status()).isEqualTo(200);
+
+            assertThat(payments(invoiceA)).hasSize(1);
+            assertThat(payments(invoiceB)).hasSize(1);
+            assertThat(paid(invoiceA)).isEqualByComparingTo("100.00");
+            assertThat(paid(invoiceB)).isEqualByComparingTo("300.00");
+        }
+
+        @Test
+        @DisplayName("the same supplier and key twice is one payment, and the replay is the same answer")
+        void sameSupplierSameKeyOnePayment() throws Exception {
+            var a = s.creditLine("200000");
+            long invoice = s.invoice(a, "65", 100);
+            String key = UUID.randomUUID().toString();
+
+            var first = record(a, invoice, key, pay("100.00"));
+            var second = record(a, invoice, key, pay("100.00"));
+
+            assertThat(first.status()).isEqualTo(200);
+            assertThat(second.status()).isEqualTo(200);
+            assertThat(second.data()).isEqualTo(first.data());
+            assertThat(payments(invoice)).hasSize(1);
+            assertThat(paid(invoice)).isEqualByComparingTo("100.00");
+        }
+
+        @Test
+        @DisplayName("a supplier squatting 'claim:<id>' or 'wallet-repayment:...' keys cannot break another tenant's confirm or repayment")
+        void squattingInternalKeysBreaksNothing() throws Exception {
+            var a = s.creditLine("200000");
+            var b = s.creditLine("200000");
+            long invoiceA = s.invoice(a, "65", 100);
+            long invoiceB = s.invoice(b, "65", 100);
+            long claimId = submitted(b, invoiceB, "2500.00");
+            long nextRepayment = jdbc.queryForObject("select coalesce(max(id), 0) + 1 from credit_repayment", Long.class);
+            // A squats B's claim key and the keys B's repayment is about to use.
+            assertThat(record(a, invoiceA, "claim:" + claimId, pay("1.00")).status()).isEqualTo(200);
+            for (long id = nextRepayment; id < nextRepayment + 3; id++) {
+                assertThat(record(a, invoiceA, "wallet-repayment:" + id + ":" + invoiceB, pay("1.00")).status())
+                        .isEqualTo(200);
+            }
+            s.topUp(b.buyer(), "20000.00");
+
+            var confirmed = confirm(b, claimId, null);
+            var repaid = s.repay(b.buyer().token(), b.agreementId(), UUID.randomUUID().toString(),
+                    Map.of("amount", "1000.00"));
+
+            assertThat(confirmed.status()).describedAs(confirmed.body().toString()).isEqualTo(200);
+            assertThat(repaid.status()).describedAs(repaid.body().toString()).isEqualTo(201);
+            assertThat(paid(invoiceB)).isEqualByComparingTo("3500.00");
+        }
+
+        @Test
+        @DisplayName("a payment dated in the future is refused, and nothing is recorded")
+        void futurePaidAtRefused() throws Exception {
+            var a = s.creditLine("200000");
+            long invoice = s.invoice(a, "65", 100);
+            var body = pay("100.00");
+            body.put("paidAt", Instant.now().plus(java.time.Duration.ofDays(2)).toString());
+
+            var reply = record(a, invoice, UUID.randomUUID().toString(), body);
+
+            assertThat(reply.status()).isEqualTo(400);
+            assertThat(reply.code()).isEqualTo("VALIDATION_ERROR");
+            assertThat(reply.body().at("/error/message").asText()).contains("future");
+            assertThat(payments(invoice)).isEmpty();
+            assertThat(paid(invoice)).isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("a payment dated before the invoice was issued is refused; today is accepted")
+        void paidAtBeforeIssueRefused() throws Exception {
+            var a = s.creditLine("200000");
+            long invoice = s.invoice(a, "65", 100);
+            var early = pay("100.00");
+            early.put("paidAt", Instant.now().minus(java.time.Duration.ofDays(3)).toString());
+
+            var refused = record(a, invoice, UUID.randomUUID().toString(), early);
+
+            assertThat(refused.status()).isEqualTo(400);
+            assertThat(refused.code()).isEqualTo("VALIDATION_ERROR");
+            assertThat(payments(invoice)).isEmpty();
+            var ok = pay("100.00");
+            ok.put("paidAt", Instant.now().minusSeconds(60).toString());
+            assertThat(record(a, invoice, UUID.randomUUID().toString(), ok).status()).isEqualTo(200);
+            assertThat(payments(invoice)).hasSize(1);
+        }
+
+        @Test
+        @DisplayName("two first requests racing for one (outlet, store) pair: one wins, the loser is a clean 409 'already waiting'")
+        void racingFirstRequestsLoserGetsACleanConflict() throws Exception {
+            var buyer = s.newBuyer();
+            for (int round = 0; round < 3; round++) {
+                var seller = s.newSeller();
+                mvc.perform(MockMvcRequestBuilders.put("/api/v1/supplier-stores/" + seller.storeId() + "/credit-policy")
+                        .header("Authorization", "Bearer " + seller.token()).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("creditEnabled", true,
+                                "defaultCreditPeriodDays", 30, "defaultGracePeriodDays", 5))));
+                // Both requests stop after reading the policy, so both then see "no agreement yet" and both insert.
+                var barrier = new java.util.concurrent.CyclicBarrier(2);
+                org.mockito.Mockito.doAnswer(call -> {
+                    barrier.await(10, TimeUnit.SECONDS);
+                    return call.callRealMethod();
+                }).when(directorySpy).creditPolicy(seller.storeId());
+                var body = Map.of("supplierStoreId", seller.storeId(), "outletId", buyer.outletId(),
+                        "requestedLimit", "50000", "requestedDays", 30, "purpose", "PROCUREMENT");
+
+                var one = pool.submit(() -> call("POST", buyer.token(), "/api/v1/credit/requests", null, body));
+                var two = pool.submit(() -> call("POST", buyer.token(), "/api/v1/credit/requests", null, body));
+                var replies = List.of(one.get(30, TimeUnit.SECONDS), two.get(30, TimeUnit.SECONDS));
+
+                var statuses = replies.stream().map(Reply::status).sorted().toList();
+                assertThat(statuses).describedAs("round %d: %s", round, replies.stream().map(r -> r.body().toString()).toList())
+                        .hasSize(2).doesNotContain(500);
+                assertThat(statuses.stream().filter(code -> code >= 200 && code < 300)).hasSize(1);
+                var loser = replies.stream().filter(r -> r.status() >= 400).findFirst().orElseThrow();
+                assertThat(loser.status()).describedAs(loser.body().toString()).isEqualTo(409);
+                assertThat(loser.body().at("/error/message").asText())
+                        .isEqualTo("A request to this supplier is already waiting for a response.");
+                assertThat(jdbc.queryForObject("select count(*) from credit_agreement where outlet_id = ? "
+                        + "and supplier_store_id = ?", Integer.class, buyer.outletId(), seller.storeId())).isEqualTo(1);
+                assertThat(jdbc.queryForObject("select count(*) from credit_request where outlet_id = ? "
+                        + "and supplier_store_id = ?", Integer.class, buyer.outletId(), seller.storeId())).isEqualTo(1);
+            }
+        }
+
+        @Test
+        @DisplayName("withdrawing twice: the retry gets 200 and the claim, with no second audit row")
+        void withdrawRetryIsIdempotent() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "65", 100);
+            long claimId = submitted(line, invoice, "2500.00");
+
+            var first = withdraw(line.buyer().token(), claimId);
+            var retry = withdraw(line.buyer().token(), claimId);
+
+            assertThat(first.status()).isEqualTo(200);
+            assertThat(retry.status()).describedAs(retry.body().toString()).isEqualTo(200);
+            assertThat(retry.data().get("status").asText()).isEqualTo("WITHDRAWN");
+            assertThat(retry.data().get("id").asLong()).isEqualTo(claimId);
+            assertThat(auditRows("CREDIT_CLAIM_WITHDRAWN", claimId)).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("rejecting twice with the same reason: the retry gets 200, one event; another reason or state is still 409")
+        void rejectRetryIsIdempotent() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "65", 100);
+            long claimId = submitted(line, invoice, "2500.00");
+
+            var first = reject(line.seller().token(), claimId, "Not in our statement.");
+            var retry = reject(line.seller().token(), claimId, "  Not in our statement.  ");
+            var other = reject(line.seller().token(), claimId, "A different reason entirely.");
+
+            assertThat(first.status()).isEqualTo(200);
+            assertThat(retry.status()).describedAs(retry.body().toString()).isEqualTo(200);
+            assertThat(retry.data().get("status").asText()).isEqualTo("REJECTED");
+            assertThat(auditRows("CREDIT_CLAIM_REJECTED", claimId)).isEqualTo(1);
+            assertThat(events("CreditClaimRejected", invoice)).isEqualTo(1);
+            assertThat(other.status()).isEqualTo(409);
+            assertThat(other.code()).isEqualTo("CREDIT_CLAIM_STATE");
+            // A claim in a different final state is never answered as the one asked for.
+            long second = submitted(line, invoice, "100.00");
+            assertThat(withdraw(line.buyer().token(), second).status()).isEqualTo(200);
+            assertThat(reject(line.seller().token(), second, "Not in our statement.").code())
+                    .isEqualTo("CREDIT_CLAIM_STATE");
         }
     }
 }

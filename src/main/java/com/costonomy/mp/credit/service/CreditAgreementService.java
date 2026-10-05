@@ -125,7 +125,18 @@ public class CreditAgreementService {
         agreement.setStatus(CreditAgreementStatus.REQUESTED);
         agreement.setSuspensionReason(null);
         agreement.setSuspensionSource(null);
-        agreements.save(agreement);
+        boolean fresh = agreement.getId() == null;
+        try {
+            agreements.saveAndFlush(agreement);
+        } catch (org.springframework.dao.DataIntegrityViolationException raced) {
+            if (!fresh) {
+                throw raced;
+            }
+            // Two first requests for the same (outlet, store) at once: the other one inserted the pair first
+            // (uk_credit_agreement_pair). From this one's side that is a request already waiting (D-129).
+            throw new BusinessException(ErrorCode.CONCURRENT_MODIFICATION,
+                    "A request to this supplier is already waiting for a response.");
+        }
 
         var request = new CreditRequest();
         request.setCreditAgreementId(agreement.getId());

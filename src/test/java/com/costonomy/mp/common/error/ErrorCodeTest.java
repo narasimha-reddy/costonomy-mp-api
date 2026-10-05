@@ -47,6 +47,18 @@ class ErrorCodeTest {
     }
 
     @Test
+    @DisplayName("a failed idempotent attempt and an on-hold wallet have their own codes (D-129)")
+    void idempotencyAndHoldCodes() {
+        assertThat(ErrorCode.IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED.status()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(ErrorCode.IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED).isNotEqualTo(ErrorCode.IDEMPOTENT_REQUEST_IN_PROGRESS);
+        assertThat(ErrorCode.IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED.defaultMessage())
+                .isEqualTo("The previous attempt did not go through. Please try again.");
+        assertThat(ErrorCode.WALLET_ON_HOLD.status()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(ErrorCode.WALLET_ON_HOLD).isNotEqualTo(ErrorCode.FORBIDDEN);
+        assertThat(ErrorCode.WALLET_ON_HOLD.defaultMessage()).isEqualTo("Your wallet is on hold. Please contact support.");
+    }
+
+    @Test
     @DisplayName("every code has a user-safe default message")
     void everyCodeHasAMessage() {
         // The message is shown to a restaurant or supplier user, so it must read
