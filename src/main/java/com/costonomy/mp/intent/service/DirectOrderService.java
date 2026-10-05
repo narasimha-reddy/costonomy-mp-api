@@ -157,11 +157,18 @@ public class DirectOrderService {
         acceptance.setStatus(IntentAcceptanceStatus.SUBMITTED);
         acceptance.setSubmittedAt(now);
         acceptance.setExpiresAt(deadline);
-        acceptance.setDeliveryModes(modesFor(intent.getSupplierStoreId()));
+        if ("PICKUP".equals(intent.getDeliveryPreference())) {
+            // The restaurant will collect it (D-143): no delivery is offered.
+            acceptance.setDeliveryModes("PICKUP");
+            acceptance.setDeliveryOffer("NONE");
+        } else {
+            acceptance.setDeliveryModes(modesFor(intent.getSupplierStoreId()));
+        }
         // A courier's fee is quoted when asked for (Doc 06 §4). The store's own fee is known, so a buyer is shown it
         // rather than "Free" (D-141).
         var ownPolicy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
-        acceptance.setDeliveryFee(ownPolicy.ownDeliveryEnabled() ? ownPolicy.ownDeliveryFee() : null);
+        acceptance.setDeliveryFee("PICKUP".equals(intent.getDeliveryPreference()) || !ownPolicy.ownDeliveryEnabled()
+                ? null : ownPolicy.ownDeliveryFee());
         acceptances.saveAndFlush(acceptance);
 
         BigDecimal value = BigDecimal.ZERO;

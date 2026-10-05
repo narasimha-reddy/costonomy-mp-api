@@ -222,6 +222,22 @@ public class IntentService {
         return mapper.toResponse(intent);
     }
 
+    /**
+     * Whether the restaurant wants this supplier's request delivered or will collect it (D-143). Chosen per supplier,
+     * on the draft, before it is sent; the supplier then answers knowing it (a pickup needs no delivery offer).
+     */
+    @Transactional
+    public IntentDtos.IntentResponse setDeliveryPreference(Long actorId, Long intentId, String preference) {
+        var intent = loadForWrite(actorId, intentId, Permissions.PROCUREMENT_CREATE);
+        if (intent.getStatus() != IntentStatus.DRAFT) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "This request has already been sent. Withdraw it to change how it should reach you.");
+        }
+        intent.setDeliveryPreference(preference);
+        intents.save(intent);
+        return mapper.toResponse(intent);
+    }
+
     @Transactional
     public IntentDtos.IntentResponse removeItem(Long actorId, Long itemId) {
         // Intent first, then the line, as everywhere (D-137). Only the line's intent id is read before the lock, and
@@ -615,7 +631,7 @@ public class IntentService {
                 source.directOrdersEnabled(),
                 source.status(), source.fulfilment(),
                 source.source(), source.clonedFromId(), source.requestedDeliveryTime(),
-                source.preferredDeliveryDate(),
+                source.preferredDeliveryDate(), source.deliveryPreference(),
                 source.notes(), source.sentAt(), source.responseDeadline(),
                 source.responseWindowSeconds(), source.acceptedAt(),
                 source.orderCreationDeadline(), source.orderCreationWindowSeconds(),

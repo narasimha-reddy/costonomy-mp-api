@@ -155,7 +155,8 @@ public class IntentResponder {
         acceptance.setStatus(IntentAcceptanceStatus.SUBMITTED);
         acceptance.setEtaMinutes(request.etaMinutes());
         acceptance.setDeliveryModes(request.deliveryModes());
-        applyDeliveryOffer(acceptance, intent.getSupplierStoreId(), request.deliveryOffer(), request.deliveryFee());
+        applyDeliveryOffer(acceptance, intent.getSupplierStoreId(),
+                "PICKUP".equals(intent.getDeliveryPreference()) ? "NONE" : request.deliveryOffer(), request.deliveryFee());
         acceptance.setNotes(request.notes());
         acceptance.setSubmittedAt(now);
         // The same instant as the order-creation deadline, deliberately: an offer
@@ -447,6 +448,11 @@ public class IntentResponder {
             return;
         }
         switch (offer) {
+            // Pickup was asked for, or the supplier cannot deliver this one: only pickup is on offer (D-143).
+            case "NONE" -> {
+                acceptance.setDeliveryModes("PICKUP");
+                acceptance.setDeliveryFee(null);
+            }
             case "SELF_FREE", "SELF" -> {
                 // Offering to deliver on this request is the supplier's own decision and needs no standing setting. What
                 // they may charge is capped by the store's own fee, which is nothing if none is set.
@@ -472,7 +478,7 @@ public class IntentResponder {
                 acceptance.setDeliveryFee(null);
             }
             default -> throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "Delivery must be SELF_FREE, SELF or COSTONOMY.");
+                    "Delivery must be SELF_FREE, SELF, COSTONOMY or NONE.");
         }
         acceptance.setDeliveryOffer(offer);
     }

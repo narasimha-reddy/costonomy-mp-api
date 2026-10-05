@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - A basket can no longer end up with two drafts for one supplier, and adding, removing and sending now take turns on the draft, so a simultaneous add and send, or removal and add, loses no line. Removed lines and emptied drafts are audited (D-137).
 
 ### Added
+- A restaurant says, for each supplier's request, whether it wants delivery or will collect (default delivery). The supplier answers knowing it; a pickup needs no delivery offer, and a supplier can say "I can't deliver this order", leaving pickup only (D-143).
 - As soon as possible is a delivery time (no slot, no day). A delivery slot is now checked when the order is created (the store's, active, not started, free), and a slot that has already started today is not offered (D-142).
 - A supplier chooses how a request is delivered when they answer it: they deliver free, they deliver at their fee (their store's fee, or less for that order), or Costonomy riders (requested once the order is Ready). The buyer can choose only what was offered, and free delivery is stated as free. The buyer was previously shown the supplier's own fee as "Free" (D-141).
 - A buyer can send a request as immediate or for a day (today to 30 days ahead). The supplier sees it, and the buyer's slot picker starts on it at order review. A preference, not a booking (D-140).

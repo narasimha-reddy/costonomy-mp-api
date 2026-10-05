@@ -548,6 +548,10 @@ public class IntentOrderCreator {
         if (mode == DeliveryMode.PICKUP || acceptance == null || acceptance.getDeliveryOffer() == null) {
             return;
         }
+        if ("NONE".equals(acceptance.getDeliveryOffer())) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "This supplier is not delivering this order. Choose pickup.");
+        }
         boolean self = "SELF_FREE".equals(acceptance.getDeliveryOffer()) || "SELF".equals(acceptance.getDeliveryOffer());
         if ((mode == DeliveryMode.SUPPLIER_DELIVERY) != self) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR, self

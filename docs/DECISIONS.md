@@ -5985,3 +5985,13 @@ Verified before changing: order creation stored `deliverySlotId` and `scheduledD
 5. **Not done.** A supplier who does not take same-day orders cannot hide as-soon-as-possible: there is no such setting. Slots are not checked against the store's opening hours (a product decision). Capacity counts orders, not quantity.
 6. **Tests:** `IntentFlowIT$DeliverySlots` (as soon as possible is accepted with no slot or day; a started slot is unavailable and refused, tomorrow's is booked; another store's slot is refused), and `tests/deliverySlotPicker.test.tsx` in the app. Mutation-checked.
 
+## D-143 — The restaurant says whether it wants delivery or will collect, per supplier's request
+
+The restaurant's intent used to be unstated until order review, after the supplier had answered, so a supplier quoted delivery for requests that were really pickups, and had no way to say "I can't deliver this one".
+
+1. **A preference on each supplier's request.** `intent.delivery_preference` (V75): `DELIVERY` (the default, what every request implicitly was) or `PICKUP`. Per supplier's request, not per basket, because a kitchen may collect from one supplier and have the rest delivered. Set on the draft (`PUT /intents/{id}/delivery-preference`), refused once the request is sent (409).
+2. **The supplier answers knowing it.** For a `PICKUP` request the answer's delivery offer is forced to `NONE` (whatever the client sends): only pickup is on offer, no fee, and the supplier is not asked about delivery. For a `DELIVERY` request the supplier chooses free, own delivery at a fee (up to the store fee), Costonomy riders, or the new `NONE`, "I can't deliver this order".
+3. **At order creation, `NONE` allows pickup only.** Pickup is always allowed, so a buyer is never stranded; they can still go to another supplier. Direct orders follow the same rule.
+4. **Not changed:** Costonomy rider fees are still quoted at order review (they depend on the drop point and weight); riders are still requested when the order is Ready for Pickup.
+5. **Tests** (`IntentFlowIT$DeliveryPreference`): delivery by default and the supplier sees which; locked once sent; unknown choice refused; a pickup request is answered with pickup only and delivery is refused at order creation; a supplier who cannot deliver leaves pickup only. Each rule mutation-checked. Mobile: `tests/cartSend.test.tsx`, `tests/deliveryOffer.test.tsx`.
+

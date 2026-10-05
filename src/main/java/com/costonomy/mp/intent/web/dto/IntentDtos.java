@@ -68,6 +68,14 @@ public final class IntentDtos {
             BigDecimal quantity) {
     }
 
+    /** Whether the restaurant wants this supplier's request delivered or will collect it (D-143). */
+    public record DeliveryPreferenceRequest(
+            @jakarta.validation.constraints.NotNull
+            @jakarta.validation.constraints.Pattern(regexp = "DELIVERY|PICKUP",
+                    message = "Choose DELIVERY or PICKUP.")
+            String preference) {
+    }
+
     /** Send a draft to the supplier. */
     public record SendRequest(
             Instant requestedDeliveryTime,
@@ -117,11 +125,11 @@ public final class IntentDtos {
             @Size(max = 120) String deliveryModes,
             /**
              * How this supplier will deliver this request: SELF_FREE (they deliver, no charge to the buyer), SELF
-             * (they deliver at their own fee) or COSTONOMY (Costonomy riders, requested at Ready for Pickup). Pickup
+             * (they deliver at their own fee), COSTONOMY (Costonomy riders, requested at Ready for Pickup) or NONE (they cannot deliver this one; only pickup). Pickup
              * is always offered. Absent keeps what the store's policy enables (D-141).
              */
-            @jakarta.validation.constraints.Pattern(regexp = "SELF_FREE|SELF|COSTONOMY",
-                    message = "Delivery must be SELF_FREE, SELF or COSTONOMY.")
+            @jakarta.validation.constraints.Pattern(regexp = "SELF_FREE|SELF|COSTONOMY|NONE",
+                    message = "Delivery must be SELF_FREE, SELF, COSTONOMY or NONE.")
             String deliveryOffer,
             /**
              * With {@code SELF}: what this supplier charges the restaurant to deliver this request. Absent means the
@@ -288,6 +296,8 @@ public final class IntentDtos {
             Instant requestedDeliveryTime,
             /** The day the buyer asked for; null is immediate (D-140). */
             java.time.LocalDate preferredDeliveryDate,
+            /** DELIVERY or PICKUP: what the restaurant asked for on this request (D-143). */
+            String deliveryPreference,
             String notes,
             Instant sentAt,
             /**

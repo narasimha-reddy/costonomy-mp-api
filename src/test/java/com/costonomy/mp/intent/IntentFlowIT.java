@@ -778,6 +778,122 @@ class IntentFlowIT extends AbstractIntegrationTest {
     }
 
     @Nested
+    @DisplayName("deliver or collect, asked per supplier's request (D-143)")
+    class DeliveryPreference {
+
+        private JsonNode prefer(String token, long intentId, String preference) throws Exception {
+            return json.readTree(mvc.perform(MockMvcRequestBuilders
+                            .put("/api/v1/intents/" + intentId + "/delivery-preference")
+                            .header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("preference", preference))))
+                    .andReturn().getResponse().getContentAsString());
+        }
+
+        /** A draft for 6 paneer with the given preference, sent, and the supplier's delivery set up. */
+        private OpenRequest sentWith(String preference) throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long skuId = listSku(seller, "paneer", "410");
+            jdbc.update("""
+                    insert into supplier_delivery_policy
+                        (supplier_store_id, own_delivery_enabled, costonomy_delivery_enabled,
+                         own_delivery_fee, created_at, updated_at, version)
+                    values (?, 1, 1, 30, now(6), now(6), 0)
+                    on duplicate key update own_delivery_enabled = 1, costonomy_delivery_enabled = 1
+                    """, seller.storeId());
+            var draft = addItem(buyer, skuId, 6);
+            long intentId = draft.at("/data/id").asLong();
+            long itemId = draft.at("/data/items/0/id").asLong();
+            if (preference != null) {
+                var set = prefer(buyer.token(), intentId, preference);
+                assertThat(set.at("/data/deliveryPreference").asText()).as(set.toString()).isEqualTo(preference);
+            }
+            api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send", Map.of());
+            return new OpenRequest(buyer, seller, intentId, itemId, skuId);
+        }
+
+        private JsonNode answerWith(OpenRequest open, String offer) throws Exception {
+            var body = new java.util.HashMap<String, Object>();
+            body.put("lines", List.of(Map.of("intentItemId", open.itemId(), "offeredQuantity", 6)));
+            if (offer != null) {
+                body.put("deliveryOffer", offer);
+            }
+            return respond(open.seller().token(), open.intentId(), body);
+        }
+
+        @Test
+        @DisplayName("a request is for delivery unless the restaurant says they will collect, and the supplier sees which")
+        void defaultsToDelivery() throws Exception {
+            var delivery = sentWith(null);
+            var collect = sentWith("PICKUP");
+
+            assertThat(api.get(delivery.seller().token(), "/api/v1/intents/" + delivery.intentId())
+                    .at("/data/deliveryPreference").asText()).isEqualTo("DELIVERY");
+            assertThat(api.get(collect.seller().token(), "/api/v1/intents/" + collect.intentId())
+                    .at("/data/deliveryPreference").asText()).isEqualTo("PICKUP");
+        }
+
+        @Test
+        @DisplayName("it cannot be changed once the request has been sent")
+        void lockedOnceSent() throws Exception {
+            var open = sentWith("PICKUP");
+
+            var refused = prefer(open.buyer().token(), open.intentId(), "DELIVERY");
+
+            assertThat(refused.at("/error/code").asText()).as(refused.toString())
+                    .isEqualTo("INVALID_STATE_TRANSITION");
+        }
+
+        @Test
+        @DisplayName("an unknown choice is refused")
+        void unknownChoice() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long intentId = addItem(buyer, listSku(seller, "paneer", "410"), 1).at("/data/id").asLong();
+
+            var refused = prefer(buyer.token(), intentId, "DRONE");
+
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+        }
+
+        @Test
+        @DisplayName("a pickup request is answered with pickup only, whatever delivery the supplier tries to offer")
+        void pickupOffersNoDelivery() throws Exception {
+            var open = sentWith("PICKUP");
+
+            var answered = answerWith(open, "SELF_FREE");
+            assertThat(answered.at("/data/acceptance/deliveryOffer").asText()).as(answered.toString())
+                    .isEqualTo("NONE");
+            assertThat(answered.at("/data/acceptance/deliveryModes").asText()).isEqualTo("PICKUP");
+
+            var refused = createOrder(open.buyer().token(), open.intentId(), Map.of("deliveryMode", "SUPPLIER_DELIVERY"));
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+            assertThat(refused.at("/error/message").asText()).contains("not delivering this order");
+            assertThat(createOrder(open.buyer().token(), open.intentId(), Map.of("deliveryMode", "PICKUP"))
+                    .at("/data/supplierOrderId").asLong()).isPositive();
+        }
+
+        @Test
+        @DisplayName("a supplier who cannot deliver this one can say so, and the buyer can only collect")
+        void cannotDeliver() throws Exception {
+            var open = sentWith("DELIVERY");
+
+            var answered = answerWith(open, "NONE");
+            assertThat(answered.at("/data/acceptance/deliveryOffer").asText()).as(answered.toString())
+                    .isEqualTo("NONE");
+
+            var refused = createOrder(open.buyer().token(), open.intentId(),
+                    Map.of("deliveryMode", "COSTONOMY_DELIVERY"));
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+            // Refused because the supplier is not delivering, not for some other reason (such as a missing quote).
+            assertThat(refused.at("/error/message").asText()).contains("not delivering this order");
+            assertThat(createOrder(open.buyer().token(), open.intentId(), Map.of("deliveryMode", "PICKUP"))
+                    .at("/data/supplierOrderId").asLong()).isPositive();
+        }
+    }
+
+    @Nested
     @DisplayName("delivery slots and as soon as possible (D-142)")
     class DeliverySlots {
 
