@@ -5590,3 +5590,19 @@ decision about commission above (and on UPI end to end).
 
 **Tests.** `CreditRepaymentPayoutIT`, `CreditRepaymentPayoutCommissionOffIT`, plus the existing `CreditWalletRepayIT`,
 `SettlementFlowIT`, `CreditFlowIT`.
+
+## D-127 — Credit: the server says how much can still be reported
+
+An "I paid" claim changes nothing until the supplier confirms (D-125), so an invoice's `outstanding` stays the same while
+claims wait. The app needs to know what can still be reported, to prefill the form, warn about duplicates and hide "I paid"
+when everything owed is already reported, and it must not do money arithmetic. So the server computes it.
+
+- `reportableAmount` = `max(0, outstanding - sum of the invoice's SUBMITTED claims)`; 0 for a settled invoice
+  (PAID/WRITTEN_OFF). Added, never replacing a field, to the invoice list, the invoice detail, every `AgreementResponse`
+  and the summary's `agreements[]`.
+- On an agreement it is the sum of its open invoices' figures, computed per invoice and then summed (so an over-claimed
+  invoice floors at 0 and does not eat into another). The summary also carries the total over its agreements.
+- One rule: `CreditInvoice.reportable(openClaims)`. The claim endpoint uses the same method, so the number a refused claim
+  reports as `details.outstanding` (`CREDIT_OVERPAYMENT`) is exactly the `reportableAmount` the reads showed.
+- Lists use one grouped query per agreement for the claim totals, not one per invoice.
+- No schema change.

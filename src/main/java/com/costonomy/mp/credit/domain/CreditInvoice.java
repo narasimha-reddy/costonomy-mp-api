@@ -75,4 +75,16 @@ public class CreditInvoice extends BaseEntity {
     public BigDecimal outstanding() {
         return amount.subtract(paidAmount);
     }
+
+    /**
+     * How much more of this invoice can be reported as paid: what is outstanding less what is already claimed and
+     * waiting for the supplier, never below zero, and zero once settled (D-127). The claim endpoint and every read
+     * use this one rule.
+     */
+    public BigDecimal reportable(BigDecimal openClaims) {
+        if (status.isSettled()) {
+            return BigDecimal.ZERO;
+        }
+        return outstanding().subtract(openClaims == null ? BigDecimal.ZERO : openClaims).max(BigDecimal.ZERO);
+    }
 }

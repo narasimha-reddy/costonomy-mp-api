@@ -46,6 +46,7 @@ public class CreditInvoiceService {
 
     private final CreditInvoiceRepository invoices;
     private final CreditPaymentRepository payments;
+    private final com.costonomy.mp.credit.repository.CreditPaymentClaimRepository claims;
     private final CreditAgreementRepository agreements;
     private final InvoiceNumberGenerator invoiceNumbers;
     private final CreditDirectory directory;
@@ -315,7 +316,9 @@ public class CreditInvoiceService {
         BigDecimal overdue = BigDecimal.ZERO;
         LocalDate nextDueDate = null;
         BigDecimal nextDueAmount = null;
+        BigDecimal reportable = BigDecimal.ZERO;
         int open = 0;
+        var openClaims = openClaimsByInvoice(agreementId);
 
         // Ascending due date, so the first open invoice is the earliest and the ones sharing its date follow it.
         for (CreditInvoice invoice : invoices.findByCreditAgreementIdOrderByDueDateAsc(agreementId)) {
@@ -331,6 +334,7 @@ public class CreditInvoiceService {
                 nextDueAmount = nextDueAmount.add(invoice.outstanding());
             }
             due = due.add(invoice.outstanding());
+            reportable = reportable.add(invoice.reportable(openClaims.get(invoice.getId())));
             if (invoice.getStatus() == CreditInvoiceStatus.OVERDUE) {
                 overdue = overdue.add(invoice.outstanding());
             }
@@ -339,22 +343,39 @@ public class CreditInvoiceService {
         // separately because they answer different questions — "what do I owe" and
         // "what am I late on" — and a restaurant reading them as disjoint would
         // think they owed the sum of the two.
-        return new Dues(due, overdue, nextDueDate, nextDueAmount, open);
+        return new Dues(due, overdue, nextDueDate, nextDueAmount, open, reportable);
     }
 
     /**
      * @param nextDueDate   the earliest due date among open invoices, null when nothing is owed
      * @param nextDueAmount what is outstanding on that date, null when nothing is owed
+     * @param reportable    the sum of the open invoices' reportable amounts (D-127)
      */
     public record Dues(BigDecimal due, BigDecimal overdue, LocalDate nextDueDate, BigDecimal nextDueAmount,
-                       int openInvoices) {
+                       int openInvoices, BigDecimal reportable) {
         public Dues(BigDecimal due, BigDecimal overdue) {
-            this(due, overdue, null, null, 0);
+            this(due, overdue, null, null, 0, BigDecimal.ZERO);
         }
+    }
+
+    /** Open (SUBMITTED) claim totals per invoice of one agreement, in a single query. */
+    public java.util.Map<Long, BigDecimal> openClaimsByInvoice(Long agreementId) {
+        var sums = new java.util.HashMap<Long, BigDecimal>();
+        for (Object[] row : claims.sumsByInvoiceForAgreement(agreementId,
+                com.costonomy.mp.credit.domain.CreditClaimStatus.SUBMITTED)) {
+            sums.put((Long) row[0], (BigDecimal) row[1]);
+        }
+        return sums;
     }
 
     /** An invoice as the app reads it, with the due state worked out against today's India date. */
     public CreditDtos.InvoiceResponse toInvoiceResponse(CreditInvoice invoice) {
+        return toInvoiceResponse(invoice, claims.sumByInvoiceAndStatus(invoice.getId(),
+                com.costonomy.mp.credit.domain.CreditClaimStatus.SUBMITTED));
+    }
+
+    /** As above, given the invoice's open claims total, so a list can batch them instead of asking per row. */
+    public CreditDtos.InvoiceResponse toInvoiceResponse(CreditInvoice invoice, BigDecimal openClaims) {
         LocalDate today = LocalDate.now(clock);
         return new CreditDtos.InvoiceResponse(
                 invoice.getId(), invoice.getInvoiceNumber(),
@@ -363,7 +384,8 @@ public class CreditInvoiceService {
                 invoice.outstanding(), invoice.getDueDate(), invoice.getOverdueAfter(),
                 invoice.getIssuedAt(), invoice.getSettledAt(),
                 CreditDueState.of(invoice.getStatus(), invoice.getDueDate(), invoice.getOverdueAfter(), today),
-                CreditDueState.daysToDue(invoice.getStatus(), invoice.getDueDate(), today));
+                CreditDueState.daysToDue(invoice.getStatus(), invoice.getDueDate(), today),
+                invoice.reportable(openClaims));
     }
 
     /** Today in India, the day every due state is measured against. */

@@ -494,6 +494,8 @@ public class CreditAgreementService {
                 total.approvedLimit(), total.reserved(), total.utilized(), total.available(),
                 total.due(), total.overdue(), responses, walletRepayEnabled,
                 responses.stream().map(CreditDtos.AgreementResponse::openClaimsAmount)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add),
+                responses.stream().map(CreditDtos.AgreementResponse::reportableAmount)
                         .reduce(BigDecimal.ZERO, BigDecimal::add));
     }
 
@@ -512,8 +514,9 @@ public class CreditAgreementService {
     @Transactional(readOnly = true)
     public List<CreditDtos.InvoiceResponse> invoicesFor(Long actorId, Long agreementId) {
         loadForEitherSide(actorId, agreementId);
+        var openClaims = invoiceService.openClaimsByInvoice(agreementId);
         return invoices.findByCreditAgreementIdOrderByDueDateAsc(agreementId).stream()
-                .map(invoiceService::toInvoiceResponse)
+                .map(invoice -> invoiceService.toInvoiceResponse(invoice, openClaims.get(invoice.getId())))
                 .toList();
     }
 
@@ -660,6 +663,8 @@ public class CreditAgreementService {
                 dues.nextDueDate(), dues.nextDueAmount(), dues.openInvoices(),
                 // What the restaurant says it paid and the supplier has not answered. It changes no figure above.
                 agreement.getId() == null ? BigDecimal.ZERO
-                        : claims.sumByAgreementAndStatus(agreement.getId(), CreditClaimStatus.SUBMITTED));
+                        : claims.sumByAgreementAndStatus(agreement.getId(), CreditClaimStatus.SUBMITTED),
+                // What can still be reported, worked out per invoice by the same rule the claim endpoint enforces.
+                dues.reportable());
     }
 }

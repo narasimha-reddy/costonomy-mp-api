@@ -36,6 +36,15 @@ public interface CreditPaymentClaimRepository extends JpaRepository<CreditPaymen
     BigDecimal sumByAgreementAndStatus(@Param("agreementId") Long agreementId,
                                        @Param("status") CreditClaimStatus status);
 
+    /** Open claim totals for every invoice of an agreement in one query: rows of (invoice id, sum). */
+    @Query("""
+            select c.creditInvoiceId, sum(c.amount) from CreditPaymentClaim c
+             where c.creditAgreementId = :agreementId and c.status = :status
+             group by c.creditInvoiceId
+            """)
+    List<Object[]> sumsByInvoiceForAgreement(@Param("agreementId") Long agreementId,
+                                             @Param("status") CreditClaimStatus status);
+
     List<CreditPaymentClaim> findByCreditInvoiceIdOrderByIdDesc(Long creditInvoiceId);
 
     List<CreditPaymentClaim> findByCreditAgreementIdOrderByIdDesc(Long creditAgreementId);

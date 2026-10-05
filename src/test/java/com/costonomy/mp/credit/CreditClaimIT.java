@@ -1009,6 +1009,188 @@ class CreditClaimIT extends AbstractIntegrationTest {
         }
     }
 
+    // ── how much can still be reported (D-127) ───────────────────────────
+
+    @Nested
+    @DisplayName("reportableAmount: the server says how much can still be reported")
+    class ReportableAmount {
+
+        private BigDecimal detail(Line line, long invoice) throws Exception {
+            var node = s.api.get(line.buyer().token(), "/api/v1/credit/invoices/" + invoice);
+            assertThat(node.at("/data/reportableAmount").isMissingNode()).isFalse();
+            return node.at("/data/reportableAmount").decimalValue();
+        }
+
+        private BigDecimal listed(Line line, long invoice) throws Exception {
+            var list = s.api.get(line.buyer().token(), "/api/v1/credit/agreements/" + line.agreementId() + "/invoices");
+            for (var row : list.at("/data")) {
+                if (row.get("id").asLong() == invoice) {
+                    assertThat(row.get("reportableAmount").isMissingNode()).isFalse();
+                    return row.get("reportableAmount").decimalValue();
+                }
+            }
+            throw new AssertionError("invoice " + invoice + " not listed");
+        }
+
+        private void assertInvoice(Line line, long invoice, String expected) throws Exception {
+            assertThat(detail(line, invoice)).isEqualByComparingTo(expected);
+            assertThat(listed(line, invoice)).isEqualByComparingTo(expected);
+        }
+
+        private BigDecimal agreementTotal(Line line) throws Exception {
+            var agreement = s.api.get(line.buyer().token(), "/api/v1/credit/agreements/" + line.agreementId());
+            return agreement.at("/data/reportableAmount").decimalValue();
+        }
+
+        @Test
+        @DisplayName("noClaims: reportable equals outstanding")
+        void noClaims() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "65", 100);
+            assertInvoice(line, invoice, "6500.00");
+            assertThat(agreementTotal(line)).isEqualByComparingTo("6500.00");
+        }
+
+        @Test
+        @DisplayName("sixtyPercentClaim: 60 percent submitted leaves 40 percent reportable, outstanding unchanged")
+        void sixtyPercentClaim() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "65", 100);
+            submitted(line, invoice, "3900.00");
+            assertInvoice(line, invoice, "2600.00");
+            assertThat(s.api.get(line.buyer().token(), "/api/v1/credit/invoices/" + invoice)
+                    .at("/data/outstanding").decimalValue()).isEqualByComparingTo("6500.00");
+        }
+
+        @Test
+        @DisplayName("withdrawAndReject: both give the amount back")
+        void withdrawAndReject() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "65", 100);
+            long a = submitted(line, invoice, "3900.00");
+            assertInvoice(line, invoice, "2600.00");
+            assertThat(withdraw(line.buyer().token(), a).status()).isEqualTo(200);
+            assertInvoice(line, invoice, "6500.00");
+            long b = submitted(line, invoice, "1000.00");
+            assertInvoice(line, invoice, "5500.00");
+            assertThat(reject(line.seller().token(), b, "Not received").status()).isEqualTo(200);
+            assertInvoice(line, invoice, "6500.00");
+        }
+
+        @Test
+        @DisplayName("confirmPart: outstanding drops, reportable is the new outstanding minus the claims still open")
+        void confirmPart() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "65", 100);
+            long a = submitted(line, invoice, "2000.00");
+            submitted(line, invoice, "1000.00");
+            assertInvoice(line, invoice, "3500.00");
+
+            assertThat(confirm(line, a, "1500.00").status()).isEqualTo(200);
+
+            // outstanding 5000, the 1000 claim is still open
+            assertThat(s.api.get(line.buyer().token(), "/api/v1/credit/invoices/" + invoice)
+                    .at("/data/outstanding").decimalValue()).isEqualByComparingTo("5000.00");
+            assertInvoice(line, invoice, "4000.00");
+        }
+
+        @Test
+        @DisplayName("settledInvoice: reportable is 0")
+        void settledInvoice() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "65", 100);
+            long a = submitted(line, invoice, "6500.00");
+            assertInvoice(line, invoice, "0.00");
+            assertThat(confirm(line, a, null).status()).isEqualTo(200);
+            assertThat(invoiceStatus(invoice)).isEqualTo("PAID");
+            assertInvoice(line, invoice, "0");
+            assertThat(agreementTotal(line)).isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("twoClaimsAndOtherInvoice: claims add up and never leak onto another invoice")
+        void twoClaimsAndOtherInvoice() throws Exception {
+            var line = s.creditLine("200000");
+            long first = s.invoice(line, "65", 100);
+            long second = s.invoice(line, "20", 100);
+            submitted(line, first, "1000.00");
+            submitted(line, first, "500.00");
+            assertInvoice(line, first, "5000.00");
+            assertInvoice(line, second, "2000.00");
+            submitted(line, second, "250.00");
+            assertInvoice(line, first, "5000.00");
+            assertInvoice(line, second, "1750.00");
+        }
+
+        @Test
+        @DisplayName("agreementAndSummaryTotals: sums per invoice at agreement, summary entry and summary level")
+        void agreementAndSummaryTotals() throws Exception {
+            var line = s.creditLine("200000");
+            long first = s.invoice(line, "65", 100);
+            long second = s.invoice(line, "20", 100);
+            submitted(line, first, "1000.00");
+            submitted(line, second, "250.00");
+            // 8500 owed, 1250 reported
+            assertThat(agreementTotal(line)).isEqualByComparingTo("7250.00");
+            var summary = s.api.get(line.buyer().token(), "/api/v1/outlets/" + line.buyer().outletId()
+                    + "/credit/summary");
+            assertThat(summary.at("/data/agreements/0/reportableAmount").decimalValue())
+                    .isEqualByComparingTo("7250.00");
+            assertThat(summary.at("/data/reportableAmount").decimalValue()).isEqualByComparingTo("7250.00");
+            var forStore = s.api.get(line.seller().token(), "/api/v1/supplier-stores/" + line.seller().storeId()
+                    + "/credit/agreements");
+            assertThat(forStore.at("/data/0/reportableAmount").decimalValue()).isEqualByComparingTo("7250.00");
+            var supplierSide = s.api.get(line.seller().token(), "/api/v1/credit/invoices/" + first);
+            assertThat(supplierSide.at("/data/reportableAmount").decimalValue()).isEqualByComparingTo("5500.00");
+        }
+
+        @Test
+        @DisplayName("exactlyReportable: claiming reportableAmount works, one paisa more is refused with the same number")
+        void exactlyReportable() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "65", 100);
+            submitted(line, invoice, "3900.00");
+            BigDecimal reportable = detail(line, invoice);
+            assertThat(reportable).isEqualByComparingTo("2600.00");
+
+            var over = claim(line, invoice, reportable.add(new BigDecimal("0.01")).toPlainString());
+            assertThat(over.status()).isEqualTo(422);
+            assertThat(over.code()).isEqualTo("CREDIT_OVERPAYMENT");
+            assertThat(over.body().at("/error/details/outstanding").decimalValue()).isEqualByComparingTo(reportable);
+
+            assertThat(claim(line, invoice, reportable.toPlainString()).status()).isEqualTo(201);
+            assertInvoice(line, invoice, "0.00");
+            assertThat(claim(line, invoice, "0.01").body().at("/error/details/outstanding").decimalValue())
+                    .isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("overClaimed: claims above a reduced outstanding floor at 0, never negative")
+        void overClaimed() throws Exception {
+            var line = s.creditLine("200000");
+            long first = s.invoice(line, "65", 100);
+            long second = s.invoice(line, "20", 100);
+            submitted(line, first, "4000.00");
+            // A payment the supplier recorded straight after: outstanding 1500 while 4000 is still claimed.
+            jdbc.update("update credit_invoice set paid_amount = 5000.00 where id = ?", first);
+            assertInvoice(line, first, "0");
+            // The over-claimed invoice does not eat into the other one.
+            assertInvoice(line, second, "2000.00");
+            assertThat(agreementTotal(line)).isEqualByComparingTo("2000.00");
+        }
+
+        @Test
+        @DisplayName("otherTenant: another restaurant still cannot read the invoice or its figure")
+        void otherTenant() throws Exception {
+            var line = s.creditLine("200000");
+            long invoice = s.invoice(line, "65", 100);
+            submitted(line, invoice, "1000.00");
+            Buyer other = s.newBuyer();
+            assertThat(call("GET", other.token(), "/api/v1/credit/invoices/" + invoice, null, null).status())
+                    .isEqualTo(404);
+        }
+    }
+
     // ── concurrency and locks ────────────────────────────────────────────
 
     @Nested

@@ -114,10 +114,7 @@ public class CreditClaimService {
         var invoice = invoices.lockById(invoiceId)
                 .orElseThrow(() -> new NotFoundException("CreditInvoice", invoiceId));
 
-        BigDecimal claimable = invoice.getStatus().isSettled() ? BigDecimal.ZERO
-                : invoice.outstanding()
-                .subtract(claims.sumByInvoiceAndStatus(invoiceId, CreditClaimStatus.SUBMITTED))
-                .max(BigDecimal.ZERO);
+        BigDecimal claimable = invoice.reportable(claims.sumByInvoiceAndStatus(invoiceId, CreditClaimStatus.SUBMITTED));
         if (amount.compareTo(claimable) > 0) {
             throw new BusinessException(ErrorCode.CREDIT_OVERPAYMENT,
                     claimable.signum() == 0

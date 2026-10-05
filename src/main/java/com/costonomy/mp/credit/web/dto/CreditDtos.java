@@ -128,7 +128,9 @@ public final class CreditDtos {
             /** How many invoices are still open. */
             int openInvoices,
             /** What the restaurant says it has paid and the supplier has not answered yet (D-125); 0 when none. */
-            BigDecimal openClaimsAmount) {
+            BigDecimal openClaimsAmount,
+            /** What can still be reported as paid across the open invoices (D-127); never below 0. */
+            BigDecimal reportableAmount) {
     }
 
     public record RequestResponse(
@@ -159,7 +161,9 @@ public final class CreditDtos {
             /** Whether repaying from the wallet is switched on; the app hides 'Pay from wallet' when false. */
             boolean walletRepayEnabled,
             /** The sum of the agreements' open "I paid" claims (D-125); 0 when none. */
-            BigDecimal openClaimsAmount) {
+            BigDecimal openClaimsAmount,
+            /** The sum of the agreements' reportable amounts (D-127). */
+            BigDecimal reportableAmount) {
     }
 
     public record LedgerEntryResponse(
@@ -203,7 +207,9 @@ public final class CreditDtos {
             /** What to show about the due date; computed here in India time, never by the app. */
             CreditDueState dueState,
             /** Days until the due date (negative once past it); null for a settled invoice. */
-            Integer daysToDue) {
+            Integer daysToDue,
+            /** Outstanding less the "I paid" claims awaiting the supplier, never below 0; 0 once settled (D-127). */
+            BigDecimal reportableAmount) {
     }
 
     /** One payment against an invoice. */
@@ -239,7 +245,9 @@ public final class CreditDtos {
             String storeName,
             List<InvoicePaymentResponse> payments,
             /** Every "I paid" claim on this invoice, newest first (D-125). */
-            List<ClaimResponse> claims) {
+            List<ClaimResponse> claims,
+            /** Outstanding less the "I paid" claims awaiting the supplier, never below 0; 0 once settled (D-127). */
+            BigDecimal reportableAmount) {
     }
 
     /** What the Home Credit tile needs: whether to show the attention dot. No amounts. */

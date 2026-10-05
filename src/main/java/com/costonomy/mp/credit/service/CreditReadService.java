@@ -101,7 +101,8 @@ public class CreditReadService {
                 store == null ? null : store.supplierName(),
                 store == null ? null : store.storeName(),
                 paymentResponses,
-                claimService.forInvoice(invoice));
+                claimService.forInvoice(invoice),
+                base.reportableAmount());
     }
 
     /** Either party may read it; nobody else may learn it exists (404, like the agreement endpoints). */
