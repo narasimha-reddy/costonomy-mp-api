@@ -149,4 +149,28 @@ public class SettlementDirectory {
                 java.sql.Timestamp.from(from), java.sql.Timestamp.from(to));
         return stores;
     }
+
+    /** What left restaurants' wallets as credit repayments in the window (D-122), by the debit's own time. */
+    public BigDecimal walletCreditRepaymentDebits(Instant from, Instant to) {
+        return jdbc.queryForObject("""
+                select coalesce(sum(amount), 0) from wallet_transaction
+                 where kind = 'CREDIT_REPAYMENT' and direction = 'DEBIT'
+                   and created_at >= ? and created_at < ?
+                """, BigDecimal.class, java.sql.Timestamp.from(from), java.sql.Timestamp.from(to));
+    }
+
+    /**
+     * What Mandi owes suppliers for those repayments (D-126): the payouts behind wallet debits in the window.
+     * Windowed by the wallet debit's time, not the payout's, so the two sums cannot differ by a clock edge.
+     */
+    public BigDecimal creditRepaymentPayoutsForDebits(Instant from, Instant to) {
+        return jdbc.queryForObject("""
+                select coalesce(sum(p.amount), 0)
+                  from credit_repayment_payout p
+                  join credit_repayment r on r.id = p.credit_repayment_id
+                  join wallet_transaction t on t.id = r.wallet_transaction_id
+                 where t.kind = 'CREDIT_REPAYMENT' and t.direction = 'DEBIT'
+                   and t.created_at >= ? and t.created_at < ?
+                """, BigDecimal.class, java.sql.Timestamp.from(from), java.sql.Timestamp.from(to));
+    }
 }

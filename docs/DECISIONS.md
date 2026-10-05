@@ -5535,3 +5535,43 @@ date or money arithmetic: it shows states and numbers, in India time (`creditClo
   "Adjustment".
 
 **Tests.** `CreditDueStateTest`, `CreditRestaurantReadsIT`, `CreditWalletRepayDisabledIT`.
+
+## D-126 — Wallet repayments are paid out to the supplier through the settlement, less commission
+
+**Why Mandi owes this money.** Credit stays the supplier's (D-117: settlement pays PREPAID only). A repayment from the
+restaurant's wallet (D-123) is the one case where Mandi holds the money: it leaves the wallet (D-122), so Mandi owes it to
+the supplier. Until now nothing paid it out, which is why the endpoint's flag `costonomy.mp.credit.wallet-repay.enabled`
+is off.
+
+**The flow: pending, then applied.**
+- In the repayment's own transaction, right after the wallet debit (step e2, so the payout exists if and only if the debit
+  does), one `credit_repayment_payout` row is inserted PENDING for the full amount (V56, unique per repayment).
+- `SettlementService.generate` considers stores with settleable orders *or* with PENDING payouts made before the period's
+  end. For each store's mutable settlement it adds, per payout, a CREDIT adjustment `CREDIT_REPAYMENT` (the amount) and,
+  when the commission is above zero, a DEBIT adjustment `CREDIT_COMMISSION`, then marks the payout APPLIED with the
+  settlement and adjustment ids. Net stays the one rule: gross - commission +/- adjustments. A store whose only activity is
+  repayments gets a settlement (net = amount - commission).
+- Modelled on `SupplierRefundLedger.applyPending`: rows are locked `FOR UPDATE`, applied once even if generation runs twice
+  or concurrently, and never added to an approved or later settlement; such a payout stays PENDING for the next one.
+- `credit_commission` and `credit_repayment` need no schema change: `reason_code` is free text (V18).
+
+**Commission snapshot.** At repayment time the store's rate is resolved by `CommissionService.resolve` (the resolver orders
+use: store, then organisation, then platform) and stored on the payout with the configuration id; commission =
+amount x rate / 100, HALF_UP to 2 decimals, never above the amount. Later changes to commission configuration never change
+an existing row. No resolvable rate: commission 0 and one warning per store. `costonomy.mp.credit.repayment-commission.enabled`
+(default TRUE) switches it off: rate null, commission 0.
+
+**Business decision for the user to confirm.** Commission on wallet repayments is ON by default, per the approved plan. It
+is charged only here, where Mandi moves the money; offline repayments the supplier records itself are not charged by this
+change. If the user decides there should be no commission, set the property to false; nothing else changes.
+
+**Reconciliation.** `SettlementReconciliationService` also compares, for the settlement's period, the wallet
+`CREDIT_REPAYMENT` debits with the payouts behind them. A difference is recorded in the settlement's note and as an audit row
+`SETTLEMENT_REPAYMENT_RECONCILIATION_MISMATCH`, and reported as `creditRepaymentsMatched` on the response; never refused
+(D-055). `matched` keeps meaning the gross.
+
+**The endpoint flag stays off.** This change builds the payout but does not turn the endpoint on: that waits on the user's
+decision about commission above (and on UPI end to end).
+
+**Tests.** `CreditRepaymentPayoutIT`, `CreditRepaymentPayoutCommissionOffIT`, plus the existing `CreditWalletRepayIT`,
+`SettlementFlowIT`, `CreditFlowIT`.
