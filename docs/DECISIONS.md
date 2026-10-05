@@ -5349,3 +5349,26 @@ left out of payouts until someone decides, deliberately, how it is paid. No sche
 
 **Tests.** `SettlementFlowIT.CreditOrders`: a credit and a prepaid order in one store settle as one order with only the
 prepaid gross and no commission row for the credit one; a store with only credit orders gets no settlement.
+
+## D-118 — Credit invoices: overdue stays overdue after a part payment, India-time dates, one invoice never blocks the sweep
+
+**Problem.** Three defects in the credit module. (1) Any non-final repayment set the invoice to `PARTIALLY_PAID`, even an
+`OVERDUE` one; the next sweep then marked it overdue again and published `CreditOverdue` a second time, so every part payment on
+a late invoice sent another SMS and flipped the status back and forth. (2) Issue date and the sweep's "today" used UTC, while
+the rest of the app uses India time: an invoice issued between 00:00 and 05:30 IST was dated the day before, and invoices went
+overdue 5.5 hours late. (3) `CreditJobs.sweepOverdue` was one transaction, so a single optimistic-lock conflict with a
+concurrent repayment rolled back every invoice in the batch.
+
+**Rule.** After a repayment the status is `PAID` if nothing is outstanding, else it stays `OVERDUE` if it was, else
+`PARTIALLY_PAID`. The credit module has its own `creditClock` bean (`Asia/Kolkata`, qualified by name; no unqualified `Clock`
+bean is added) used for the issue date and for the overdue check's "today". Each invoice is marked overdue by
+`CreditOverdueMarker` in its own `REQUIRES_NEW` transaction, re-checking the fresh row; a failure logs a warning with the
+invoice id and skips only that invoice, and the next hourly sweep retries it. `sweepOverdue` is no longer transactional, and
+auto-suspend still runs after marking.
+
+**Existing data.** Invoices keep their stored dates; nothing is rewritten. No schema change; no migration.
+
+**Tests.** `CreditFlowIT.InvoicesAndRepayment`: `partialPaymentOnOverdueStaysOverdue`, `sweepNotifiesOnce`,
+`partlyPaidThenLateGoesOverdueOnce`, `issuedJustAfterMidnightIstDatesToday`, `markOverdueUsesIstToday`,
+`oneBadInvoiceDoesNotBlockTheSweep`. Mutations: the unconditional `PARTIALLY_PAID` fails the first two; UTC for the issue date
+fails the midnight test; `REQUIRED` with a transactional sweep fails the bad-invoice test.

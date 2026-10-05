@@ -7,7 +7,6 @@ import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 
@@ -36,7 +35,6 @@ public class CreditJobs {
      */
     @Scheduled(fixedDelayString = "${costonomy.mp.credit.overdue-interval:PT1H}")
     @SchedulerLock(name = "credit-overdue", lockAtMostFor = "PT30M", lockAtLeastFor = "PT0S")
-    @Transactional
     public void sweepOverdue() {
         int marked = invoices.markOverdue();
         if (marked > 0) {

@@ -13,13 +13,15 @@ import com.costonomy.mp.credit.repository.*;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 
@@ -51,6 +53,11 @@ public class CreditInvoiceService {
     private final OutboxService outbox;
 
     private final CreditLedger ledger;
+    private final CreditOverdueMarker overdueMarker;
+    // Field-injected: Lombok's constructor would drop the @Qualifier, and there must be no unqualified Clock here.
+    @Autowired
+    @Qualifier("creditClock")
+    private Clock clock;
 
     /** Raise the invoice for a drawn-down order. */
     @Transactional
@@ -65,8 +72,9 @@ public class CreditInvoiceService {
         var agreement = agreements.findById(reservation.getCreditAgreementId()).orElseThrow();
         var order = directory.order(reservation.getSupplierOrderId());
 
-        Instant now = Instant.now();
-        LocalDate issuedOn = LocalDate.ofInstant(now, ZoneOffset.UTC);
+        Instant now = clock.instant();
+        // India date, like the rest of the app: an invoice issued at 00:30 IST is dated that day.
+        LocalDate issuedOn = LocalDate.ofInstant(now, clock.getZone());
         LocalDate due = issuedOn.plusDays(agreement.getCreditPeriodDays());
 
         var invoice = new CreditInvoice();
@@ -155,7 +163,12 @@ public class CreditInvoiceService {
 
         invoice.setPaidAmount(invoice.getPaidAmount().add(request.amount()));
         boolean settled = invoice.outstanding().signum() == 0;
-        invoice.setStatus(settled ? CreditInvoiceStatus.PAID : CreditInvoiceStatus.PARTIALLY_PAID);
+        if (settled) {
+            invoice.setStatus(CreditInvoiceStatus.PAID);
+        } else if (invoice.getStatus() != CreditInvoiceStatus.OVERDUE) {
+            // A part payment does not cure lateness: an overdue invoice stays overdue until it is paid.
+            invoice.setStatus(CreditInvoiceStatus.PARTIALLY_PAID);
+        }
         if (settled) {
             invoice.setSettledAt(Instant.now());
         }
@@ -187,28 +200,23 @@ public class CreditInvoiceService {
      * decision about that fact. {@code CreditJobs} applies the second only where
      * the supplier asked for it.
      */
-    @Transactional
     public int markOverdue() {
-        LocalDate today = LocalDate.now(ZoneOffset.UTC);
-        var newlyOverdue = invoices.findNewlyOverdue(
+        LocalDate today = LocalDate.now(clock);
+        var candidates = invoices.findNewlyOverdue(
                 List.of(CreditInvoiceStatus.ISSUED, CreditInvoiceStatus.PARTIALLY_PAID), today);
 
-        for (CreditInvoice invoice : newlyOverdue) {
-            invoice.setStatus(CreditInvoiceStatus.OVERDUE);
-            invoice.setMarkedOverdueAt(Instant.now());
-            invoices.save(invoice);
-
-            outbox.publish("CreditOverdue", "CREDIT_INVOICE", invoice.getId(),
-                    Map.of("creditAgreementId", invoice.getCreditAgreementId(),
-                            "outletId", invoice.getOutletId(),
-                            "outstanding", invoice.outstanding().toPlainString(),
-                            "dueDate", invoice.getDueDate().toString()),
-                    null);
-
-            log.info("Invoice {} is overdue — {} outstanding since {}",
-                    invoice.getInvoiceNumber(), invoice.outstanding(), invoice.getDueDate());
+        int marked = 0;
+        for (CreditInvoice candidate : candidates) {
+            try {
+                if (overdueMarker.markOverdue(candidate.getId(), today)) {
+                    marked++;
+                }
+            } catch (RuntimeException ex) {
+                // One invoice must not stop the rest; the next sweep tries it again.
+                log.warn("Could not mark credit invoice {} overdue; skipped this sweep", candidate.getId(), ex);
+            }
         }
-        return newlyOverdue.size();
+        return marked;
     }
 
     /** What is owed, and what is late, for one agreement. */

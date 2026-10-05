@@ -13,12 +13,21 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.mock.mockito.SpyBean;
+import com.costonomy.mp.common.outbox.OutboxService;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +38,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.when;
 
 /**
  * Supplier credit end to end. Doc 01 §18–19, doc 03 §8–9, doc 04 §13, doc 10.
@@ -48,11 +62,31 @@ class CreditFlowIT extends AbstractIntegrationTest {
     @Autowired private CreditJobs creditJobs;
     @Autowired private CreditInvoiceService invoiceService;
 
+    /** The credit module's India-time clock, replaced so a test can put "now" on a day boundary. */
+    @MockBean(name = "creditClock") private Clock creditClock;
+
+    @SpyBean private OutboxService outboxSpy;
+
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
+
     private ApiClient api;
 
     @BeforeEach
     void setUp() {
         api = new ApiClient(mvc, json);
+        useRealTime();
+    }
+
+    private void useRealTime() {
+        Clock real = Clock.system(IST);
+        when(creditClock.getZone()).thenReturn(IST);
+        when(creditClock.instant()).thenAnswer(inv -> real.instant());
+    }
+
+    private void freezeAt(String istDateTime) {
+        Instant at = ZonedDateTime.parse(istDateTime + "+05:30[Asia/Kolkata]").toInstant();
+        when(creditClock.getZone()).thenReturn(IST);
+        when(creditClock.instant()).thenReturn(at);
     }
 
     private record Buyer(String token, long outletId) {
@@ -853,6 +887,145 @@ class CreditFlowIT extends AbstractIntegrationTest {
             // The supplier asked to be protected past ₹10,000 overdue.
             assertThat(agreement.get("status").asText()).isEqualTo("SUSPENDED");
             assertThat(agreement.get("suspensionReason").asText()).contains("Overdue");
+        }
+
+        /** An invoice for a fresh credit line, aged so it is past due and grace. */
+        private long overdueInvoice(CreditLine line) throws Exception {
+            orderOnCredit(line, "400", 100);
+            long invoiceId = firstInvoiceId(line);
+            jdbc.update("update credit_invoice set due_date = date_sub(curdate(), interval 10 day), "
+                    + "overdue_after = date_sub(curdate(), interval 5 day) where id = ?", invoiceId);
+            return invoiceId;
+        }
+
+        private JsonNode invoiceOf(CreditLine line) throws Exception {
+            return api.get(line.buyer().token(), "/api/v1/credit/agreements/" + line.agreementId()
+                    + "/invoices").at("/data").get(0);
+        }
+
+        private int overdueEvents(long invoiceId) {
+            return jdbc.queryForObject("select count(*) from outbox_event where event_type = 'CreditOverdue' "
+                    + "and aggregate_type = 'CREDIT_INVOICE' and aggregate_id = ?", Integer.class, invoiceId);
+        }
+
+        @Test
+        @DisplayName("a part payment on an overdue invoice leaves it overdue; the rest pays it")
+        void partialPaymentOnOverdueStaysOverdue() throws Exception {
+            var line = creditLine("200000");
+            long invoiceId = overdueInvoice(line);
+            creditJobs.sweepOverdue();
+            assertThat(invoiceOf(line).get("status").asText()).isEqualTo("OVERDUE");
+
+            recordPayment(line.seller(), invoiceId, "15000", UUID.randomUUID().toString());
+
+            var partly = invoiceOf(line);
+            assertThat(partly.get("status").asText()).isEqualTo("OVERDUE");
+            assertThat(partly.get("outstanding").asDouble()).isEqualTo(25000.0);
+            assertThat(agreement(line).get("overdue").asDouble()).isEqualTo(25000.0);
+
+            recordPayment(line.seller(), invoiceId, "25000", UUID.randomUUID().toString());
+            assertThat(invoiceOf(line).get("status").asText()).isEqualTo("PAID");
+        }
+
+        @Test
+        @DisplayName("an overdue invoice is announced once, however many part payments and sweeps follow")
+        void sweepNotifiesOnce() throws Exception {
+            var line = creditLine("200000");
+            long invoiceId = overdueInvoice(line);
+
+            creditJobs.sweepOverdue();
+            recordPayment(line.seller(), invoiceId, "10000", UUID.randomUUID().toString());
+            creditJobs.sweepOverdue();
+            creditJobs.sweepOverdue();
+
+            assertThat(overdueEvents(invoiceId)).isEqualTo(1);
+            assertThat(invoiceOf(line).get("status").asText()).isEqualTo("OVERDUE");
+        }
+
+        @Test
+        @DisplayName("a part-paid invoice that is not yet late is PARTIALLY_PAID, and goes overdue once later")
+        void partlyPaidThenLateGoesOverdueOnce() throws Exception {
+            var line = creditLine("200000");
+            orderOnCredit(line, "400", 100);
+            long invoiceId = firstInvoiceId(line);
+
+            recordPayment(line.seller(), invoiceId, "15000", UUID.randomUUID().toString());
+            creditJobs.sweepOverdue();
+            assertThat(invoiceOf(line).get("status").asText()).isEqualTo("PARTIALLY_PAID");
+            assertThat(overdueEvents(invoiceId)).isZero();
+
+            // Due date passed but grace has not: still not overdue.
+            jdbc.update("update credit_invoice set due_date = date_sub(curdate(), interval 1 day) where id = ?",
+                    invoiceId);
+            creditJobs.sweepOverdue();
+            assertThat(invoiceOf(line).get("status").asText()).isEqualTo("PARTIALLY_PAID");
+
+            jdbc.update("update credit_invoice set overdue_after = date_sub(curdate(), interval 1 day) "
+                    + "where id = ?", invoiceId);
+            creditJobs.sweepOverdue();
+            creditJobs.sweepOverdue();
+            assertThat(invoiceOf(line).get("status").asText()).isEqualTo("OVERDUE");
+            assertThat(invoiceOf(line).get("outstanding").asDouble()).isEqualTo(25000.0);
+            assertThat(overdueEvents(invoiceId)).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("an invoice issued 00:30 India time is dated that day, not the UTC day before")
+        void issuedJustAfterMidnightIstDatesToday() throws Exception {
+            freezeAt("2027-03-10T00:30:00");
+            var line = creditLine("200000");
+            orderOnCredit(line, "400", 100);
+
+            // 30-day credit period, grace 5: 10 Mar + 30 = 9 Apr (UTC dating would give 8 Apr).
+            assertThat(jdbc.queryForObject("select due_date from credit_invoice where credit_agreement_id = ?",
+                    LocalDate.class, line.agreementId())).isEqualTo(LocalDate.of(2027, 4, 9));
+            assertThat(jdbc.queryForObject("select overdue_after from credit_invoice where credit_agreement_id = ?",
+                    LocalDate.class, line.agreementId())).isEqualTo(LocalDate.of(2027, 4, 14));
+        }
+
+        @Test
+        @DisplayName("the overdue check uses the India date at the day boundary")
+        void markOverdueUsesIstToday() throws Exception {
+            var line = creditLine("200000");
+            orderOnCredit(line, "400", 100);
+            long invoiceId = firstInvoiceId(line);
+            jdbc.update("update credit_invoice set due_date = '2026-10-01', overdue_after = '2026-10-04' "
+                    + "where id = ?", invoiceId);
+
+            // 4 Oct 23:30 IST (= 18:00 UTC, still 4 Oct either way): grace runs to the 4th, not past it.
+            freezeAt("2026-10-04T23:30:00");
+            creditJobs.sweepOverdue();
+            assertThat(invoiceOf(line).get("status").asText()).isEqualTo("ISSUED");
+
+            // 5 Oct 00:30 IST = 4 Oct 19:00 UTC: it is the 5th in India, so now overdue.
+            freezeAt("2026-10-05T00:30:00");
+            creditJobs.sweepOverdue();
+            assertThat(invoiceOf(line).get("status").asText()).isEqualTo("OVERDUE");
+        }
+
+        @Test
+        @DisplayName("one invoice that cannot be marked does not stop the others")
+        void oneBadInvoiceDoesNotBlockTheSweep() throws Exception {
+            var bad = creditLine("200000");
+            long badId = overdueInvoice(bad);
+            var good = creditLine("200000");
+            long goodId = overdueInvoice(good);
+
+            // Marking the first invoice fails at the end of its own unit of work, as a lost
+            // optimistic lock on a concurrent repayment would.
+            doThrow(new IllegalStateException("blocked for test")).when(outboxSpy)
+                    .publish(eq("CreditOverdue"), eq("CREDIT_INVOICE"), eq(badId), any(), any());
+            creditJobs.sweepOverdue();
+            reset(outboxSpy);
+
+            assertThat(invoiceOf(good).get("status").asText()).isEqualTo("OVERDUE");
+            assertThat(overdueEvents(goodId)).isEqualTo(1);
+            assertThat(invoiceOf(bad).get("status").asText()).isEqualTo("ISSUED");
+            assertThat(overdueEvents(badId)).isZero();
+
+            // The next sweep picks the skipped one up.
+            creditJobs.sweepOverdue();
+            assertThat(invoiceOf(bad).get("status").asText()).isEqualTo("OVERDUE");
         }
 
         @Test
