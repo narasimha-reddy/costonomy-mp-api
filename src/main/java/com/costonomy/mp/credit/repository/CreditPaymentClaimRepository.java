@@ -79,4 +79,12 @@ public interface CreditPaymentClaimRepository extends JpaRepository<CreditPaymen
 
     List<CreditPaymentClaim> findBySupplierStoreIdAndStatusOrderByIdDesc(Long supplierStoreId,
                                                                          CreditClaimStatus status);
+
+    /** Claims of one status per agreement for a store: rows of (agreement id, count). */
+    @Query("""
+            select c.creditAgreementId, count(c) from CreditPaymentClaim c
+             where c.supplierStoreId = :storeId and c.status = :status
+             group by c.creditAgreementId
+            """)
+    List<Object[]> countsByAgreementForStore(@Param("storeId") Long storeId, @Param("status") CreditClaimStatus status);
 }

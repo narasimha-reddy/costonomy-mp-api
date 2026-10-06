@@ -103,6 +103,29 @@ public class CreditDirectory {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** Several outlets at once (outlet and restaurant names); an id that does not exist is simply absent. */
+    public java.util.Map<Long, OutletInfo> outlets(java.util.Collection<Long> outletIds) {
+        var found = new java.util.HashMap<Long, OutletInfo>();
+        if (outletIds.isEmpty()) {
+            return found;
+        }
+        String marks = String.join(",", java.util.Collections.nCopies(outletIds.size(), "?"));
+        jdbc.query("""
+                select o.id, o.name, r.id, r.name, o.landmark, o.address_line1, o.city,
+                       o.latitude, o.longitude
+                  from outlet o join restaurant r on r.id = o.restaurant_id
+                 where o.id in (%s)
+                """.formatted(marks),
+                (rs) -> {
+                    found.put(rs.getLong(1), new OutletInfo(rs.getLong(1), rs.getString(2),
+                            rs.getLong(3), rs.getString(4),
+                            rs.getString(5) != null ? rs.getString(5) : rs.getString(6),
+                            rs.getString(7), rs.getBigDecimal(8), rs.getBigDecimal(9)));
+                },
+                outletIds.toArray());
+        return found;
+    }
+
     /**
      * A store's default credit terms. Doc 01 §18.
      *

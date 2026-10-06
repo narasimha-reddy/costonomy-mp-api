@@ -5675,3 +5675,14 @@ Five rule gaps found by the credit edge-case review. No schema change (claim sta
   transaction (note "Invoice was settled before this was confirmed", no actor, no notification). They no longer count in
   `openClaimsAmount`/`reportableAmount`, are not in the supplier's SUBMITTED inbox, and stay in the claim lists as history. Confirm,
   reject and withdraw on one are 409 `CREDIT_CLAIM_STATE`. A claim larger than the new outstanding but not settled stays SUBMITTED.
+
+## D-131 — Supplier receivables reads (B3): definitions the app shows as sent
+
+Read-only endpoints under the supplier-store scope (`CREDIT_VIEW` or `CREDIT_REQUEST_VIEW` on the store, else 404, like the agreements and claims lists); no schema change. Everything is computed in `CreditSupplierReadService` with `creditClock` (India day) and `CreditDueState`, so overdue is the date rule (past grace, whether or not the sweep has run), never `credit_invoice.status`.
+
+- `/receivables`: `totalReceivable` = outstanding of every open invoice (not PAID/WRITTEN_OFF) of the store, any line status; `overdue` (state OVERDUE), `inGrace` (IN_GRACE), `dueToday`, `dueThisWeek` (not yet due, due today through today + 6) partition-or-subset it as documented on the DTO. `collectedThisMonth` sums `credit_payment` of the store's lines paid in the India calendar month, any source (there is no reversal yet; when one exists it must be excluded here). `exposure` counts ACTIVE lines only: `extended` = limits, `drawn` = utilized, `availableToLend` = per-line `max(0, limit - utilized - reserved)`. `counts.restaurants` = lines that are ACTIVE or SUSPENDED or still owe; `requestsPending` = REQUESTED lines; `claimsWaiting` = SUBMITTED claims; `overdueRestaurants` = lines with an overdue invoice. `pendingActions` lists only kinds with a count above zero (CLAIMS_WAITING, REQUESTS_PENDING, OVERDUE_RESTAURANTS, LINE_AT_LIMIT = ACTIVE lines with nothing left to lend).
+- `/receivables/restaurants`: the same set of lines; sort `overdue` (amount, default), `owed`, `nextDue` (earliest date, none last), always ending on the agreement id; page from 0, size default 20, max 100; unknown sort or negative page is a 400.
+- `/ageing`: days past the due date (not the grace-adjusted date) in India time: CURRENT (due today or later), D1_7 (grace invoices land here), D8_30, D30_PLUS. Each open invoice is in exactly one bucket, so the buckets add up to `totalReceivable`. Up to five top restaurants per bucket.
+- `/payments` (store) and `/credit/agreements/{id}/payments` (either side of the line): newest first, id breaks ties, `from`/`to` are inclusive India days.
+- Money is sent with two decimals (HALF_UP of the 4-decimal sums); every figure is a JSON number.
+- Known gap: the supplier's record-payment endpoint stamps `paidAt` with `Instant.now()` rather than `creditClock` when `paidAt` is left out (same instant in production, but tests must pass `paidAt` to place a payment on a given India day).

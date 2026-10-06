@@ -51,6 +51,9 @@ public interface CreditInvoiceRepository extends JpaRepository<CreditInvoice, Lo
 
     List<CreditInvoice> findByCreditAgreementIdOrderByDueDateAsc(Long creditAgreementId);
 
+    /** Every invoice of the store whose status is not one of {@code settled}: what the supplier's receivables are made of. */
+    List<CreditInvoice> findBySupplierStoreIdAndStatusNotIn(Long supplierStoreId, java.util.Collection<CreditInvoiceStatus> settled);
+
     /**
      * Invoices whose grace period has run out and which nobody has marked overdue.
      *
