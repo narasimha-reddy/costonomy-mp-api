@@ -101,6 +101,7 @@ public class DeliveryBookingService {
                 // courier who is no longer involved.
                 delivery.setFailureCode(null);
                 delivery.setFailureReason(null);
+                delivery.clearNoPartner();
                 deliveries.save(delivery);
 
                 eventPublisher.publishEvent(new com.costonomy.mp.delivery.domain.DeliveryBookedEvent(
@@ -198,6 +199,7 @@ public class DeliveryBookingService {
 
     private boolean fail(Delivery delivery, DeliveryStatus status, String code, String reason) {
         delivery.setStatus(status);
+        delivery.markNoPartner(Instant.now());
         delivery.setFailureCode(code);
         delivery.setFailureReason(reason);
         deliveries.save(delivery);

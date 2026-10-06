@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [phase6/known-bugs] - Known bugs (D-135 onward)
 
+### Added
+- Deliveries with no partner (D-151): an automatic retry job (every 2 min for 30 min), an offer to the supplier after 45 min, `POST /deliveries/{id}/switch-to-own`, and notifications to both sides. V77.
+
 ### Fixed
 - Delivery with no partner available (D-150): the existing reassign endpoint re-quotes a `QUOTE_FAILED` delivery; test added. The supplier app now offers "Try again".
 - Supplier list filters (D-147): the popular list no longer computes every store's ratings unless a rating filter or sort needs them, and `minRating` outside 1 to 5 is refused on both lists.

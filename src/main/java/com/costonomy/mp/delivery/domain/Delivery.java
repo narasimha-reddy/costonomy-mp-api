@@ -164,4 +164,29 @@ public class Delivery extends BaseEntity {
     /** When the provider last told us anything. Drives the staleness indicator. */
     @Column(name = "last_provider_update_at")
     private Instant lastProviderUpdateAt;
+
+    /** When the search for a partner first failed; null while one is booked. D-151. */
+    @Column(name = "no_partner_since")
+    private Instant noPartnerSince;
+
+    @Column(name = "auto_retry_count", nullable = false)
+    private int autoRetryCount;
+
+    @Column(name = "last_retry_at")
+    private Instant lastRetryAt;
+
+    /** When the supplier was first offered delivering it themselves. */
+    @Column(name = "own_delivery_offered_at")
+    private Instant ownDeliveryOfferedAt;
+
+    public void markNoPartner(Instant now) {
+        if (noPartnerSince == null) {
+            noPartnerSince = now;
+        }
+    }
+
+    public void clearNoPartner() {
+        noPartnerSince = null;
+        ownDeliveryOfferedAt = null;
+    }
 }

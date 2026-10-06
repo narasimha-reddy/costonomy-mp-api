@@ -2,6 +2,7 @@ package com.costonomy.mp.delivery;
 
 import com.costonomy.mp.delivery.provider.MockDeliveryProvider;
 import com.costonomy.mp.delivery.service.DeliveryJobs;
+import com.costonomy.mp.delivery.service.DeliveryRetryJobs;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
@@ -44,6 +45,7 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private DeliveryJobs deliveryJobs;
+    @Autowired private DeliveryRetryJobs retryJobs;
     @Autowired private TestPaymentAccess payments;
 
     @Autowired
@@ -822,6 +824,169 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
                 assertThat(status).isEqualTo(403);
             }
             assertThat(orderStatus(order.orderId())).isEqualTo("READY_FOR_PICKUP");
+        }
+    }
+
+    // ── No partner found: automatic retry, then delivering it yourself (D-151) ──
+
+    @Nested
+    @DisplayName("no partner found")
+    class NoPartner {
+
+        /**
+         * The job retries every delivery that is due, so one left failed by an earlier test would be retried first and
+         * spend the mock's one-shot failure meant for this test's delivery.
+         */
+        @BeforeEach
+        void clearEarlierFailures() {
+            jdbc.update("update delivery set status = 'CANCELLED' where status in "
+                    + "('QUOTE_FAILED', 'PROVIDER_UNAVAILABLE')");
+        }
+
+        private long failedDelivery(ReadyOrder order) throws Exception {
+            express.arm(MockDeliveryProvider.Failure.QUOTE_FAILS);
+            saver.arm(MockDeliveryProvider.Failure.QUOTE_FAILS);
+            var delivery = requestDelivery(order);
+            assertThat(delivery.get("status").asText()).isEqualTo("QUOTE_FAILED");
+            return delivery.get("id").asLong();
+        }
+
+        private void partnersBack() {
+            express.disarm();
+            saver.disarm();
+        }
+
+        private String status(long deliveryId) {
+            return jdbc.queryForObject("select status from delivery where id = ?", String.class, deliveryId);
+        }
+
+        private int retries(long deliveryId) {
+            return jdbc.queryForObject("select auto_retry_count from delivery where id = ?", Integer.class,
+                    deliveryId);
+        }
+
+        private int status(String path, ReadyOrder order, boolean seller) throws Exception {
+            return mvc.perform(MockMvcRequestBuilders.post(path)
+                            .header("Authorization", "Bearer " + (seller ? order.seller().token()
+                                    : order.buyer().token()))
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON))
+                    .andReturn().getResponse().getStatus();
+        }
+
+        @Test
+        @DisplayName("the job books a partner once one is back, on the same delivery")
+        void retryBooks() throws Exception {
+            var order = readyOrder();
+            long id = failedDelivery(order);
+            partnersBack();
+
+            retryJobs.runOnce();
+
+            assertThat(status(id)).isEqualTo("PROVIDER_SELECTED");
+            assertThat(retries(id)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("select no_partner_since from delivery where id = ?",
+                    Object.class, id)).isNull();
+            assertThat(jdbc.queryForObject("select count(*) from delivery where supplier_order_id = ?",
+                    Integer.class, order.orderId())).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("it does not retry again inside the interval")
+        void notInsideTheInterval() throws Exception {
+            var order = readyOrder();
+            long id = failedDelivery(order);
+
+            // The mock's armed failure is spent by the first call, so arm it again for the retry.
+            express.arm(MockDeliveryProvider.Failure.QUOTE_FAILS);
+            saver.arm(MockDeliveryProvider.Failure.QUOTE_FAILS);
+            retryJobs.runOnce();                    // still nobody: counted
+            partnersBack();
+            retryJobs.runOnce();                    // too soon
+
+            assertThat(status(id)).isEqualTo("QUOTE_FAILED");
+            assertThat(retries(id)).isEqualTo(1);
+
+            jdbc.update("update delivery set last_retry_at = now(6) - interval 3 minute where id = ?", id);
+            retryJobs.runOnce();
+            assertThat(status(id)).isEqualTo("PROVIDER_SELECTED");
+        }
+
+        @Test
+        @DisplayName("it stops after the window, and offers the supplier delivering it themselves exactly once")
+        void windowThenOffer() throws Exception {
+            var order = readyOrder();
+            long id = failedDelivery(order);
+            jdbc.update("update delivery set no_partner_since = now(6) - interval 50 minute where id = ?", id);
+            partnersBack();
+
+            retryJobs.runOnce();
+            retryJobs.runOnce();
+
+            assertThat(status(id)).isEqualTo("QUOTE_FAILED");
+            assertThat(retries(id)).isZero();
+            assertThat(jdbc.queryForObject("select count(*) from delivery_event where delivery_id = ? "
+                    + "and event_type = 'DeliveryOwnDeliveryOffered'", Integer.class, id)).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the supplier can't switch before the offer, and the buyer never can")
+        void switchRefusals() throws Exception {
+            var order = readyOrder();
+            long id = failedDelivery(order);
+            String path = "/api/v1/deliveries/" + id + "/switch-to-own";
+
+            assertThat(status(path, order, true)).isEqualTo(409);
+
+            jdbc.update("update delivery set no_partner_since = now(6) - interval 50 minute, "
+                    + "own_delivery_offered_at = now(6) where id = ?", id);
+            assertThat(status(path, order, false)).isGreaterThanOrEqualTo(400);
+            assertThat(status(id)).isEqualTo("QUOTE_FAILED");
+        }
+
+        @Test
+        @DisplayName("after the offer the supplier delivers it on the same delivery, and the buyer's total is unchanged")
+        void switchToOwn() throws Exception {
+            var order = readyOrder();
+            long id = failedDelivery(order);
+            var total = jdbc.queryForObject("select total_amount from supplier_order where id = ?",
+                    java.math.BigDecimal.class, order.orderId());
+            jdbc.update("update delivery set no_partner_since = now(6) - interval 50 minute, "
+                    + "own_delivery_offered_at = now(6) where id = ?", id);
+            String path = "/api/v1/deliveries/" + id + "/switch-to-own";
+
+            assertThat(status(path, order, true)).isEqualTo(200);
+
+            assertThat(status(id)).isEqualTo("DRIVER_ASSIGNED");
+            assertThat(jdbc.queryForObject("select mode from delivery where id = ?", String.class, id))
+                    .isEqualTo("SUPPLIER_OWN");
+            assertThat(jdbc.queryForObject("select delivery_mode from supplier_order where id = ?",
+                    String.class, order.orderId())).isEqualTo("SUPPLIER_DELIVERY");
+            assertThat(jdbc.queryForObject("select total_amount from supplier_order where id = ?",
+                    java.math.BigDecimal.class, order.orderId())).isEqualByComparingTo(total);
+            assertThat(jdbc.queryForObject("select count(*) from delivery where supplier_order_id = ?",
+                    Integer.class, order.orderId())).isEqualTo(1);
+            // Repeating it is not an error and changes nothing.
+            assertThat(status(path, order, true)).isEqualTo(200);
+
+            // And it now runs as the supplier's own delivery.
+            api.post(order.seller().token(), "/api/v1/deliveries/" + id + "/dispatched", Map.of());
+            assertThat(orderStatus(order.orderId())).isEqualTo("OUT_FOR_DELIVERY");
+            api.post(order.seller().token(), "/api/v1/deliveries/" + id + "/delivered", Map.of());
+            assertThat(orderStatus(order.orderId())).isEqualTo("DELIVERED");
+        }
+
+        @Test
+        @DisplayName("a partner found meanwhile is not displaced by the switch")
+        void switchRefusedOnceBooked() throws Exception {
+            var order = readyOrder();
+            long id = failedDelivery(order);
+            partnersBack();
+            retryJobs.runOnce();
+            jdbc.update("update delivery set own_delivery_offered_at = now(6) where id = ?", id);
+
+            assertThat(status("/api/v1/deliveries/" + id + "/switch-to-own", order, true)).isEqualTo(409);
+            assertThat(status(id)).isEqualTo("PROVIDER_SELECTED");
         }
     }
 }

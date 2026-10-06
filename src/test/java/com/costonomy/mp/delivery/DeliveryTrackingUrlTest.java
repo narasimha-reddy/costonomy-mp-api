@@ -34,7 +34,7 @@ class DeliveryTrackingUrlTest {
                 null, false, null,
                 null, null, Instant.now(), null, null,
                 BigDecimal.valueOf(5.5), BigDecimal.valueOf(0.02), "TWO_WHEELER",
-                List.of());
+                List.of(), null, false);
 
         assertThat(response.trackingUrl()).isEqualTo("https://track.pidge.in/order/pidge-test-123");
         assertThat(response.trackable()).isTrue();

@@ -41,6 +41,17 @@ public class DeliveryDirectory {
         }
     }
 
+    /** Takes the order's row lock; the switch to own delivery holds it so nothing else moves the order meanwhile. */
+    public void lockOrder(Long supplierOrderId) {
+        jdbc.queryForList("select id from supplier_order where id = ? for update", Long.class, supplierOrderId);
+    }
+
+    /** The supplier is now carrying it (D-151). The version moves so an in-flight stale write cannot overwrite it. */
+    public void setDeliveryMode(Long supplierOrderId, String deliveryMode) {
+        jdbc.update("update supplier_order set delivery_mode = ?, version = version + 1, updated_at = now(6) "
+                + "where id = ?", deliveryMode, supplierOrderId);
+    }
+
     public OrderInfo order(Long supplierOrderId) {
         var rows = jdbc.query("""
                 select id, order_number, status, outlet_id, supplier_store_id,

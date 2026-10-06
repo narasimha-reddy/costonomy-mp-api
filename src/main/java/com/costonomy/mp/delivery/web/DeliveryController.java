@@ -119,6 +119,20 @@ public class DeliveryController {
                 () -> deliveries.reassign(actorId, id, reason)));
     }
 
+    @PostMapping("/deliveries/{id}/switch-to-own")
+    @Operation(summary = "Deliver it yourself, because no delivery partner was found",
+            description = "Supplier only, once the offer has been made after the automatic retries. The same delivery "
+                    + "becomes the supplier's own; the delivery charge the buyer paid is unchanged (D-151).")
+    public ApiResponse<DeliveryDtos.DeliveryResponse> switchToOwn(
+            @PathVariable Long id,
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(idempotency.execute(actorId, "delivery.switchToOwn", idempotencyKey,
+                Map.of("deliveryId", id),
+                DeliveryDtos.DeliveryResponse.class,
+                () -> deliveries.switchToOwn(actorId, id)));
+    }
+
     // ── Supplier own delivery ────────────────────────────────────────────
 
     @PostMapping("/deliveries/{id}/dispatched")
