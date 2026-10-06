@@ -355,6 +355,27 @@ public final class NotificationRules {
                 "Your supplier cancelled the payment of {amount} recorded on {recordedOnLabel}. Reason: {reason}",
                 "CREDIT_INVOICE"));
 
+        // A credit note (B7, D-151): the supplier took an amount off an invoice, or an order cancelled after the draw
+        // cleared its debt automatically. In-app and push, never SMS: this is good news, nothing is owed today.
+        add(rules, new NotificationRule(CreditEvents.CREDIT_NOTE_ISSUED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit note issued",
+                "{supplierName} issued credit note {creditNoteNumber} for {amount} on invoice {invoiceNumber}.",
+                "CREDIT_INVOICE"));
+
+        // A write-off (B8, D-155): in-app only and neutral. The supplier's reason is theirs and is not in the event.
+        add(rules, new NotificationRule(CreditEvents.WRITTEN_OFF, OUTLET, CREDIT, false,
+                List.of(IN_APP),
+                "Invoice closed",
+                "{supplierName} has closed invoice {invoiceNumber} ({amount}).", "CREDIT_INVOICE"));
+
+        // A cancelled order left money the restaurant had paid (D-153): the supplier is told it owes a refund.
+        add(rules, new NotificationRule(CreditEvents.REFUND_DUE, SUPPLIER_STORE, CREDIT, false,
+                List.of(IN_APP),
+                "Refund due",
+                "{amount} is due back to {restaurantName}: their order for invoice {invoiceNumber} was cancelled. "
+                        + "Refund them directly and mark it refunded.", "CREDIT_INVOICE"));
+
         add(rules, new NotificationRule(CreditEvents.REINSTATED, OUTLET, CREDIT, false,
                 List.of(IN_APP, PUSH),
                 "Credit available again",

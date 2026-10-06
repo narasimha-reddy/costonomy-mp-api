@@ -36,13 +36,14 @@ public final class CreditReversalRules {
 
     /**
      * What an invoice is once a payment is taken back off it: OVERDUE when its grace period is over (the date rule of
-     * {@code CreditOverdueMarker}: overdue begins the day after {@code overdueAfter}), else ISSUED with nothing paid
-     * and PARTIALLY_PAID with something paid.
+     * {@code CreditOverdueMarker}: overdue begins the day after {@code overdueAfter}), else ISSUED with nothing taken
+     * off and PARTIALLY_PAID with something taken off. {@code reducedAfter} is paid plus credited (B7): a credit note
+     * on the invoice means it is not untouched even when no payment is left.
      */
-    public static CreditInvoiceStatus statusAfter(LocalDate overdueAfter, BigDecimal paidAfter, LocalDate today) {
+    public static CreditInvoiceStatus statusAfter(LocalDate overdueAfter, BigDecimal reducedAfter, LocalDate today) {
         if (overdueAfter.isBefore(today)) {
             return CreditInvoiceStatus.OVERDUE;
         }
-        return paidAfter.signum() == 0 ? CreditInvoiceStatus.ISSUED : CreditInvoiceStatus.PARTIALLY_PAID;
+        return reducedAfter.signum() == 0 ? CreditInvoiceStatus.ISSUED : CreditInvoiceStatus.PARTIALLY_PAID;
     }
 }

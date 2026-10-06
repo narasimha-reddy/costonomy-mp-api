@@ -36,7 +36,7 @@ import static org.mockito.Mockito.doAnswer;
 
 /**
  * Money-safety edge cases on the credit feature: what a failure or a refusal must leave untouched, and what a
- * deliberately missing feature (the credit note, D-091) does today. Every test asserts the rows, not only the status.
+ * cancel-after-the-draw credit note (B7, D-152). Every test asserts the rows, not only the status.
  */
 @AutoConfigureMockMvc
 @TestPropertySource(properties = "costonomy.mp.credit.wallet-repay.enabled=true")
@@ -304,56 +304,79 @@ class CreditMoneySafetyIT extends AbstractIntegrationTest {
         return new Placed(line, orderId, invoice);
     }
 
-    private void assertDebtStandsAfterCancellation(Placed placed, Map<String, Object> invoiceBefore, long ledgerBefore) {
+    /**
+     * The correct behaviour (B7, D-152): an order cancelled after the draw owes nothing. The debt is cleared by a SYSTEM
+     * credit note in the cancel transaction, the credit is free again, the ledger and the statement show the note,
+     * the restaurant is told, and no payout, commission or refund is involved.
+     */
+    private void assertDebtClearedByACreditNote(Placed placed, long payoutsBefore) throws Exception {
         assertThat(jdbc.queryForObject("select status from supplier_order where id = ?", String.class, placed.orderId()))
                 .isEqualTo("CANCELLED");
         var agreement = e.agreementRow(placed.line().agreementId());
-        assertThat(e.dec(agreement, "utilized_amount"))
-                .describedAs("TODAY'S BEHAVIOUR, to flip when the credit note ships (missing credit note, D-091): "
-                        + "the debt for goods that will not arrive is still drawn")
-                .isEqualByComparingTo("40000.00");
-        assertThat(jdbc.queryForMap("select status, paid_amount, amount from credit_invoice where id = ?",
-                placed.invoiceId()))
-                .describedAs("TODAY'S BEHAVIOUR (missing credit note, D-091): the invoice stays as it was")
-                .isEqualTo(invoiceBefore);
-        assertThat(e.count("select count(*) from credit_transaction where credit_agreement_id = ?",
-                placed.line().agreementId()))
-                .describedAs("TODAY'S BEHAVIOUR (missing credit note, D-091): no release or reversal row is written")
-                .isEqualTo(ledgerBefore);
+        assertThat(e.dec(agreement, "utilized_amount")).describedAs("the debt for goods that will not arrive is gone")
+                .isEqualByComparingTo("0");
+        assertThat(e.dec(agreement, "reserved_amount")).isEqualByComparingTo("0");
+        var read = s.api.get(placed.line().buyer().token(), "/api/v1/credit/agreements/" + placed.line().agreementId()).at("/data");
+        assertThat(read.get("available").decimalValue()).describedAs("the credit is available again").isEqualByComparingTo("200000");
+        assertThat(read.get("due").decimalValue()).isEqualByComparingTo("0");
+
+        var invoice = jdbc.queryForMap("select status, paid_amount, credited_amount, amount from credit_invoice where id = ?",
+                placed.invoiceId());
+        assertThat(invoice.get("status")).describedAs("nothing is owed, so it is settled").isEqualTo("PAID");
+        assertThat((BigDecimal) invoice.get("credited_amount")).isEqualByComparingTo("40000.00");
+        assertThat((BigDecimal) invoice.get("paid_amount")).describedAs("credited, not paid").isEqualByComparingTo("0");
+
+        var note = jdbc.queryForMap("select credit_note_number, kind, reason_code, amount, created_by, note from credit_note "
+                + "where credit_invoice_id = ?", placed.invoiceId());
+        assertThat(note.get("kind")).isEqualTo("SYSTEM_CANCEL");
+        assertThat(note.get("reason_code")).isEqualTo("CANCELLED");
+        assertThat((BigDecimal) note.get("amount")).isEqualByComparingTo("40000.00");
+        assertThat(note.get("created_by")).describedAs("issued by the system").isNull();
+        assertThat(e.count("select count(*) from credit_transaction where credit_agreement_id = ? "
+                + "and transaction_type = 'CREDIT_NOTE' and credit_invoice_id = ?", placed.line().agreementId(), placed.invoiceId()))
+                .describedAs("the ledger shows the credit note").isEqualTo(1);
+        assertThat(e.count("select count(*) from outbox_event where event_type = 'CreditNoteIssued' and aggregate_id = ? "
+                + "and json_extract(payload, '$.outletId') = ?", placed.invoiceId(), placed.line().buyer().outletId()))
+                .describedAs("the restaurant is told").isEqualTo(1);
+
+        var statement = s.api.get(placed.line().buyer().token(), "/api/v1/credit/agreements/" + placed.line().agreementId()
+                + "/statement").at("/data");
+        assertThat(statement.get("closingOwed").decimalValue()).isEqualByComparingTo("0");
+        assertThat(statement.get("lines").toString()).contains("Credit note").contains((String) note.get("credit_note_number"));
+
+        assertThat(payouts(placed.line())).describedAs("no payout").isEqualTo(payoutsBefore);
+        assertThat(e.count("select count(*) from credit_repayment where outlet_id = ?", placed.line().buyer().outletId())).isZero();
+        assertThat(e.count("select count(*) from credit_payment where credit_agreement_id = ?", placed.line().agreementId())).isZero();
+        assertThat(e.count("select count(*) from credit_refund_due where credit_invoice_id = ?", placed.invoiceId()))
+                .describedAs("nothing was paid, so nothing is owed back").isZero();
     }
 
     @Test
-    @DisplayName("S39: the supplier cancels a CONFIRMED credit order: today the debt and the invoice stand (missing credit note, D-091)")
+    @DisplayName("S39: the supplier cancels a CONFIRMED credit order: a system credit note clears the debt (B7, D-152)")
     void supplierCancelsConfirmedCreditOrder() throws Exception {
         var placed = confirmedCreditOrder();
-        var invoiceBefore = jdbc.queryForMap("select status, paid_amount, amount from credit_invoice where id = ?",
-                placed.invoiceId());
-        long ledgerBefore = e.count("select count(*) from credit_transaction where credit_agreement_id = ?",
-                placed.line().agreementId());
+        long payoutsBefore = payouts(placed.line());
 
         var cancel = e.call("POST", placed.line().seller().token(),
                 "/api/v1/supplier-orders/" + placed.orderId() + "/supplier-cancel", UUID.randomUUID().toString(),
                 Map.of("reason", "OUT_OF_STOCK"));
 
         assertThat(cancel.status()).describedAs(cancel.body().toString()).isEqualTo(200);
-        assertDebtStandsAfterCancellation(placed, invoiceBefore, ledgerBefore);
+        assertDebtClearedByACreditNote(placed, payoutsBefore);
     }
 
     @Test
-    @DisplayName("S40: the restaurant cancels a CONFIRMED credit order: today the debt and the invoice stand (missing credit note, D-091)")
+    @DisplayName("S40: the restaurant cancels a CONFIRMED credit order: a system credit note clears the debt (B7, D-152)")
     void restaurantCancelsConfirmedCreditOrder() throws Exception {
         var placed = confirmedCreditOrder();
-        var invoiceBefore = jdbc.queryForMap("select status, paid_amount, amount from credit_invoice where id = ?",
-                placed.invoiceId());
-        long ledgerBefore = e.count("select count(*) from credit_transaction where credit_agreement_id = ?",
-                placed.line().agreementId());
+        long payoutsBefore = payouts(placed.line());
 
         var cancel = e.call("POST", placed.line().buyer().token(),
                 "/api/v1/supplier-orders/" + placed.orderId() + "/cancel", UUID.randomUUID().toString(),
                 Map.of("reason", "Changed our plans"));
 
         assertThat(cancel.status()).describedAs(cancel.body().toString()).isEqualTo(200);
-        assertDebtStandsAfterCancellation(placed, invoiceBefore, ledgerBefore);
+        assertDebtClearedByACreditNote(placed, payoutsBefore);
     }
 
     // ── T15 ──────────────────────────────────────────────────────────────

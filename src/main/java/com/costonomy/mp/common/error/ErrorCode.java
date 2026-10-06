@@ -164,6 +164,20 @@ public enum ErrorCode {
     CREDIT_REVERSAL_NO_HEADROOM(HttpStatus.UNPROCESSABLE_ENTITY,
             "The restaurant has used the credit this payment freed."),
 
+    // ── Credit notes and write-offs (B7, B8, D-151..D-156) ───────────────
+    /** A credit note or write-off of more than the invoice still owes. The details carry {@code outstanding}; nothing moved. */
+    CREDIT_NOTE_EXCEEDS_OUTSTANDING(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That's more than is still owed on this invoice."),
+    /** The invoice is PAID or WRITTEN_OFF: a credit note cannot reach money already paid (the supplier refunds it directly, D-153). */
+    CREDIT_NOTE_INVOICE_SETTLED(HttpStatus.CONFLICT,
+            "This invoice is already settled, so a credit note can't be issued on it."),
+    /** Nothing is owed on the invoice (or the whole line), so there is nothing to write off. */
+    CREDIT_WRITE_OFF_NOTHING_OWED(HttpStatus.CONFLICT,
+            "Nothing is owed here, so there is nothing to write off."),
+    /** A refund due that was paid from the Mandi wallet is put right by Mandi, not marked refunded by the supplier. */
+    CREDIT_REFUND_OPS_ONLY(HttpStatus.CONFLICT,
+            "This refund was paid from the restaurant's wallet, so Mandi will settle it."),
+
     // ── Credit rules hardening (D-130) ───────────────────────────────────
     /** The restaurant accepted a terms version that is no longer the agreement's current one. Nothing changed. */
     CREDIT_TERMS_CHANGED(HttpStatus.CONFLICT,

@@ -115,7 +115,7 @@ class MigrationIT extends AbstractIntegrationTest {
                   -- locking on a hot counter would mean constant conflicts on
                   -- the one row every submission touches.
                   and t.table_name not in ('order_number_sequence', 'credit_invoice_sequence',
-                                           'dispute_number_sequence',
+                                           'credit_note_sequence', 'dispute_number_sequence',
                                            'settlement_number_sequence')
                   and exists (
                       select 1 from information_schema.columns c
@@ -168,6 +168,8 @@ class MigrationIT extends AbstractIntegrationTest {
                         "credit_payment",
                         "credit_due_extension",
                         "credit_payment_reversal",
+                        // A credit note or write-off is never edited or deleted (B7, B8, D-151).
+                        "credit_note",
                         // Delivery's evidence trail. A courier's event, a driver's
                         // position and a booking attempt are records of what
                         // happened; editing one would rewrite the journey.
