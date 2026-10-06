@@ -597,7 +597,7 @@ public final class CreditDtos {
     }
 
     /** One payment in the supplier's feed. */
-    public record SupplierPaymentResponse(
+    public record PaymentFeedItem(
             Long id,
             Instant paidAt,
             /** The India calendar day of {@code paidAt}. */

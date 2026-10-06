@@ -214,7 +214,7 @@ public class CreditController {
                     + "invoice number, amount, source, method, reference. `from` and `to` are India calendar days "
                     + "(YYYY-MM-DD, both inclusive, either optional), `source` is SUPPLIER_RECORDED, WALLET or "
                     + "CLAIM_CONFIRMED. `page` from 0, `size` default 20, at most 100. Same access as `/receivables`.")
-    public ApiResponse<CreditDtos.PageOf<CreditDtos.SupplierPaymentResponse>> storePayments(
+    public ApiResponse<CreditDtos.PageOf<CreditDtos.PaymentFeedItem>> storePayments(
             @PathVariable Long storeId,
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(
                     iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate from,
@@ -336,7 +336,7 @@ public class CreditController {
     @Operation(summary = "Payments made on this credit line",
             description = "Newest first, with the invoice number, amount, source, method and reference. `page` from 0, "
                     + "`size` default 20, at most 100. Same access as the agreement's ledger: either side, else 404.")
-    public ApiResponse<CreditDtos.PageOf<CreditDtos.SupplierPaymentResponse>> agreementPayments(
+    public ApiResponse<CreditDtos.PageOf<CreditDtos.PaymentFeedItem>> agreementPayments(
             @PathVariable Long id, @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.ok(supplierReads.agreementPayments(ActorContext.requireUserId(), id, page, size));

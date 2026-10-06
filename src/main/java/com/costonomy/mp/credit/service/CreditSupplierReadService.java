@@ -338,7 +338,7 @@ public class CreditSupplierReadService {
 
     /** The store's payments newest first, between two India days (both inclusive; either may be left out). */
     @Transactional(readOnly = true)
-    public CreditDtos.PageOf<CreditDtos.SupplierPaymentResponse> storePayments(
+    public CreditDtos.PageOf<CreditDtos.PaymentFeedItem> storePayments(
             Long actorId, Long storeId, LocalDate from, LocalDate to, CreditPaymentSource source, int page, int size) {
         requireStore(actorId, storeId);
         checkPage(page, size);
@@ -354,7 +354,7 @@ public class CreditSupplierReadService {
 
     /** One agreement's payments, newest first. Same access as the agreement itself: either side, else 404. */
     @Transactional(readOnly = true)
-    public CreditDtos.PageOf<CreditDtos.SupplierPaymentResponse> agreementPayments(
+    public CreditDtos.PageOf<CreditDtos.PaymentFeedItem> agreementPayments(
             Long actorId, Long agreementId, int page, int size) {
         agreementService.loadForEitherSide(actorId, agreementId);
         checkPage(page, size);
@@ -363,7 +363,7 @@ public class CreditSupplierReadService {
         return respond(result.getContent(), page, size, result.getTotalElements(), result.hasNext());
     }
 
-    private CreditDtos.PageOf<CreditDtos.SupplierPaymentResponse> respond(
+    private CreditDtos.PageOf<CreditDtos.PaymentFeedItem> respond(
             List<CreditPayment> rows, int page, int size, long total, boolean hasNext) {
         var invoiceNumbers = invoices.findAllById(rows.stream().map(CreditPayment::getCreditInvoiceId).distinct().toList())
                 .stream().collect(Collectors.toMap(CreditInvoice::getId, CreditInvoice::getInvoiceNumber));
@@ -373,7 +373,7 @@ public class CreditSupplierReadService {
         var items = rows.stream().map(p -> {
             var line = lineById.get(p.getCreditAgreementId());
             var outlet = outlets.get(line.getOutletId());
-            return new CreditDtos.SupplierPaymentResponse(p.getId(), p.getPaidAt(),
+            return new CreditDtos.PaymentFeedItem(p.getId(), p.getPaidAt(),
                     LocalDate.ofInstant(p.getPaidAt(), clock.getZone()), line.getId(), line.getOutletId(),
                     outlet == null ? null : outlet.outletName(), outlet == null ? null : outlet.restaurantName(),
                     p.getCreditInvoiceId(), invoiceNumbers.get(p.getCreditInvoiceId()), m(p.getAmount()),
