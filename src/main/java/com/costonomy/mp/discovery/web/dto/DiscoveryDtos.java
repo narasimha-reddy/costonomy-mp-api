@@ -168,7 +168,19 @@ public final class DiscoveryDtos {
             BigDecimal requestedQuantity,
             String unit,
             List<RecommendedOffer> offers,
-            String unservedReason) {
+            String unservedReason,
+            /**
+             * Suppliers that could serve this outlet but were left out by the filters the caller passed (D-149).
+             * Lets the screen say "3 more hidden by your filters" instead of showing a list that shrank for no
+             * visible reason. Zero when no filter was passed.
+             */
+            int hiddenByFilters) {
+
+        /** A recommendation with no filter applied. */
+        public ProductRecommendation(Long canonicalProductId, String productName, BigDecimal requestedQuantity,
+                                     String unit, List<RecommendedOffer> offers, String unservedReason) {
+            this(canonicalProductId, productName, requestedQuantity, unit, offers, unservedReason, 0);
+        }
     }
 
     public record SuggestionResponse(

@@ -14,6 +14,8 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -308,6 +310,150 @@ class RecommendationIT extends AbstractIntegrationTest {
     }
 
     // ── Honesty ──────────────────────────────────────────────────────────
+
+    // ── Sort and filters (D-149) ─────────────────────────────────────────
+
+    @Nested
+    @DisplayName("sort and filters on the comparison")
+    class Choices {
+
+        private void rate(Outlet outlet, Store store, int stars) {
+            Long buyerUserId = jdbc.queryForObject("select id from users limit 1", Long.class);
+            jdbc.update("""
+                    insert into procurement (outlet_id, created_by, status, approval_status,
+                                              payment_method, payment_status, total_amount, created_at, updated_at, version)
+                    values (?, ?, 'SUBMITTED', 'NOT_REQUIRED', 'PREPAID', 'CAPTURED', 500.00, now(6), now(6), 0)
+                    """, outlet.outletId(), buyerUserId);
+            Long procurementId = jdbc.queryForObject(
+                    "select id from procurement where outlet_id = ? order by id desc limit 1", Long.class, outlet.outletId());
+            String orderNumber = "SO-CHOICE-" + System.nanoTime();
+            jdbc.update("""
+                    insert into supplier_order (procurement_id, supplier_store_id, outlet_id, order_number, status,
+                                                total_amount, accepted_amount, delivery_mode, payment_method,
+                                                payment_status, created_at, updated_at, version)
+                    values (?, ?, ?, ?, 'COMPLETED', 500.00, 500.00, 'SUPPLIER_DELIVERY', 'PREPAID', 'CAPTURED',
+                            now(6), now(6), 0)
+                    """, procurementId, store.storeId(), outlet.outletId(), orderNumber);
+            Long orderId = jdbc.queryForObject("select id from supplier_order where order_number = ?",
+                    Long.class, orderNumber);
+            jdbc.update("""
+                    insert into rating (supplier_order_id, outlet_id, supplier_store_id, overall_rating,
+                                        moderation_status, rated_by, version)
+                    values (?, ?, ?, ?, 'PUBLISHED', ?, 0)
+                    """, orderId, outlet.outletId(), store.storeId(), stars, buyerUserId);
+        }
+
+        private JsonNode compare(Outlet outlet, long product, String extra) throws Exception {
+            return api.get(outlet.token(), "/api/v1/products/" + product + "/recommendations?outletId="
+                    + outlet.outletId() + "&quantity=20" + extra).at("/data");
+        }
+
+        private List<String> order(JsonNode result) {
+            var names = new ArrayList<String>();
+            result.get("offers").forEach(o -> names.add(o.get("supplierName").asText()));
+            return names;
+        }
+
+        /** Four suppliers: a near dear one, a far cheap one with little stock, a near mid-price one that is closed. */
+        private record Field(Outlet outlet, long product, Store near, Store far, Store thin, Store closed) {
+        }
+
+        private Field field() throws Exception {
+            long product = freshProduct("choices");
+            var outlet = newOutlet();
+            String run = "C" + System.nanoTime();
+            var near = newStore(run + " Near", HYD_LAT, HYD_LON);
+            var far = newStore(run + " Far", NEARBY_LAT, NEARBY_LON);
+            var thin = newStore(run + " Thin", NEARBY_LAT, NEARBY_LON);
+            var closed = newStore(run + " Closed", HYD_LAT, HYD_LON);
+            stock(near, product, "NR" + run, "450");
+            stock(far, product, "FR" + run, "400");
+            long thinSku = stock(thin, product, "TH" + run, "380");
+            stock(closed, product, "CL" + run, "420");
+            // The cheapest has only 5 kg against the 20 asked for.
+            assertThat(api.patchStatus(thin.token(), "/api/v1/supplier-skus/" + thinSku,
+                    Map.of("availableQuantity", "5"))).isEqualTo(200);
+            jdbc.update("update supplier_store set operating_hours_json = ? where id = ?",
+                    "{\"days\":[\"MONDAY\",\"TUESDAY\",\"WEDNESDAY\",\"THURSDAY\",\"FRIDAY\",\"SATURDAY\","
+                            + "\"SUNDAY\"],\"opensAt\":\"01:00\",\"closesAt\":\"01:01\"}", closed.storeId());
+            rate(outlet, near, 3);
+            rate(outlet, far, 5);
+            rate(outlet, thin, 4);
+            return new Field(outlet, product, near, far, thin, closed);
+        }
+
+        @Test
+        @DisplayName("price puts the cheapest first, nearest the closest, rating the best rated; best value is unchanged")
+        void sorts() throws Exception {
+            var f = field();
+
+            var byPrice = order(compare(f.outlet(), f.product(), "&sort=price"));
+            var byNearest = order(compare(f.outlet(), f.product(), "&sort=nearest"));
+            var byRating = order(compare(f.outlet(), f.product(), "&sort=rating"));
+            var bestValue = order(compare(f.outlet(), f.product(), ""));
+            var explicitBestValue = order(compare(f.outlet(), f.product(), "&sort=best_value"));
+
+            assertThat(byPrice.get(0)).endsWith("Thin");
+            assertThat(byPrice.get(byPrice.size() - 1)).endsWith("Near");
+            assertThat(byNearest.subList(0, 2)).allSatisfy(n -> assertThat(n).containsAnyOf("Near", "Closed"));
+            assertThat(byRating.get(0)).endsWith("Far");
+            assertThat(byRating.get(1)).endsWith("Thin");
+            assertThat(explicitBestValue).as("best_value is the default ranking").isEqualTo(bestValue);
+        }
+
+        @Test
+        @DisplayName("covers-quantity hides the supplier without enough stock, and says how many it hid")
+        void coversQuantity() throws Exception {
+            var f = field();
+
+            var result = compare(f.outlet(), f.product(), "&coversQuantity=true");
+
+            assertThat(order(result)).noneMatch(n -> n.endsWith("Thin"));
+            assertThat(order(result)).hasSize(3);
+            assertThat(result.get("hiddenByFilters").asInt()).isEqualTo(1);
+            assertThat(compare(f.outlet(), f.product(), "").get("hiddenByFilters").asInt())
+                    .as("nothing hidden without a filter").isZero();
+        }
+
+        @Test
+        @DisplayName("open-now hides a closed supplier")
+        void openNow() throws Exception {
+            var f = field();
+
+            var result = compare(f.outlet(), f.product(), "&openNow=true");
+
+            assertThat(order(result)).noneMatch(n -> n.endsWith("Closed"));
+            assertThat(result.get("hiddenByFilters").asInt()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a distance filter hides suppliers beyond it, and a filter does not re-rank the rest")
+        void distanceAndRanking() throws Exception {
+            var f = field();
+            var all = order(compare(f.outlet(), f.product(), ""));
+
+            var nearOnly = compare(f.outlet(), f.product(), "&radiusKm=3");
+
+            assertThat(order(nearOnly)).allSatisfy(n -> assertThat(n).containsAnyOf("Near", "Closed"));
+            assertThat(nearOnly.get("hiddenByFilters").asInt()).isEqualTo(2);
+            // The survivors keep their relative order from the unfiltered ranking.
+            assertThat(all.stream().filter(order(nearOnly)::contains).toList()).isEqualTo(order(nearOnly));
+        }
+
+        @Test
+        @DisplayName("an unknown sort and a non-positive distance are refused")
+        void refusesNonsense() throws Exception {
+            var f = field();
+
+            var badSort = api.get(f.outlet().token(), "/api/v1/products/" + f.product()
+                    + "/recommendations?outletId=" + f.outlet().outletId() + "&sort=cheapest");
+            var badRadius = api.get(f.outlet().token(), "/api/v1/products/" + f.product()
+                    + "/recommendations?outletId=" + f.outlet().outletId() + "&radiusKm=0");
+
+            assertThat(badSort.at("/error/code").asText()).isEqualTo("VALIDATION_ERROR");
+            assertThat(badRadius.at("/error/code").asText()).isEqualTo("VALIDATION_ERROR");
+        }
+    }
 
     @Nested
     @DisplayName("honesty")

@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - A basket can no longer end up with two drafts for one supplier, and adding, removing and sending now take turns on the draft, so a simultaneous add and send, or removal and add, loses no line. Removed lines and emptied drafts are audited (D-137).
 
 ### Added
+- Sort (best value, lowest price, nearest, top rated) and filters (covers my quantity, open now, distance) on a product's supplier comparison. Filters apply after scoring so they never re-rank the rest, and `hiddenByFilters` says how many were removed (D-149).
 - Database quick wins from the audit (D-148): indexes for the queries that scanned growing tables (V76), a nightly batched purge of rows that only grew (idempotency records, published outbox events, old live locations, expired refresh tokens and OTP challenges), single-statement realtime cleanup, an indexed typeahead alias query, an in-memory role-code cache for permission checks, and a larger connection pool (30) with max-lifetime and leak detection.
 - Supplier directory and popular suppliers now support filters (`radiusKm`, `openNow`, `minRating`) and sort (`sort=nearest`, `sort=rating`). Unknown sort returns 422 `VALIDATION_ERROR`. Filters and sorting are evaluated server-side before pagination/clamping (D-147).
 - A restaurant is warned when a supplier's own delivery charge is high (at least 10% of the goods and at least ₹100, both configurable). A prompt, not a limit (D-144).

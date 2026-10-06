@@ -212,13 +212,21 @@ public class DiscoveryController {
 
                     `effectiveTotal` is item value plus GST. Delivery is not included —
                     it is not quoted until a provider is selected after Ready for Pickup.
+
+                    Optional choices (D-149): `sort` = `best_value` (default) | `price` | `nearest` | `rating`;
+                    filters `coversQuantity`, `openNow`, `radiusKm`. Filters apply after scoring, so they remove
+                    cards without re-ranking the rest, and `hiddenByFilters` says how many they removed.
                     """)
     public ApiResponse<DiscoveryDtos.ProductRecommendation> recommendations(
             @PathVariable Long id,
             @RequestParam Long outletId,
-            @RequestParam(required = false) BigDecimal quantity) {
+            @RequestParam(required = false) BigDecimal quantity,
+            @RequestParam(required = false) String sort,
+            @RequestParam(required = false) Boolean coversQuantity,
+            @RequestParam(required = false) Boolean openNow,
+            @RequestParam(required = false) BigDecimal radiusKm) {
         return ApiResponse.ok(recommendations.recommendForProduct(
-                ActorContext.requireUserId(), id, outletId, quantity));
+                ActorContext.requireUserId(), id, outletId, quantity, sort, coversQuantity, openNow, radiusKm));
     }
 
     @GetMapping("/outlets/{outletId}/suppliers/popular")

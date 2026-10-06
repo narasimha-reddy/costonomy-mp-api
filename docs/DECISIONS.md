@@ -6060,3 +6060,14 @@ From `docs/performance/DB_BOTTLENECKS.md`: the changes that are small, low-risk 
 - **Tests added:** total and next offset describe the filtered list and two pages cover it without repeats; `reach=all` still skips serviceability and still obeys the filters; bad `minRating` and `sort` are refused on both lists; ratings are not loaded for every store without a filter (a spy on the performance provider). Mutation-checked.
 - **App:** the search Suppliers tab starts within 10 km again (the directory's old default), an empty list with filters says "No suppliers found" whatever aisle is chosen, and a star filter notes that unrated suppliers are not shown.
 
+## D-149 — Sort and filters on a product's supplier comparison
+
+The comparison on a product screen (`GET /products/{id}/recommendations`) was one card per supplier, ranked by Best Value, with no way to reorder it, and it asked the server about a single unit, so nothing on it could say "enough for my 20 kg".
+
+1. **Four sorts.** `sort=best_value` (default, the existing ranking), `price` (lowest per base unit first, falling back to the total for a pack not measured in the product's unit), `nearest`, `rating`. Ties keep the Best Value order; a missing value (unknown distance, unrated supplier) goes last. Anything else is a 422.
+2. **Filters:** `coversQuantity` (stock covers the quantity asked), `openNow`, `radiusKm` (an unknown distance is kept). Applied **after scoring**: Best Value is relative to the suppliers compared, so scoring only the survivors would change every score each time a filter was touched. A filter removes cards; it does not re-rank the rest. A supplier with several packs is kept if any pack passes.
+3. **`hiddenByFilters`** on the response says how many suppliers the filters removed, so the screen can say "2 more hidden by your filters" rather than shrink the list unexplained. Zero when nothing was passed.
+4. **The app asks for what the buyer needs.** An "I need [20] KG" box on the comparison (debounced) sets `quantity`, so totals and "only 5 available" are for the real amount and "Covers my quantity" means something. The bar offers the four sorts, "Covers my quantity" and "Open now". The 5/10/25 km chips appear only when six or more suppliers could serve the outlet (or one is already on): on a short list everyone already delivers here and a distance filter hides nothing useful. Under any sort but Best Value the first card is not badged "recommended".
+5. **Not done:** a minimum-rating filter (the rating is already part of the ranking and a star filter hides every new supplier); the open flag is not a field on each offer, it is applied on the server.
+6. **Tests:** `RecommendationIT$Choices` (the four sorts, each filter, the hidden count, filters not re-ranking, bad values refused), mutation-checked; `tests/comparisonChoices.test.tsx` and `tests/searchSuppliersService.test.ts` in the app.
+
