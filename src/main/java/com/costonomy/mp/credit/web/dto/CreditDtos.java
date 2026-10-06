@@ -412,4 +412,119 @@ public final class CreditDtos {
             Instant createdAt,
             Instant decidedAt) {
     }
+
+    // ── The supplier's receivables (plan B3) ─────────────────────────────
+
+    /** One page of a list: {@code total} rows in all, {@code hasNext} when another page follows. */
+    public record PageOf<T>(List<T> items, int page, int size, long total, boolean hasNext) {
+    }
+
+    /** What the supplier store is owed, as of {@code asOf} (the India date). Every figure is worked out on the server. */
+    public record ReceivablesResponse(
+            LocalDate asOf,
+            /** Outstanding on every open invoice of the store: overdue + inGrace + what is not yet due. */
+            BigDecimal totalReceivable,
+            /** Open invoices past their grace period (marked OVERDUE or not yet swept): {@code CreditDueState.OVERDUE}. */
+            BigDecimal overdue,
+            /** Past the due date but inside the grace period. */
+            BigDecimal inGrace,
+            /** Due on {@code asOf}. */
+            BigDecimal dueToday,
+            /** Not yet due and due from {@code asOf} through {@code asOf + 6} days, today included. */
+            BigDecimal dueThisWeek,
+            /** Payments received in the current India calendar month, whatever the source. */
+            BigDecimal collectedThisMonth,
+            Exposure exposure,
+            Counts counts,
+            /** Only what needs doing (count above zero), in display order; the app renders exactly this. */
+            List<PendingAction> pendingActions) {
+    }
+
+    public record Exposure(
+            /** Sum of the approved limits of ACTIVE lines. */
+            BigDecimal extended,
+            /** What those lines have drawn (utilized). */
+            BigDecimal drawn,
+            /** What those lines can still be ordered against: limit less drawn and reserved, never below zero per line. */
+            BigDecimal availableToLend) {
+    }
+
+    public record Counts(
+            /** Lines that are live (ACTIVE or SUSPENDED) or still owe something. */
+            int restaurants,
+            int linesActive,
+            int linesSuspended,
+            int requestsPending,
+            int claimsWaiting,
+            int overdueRestaurants) {
+    }
+
+    public enum PendingActionKind {
+        CLAIMS_WAITING, REQUESTS_PENDING, OVERDUE_RESTAURANTS, LINE_AT_LIMIT
+    }
+
+    public record PendingAction(PendingActionKind kind, int count) {
+    }
+
+    /** One line (restaurant outlet) in the receivables list. */
+    public record ReceivableRestaurantResponse(
+            Long agreementId,
+            Long outletId,
+            String outletName,
+            String restaurantName,
+            CreditAgreementStatus status,
+            BigDecimal owed,
+            BigDecimal overdue,
+            /** Outstanding on the invoices due on {@code nextDueDate}; null when nothing is owed. */
+            BigDecimal nextDueAmount,
+            /** The earliest due date among open invoices, or null. */
+            LocalDate nextDueDate,
+            /** The state of the worst open invoice (OVERDUE, IN_GRACE, DUE_TODAY, DUE_SOON, DUE_LATER); null when nothing is open. */
+            CreditDueState dueState,
+            int claimsWaiting,
+            BigDecimal limit,
+            /** What the line has drawn. */
+            BigDecimal utilized,
+            /** Drawn as a percentage of the limit, one decimal; null when the limit is zero. */
+            BigDecimal utilization) {
+    }
+
+    public record AgeingBucketRestaurant(
+            Long agreementId,
+            String outletName,
+            String restaurantName,
+            BigDecimal amount,
+            int invoiceCount) {
+    }
+
+    /** CURRENT, D1_7, D8_30 or D30_PLUS. */
+    public record AgeingBucket(
+            String bucket,
+            BigDecimal amount,
+            int invoiceCount,
+            int restaurantCount,
+            /** Up to five restaurants with the most in this bucket, biggest first. */
+            List<AgeingBucketRestaurant> topRestaurants) {
+    }
+
+    public record AgeingResponse(LocalDate asOf, BigDecimal total, List<AgeingBucket> buckets) {
+    }
+
+    /** One payment in the supplier's feed. */
+    public record SupplierPaymentResponse(
+            Long id,
+            Instant paidAt,
+            /** The India calendar day of {@code paidAt}. */
+            LocalDate paidOn,
+            Long agreementId,
+            Long outletId,
+            String outletName,
+            String restaurantName,
+            Long invoiceId,
+            String invoiceNumber,
+            BigDecimal amount,
+            CreditPaymentSource source,
+            String method,
+            String reference) {
+    }
 }

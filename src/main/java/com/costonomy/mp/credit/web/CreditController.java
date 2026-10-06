@@ -7,6 +7,9 @@ import com.costonomy.mp.credit.domain.CreditClaimStatus;
 import com.costonomy.mp.credit.service.CreditAgreementService;
 import com.costonomy.mp.credit.service.CreditClaimService;
 import com.costonomy.mp.credit.service.CreditReadService;
+import com.costonomy.mp.credit.service.CreditSupplierReadService;
+import com.costonomy.mp.credit.domain.CreditAgreementStatus;
+import com.costonomy.mp.credit.domain.CreditPaymentSource;
 import com.costonomy.mp.credit.service.CreditRepaymentService;
 import com.costonomy.mp.credit.service.CreditWalletRepaymentService;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
@@ -39,6 +42,7 @@ public class CreditController {
     private final CreditWalletRepaymentService walletRepayments;
     private final CreditReadService reads;
     private final CreditClaimService claims;
+    private final CreditSupplierReadService supplierReads;
 
     // ── Restaurant ───────────────────────────────────────────────────────
 
@@ -155,6 +159,71 @@ public class CreditController {
         return ApiResponse.ok(agreements.forStore(ActorContext.requireUserId(), storeId));
     }
 
+    @GetMapping("/supplier-stores/{storeId}/credit/receivables")
+    @Operation(summary = "What the store is owed: the Receivables home",
+            description = """
+                    Totals worked out on the server as of today in India: `totalReceivable` (every open invoice's
+                    outstanding), split into `overdue` (past grace, whether or not the hourly sweep has marked it),
+                    `inGrace` and the rest; `dueToday`; `dueThisWeek` (not yet due, due today through the next six
+                    days); `collectedThisMonth` (payments received in the India calendar month, any source). `exposure`
+                    is across ACTIVE lines: `extended` (limits), `drawn`, `availableToLend`. `counts` and
+                    `pendingActions` (only kinds with a count above zero) say what needs doing; render exactly those.
+                    Needs `CREDIT_VIEW` or `CREDIT_REQUEST_VIEW` on the store; anyone else gets a 404.
+                    """)
+    public ApiResponse<CreditDtos.ReceivablesResponse> receivables(@PathVariable Long storeId) {
+        return ApiResponse.ok(supplierReads.receivables(ActorContext.requireUserId(), storeId));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/credit/receivables/restaurants")
+    @Operation(summary = "The Receivables restaurant list",
+            description = """
+                    One row per credit line that is live (ACTIVE or SUSPENDED) or still owes: `owed`, `overdue`,
+                    next due date and amount, the state of the worst open invoice, claims waiting, limit and
+                    utilization. `sort`: `overdue` (default, most overdue first), `owed` (most first) or `nextDue`
+                    (earliest first); ties by agreement id so paging is stable. `status` filters by line status, `q`
+                    matches outlet or restaurant name. `page` from 0, `size` default 20, at most 100. Same access as
+                    `/receivables`.
+                    """)
+    public ApiResponse<CreditDtos.PageOf<CreditDtos.ReceivableRestaurantResponse>> receivableRestaurants(
+            @PathVariable Long storeId,
+            @RequestParam(required = false) String sort,
+            @RequestParam(required = false) CreditAgreementStatus status,
+            @RequestParam(required = false) String q,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(supplierReads.restaurants(ActorContext.requireUserId(), storeId, sort, status, q, page, size));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/credit/ageing")
+    @Operation(summary = "Receivables by how late they are",
+            description = """
+                    Four buckets of open outstanding by days past the due date in India time: `CURRENT` (not yet due
+                    or due today), `D1_7`, `D8_30`, `D30_PLUS`. Invoices inside their grace period sit in `D1_7`. Each
+                    has `amount`, `invoiceCount`, `restaurantCount` and up to five `topRestaurants`. The amounts add up
+                    to `total`, which is `/receivables`' `totalReceivable`. Same access as `/receivables`.
+                    """)
+    public ApiResponse<CreditDtos.AgeingResponse> ageing(@PathVariable Long storeId) {
+        return ApiResponse.ok(supplierReads.ageing(ActorContext.requireUserId(), storeId));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/credit/payments")
+    @Operation(summary = "The store's payment feed",
+            description = "Payments received against the store's credit invoices, newest first: date, restaurant, "
+                    + "invoice number, amount, source, method, reference. `from` and `to` are India calendar days "
+                    + "(YYYY-MM-DD, both inclusive, either optional), `source` is SUPPLIER_RECORDED, WALLET or "
+                    + "CLAIM_CONFIRMED. `page` from 0, `size` default 20, at most 100. Same access as `/receivables`.")
+    public ApiResponse<CreditDtos.PageOf<CreditDtos.SupplierPaymentResponse>> storePayments(
+            @PathVariable Long storeId,
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(
+                    iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate from,
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(
+                    iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate to,
+            @RequestParam(required = false) CreditPaymentSource source,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(supplierReads.storePayments(ActorContext.requireUserId(), storeId, from, to, source, page, size));
+    }
+
     @PostMapping("/credit/agreements/{id}/approve")
     @Operation(summary = "Approve a credit request",
             description = """
@@ -259,6 +328,16 @@ public class CreditController {
     @Operation(summary = "Invoices raised against this credit line")
     public ApiResponse<List<CreditDtos.InvoiceResponse>> invoices(@PathVariable Long id) {
         return ApiResponse.ok(agreements.invoicesFor(ActorContext.requireUserId(), id));
+    }
+
+    @GetMapping("/credit/agreements/{id}/payments")
+    @Operation(summary = "Payments made on this credit line",
+            description = "Newest first, with the invoice number, amount, source, method and reference. `page` from 0, "
+                    + "`size` default 20, at most 100. Same access as the agreement's ledger: either side, else 404.")
+    public ApiResponse<CreditDtos.PageOf<CreditDtos.SupplierPaymentResponse>> agreementPayments(
+            @PathVariable Long id, @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(supplierReads.agreementPayments(ActorContext.requireUserId(), id, page, size));
     }
 
     @GetMapping("/credit/agreements/{id}/claims")

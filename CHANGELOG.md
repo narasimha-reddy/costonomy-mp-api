@@ -19,6 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+### [feat/sup-b3-receivables-reads] - supplier receivables read model (B3)
+#### Added
+- `GET /supplier-stores/{storeId}/credit/receivables`, `/receivables/restaurants`, `/ageing` and `/payments`, and `GET /credit/agreements/{id}/payments`: server-computed totals, restaurant rows, ageing buckets and payment feeds for the supplier's Receivables screens. India dates from `creditClock`; overdue by `CreditDueState`, never the status column. No migration.
+
 ## [Architecture & Security Audit]
 
 ### [Security Audit Report] - 2026-10-02
