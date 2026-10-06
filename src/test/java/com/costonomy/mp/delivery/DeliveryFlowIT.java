@@ -516,6 +516,35 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
     class Reassignment {
 
         @Test
+        @DisplayName("a delivery with no partner available is retried on the same delivery once one is back (D-150)")
+        void failedQuoteIsRetried() throws Exception {
+            var order = readyOrder();
+            express.arm(MockDeliveryProvider.Failure.QUOTE_FAILS);
+            saver.arm(MockDeliveryProvider.Failure.QUOTE_FAILS);
+            var failed = requestDelivery(order);
+            long deliveryId = failed.get("id").asLong();
+            assertThat(failed.get("status").asText()).isEqualTo("QUOTE_FAILED");
+
+            express.disarm();
+            saver.disarm();
+
+            String body = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/deliveries/" + deliveryId + "/reassign")
+                            .header("Authorization", "Bearer " + order.buyer().token())
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{}"))
+                    .andReturn().getResponse().getContentAsString();
+            var retried = json.readTree(body).at("/data");
+
+            assertThat(retried.get("id").asLong()).isEqualTo(deliveryId);
+            assertThat(retried.get("status").asText()).isEqualTo("PROVIDER_SELECTED");
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from delivery where supplier_order_id = ?",
+                    Integer.class, order.orderId())).isEqualTo(1);
+        }
+
+        @Test
         @DisplayName("a cancelled driver is replaced without a second delivery")
         void driverCancellationIsReassigned() throws Exception {
             var order = readyOrder();

@@ -6071,3 +6071,11 @@ The comparison on a product screen (`GET /products/{id}/recommendations`) was on
 5. **Not done:** a minimum-rating filter (the rating is already part of the ranking and a star filter hides every new supplier); the open flag is not a field on each offer, it is applied on the server.
 6. **Tests:** `RecommendationIT$Choices` (the four sorts, each filter, the hidden count, filters not re-ranking, bad values refused), mutation-checked; `tests/comparisonChoices.test.tsx` and `tests/searchSuppliersService.test.ts` in the app.
 
+
+## D-150 — A delivery with no partner available can be retried
+
+When a supplier asked for Costonomy delivery and no partner could take the route, the delivery stopped at `QUOTE_FAILED` ("No partner available", fee 0) and the order stayed in Ready for pickup with nothing to press: the "Request Delivery Partner" card only shows while there is no delivery, and the failed attempt is a delivery.
+
+1. **The API already retried it.** `POST /deliveries/{id}/reassign` re-quotes the same delivery from `QUOTE_FAILED` (D-026: one consignment), and either side can call it. Nothing called it. `DeliveryFlowIT$Reassignment.failedQuoteIsRetried` now pins it: fail every partner, bring them back, reassign, and the same delivery is `PROVIDER_SELECTED`.
+2. **The supplier app shows "Try again"** (card and sticky bar) whenever a partner delivery has stopped without a driver (`QUOTE_FAILED`, `PROVIDER_UNAVAILABLE`, `DRIVER_CANCELLED`, `PICKUP_FAILED`), with the server's reason. If it is still unavailable it says so; the order stays ready.
+3. **Not done, for the product owner:** an automatic retry job, a deadline after which the supplier is offered "I'll deliver it myself" or the order is cancelled and refunded, and a retry on the buyer side. The order cannot be switched to own delivery today (D-145).

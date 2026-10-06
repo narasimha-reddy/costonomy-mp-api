@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [phase6/known-bugs] - Known bugs (D-135 onward)
 
 ### Fixed
+- Delivery with no partner available (D-150): the existing reassign endpoint re-quotes a `QUOTE_FAILED` delivery; test added. The supplier app now offers "Try again".
 - Supplier list filters (D-147): the popular list no longer computes every store's ratings unless a rating filter or sort needs them, and `minRating` outside 1 to 5 is refused on both lists.
 - Sending one request now re-checks its prices like the basket send, and the free-delivery threshold no longer waives Costonomy rider fees or overrides a charge the supplier offered (D-146).
 - A rate-sheet row with no availability no longer puts a sold-out SKU back in stock; an item-variants update no longer relists a delisted SKU or resets GST and stock; a supplier can't list again a SKU Costonomy disabled (D-146).
