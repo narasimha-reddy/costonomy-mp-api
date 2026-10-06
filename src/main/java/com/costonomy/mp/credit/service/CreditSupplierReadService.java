@@ -14,10 +14,12 @@ import com.costonomy.mp.credit.domain.CreditInvoice;
 import com.costonomy.mp.credit.domain.CreditInvoiceStatus;
 import com.costonomy.mp.credit.domain.CreditPayment;
 import com.costonomy.mp.credit.domain.CreditPaymentSource;
+import com.costonomy.mp.credit.domain.CreditReversalRules;
 import com.costonomy.mp.credit.repository.CreditAgreementRepository;
 import com.costonomy.mp.credit.repository.CreditInvoiceRepository;
 import com.costonomy.mp.credit.repository.CreditPaymentClaimRepository;
 import com.costonomy.mp.credit.repository.CreditPaymentRepository;
+import com.costonomy.mp.credit.repository.CreditPaymentReversalRepository;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -76,6 +78,7 @@ public class CreditSupplierReadService {
     private final CreditAgreementRepository agreements;
     private final CreditInvoiceRepository invoices;
     private final CreditPaymentRepository payments;
+    private final CreditPaymentReversalRepository reversals;
     private final CreditPaymentClaimRepository claims;
     private final CreditAgreementService agreementService;
     private final CreditDirectory directory;
@@ -370,14 +373,27 @@ public class CreditSupplierReadService {
         var lineById = agreements.findAllById(rows.stream().map(CreditPayment::getCreditAgreementId).distinct().toList())
                 .stream().collect(Collectors.toMap(CreditAgreement::getId, a -> a));
         var outlets = directory.outlets(lineById.values().stream().map(CreditAgreement::getOutletId).distinct().toList());
+        var reversedAt = reversals.findByCreditPaymentIdIn(rows.stream().map(CreditPayment::getId).toList()).stream()
+                .collect(Collectors.toMap(r -> r.getCreditPaymentId(), r -> r.getReversedAt()));
+        var writtenOff = invoices.findAllById(rows.stream().map(CreditPayment::getCreditInvoiceId).distinct().toList())
+                .stream().filter(i -> i.getStatus() == CreditInvoiceStatus.WRITTEN_OFF).map(CreditInvoice::getId)
+                .collect(Collectors.toSet());
+        LocalDate today = LocalDate.now(clock);
         var items = rows.stream().map(p -> {
             var line = lineById.get(p.getCreditAgreementId());
             var outlet = outlets.get(line.getOutletId());
+            // Undo (B6): what the supplier may still take back, decided here and never by the app.
+            Instant reversed = reversedAt.get(p.getId());
+            LocalDate until = reversed == null && CreditReversalRules.sourceAllowed(p.getSource())
+                    ? CreditReversalRules.lastDay(p.getCreatedAt(), p.getMethod(), clock.getZone()) : null;
+            boolean reversible = until != null && CreditReversalRules.isOpen(until, today)
+                    && !writtenOff.contains(p.getCreditInvoiceId());
+            Long receiptId = p.getSource() == CreditPaymentSource.SUPPLIER_RECORDED ? p.getCreditRepaymentId() : null;
             return new CreditDtos.PaymentFeedItem(p.getId(), p.getPaidAt(),
                     LocalDate.ofInstant(p.getPaidAt(), clock.getZone()), line.getId(), line.getOutletId(),
                     outlet == null ? null : outlet.outletName(), outlet == null ? null : outlet.restaurantName(),
                     p.getCreditInvoiceId(), invoiceNumbers.get(p.getCreditInvoiceId()), m(p.getAmount()),
-                    p.getSource(), p.getMethod(), p.getReference());
+                    p.getSource(), p.getMethod(), p.getReference(), receiptId, reversible, until, reversed);
         }).toList();
         return new CreditDtos.PageOf<>(items, page, size, total, hasNext);
     }

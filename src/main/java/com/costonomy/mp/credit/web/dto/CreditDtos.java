@@ -228,7 +228,9 @@ public final class CreditDtos {
             String reference,
             Instant paidAt,
             /** The wallet ledger entry that funded it, for a WALLET payment; null otherwise. */
-            Long walletEntryId) {
+            Long walletEntryId,
+            /** When the supplier reversed it, else null: it is no longer counted in what was paid. */
+            Instant reversedAt) {
     }
 
     /** An invoice with who it is from, which order it is for, and what has been paid against it. */
@@ -611,6 +613,35 @@ public final class CreditDtos {
             BigDecimal amount,
             CreditPaymentSource source,
             String method,
-            String reference) {
+            String reference,
+            /** The receipt it was recorded in (SUPPLIER_RECORDED only); undo the whole receipt through it. Null otherwise. */
+            Long receiptId,
+            /** Server-computed: the supplier may undo it today (right source, inside the window, not reversed). */
+            boolean reversible,
+            /** The last India day it can be undone; null once reversed or when it never can be (WALLET). */
+            LocalDate reversibleUntil,
+            /** When the supplier reversed it, else null. A reversed payment stays in the feed and is not collected. */
+            Instant reversedAt) {
+    }
+
+    // ── Undoing a recorded payment (B6) ──────────────────────────────────
+
+    public record ReversalRequest(
+            @NotBlank(message = "Say why you are undoing this payment")
+            @Size(min = 3, max = 500, message = "Give a reason of 3 to 500 characters")
+            String reason) {
+    }
+
+    /** What an undo did: the invoices it reopened and the line as it stands now. */
+    public record ReversalResponse(
+            /** The receipt that was reversed; null when a payment recorded alone was. */
+            Long receiptId,
+            /** The payment that was reversed; null when a whole receipt was. */
+            Long paymentId,
+            BigDecimal amount,
+            String reason,
+            Instant reversedAt,
+            List<WalletRepaymentAllocation> allocations,
+            RepaymentAgreementState agreement) {
     }
 }

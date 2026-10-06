@@ -67,6 +67,21 @@ public class CreditLedger {
     }
 
     /**
+     * The supplier undid a payment of {@code amount}: the debt is owed again (D-140). The reverse of {@link #repay}, in
+     * the same transaction as the invoice and receipt it belongs to.
+     *
+     * @return false, with nothing written, when the debt would not fit under the limit
+     */
+    @Transactional
+    public boolean reverse(Long agreementId, Long invoiceId, BigDecimal amount, String description, Long actorId) {
+        if (!exposure.unrepay(agreementId, amount)) {
+            return false;
+        }
+        record(agreementId, CreditTransactionType.PAYMENT_REVERSED, amount, null, null, invoiceId, description, actorId);
+        return true;
+    }
+
+    /**
      * The restaurant repaid {@code amount}. Reduce what is drawn.
      *
      * <p>Called once a payment has been recorded against an invoice, so the debt

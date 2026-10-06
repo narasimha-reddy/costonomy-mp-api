@@ -28,6 +28,8 @@ public final class CreditEvents {
     public static final String CLAIM_CONFIRMED = "CreditClaimConfirmed";
     /** The supplier could not confirm a claim; the restaurant is told why (D-125). */
     public static final String CLAIM_REJECTED = "CreditClaimRejected";
+    /** The supplier undid a payment it had recorded; the restaurant is told (D-140). */
+    public static final String PAYMENT_REVERSED = "CreditPaymentReversed";
     // Bookkeeping on the exposure ledger; nobody is told.
     public static final String RESERVED = "CreditReserved";
     public static final String UTILIZED = "CreditUtilized";
@@ -37,7 +39,7 @@ public final class CreditEvents {
     public static final List<String> ALL = List.of(
             REQUESTED, APPROVED, REJECTED, MODIFIED, SUSPENDED, REINSTATED, OVERDUE,
             INVOICE_ISSUED, REPAYMENT_RECORDED, REPAYMENT_RECEIVED, CLAIM_SUBMITTED, CLAIM_CONFIRMED,
-            CLAIM_REJECTED, RESERVED, UTILIZED, RELEASED);
+            CLAIM_REJECTED, PAYMENT_REVERSED, RESERVED, UTILIZED, RELEASED);
 
     private CreditEvents() {
     }

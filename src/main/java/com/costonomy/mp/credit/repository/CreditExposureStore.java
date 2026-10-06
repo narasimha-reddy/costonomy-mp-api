@@ -136,4 +136,25 @@ public class CreditExposureStore {
                 """, amount, agreementId, amount);
         return applied == 1;
     }
+
+    /**
+     * Put back what is drawn, because the supplier undid a payment (D-140): the exact reverse of {@link #repay}.
+     *
+     * <p>The guard is the limit: the debt comes back only if it fits under what is approved, so a restaurant that drew
+     * the credit the payment freed cannot be pushed past its limit by a reversal. It is checked in the statement, the
+     * way {@link #reserve} does it, rather than left to the CHECK constraint, which would answer with a 500.
+     *
+     * @return true if the debt was put back; false if it would take reserved + utilized past the approved limit
+     */
+    public boolean unrepay(Long agreementId, BigDecimal amount) {
+        int applied = jdbc.update("""
+                update credit_agreement
+                   set utilized_amount = utilized_amount + ?,
+                       version = version + 1,
+                       updated_at = now(6)
+                 where id = ?
+                   and approved_limit - reserved_amount - utilized_amount >= ?
+                """, amount, agreementId, amount);
+        return applied == 1;
+    }
 }
