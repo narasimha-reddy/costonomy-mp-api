@@ -5783,3 +5783,10 @@ A supplier's only lever on a late restaurant was the overdue notice and a phone 
 - **File name** `statement-<outlet>-<from>-<to>.csv` (outlet name slugged to lower case letters, digits and dashes, so it cannot carry a formula) and `collections-store-<id>-<from|start>-<to|today>.csv`.
 - **Cap** 20,000 rows (`costonomy.mp.credit.export-max-rows`, only a test lowers it): beyond it 413 `CREDIT_EXPORT_TOO_LARGE`, details `max` and `rows`, never a silent cut. Every successful export writes an audit row `CREDIT_EXPORT` (actor; `CREDIT_AGREEMENT` or `SUPPLIER_STORE`; `STATEMENT_CSV rows=N` or `COLLECTIONS_CSV rows=N`; the range). A refusal writes none.
 
+## D-148 — Credit: the daily supplier digest
+
+One quiet daily notification instead of a push per overdue invoice (a plan rule).
+
+- `CreditDigestService`, job every 10 minutes (`costonomy.mp.credit.digest-interval`, ShedLock `credit-digest`), sends from `costonomy.mp.credit.digest-time` (08:30 IST) until 20:00, once per store per India day: `credit_digest_log` (V62, unique store and day, append-only) is written for every store looked at, with `sent = 0` when nothing was sent, so a restart or a second node cannot repeat it, and something that appears later the same day waits for tomorrow.
+- Content, all counted by the server: claims waiting (and how many for 7+ days), the overdue total and how many restaurants, due this week (today and the next 6 days, as on the receivables screen), credit requests waiting (lines in REQUESTED), payouts PENDING. Parts that are zero are left out; **everything zero sends nothing**. Event `CreditSupplierDigest`, aggregate the store; text in `{message}`.
+- **Recipients** are the store's people (a grant on the store or its organisation) whose role holds `CREDIT_VIEW`: a new notification audience `SUPPLIER_STORE_CREDIT` (`NotificationAudience.forSupplierStoreWith`). The plain store audience tells everyone with any grant, which would put credit totals in front of a person who may not see credit. In-app and push, never SMS.

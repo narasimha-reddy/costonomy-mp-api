@@ -54,3 +54,23 @@ CREATE TABLE credit_reminder_invoice (
 ALTER TABLE supplier_credit_policy
     ADD COLUMN auto_reminders_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER auto_suspend_enabled;
 
+-- One row per store per India day the digest was looked at, so a restart or a second node cannot send it twice.
+-- sent = 0 when everything was zero and nothing was sent. Append-only.
+CREATE TABLE credit_digest_log (
+    id                  BIGINT PRIMARY KEY AUTO_INCREMENT,
+    supplier_store_id   BIGINT       NOT NULL,
+    digest_date         DATE         NOT NULL,
+    sent                TINYINT(1)   NOT NULL,
+    claims_waiting      INT          NOT NULL,
+    claims_stale        INT          NOT NULL,
+    overdue_amount      DECIMAL(19,4) NOT NULL,
+    overdue_restaurants INT          NOT NULL,
+    due_week_amount     DECIMAL(19,4) NOT NULL,
+    requests_pending    INT          NOT NULL,
+    payouts_pending     INT          NOT NULL,
+    message             VARCHAR(1000) NULL,
+    created_at          TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+
+    CONSTRAINT fk_credit_digest_log_store FOREIGN KEY (supplier_store_id) REFERENCES supplier_store (id),
+    CONSTRAINT uk_credit_digest_log_day UNIQUE (supplier_store_id, digest_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

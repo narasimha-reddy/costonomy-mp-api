@@ -82,9 +82,11 @@ public class NotificationRelay {
                 continue;
             }
 
-            var recipients = rule.audience() == NotificationRule.Audience.OUTLET
-                    ? audience.forOutlet(scopeId)
-                    : audience.forSupplierStore(scopeId);
+            var recipients = switch (rule.audience()) {
+                case OUTLET -> audience.forOutlet(scopeId);
+                case SUPPLIER_STORE -> audience.forSupplierStore(scopeId);
+                case SUPPLIER_STORE_CREDIT -> audience.forSupplierStoreWith(scopeId, "CREDIT_VIEW");
+            };
 
             // Deliberately not excluding the actor. An order rejected at 6am is the
             // shift manager's problem whether or not they placed it, and the person

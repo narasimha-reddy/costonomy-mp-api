@@ -170,6 +170,7 @@ class MigrationIT extends AbstractIntegrationTest {
                         // Which invoices a reminder named (the unique key makes an automatic one once a day), and the
                         // record that a store's daily digest was looked at: facts about what was sent, never edited.
                         "credit_reminder_invoice",
+                        "credit_digest_log",
                         // Delivery's evidence trail. A courier's event, a driver's
                         // position and a booking attempt are records of what
                         // happened; editing one would rewrite the journey.

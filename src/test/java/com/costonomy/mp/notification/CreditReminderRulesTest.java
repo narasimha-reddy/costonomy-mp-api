@@ -35,4 +35,14 @@ class CreditReminderRulesTest {
         }
     }
 
+    @Test
+    @DisplayName("the digest goes to the store's credit viewers, in-app and push, never SMS")
+    void digestRule() {
+        var rules = NotificationRules.forEvent(CreditEvents.SUPPLIER_DIGEST);
+        assertThat(rules).hasSize(1);
+        assertThat(rules.get(0).audience()).isEqualTo(NotificationRule.Audience.SUPPLIER_STORE_CREDIT);
+        assertThat(rules.get(0).channels()).containsExactly(NotificationChannel.IN_APP, NotificationChannel.PUSH);
+        assertThat(rules.get(0).critical()).isFalse();
+        assertThat(CreditEvents.ALL).contains(CreditEvents.REMINDER, CreditEvents.SUPPLIER_DIGEST);
+    }
 }

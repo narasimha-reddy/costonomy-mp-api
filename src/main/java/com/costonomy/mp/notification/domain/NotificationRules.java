@@ -9,6 +9,7 @@ import static com.costonomy.mp.notification.domain.NotificationCategory.*;
 import static com.costonomy.mp.notification.domain.NotificationChannel.*;
 import static com.costonomy.mp.notification.domain.NotificationRule.Audience.OUTLET;
 import static com.costonomy.mp.notification.domain.NotificationRule.Audience.SUPPLIER_STORE;
+import static com.costonomy.mp.notification.domain.NotificationRule.Audience.SUPPLIER_STORE_CREDIT;
 
 /**
  * The catalogue. Doc 08 §1's event list, mapped to doc 08 §4's notifications.
@@ -397,6 +398,11 @@ public final class NotificationRules {
         add(rules, new NotificationRule(CreditEvents.REMINDER + "#SMS", OUTLET, CREDIT, true,
                 List.of(IN_APP, PUSH, SMS),
                 "Payment reminder", "{message}", "CREDIT_AGREEMENT"));
+
+        // The supplier's daily credit summary (D-148): only people who may see credit, in-app and push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.SUPPLIER_DIGEST, SUPPLIER_STORE_CREDIT, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit today", "{message}", "SUPPLIER_STORE"));
 
         // CreditReserved, CreditUtilized and CreditReleased are exposure bookkeeping and stay
         // silent on purpose; NotificationRulesTest keeps that list explicit.
