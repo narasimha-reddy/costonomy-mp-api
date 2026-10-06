@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Credit]
+
+### [feat/sup-b1-b2-permissions-reinstate] - Supplier collect permission (D-131) and manual-reinstate floor (D-132)
+- V57: `CREDIT_COLLECT` (SUP_OWNER, SUP_ADMIN, SUP_FINANCE_STAFF, SUP_STORE_MANAGER) and `CREDIT_WRITE_OFF` (SUP_OWNER, SUP_ADMIN), granted explicitly. Recording a payment and confirming or rejecting a claim now accept `CREDIT_COLLECT` or `CREDIT_MODIFY`; terms, suspend and reinstate stay `CREDIT_MODIFY`.
+
+---
+
 ## [Architecture & Security Audit]
 
 ### [Security Audit Report] - 2026-10-02

@@ -197,8 +197,8 @@ public class CreditClaimService {
                                             String idempotencyKey) {
         var seen = claims.findById(claimId).orElseThrow(() -> new NotFoundException("CreditPaymentClaim", claimId));
         // Only the supplier the money reached can say it arrived. A restaurant user gets "not found".
-        accessControl.requireScoped(actorId, Permissions.CREDIT_MODIFY, ScopeType.SUPPLIER_STORE,
-                seen.getSupplierStoreId(), "CreditPaymentClaim");
+        accessControl.requireAnyScoped(actorId, ScopeType.SUPPLIER_STORE, seen.getSupplierStoreId(),
+                "CreditPaymentClaim", Permissions.CREDIT_COLLECT, Permissions.CREDIT_MODIFY);
 
         BigDecimal requested = requestedAmount == null ? null : requestedAmount.setScale(2);
         var payload = new HashMap<String, Object>();
@@ -275,8 +275,8 @@ public class CreditClaimService {
 
     public CreditDtos.ClaimResponse reject(Long actorId, Long claimId, String reason) {
         var seen = claims.findById(claimId).orElseThrow(() -> new NotFoundException("CreditPaymentClaim", claimId));
-        accessControl.requireScoped(actorId, Permissions.CREDIT_MODIFY, ScopeType.SUPPLIER_STORE,
-                seen.getSupplierStoreId(), "CreditPaymentClaim");
+        accessControl.requireAnyScoped(actorId, ScopeType.SUPPLIER_STORE, seen.getSupplierStoreId(),
+                "CreditPaymentClaim", Permissions.CREDIT_COLLECT, Permissions.CREDIT_MODIFY);
 
         return txTemplate.execute(status -> {
             var claim = claims.lockById(claimId).orElseThrow(() -> new NotFoundException("CreditPaymentClaim", claimId));

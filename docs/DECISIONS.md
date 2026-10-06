@@ -5675,3 +5675,12 @@ Five rule gaps found by the credit edge-case review. No schema change (claim sta
   transaction (note "Invoice was settled before this was confirmed", no actor, no notification). They no longer count in
   `openClaimsAmount`/`reportableAmount`, are not in the supplier's SUBMITTED inbox, and stay in the claim lists as history. Confirm,
   reject and withdraw on one are 409 `CREDIT_CLAIM_STATE`. A claim larger than the new outstanding but not settled stays SUBMITTED.
+
+## D-131 — Credit: who may collect on a line (`CREDIT_COLLECT`) and who may write off
+
+Store managers receive the cash but did not hold `CREDIT_MODIFY`, so a payment went unrecorded and the line auto-suspended wrongly.
+
+- V57 adds `CREDIT_COLLECT` and grants it explicitly to SUP_OWNER, SUP_ADMIN, SUP_FINANCE_STAFF and SUP_STORE_MANAGER. (V5 gave owner and admin every supplier permission that existed *then*, so a later permission reaches nobody unless a migration grants it.)
+- Record a payment (`POST /credit/invoices/{id}/payments`) and confirm or reject a claim accept `CREDIT_COLLECT` **or** `CREDIT_MODIFY`, so no existing grant regresses. Terms, modify, suspend and reinstate stay `CREDIT_MODIFY` only: a store manager can collect but cannot change terms or suspend.
+- `CREDIT_WRITE_OFF` is added now (SUP_OWNER, SUP_ADMIN only) for the write-off work to come; nothing checks it yet.
+- A refusal is a 404, as for every credit endpoint (`AccessControlService.requireAnyScoped`).

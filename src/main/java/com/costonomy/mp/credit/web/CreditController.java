@@ -208,8 +208,8 @@ public class CreditController {
                     CLAIM_CONFIRMED). Leave `amount` out to confirm what was claimed, capped at what is outstanding
                     now; an explicit amount must be more than zero and at most both. Anything more is
                     `CREDIT_OVERPAYMENT`. Only a SUBMITTED claim can be confirmed, else 409 `CREDIT_CLAIM_STATE`
-                    (also when the invoice is already settled). Needs `CREDIT_MODIFY` on the store and an
-                    `Idempotency-Key`; confirming twice records one payment.
+                    (also when the invoice is already settled). Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store
+                    and an `Idempotency-Key`; confirming twice records one payment.
                     """)
     public ApiResponse<CreditDtos.ClaimResponse> confirmClaim(
             @PathVariable Long id,
@@ -224,7 +224,7 @@ public class CreditController {
     @PostMapping("/credit/claims/{id}/reject")
     @Operation(summary = "Say you could not confirm a restaurant's claim",
             description = "Needs a reason of 3 to 500 characters. No money effect. Only while SUBMITTED, else 409 "
-                    + "`CREDIT_CLAIM_STATE`. Needs `CREDIT_MODIFY` on the store.")
+                    + "`CREDIT_CLAIM_STATE`. Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store.")
     public ApiResponse<CreditDtos.ClaimResponse> rejectClaim(
             @PathVariable Long id, @Valid @RequestBody CreditDtos.RejectClaimRequest body) {
         return ApiResponse.ok(claims.reject(ActorContext.requireUserId(), id, body.reason()));
@@ -306,7 +306,7 @@ public class CreditController {
                     Recorded, not collected: the money moves directly between restaurant and
                     supplier and this reconciles it, reducing the outlet's utilization by the
                     same amount. Idempotent on `Idempotency-Key` — a repeated call must not
-                    reduce the debt twice.
+                    reduce the debt twice. Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; anyone else gets a 404.
                     """)
     public ApiResponse<CreditDtos.PaymentResponse> recordPayment(
             @PathVariable Long id,

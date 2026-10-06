@@ -123,6 +123,21 @@ public class AccessControlService {
         }
     }
 
+    /** {@link #requireScoped} satisfied by holding any one of {@code permissions}. */
+    public void requireAnyScoped(
+            Long userId, ScopeType scopeType, Long scopeId, String entityName, String... permissions) {
+
+        Set<String> held = permissionsAt(userId, scopeType, scopeId);
+        for (String permission : permissions) {
+            if (held.contains(permission)) {
+                return;
+            }
+        }
+        log.warn("Scope violation: user={} permissions={} {}={} — reported as not found",
+                userId, List.of(permissions), entityName, scopeId);
+        throw new com.costonomy.mp.common.error.NotFoundException(entityName, scopeId);
+    }
+
     /** Every scope a user holds any grant in. Backs {@code /auth/me} memberships. */
     @Transactional(readOnly = true)
     public List<UserRole> activeGrants(Long userId) {
