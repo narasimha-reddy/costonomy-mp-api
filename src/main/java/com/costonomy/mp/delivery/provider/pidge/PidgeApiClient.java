@@ -246,16 +246,17 @@ public class PidgeApiClient {
                     if (bestItem != null && lowestPrice != null) {
                         String networkName = bestItem.path("network_name").asText("Pidge");
                         String quoteId = "pidg_q_" + bestItem.path("network_id").asText("1") + "_" + System.currentTimeMillis();
-                        int etaMinutes = 45; // Default estimate
+                        // Only what Pidge states: an ETA or distance it did not give is left unknown, not made up.
+                        Integer etaMinutes = null;
                         var etaNode = bestItem.path("quote").path("eta");
                         if (etaNode.hasNonNull("pickup_min")) {
-                            etaMinutes = etaNode.path("pickup_min").asInt(45);
+                            etaMinutes = etaNode.path("pickup_min").asInt();
                         }
 
-                        double distance = 5.0;
+                        Double distance = null;
                         var distArray = data.path("distance");
-                        if (distArray.isArray() && !distArray.isEmpty()) {
-                            distance = distArray.get(0).path("distance").asDouble(5000.0) / 1000.0;
+                        if (distArray.isArray() && !distArray.isEmpty() && distArray.get(0).hasNonNull("distance")) {
+                            distance = distArray.get(0).path("distance").asDouble() / 1000.0;
                         }
 
                         Instant expiresAt = Instant.now().plusSeconds(900); // 15 mins

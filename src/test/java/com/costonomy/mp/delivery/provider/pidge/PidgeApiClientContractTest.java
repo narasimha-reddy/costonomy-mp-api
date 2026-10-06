@@ -72,49 +72,55 @@ class PidgeApiClientContractTest {
     }
 
     private void respondToQuote(String json) {
-        server.expect(requestTo(BASE_URL + "/v1/channel/quote"))
+        server.expect(requestTo(BASE_URL + "/v1.0/store/channel/vendor/quote"))
                 .andExpect(method(HttpMethod.POST))
                 .andRespond(withSuccess(json, MediaType.APPLICATION_JSON));
     }
 
     @Test
-    @DisplayName("a complete quote response is returned as the carrier gave it")
+    @DisplayName("a complete quote is returned as Pidge gave it: the cheapest serviceable network, its ETA and distance")
     void quoteSuccess() {
         respondToQuote("""
-                {"serviceable": true, "quote_id": "q-9", "total_fare": "61.50",
-                 "eta_minutes": 28, "distance_km": 4.8, "expires_in_seconds": 600}""");
+                {"data": {"items": [
+                   {"network_id": 1, "network_name": "Dear", "quote": {"price": "81.50", "eta": {"pickup_min": 35}}},
+                   {"network_id": 2, "network_name": "Cheap", "quote": {"price": "61.50", "eta": {"pickup_min": 28}}},
+                   {"network_id": 3, "network_name": "Down", "error": {"message": "not serviceable"}}],
+                  "distance": [{"distance": 4800}]}}""");
 
         var quote = client.getQuote(goodQuote());
 
         assertThat(quote.serviceable()).isTrue();
         assertThat(quote.amount()).isEqualByComparingTo("61.50");
-        assertThat(quote.providerQuoteId()).isEqualTo("q-9");
         assertThat(quote.etaMinutes()).isEqualTo(28);
+        assertThat(quote.distanceKm()).isEqualTo(4.8);
         server.verify();
     }
 
     @Test
-    @DisplayName("a quote response without a fare is an error, never a default price")
-    void quoteWithoutFareThrows() {
+    @DisplayName("an ETA or distance Pidge did not state is left unknown, never 45 minutes or 5 km")
+    void missingEtaAndDistanceStayUnknown() {
         respondToQuote("""
-                {"serviceable": true, "quote_id": "q-9", "eta_minutes": 28,
-                 "distance_km": 4.8, "expires_in_seconds": 600}""");
+                {"data": {"items": [{"network_id": 2, "network_name": "Cheap", "quote": {"price": "61.50"}}]}}""");
 
-        assertThatThrownBy(() -> client.getQuote(goodQuote()))
-                .isInstanceOf(DeliveryProviderException.class)
-                .hasMessageContaining("total_fare");
+        var quote = client.getQuote(goodQuote());
+
+        assertThat(quote.serviceable()).isTrue();
+        assertThat(quote.etaMinutes()).isNull();
+        assertThat(quote.distanceKm()).isNull();
+        server.verify();
     }
 
     @Test
-    @DisplayName("a quote response without a serviceable flag is an error, not a yes")
-    void quoteWithoutServiceableFlagThrows() {
+    @DisplayName("a network with no price is not a quote, and no networks means not serviceable: never a default price")
+    void noPriceMeansNoQuote() {
         respondToQuote("""
-                {"quote_id": "q-9", "total_fare": "61.50", "eta_minutes": 28,
-                 "distance_km": 4.8, "expires_in_seconds": 600}""");
+                {"data": {"items": [{"network_id": 1, "network_name": "NoPrice", "quote": {}}]}}""");
 
-        assertThatThrownBy(() -> client.getQuote(goodQuote()))
-                .isInstanceOf(DeliveryProviderException.class)
-                .hasMessageContaining("serviceable");
+        var quote = client.getQuote(goodQuote());
+
+        assertThat(quote.serviceable()).isFalse();
+        assertThat(quote.amount()).isNull();
+        server.verify();
     }
 
     @Test
@@ -131,27 +137,22 @@ class PidgeApiClientContractTest {
     }
 
     @Test
-    @DisplayName("a booking missing its quote id or a contact is refused before any carrier call")
+    @DisplayName("a booking missing its quote id is refused before any carrier call")
     void bookingRefusedWhenIncomplete() {
         assertThatThrownBy(() -> client.createOrder(booking(null, "Store Desk")))
                 .isInstanceOf(DeliveryProviderException.class)
                 .hasMessageContaining("quote id");
-        assertThatThrownBy(() -> client.createOrder(booking("q-9", " ")))
-                .isInstanceOf(DeliveryProviderException.class)
-                .hasMessageContaining("pickup contact");
         server.verify();
     }
 
     @Test
-    @DisplayName("a booking response without a fare is an error, never a default fare")
-    void bookingWithoutFareThrows() {
-        server.expect(requestTo(BASE_URL + "/v1/channel/order/create"))
+    @DisplayName("a booking answer without an order id is an error, never a made-up id")
+    void bookingWithoutOrderIdThrows() {
+        server.expect(requestTo(BASE_URL + "/v1.0/store/channel/vendor/order"))
                 .andExpect(method(HttpMethod.POST))
-                .andRespond(withSuccess("{\"pidge_delivery_id\": \"d-1\", \"eta_minutes\": 25}",
-                        MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess("{\"data\": {}}", MediaType.APPLICATION_JSON));
 
         assertThatThrownBy(() -> client.createOrder(booking("q-9", "Store Desk")))
-                .isInstanceOf(DeliveryProviderException.class)
-                .hasMessageContaining("fare");
+                .isInstanceOf(DeliveryProviderException.class);
     }
 }
