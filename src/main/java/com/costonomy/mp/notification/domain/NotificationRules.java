@@ -352,6 +352,12 @@ public final class NotificationRules {
                 "Credit available again",
                 "Your credit with {supplierName} is available again.", "CREDIT_AGREEMENT"));
 
+        // A supplier closed the line (D-136): the restaurant is told, with the supplier's reason. In-app and push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.CLOSED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit line closed",
+                "{supplierName} closed your credit line. {reason}", "CREDIT_AGREEMENT"));
+
         // CreditReserved, CreditUtilized and CreditReleased are exposure bookkeeping and stay
         // silent on purpose; NotificationRulesTest keeps that list explicit.
 

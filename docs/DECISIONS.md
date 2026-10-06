@@ -5702,3 +5702,13 @@ Without this the supplier's reinstate was undone by the next hourly sweep (the o
 - The sweep (`CreditJobs.suspendOverLimit`) and the automatic reinstate after a repayment use `max(maxOverdueAmount, overdue_floor)` as the tolerance (`CreditAgreement.overdueTolerance`). New overdue beyond the floor suspends again, by SYSTEM.
 - The floor is cleared when overdue reaches zero: in the repayment path (`reinstateIfOverdueCleared`) and by the sweep for any other way overdue became zero. A part payment does not clear it.
 - Not exposed on the API; it is server-set state.
+
+## D-136 — Credit: closing a line
+
+A supplier needed a way to end a relationship without leaving a dead line or a debt nobody tracks.
+
+- `POST /credit/agreements/{id}/close {reason}` (`CREDIT_MODIFY` on the store; anyone else 404). Allowed from ACTIVE and SUSPENDED only. A REQUESTED request is declined and an APPROVED offer withdrawn (reject), not closed: 409.
+- **Refused with 409 `INVALID_STATE_TRANSITION`** (details `owed`, `reserved`) while anything is owed (utilized, or any open invoice) or held for an order in flight (reserved). The supplier suspends the line to stop new orders and closes it once it is paid. Debt is never closed over.
+- The agreement row is taken `FOR UPDATE` before it is read (`CreditAgreementLockRepository`), and an order reserves with `status = 'ACTIVE'` in the same UPDATE, so an order racing a close either reserves first (the close then refuses) or is refused as `CREDIT_AGREEMENT_NOT_ACTIVE`.
+- CLOSED: `closed_at` set, suspension fields and the overdue floor cleared, audit `CREDIT_CLOSED`, event `CreditClosed` (restaurant told, in-app and push, never SMS, with the reason). Closing a CLOSED line answers 200 and changes nothing (a retry).
+- The restaurant may ask again: the unique (outlet, store) row is reused. `request()` already allowed a new round after REJECTED, EXPIRED and CLOSED when nothing is owed or held; it now also clears `closed_at`. A CLOSED line that still shows ₹1 owed (should not exist) is refused (409).

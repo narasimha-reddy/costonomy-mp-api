@@ -125,6 +125,8 @@ public class CreditAgreementService {
         agreement.setStatus(CreditAgreementStatus.REQUESTED);
         agreement.setSuspensionReason(null);
         agreement.setSuspensionSource(null);
+        // A new round is not a closed line (D-136).
+        agreement.setClosedAt(null);
         boolean fresh = agreement.getId() == null;
         try {
             agreements.saveAndFlush(agreement);
@@ -667,6 +669,11 @@ public class CreditAgreementService {
         Double km = Serviceability.distanceKm(
                 store.latitude(), store.longitude(), outlet.latitude(), outlet.longitude());
         return km == null ? null : BigDecimal.valueOf(km).setScale(1, RoundingMode.HALF_UP);
+    }
+
+    /** The agreement as the app reads it, for the lifecycle service that moves it (D-136). */
+    public CreditDtos.AgreementResponse toResponse(CreditAgreement agreement) {
+        return toResponse(agreement, agreement.getId() == null ? null : latestRequest(agreement.getId()));
     }
 
     private CreditDtos.AgreementResponse toResponse(CreditAgreement agreement, CreditRequest request) {

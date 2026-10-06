@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Credit]
 
+### [feat/sup-b9-b12-lifecycle-context] - Close a credit line (B9, D-136)
+#### Added
+- [Credit] `POST /api/v1/credit/agreements/{id}/close {reason}`: a supplier closes an ACTIVE or SUSPENDED line. Refused with 409 `INVALID_STATE_TRANSITION` (details `owed`, `reserved`) while anything is owed or held for an order in flight. The restaurant is told (`CreditClosed`), a closed line takes no orders, and the restaurant may ask again. Needs `CREDIT_MODIFY` on the store; others get 404.
+
 ### [Supplier payouts list] - B4
 #### Added
 - [Credit] `GET /api/v1/supplier-stores/{storeId}/credit/payouts?status=PENDING|APPLIED|ALL&from&to&page&size` and `GET .../payouts/{payoutId}`: the wallet repayments Mandi collected for the store, with gross, the commission as snapshotted at repayment time, net, the invoices each settled, and the settlement once applied; plus `summary {pendingNet, appliedNetThisMonth}`. Read-only, no schema change. Needs `CREDIT_VIEW` or `SETTLEMENT_VIEW` on the store; others get 404.
