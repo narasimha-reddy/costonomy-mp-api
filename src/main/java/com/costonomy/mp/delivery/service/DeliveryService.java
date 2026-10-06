@@ -390,7 +390,10 @@ public class DeliveryService {
         }
 
         var order = directory.order(delivery.getSupplierOrderId());
-        var tried = booking.triedProviders(deliveryId);
+        // Providers already tried are skipped when a booked partner failed and another is wanted. When nobody holds the
+        // delivery (no partner was found), that skip would rule out the only partner there is, forever: a retry then
+        // asks everyone again, as the automatic retry does (D-151).
+        var tried = isNoPartner(delivery) ? List.<String>of() : booking.triedProviders(deliveryId);
 
         // Stand the current courier down first, so we are not paying two.
         releaseCurrentProvider(delivery, reason == null ? "Reassigned" : reason);

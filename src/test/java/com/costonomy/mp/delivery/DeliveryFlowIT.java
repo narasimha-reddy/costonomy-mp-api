@@ -904,6 +904,32 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("a retry asks a partner that was tried before: with one partner, skipping it ruled it out forever")
+        void retryAsksPartnersTriedBefore() throws Exception {
+            var order = readyOrder();
+            long id = failedDelivery(order);
+            for (int provider : new int[] {1, 2}) {
+                jdbc.update("""
+                        insert into delivery_provider_attempt (delivery_id, delivery_provider_id, provider_code,
+                            attempt_number, attempt_type, outcome, started_at)
+                        select ?, id, code, ?, 'BOOKING', 'CANCELLED', now(6) from delivery_provider where id = ?
+                        """, id, provider, provider);
+            }
+            jdbc.update("update delivery set attempt_count = 2 where id = ?", id);
+            partnersBack();
+
+            String body = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/deliveries/" + id + "/reassign")
+                            .header("Authorization", "Bearer " + order.seller().token())
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{}"))
+                    .andReturn().getResponse().getContentAsString();
+
+            assertThat(json.readTree(body).at("/data/status").asText()).isEqualTo("PROVIDER_SELECTED");
+        }
+
+        @Test
         @DisplayName("the job books a partner once one is back, on the same delivery")
         void retryBooks() throws Exception {
             var order = readyOrder();
