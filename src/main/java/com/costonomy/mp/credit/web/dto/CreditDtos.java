@@ -416,6 +416,20 @@ public final class CreditDtos {
             BigDecimal confirmedAmount,
             Long creditPaymentId,
             Instant createdAt,
-            Instant decidedAt) {
+            Instant decidedAt,
+            /** India days since it was submitted, worked out here (D-139). */
+            int ageDays,
+            /** Still waiting for the supplier at 7 days or more. Never auto-rejected. */
+            boolean stale,
+            /** What is owed on the invoice now; 0 once settled. */
+            BigDecimal invoiceOutstanding,
+            /** All claims waiting for the supplier on the invoice, this one included while it waits. */
+            BigDecimal invoiceOpenClaimsAmount,
+            /** The same without this claim. */
+            BigDecimal invoiceOtherOpenClaimsAmount,
+            /** Another claim or a payment on this invoice with the same amount and the same reference or within 24h; else null. */
+            Long possibleDuplicateOf,
+            /** CLAIM or PAYMENT: which kind {@code possibleDuplicateOf} is; null when it is. */
+            String possibleDuplicateKind) {
     }
 }

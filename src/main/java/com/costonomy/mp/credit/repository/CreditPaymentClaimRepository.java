@@ -68,6 +68,19 @@ public interface CreditPaymentClaimRepository extends JpaRepository<CreditPaymen
             """)
     int supersede(@Param("ids") List<Long> ids, @Param("note") String note, @Param("now") java.time.Instant now);
 
+    /** Open claim totals for the given invoices in one query: rows of (invoice id, sum). */
+    @Query("""
+            select c.creditInvoiceId, sum(c.amount) from CreditPaymentClaim c
+             where c.creditInvoiceId in :invoiceIds and c.status = :status
+             group by c.creditInvoiceId
+            """)
+    List<Object[]> sumsByInvoices(@Param("invoiceIds") java.util.Collection<Long> invoiceIds,
+                                  @Param("status") CreditClaimStatus status);
+
+    /** Claims of the given invoices in any of the statuses, oldest first: what a duplicate hint compares against. */
+    List<CreditPaymentClaim> findByCreditInvoiceIdInAndStatusInOrderByIdAsc(
+            java.util.Collection<Long> invoiceIds, java.util.Collection<CreditClaimStatus> statuses);
+
     List<CreditPaymentClaim> findByCreditInvoiceIdOrderByIdDesc(Long creditInvoiceId);
 
     List<CreditPaymentClaim> findByCreditAgreementIdOrderByIdDesc(Long creditAgreementId);

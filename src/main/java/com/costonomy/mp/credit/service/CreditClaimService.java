@@ -11,6 +11,7 @@ import com.costonomy.mp.common.idempotency.IdempotencyService;
 import com.costonomy.mp.common.logging.TraceScope;
 import com.costonomy.mp.common.outbox.OutboxService;
 import com.costonomy.mp.common.text.Rupees;
+import com.costonomy.mp.credit.domain.CreditClaimAge;
 import com.costonomy.mp.credit.domain.CreditClaimStatus;
 import com.costonomy.mp.credit.domain.CreditEvents;
 import com.costonomy.mp.credit.domain.CreditInvoice;
@@ -55,6 +56,7 @@ public class CreditClaimService {
 
     private final CreditPaymentClaimRepository claims;
     private final CreditInvoiceRepository invoices;
+    private final com.costonomy.mp.credit.repository.CreditPaymentRepository payments;
     private final CreditInvoiceService invoiceService;
     private final CreditAgreementService agreements;
     private final CreditDirectory directory;
@@ -167,7 +169,7 @@ public class CreditClaimService {
                 actorId);
         log.info("Credit claim {} of {} on invoice {} (outlet {})", claim.getId(), Rupees.of(amount),
                 invoiceId, invoice.getOutletId());
-        return toResponse(claim, invoice.getInvoiceNumber(), outlet);
+        return respond(claim);
     }
 
     public CreditDtos.ClaimResponse withdraw(Long actorId, Long claimId) {
@@ -270,7 +272,7 @@ public class CreditClaimService {
                         "claimId", claimId),
                 actorId);
         log.info("Credit claim {} confirmed for {} on invoice {}", claimId, Rupees.of(amount), invoice.getId());
-        return toResponse(claim, invoice.getInvoiceNumber(), directory.outlet(invoice.getOutletId()));
+        return respond(claim);
     }
 
     public CreditDtos.ClaimResponse reject(Long actorId, Long claimId, String reason) {
@@ -305,7 +307,7 @@ public class CreditClaimService {
                             "reason", reason.trim(),
                             "claimId", claimId),
                     actorId);
-            return toResponse(claim, invoice.getInvoiceNumber(), directory.outlet(invoice.getOutletId()));
+            return respond(claim);
         });
     }
 
@@ -336,10 +338,7 @@ public class CreditClaimService {
     /** The claims of one invoice, newest first. The caller has already checked who may read the invoice. */
     @Transactional(readOnly = true)
     public List<CreditDtos.ClaimResponse> forInvoice(CreditInvoice invoice) {
-        var outlet = directory.outlet(invoice.getOutletId());
-        return claims.findByCreditInvoiceIdOrderByIdDesc(invoice.getId()).stream()
-                .map(claim -> toResponse(claim, invoice.getInvoiceNumber(), outlet))
-                .toList();
+        return respond(claims.findByCreditInvoiceIdOrderByIdDesc(invoice.getId()));
     }
 
     // ── helpers ──────────────────────────────────────────────────────────
@@ -361,26 +360,81 @@ public class CreditClaimService {
     }
 
     private List<CreditDtos.ClaimResponse> respond(List<CreditPaymentClaim> rows) {
-        var numbers = invoices.findAllById(rows.stream().map(CreditPaymentClaim::getCreditInvoiceId)
-                        .distinct().toList()).stream()
-                .collect(Collectors.toMap(CreditInvoice::getId, CreditInvoice::getInvoiceNumber));
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        var invoiceIds = rows.stream().map(CreditPaymentClaim::getCreditInvoiceId).distinct().toList();
+        var byId = invoices.findAllById(invoiceIds).stream().collect(Collectors.toMap(CreditInvoice::getId, i -> i));
         var outlets = new LinkedHashMap<Long, CreditDirectory.OutletInfo>();
         for (CreditPaymentClaim row : rows) {
             outlets.computeIfAbsent(row.getOutletId(), directory::outlet);
         }
-        return rows.stream()
-                .map(row -> toResponse(row, numbers.get(row.getCreditInvoiceId()), outlets.get(row.getOutletId())))
-                .toList();
+        var open = new HashMap<Long, BigDecimal>();
+        for (Object[] sum : claims.sumsByInvoices(invoiceIds, CreditClaimStatus.SUBMITTED)) {
+            open.put((Long) sum[0], (BigDecimal) sum[1]);
+        }
+        var comparable = claims.findByCreditInvoiceIdInAndStatusInOrderByIdAsc(invoiceIds,
+                List.of(CreditClaimStatus.SUBMITTED, CreditClaimStatus.CONFIRMED));
+        var paid = payments.findByCreditInvoiceIdInOrderByIdAsc(invoiceIds);
+        LocalDate today = invoiceService.today();
+
+        return rows.stream().map(row -> {
+            var invoice = byId.get(row.getCreditInvoiceId());
+            int age = CreditClaimAge.ageDays(row.getCreatedAt(), today, invoiceService.zone());
+            boolean waiting = row.getStatus() == CreditClaimStatus.SUBMITTED;
+            BigDecimal openTotal = open.getOrDefault(row.getCreditInvoiceId(), BigDecimal.ZERO);
+            BigDecimal outstanding = invoice == null || invoice.getStatus().isSettled()
+                    ? BigDecimal.ZERO : invoice.outstanding();
+            Object[] duplicate = waiting ? duplicateOf(row, comparable, paid) : null;
+            return new CreditDtos.ClaimResponse(
+                    row.getId(), row.getCreditInvoiceId(), invoice == null ? null : invoice.getInvoiceNumber(),
+                    row.getCreditAgreementId(), row.getOutletId(),
+                    outlets.get(row.getOutletId()) == null ? null : outlets.get(row.getOutletId()).outletName(),
+                    outlets.get(row.getOutletId()) == null ? null : outlets.get(row.getOutletId()).restaurantName(),
+                    row.getAmount(), row.getMethod(), row.getReference(), row.getPaidOn(), row.getNote(),
+                    row.getStatus(), row.getDecisionNote(), row.getConfirmedAmount(), row.getCreditPaymentId(),
+                    row.getCreatedAt(), row.getDecidedAt(),
+                    age, CreditClaimAge.isStale(row.getStatus(), age), outstanding, openTotal,
+                    waiting ? openTotal.subtract(row.getAmount()).max(BigDecimal.ZERO) : openTotal,
+                    duplicate == null ? null : (Long) duplicate[0], duplicate == null ? null : (String) duplicate[1]);
+        }).toList();
     }
 
-    private CreditDtos.ClaimResponse toResponse(CreditPaymentClaim claim, String invoiceNumber,
-                                                CreditDirectory.OutletInfo outlet) {
-        return new CreditDtos.ClaimResponse(
-                claim.getId(), claim.getCreditInvoiceId(), invoiceNumber, claim.getCreditAgreementId(),
-                claim.getOutletId(), outlet == null ? null : outlet.outletName(),
-                outlet == null ? null : outlet.restaurantName(),
-                claim.getAmount(), claim.getMethod(), claim.getReference(), claim.getPaidOn(), claim.getNote(),
-                claim.getStatus(), claim.getDecisionNote(), claim.getConfirmedAmount(), claim.getCreditPaymentId(),
-                claim.getCreatedAt(), claim.getDecidedAt());
+    /**
+     * A hint that a waiting claim repeats money already claimed or recorded (D-139): another claim still waiting or
+     * already confirmed, else a payment, on the same invoice, for the same amount, with the same reference or made
+     * within 24 hours of it. Claims first, lowest id first. Only a waiting claim is checked, so it has no payment of its own.
+     */
+    private static Object[] duplicateOf(CreditPaymentClaim claim, List<CreditPaymentClaim> claimsOnInvoices,
+                                        List<com.costonomy.mp.credit.domain.CreditPayment> paymentsOnInvoices) {
+        for (var other : claimsOnInvoices) {
+            if (!other.getCreditInvoiceId().equals(claim.getCreditInvoiceId()) || other.getId().equals(claim.getId())
+                    || other.getAmount().compareTo(claim.getAmount()) != 0) {
+                continue;
+            }
+            if (sameReference(claim.getReference(), other.getReference())
+                    || withinADay(claim.getCreatedAt(), other.getCreatedAt())) {
+                return new Object[]{other.getId(), "CLAIM"};
+            }
+        }
+        for (var payment : paymentsOnInvoices) {
+            if (!payment.getCreditInvoiceId().equals(claim.getCreditInvoiceId())
+                    || payment.getAmount().compareTo(claim.getAmount()) != 0) {
+                continue;
+            }
+            if (sameReference(claim.getReference(), payment.getReference())
+                    || withinADay(claim.getCreatedAt(), payment.getCreatedAt())) {
+                return new Object[]{payment.getId(), "PAYMENT"};
+            }
+        }
+        return null;
+    }
+
+    private static boolean sameReference(String a, String b) {
+        return a != null && b != null && !a.isBlank() && a.trim().equalsIgnoreCase(b.trim());
+    }
+
+    private static boolean withinADay(Instant a, Instant b) {
+        return a != null && b != null && java.time.Duration.between(a, b).abs().compareTo(java.time.Duration.ofHours(24)) <= 0;
     }
 }
