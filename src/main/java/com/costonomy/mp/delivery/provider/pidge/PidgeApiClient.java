@@ -368,6 +368,47 @@ public class PidgeApiClient {
         }
     }
 
+    /**
+     * Staging Sandbox API: Simulate order status retrieval.
+     * <p>Hits {@code GET /v1.0/store/channel/vendor/order/:id?dummy_status=:status}.
+     * Allowed statuses: cancelled, pending, fulfilled|registered, fulfilled|out for pickup,
+     * fulfilled|reached pickup, fulfilled|picked up, fulfilled|ofd, fulfilled|reached delivery,
+     * fulfilled|undelivered, fulfilled|delivered, fulfilled|rto out for delivery, fulfilled|rto delivered.
+     */
+    public JsonNode simulateOrderStatus(String pidgeDeliveryId, String dummyStatus) {
+        checkRateLimit();
+        var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/order/"
+                + pidgeDeliveryId + "?dummy_status=" + dummyStatus;
+        try {
+            var entity = new HttpEntity<>(createHeaders());
+            var response = restTemplate.exchange(url, HttpMethod.GET, entity, JsonNode.class);
+            return response.getBody();
+        } catch (Exception ex) {
+            log.error("Pidge sandbox simulateOrderStatus failed for {}: {}", pidgeDeliveryId, ex.getMessage());
+            throw new DeliveryProviderException("PIDGE", "Pidge sandbox status simulation failed: " + ex.getMessage(), false);
+        }
+    }
+
+    /**
+     * Staging Sandbox API: Simulate webhook dispatch from Pidge to our webhook URL.
+     * <p>Hits {@code POST /v1.0/store/channel/vendor/order/:id/webhook/events}.
+     * Payload: {@code {"dummy_status": ":status"}}.
+     */
+    public JsonNode triggerSandboxWebhook(String pidgeDeliveryId, String dummyStatus) {
+        checkRateLimit();
+        var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/order/"
+                + pidgeDeliveryId + "/webhook/events";
+        var payload = Map.of("dummy_status", dummyStatus);
+        try {
+            var entity = new HttpEntity<>(payload, createHeaders());
+            var response = restTemplate.postForEntity(url, entity, JsonNode.class);
+            return response.getBody();
+        } catch (Exception ex) {
+            log.error("Pidge sandbox triggerSandboxWebhook failed for {}: {}", pidgeDeliveryId, ex.getMessage());
+            throw new DeliveryProviderException("PIDGE", "Pidge sandbox webhook simulation failed: " + ex.getMessage(), false);
+        }
+    }
+
     public static DeliveryProvider.ProviderDeliveryStatus mapPidgeStatus(String pidgeStatus) {
         if (pidgeStatus == null) return DeliveryProvider.ProviderDeliveryStatus.PENDING;
         return switch (pidgeStatus.toUpperCase().trim()) {

@@ -8,6 +8,7 @@ import com.costonomy.mp.identity.security.ActorContext;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
 
@@ -162,6 +163,41 @@ public class AdminDeliveryController {
         }
 
         return ApiResponse.ok(rows);
+    }
+
+    // -----------------------------------------------------------------------
+    // Pidge Staging Sandbox Simulation
+    // -----------------------------------------------------------------------
+
+    @GetMapping("/pidge/sandbox/status")
+    @Operation(summary = "Pidge Sandbox: simulate status retrieval",
+               description = "Calls Pidge staging dummy GET endpoint. Allowed statuses: cancelled, pending, " +
+                             "fulfilled|registered, fulfilled|out for pickup, fulfilled|reached pickup, " +
+                             "fulfilled|picked up, fulfilled|ofd, fulfilled|reached delivery, fulfilled|undelivered, " +
+                             "fulfilled|delivered, fulfilled|rto out for delivery, fulfilled|rto delivered.")
+    public ApiResponse<Object> simulatePidgeStatus(
+            @RequestParam String pidgeDeliveryId,
+            @RequestParam String dummyStatus,
+            @Autowired(required = false) com.costonomy.mp.delivery.provider.pidge.PidgeApiClient pidgeApiClient) {
+        if (pidgeApiClient == null) {
+            throw new com.costonomy.mp.common.error.BusinessException(
+                    com.costonomy.mp.common.error.ErrorCode.INTERNAL_ERROR, "Pidge API client is not configured");
+        }
+        return ApiResponse.ok(pidgeApiClient.simulateOrderStatus(pidgeDeliveryId, dummyStatus));
+    }
+
+    @PostMapping("/pidge/sandbox/webhook")
+    @Operation(summary = "Pidge Sandbox: trigger simulated webhook",
+               description = "Calls Pidge staging dummy webhook trigger endpoint to dispatch a simulated callback event.")
+    public ApiResponse<Object> triggerPidgeWebhook(
+            @RequestParam String pidgeDeliveryId,
+            @RequestParam String dummyStatus,
+            @Autowired(required = false) com.costonomy.mp.delivery.provider.pidge.PidgeApiClient pidgeApiClient) {
+        if (pidgeApiClient == null) {
+            throw new com.costonomy.mp.common.error.BusinessException(
+                    com.costonomy.mp.common.error.ErrorCode.INTERNAL_ERROR, "Pidge API client is not configured");
+        }
+        return ApiResponse.ok(pidgeApiClient.triggerSandboxWebhook(pidgeDeliveryId, dummyStatus));
     }
 }
 
