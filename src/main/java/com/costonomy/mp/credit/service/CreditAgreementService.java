@@ -425,6 +425,13 @@ public class CreditAgreementService {
                     "This agreement can't be reinstated from " + agreement.getStatus() + ".");
         }
 
+        // Lifting the sweep's own suspension by hand is the supplier saying "I carry what is overdue now". Remember
+        // how much, so the next sweep does not undo it; only overdue beyond this suspends again (D-132). The server
+        // works the amount out; a supplier's own suspension has nothing to carry.
+        if (agreement.getSuspensionSource() == SuspensionSource.SYSTEM) {
+            BigDecimal overdue = invoiceService.duesFor(agreementId).overdue();
+            agreement.setOverdueFloor(overdue.signum() > 0 ? overdue : null);
+        }
         agreement.setStatus(CreditAgreementStatus.ACTIVE);
         agreement.setSuspendedAt(null);
         agreement.setSuspensionReason(null);

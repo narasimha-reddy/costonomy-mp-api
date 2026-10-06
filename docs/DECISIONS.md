@@ -5684,3 +5684,12 @@ Store managers receive the cash but did not hold `CREDIT_MODIFY`, so a payment w
 - Record a payment (`POST /credit/invoices/{id}/payments`) and confirm or reject a claim accept `CREDIT_COLLECT` **or** `CREDIT_MODIFY`, so no existing grant regresses. Terms, modify, suspend and reinstate stay `CREDIT_MODIFY` only: a store manager can collect but cannot change terms or suspend.
 - `CREDIT_WRITE_OFF` is added now (SUP_OWNER, SUP_ADMIN only) for the write-off work to come; nothing checks it yet.
 - A refusal is a 404, as for every credit endpoint (`AccessControlService.requireAnyScoped`).
+
+## D-132 — Credit: a manual reinstate of an auto-suspension carries the overdue it was lifted at
+
+Without this the supplier's reinstate was undone by the next hourly sweep (the overdue was still above the maximum), and the supplier stopped trusting the product.
+
+- `credit_agreement.overdue_floor` (V57, nullable). When a supplier manually reinstates a line whose `suspension_source` is SYSTEM, the server stores the line's overdue amount at that moment (null when nothing is overdue). A supplier's own suspension stores nothing.
+- The sweep (`CreditJobs.suspendOverLimit`) and the automatic reinstate after a repayment use `max(maxOverdueAmount, overdue_floor)` as the tolerance (`CreditAgreement.overdueTolerance`). New overdue beyond the floor suspends again, by SYSTEM.
+- The floor is cleared when overdue reaches zero: in the repayment path (`reinstateIfOverdueCleared`) and by the sweep for any other way overdue became zero. A part payment does not clear it.
+- Not exposed on the API; it is server-set state.

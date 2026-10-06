@@ -288,13 +288,17 @@ public class CreditInvoiceService {
             // would fail on its version. Read it again.
             entityManager.refresh(agreement);
         }
+        if (agreement != null && agreement.getOverdueFloor() != null && duesFor(agreementId).overdue().signum() == 0) {
+            agreement.setOverdueFloor(null);
+            agreements.save(agreement);
+        }
         if (agreement == null
                 || agreement.getStatus() != CreditAgreementStatus.SUSPENDED
                 || agreement.getSuspensionSource() != SuspensionSource.SYSTEM
                 || !agreement.getStatus().canTransitionTo(CreditAgreementStatus.ACTIVE)) {
             return;
         }
-        BigDecimal max = agreement.getMaxOverdueAmount();
+        BigDecimal max = agreement.overdueTolerance();
         if (max != null && duesFor(agreementId).overdue().compareTo(max) > 0) {
             return;
         }
@@ -315,6 +319,17 @@ public class CreditInvoiceService {
                         "supplierStoreId", agreement.getSupplierStoreId(),
                         "supplierName", supplierNameOf(agreement.getSupplierStoreId())),
                 null);
+    }
+
+    /** Forget the floor a manual reinstate left once nothing is overdue (D-132). For the sweep; repayments clear it above. */
+    @Transactional
+    public void clearOverdueFloorIfCleared(Long agreementId) {
+        var agreement = agreements.findById(agreementId).orElse(null);
+        if (agreement != null && agreement.getOverdueFloor() != null && duesFor(agreementId).overdue().signum() == 0) {
+            entityManager.refresh(agreement);
+            agreement.setOverdueFloor(null);
+            agreements.save(agreement);
+        }
     }
 
     private String supplierNameOf(Long supplierStoreId) {

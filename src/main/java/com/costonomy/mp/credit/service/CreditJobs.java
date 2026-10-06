@@ -58,14 +58,19 @@ public class CreditJobs {
             }
 
             BigDecimal overdue = invoices.duesFor(agreement.getId()).overdue();
-            if (overdue.compareTo(agreement.getMaxOverdueAmount()) <= 0) {
+            if (overdue.signum() == 0 && agreement.getOverdueFloor() != null) {
+                invoices.clearOverdueFloorIfCleared(agreement.getId());
+            }
+            // A supplier who lifted an earlier auto-suspension has accepted what was overdue then (D-132).
+            BigDecimal tolerance = agreement.overdueTolerance();
+            if (overdue.compareTo(tolerance) <= 0) {
                 continue;
             }
 
             try {
                 agreementService.suspendInternal(agreement,
                         "Overdue balance of %s is above the agreed maximum of %s"
-                                .formatted(overdue, agreement.getMaxOverdueAmount()),
+                                .formatted(overdue, tolerance),
                         null);
             } catch (RuntimeException ex) {
                 // One agreement must not stop the sweep — the next one may be the

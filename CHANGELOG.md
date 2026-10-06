@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### [feat/sup-b1-b2-permissions-reinstate] - Supplier collect permission (D-131) and manual-reinstate floor (D-132)
 - V57: `CREDIT_COLLECT` (SUP_OWNER, SUP_ADMIN, SUP_FINANCE_STAFF, SUP_STORE_MANAGER) and `CREDIT_WRITE_OFF` (SUP_OWNER, SUP_ADMIN), granted explicitly. Recording a payment and confirming or rejecting a claim now accept `CREDIT_COLLECT` or `CREDIT_MODIFY`; terms, suspend and reinstate stay `CREDIT_MODIFY`.
 
+- V57: `credit_agreement.overdue_floor`. A supplier's manual reinstate of a SYSTEM (overdue-sweep) suspension stores the overdue amount at that moment; the sweep suspends again only above `max(maxOverdueAmount, overdue_floor)`, and the floor clears when overdue returns to zero. No API change.
+
 ---
 
 ## [Architecture & Security Audit]
