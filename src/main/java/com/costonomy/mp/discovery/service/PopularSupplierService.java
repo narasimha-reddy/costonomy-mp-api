@@ -64,11 +64,8 @@ public class PopularSupplierService {
     public List<DiscoveryDtos.PopularSupplier> forOutlet(Long outletId, int limit, Long categoryId,
                                                          BigDecimal radiusKm, Boolean openNow,
                                                          Integer minRating, String sort) {
-        String effectiveSort = sort == null || sort.isBlank() ? "nearest" : sort.trim();
-        if (!"nearest".equalsIgnoreCase(effectiveSort) && !"rating".equalsIgnoreCase(effectiveSort)) {
-            throw new com.costonomy.mp.common.error.BusinessException(
-                    com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR, "Unknown sort: " + sort);
-        }
+        String effectiveSort = SupplierListFilters.requireSort(sort);
+        SupplierListFilters.requireMinRating(minRating);
 
         var outlet = outletId == null ? null : directory.outlet(outletId).orElse(null);
 
@@ -116,7 +113,10 @@ public class PopularSupplierService {
 
         var storeIdsAll = stores.stream().map(StoreRow::id).toList();
         var storeInfo = directory.stores(storeIdsAll);
-        var ratingsAll = performance.forStores(storeIdsAll);
+        // Ratings are an all-time aggregate over order history. They are needed for every store only to filter or sort
+        // by rating; otherwise they are fetched for the page that is returned (D-147).
+        boolean needsRatings = minRating != null || "rating".equals(effectiveSort);
+        var ratingsAll = needsRatings ? performance.forStores(storeIdsAll) : null;
 
         // Filter by serviceability, distance radius, openNow, minRating BEFORE applying the limit.
         int clampedLimit = Math.min(Math.max(1, limit), 100);
@@ -146,7 +146,7 @@ public class PopularSupplierService {
                 continue;
             }
 
-            var metrics = ratingsAll.get(store.id());
+            var metrics = ratingsAll == null ? null : ratingsAll.get(store.id());
             BigDecimal avgRating = metrics == null ? null : metrics.averageRating().orElse(null);
             int ratingCount = metrics == null ? 0 : metrics.ratingCount();
             if (minRating != null) {
@@ -159,13 +159,16 @@ public class PopularSupplierService {
             candidates.add(new SizedPop(store, distance, avgRating, ratingCount, isOpen, directOrders));
         }
 
-        if ("rating".equalsIgnoreCase(effectiveSort)) {
+        if ("rating".equals(effectiveSort)) {
             candidates.sort(Comparator.comparing(
                     (SizedPop s) -> s.avgRating() == null ? BigDecimal.valueOf(-1) : s.avgRating(),
                     Comparator.reverseOrder())
                     .thenComparing(s -> s.distanceKm() == null ? Double.MAX_VALUE : s.distanceKm())
                     .thenComparing(s -> s.store().id()));
         } else {
+            // Nearest first where both ends are located. A supplier with no coordinates sorts last rather than being
+            // dropped: they can still be ordered from, and a directory that hides them is wrong in a way a kitchen
+            // cannot see.
             candidates.sort((a, b) -> {
                 if (a.distanceKm() == null && b.distanceKm() == null) return 0;
                 if (a.distanceKm() == null) return 1;
@@ -174,7 +177,17 @@ public class PopularSupplierService {
             });
         }
 
-        var ranked = candidates.stream().limit(clampedLimit).toList();
+        List<SizedPop> ranked = candidates.stream().limit(clampedLimit).toList();
+        if (ratingsAll == null) {
+            var pageRatings = performance.forStores(ranked.stream().map(entry -> entry.store().id()).toList());
+            ranked = ranked.stream().map(entry -> {
+                var metrics = pageRatings.get(entry.store().id());
+                return new SizedPop(entry.store(), entry.distanceKm(),
+                        metrics == null ? null : metrics.averageRating().orElse(null),
+                        metrics == null ? 0 : metrics.ratingCount(),
+                        entry.openNow(), entry.directOrdersEnabled());
+            }).toList();
+        }
 
         var selectedStoreIds = ranked.stream().map(entry -> entry.store().id()).toList();
         var categories = categoriesFor(selectedStoreIds);

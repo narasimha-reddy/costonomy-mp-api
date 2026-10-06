@@ -6036,8 +6036,7 @@ The buyer's supplier lists (`GET /api/v1/search/suppliers` and `GET /api/v1/outl
    - `minRating=3|4`: excludes stores with an average rating below the threshold. Stores without any rating yet are excluded only when `minRating` is specified.
    - `sort=nearest` (default) vs `sort=rating` (highest average rating first, then nearest distance, then store id for deterministic tie-breaking). Unknown sort returns 422 `VALIDATION_ERROR`.
    - `reach=all` (used by credit requests) continues to bypass serviceability and is only affected by the new filters if explicitly passed.
-2. **Popular suppliers remain unpaged.**
-   `GET /api/v1/outlets/{outletId}/suppliers/popular` is an unpaged showcase tile list capped at 100 entries (`limit`, clamped between 1 and 100, default 10). Because the frontend renders popular suppliers as a fixed horizontal or categorized showcase without infinite scroll or pagination, adding full offset/limit paging would add unnecessary complexity without user benefit. The filters (`radiusKm`, `openNow`, `minRating`) and sort (`sort=nearest|rating`) are applied to popular suppliers before clamping to the requested limit.
+2. **Popular suppliers remain unpaged.** `GET /api/v1/outlets/{outletId}/suppliers/popular` is a showcase list capped at 100 entries (`limit`, clamped to 1 to 100, default 10), not a directory, so it takes the same filters and sort but no offset.
 3. **Tests:** `StorefrontIT$Suppliers.filtersAndSortByRating` and `StorefrontIT$Popular.popularFiltersAndSort`. Verified with mutation testing.
 
 ## D-148 — Quick wins from the database audit
@@ -6054,4 +6053,10 @@ From `docs/performance/DB_BOTTLENECKS.md`: the changes that are small, low-risk 
 **Not done:** the structural fixes in the audit (nested transactions, the delivery poll, outbox draining, order-inbox N+1, search design, a real cache layer). Caffeine is not available offline here, so caching used an in-memory snapshot like `RolePermissionCatalog`; a proper cache needs the dependency and an eviction design.
 
 **Tests:** `RetentionPurgerIT` (each rule deletes the old and keeps the recent, a backlog clears across batches, FAILED and PENDING outbox rows stay, and the indexes exist), `RoleCodeCacheTest`, `SearchSuggestionsIT`. Mutation-checked.
+
+**Review fixes (after D-147 first landed):**
+- **Ratings are fetched only when needed.** The popular list had begun computing all-time ratings (five aggregate queries over order history) for *every* store on each call, even with no filter. It now does that only for `minRating` or `sort=rating`, and otherwise looks ratings up for the returned page only, as before.
+- **`minRating` is validated:** 1 to 5, otherwise 422 on both lists, through one shared check (`SupplierListFilters`) that also validates `sort` (`nearest` or `rating`, case-insensitive).
+- **Tests added:** total and next offset describe the filtered list and two pages cover it without repeats; `reach=all` still skips serviceability and still obeys the filters; bad `minRating` and `sort` are refused on both lists; ratings are not loaded for every store without a filter (a spy on the performance provider). Mutation-checked.
+- **App:** the search Suppliers tab starts within 10 km again (the directory's old default), an empty list with filters says "No suppliers found" whatever aisle is chosen, and a star filter notes that unrated suppliers are not shown.
 

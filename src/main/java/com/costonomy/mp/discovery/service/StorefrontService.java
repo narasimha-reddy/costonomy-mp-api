@@ -180,10 +180,8 @@ public class StorefrontService {
                                                             BigDecimal radiusKm, String reach,
                                                             Integer offset, Integer limit,
                                                             Boolean openNow, Integer minRating, String sort) {
-        String effectiveSort = sort == null || sort.isBlank() ? "nearest" : sort.trim();
-        if (!"nearest".equalsIgnoreCase(effectiveSort) && !"rating".equalsIgnoreCase(effectiveSort)) {
-            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "Unknown sort: " + sort);
-        }
+        String effectiveSort = SupplierListFilters.requireSort(sort);
+        SupplierListFilters.requireMinRating(minRating);
 
         String term = query == null ? "" : query.trim().toLowerCase();
         boolean filtered = term.length() >= MIN_TERM;
@@ -297,7 +295,7 @@ public class StorefrontService {
         }
 
         // Sort: nearest (default) or rating (highest first, then nearest, then store id)
-        if ("rating".equalsIgnoreCase(effectiveSort)) {
+        if ("rating".equals(effectiveSort)) {
             sized.sort(Comparator.comparing(
                     (Sized s) -> s.result().averageRating() == null ? BigDecimal.valueOf(-1) : s.result().averageRating(),
                     Comparator.reverseOrder())

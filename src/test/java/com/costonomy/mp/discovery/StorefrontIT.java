@@ -1,5 +1,6 @@
 package com.costonomy.mp.discovery;
 
+import com.costonomy.mp.discovery.service.SupplierPerformanceProvider;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -32,6 +34,7 @@ class StorefrontIT extends AbstractIntegrationTest {
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
+    @SpyBean private SupplierPerformanceProvider performance;
 
     private ApiClient api;
 
@@ -502,11 +505,116 @@ class StorefrontIT extends AbstractIntegrationTest {
         }
     }
 
+
+    @Nested
+    @DisplayName("supplier list filters, paging and reach (D-147)")
+    class FilterPaging {
+
+        @Test
+        @DisplayName("total and nextOffset describe the filtered list, and two pages cover it without repeats")
+        void pagingStaysCorrectWithFilters() throws Exception {
+            var outlet = newOutlet();
+            String run = "G" + System.nanoTime();
+            for (int i = 1; i <= 3; i++) {
+                rateStore(outlet, newStore(run + " Five" + i, HYD_LAT, HYD_LON), 5);
+            }
+            for (int i = 1; i <= 2; i++) {
+                rateStore(outlet, newStore(run + " Three" + i, HYD_LAT, HYD_LON), 3);
+            }
+            newStore(run + " Unrated", HYD_LAT, HYD_LON);
+
+            var first = directory(outlet, "&q=" + run + "&minRating=4&limit=2&offset=0");
+            var second = directory(outlet, "&q=" + run + "&minRating=4&limit=2&offset=2");
+
+            assertThat(first.get("total").asInt()).as("only the three five-star stores count").isEqualTo(3);
+            assertThat(first.get("suppliers")).hasSize(2);
+            assertThat(first.get("nextOffset").asInt()).isEqualTo(2);
+            assertThat(second.get("suppliers")).hasSize(1);
+            assertThat(second.get("nextOffset").isNull()).isTrue();
+
+            var names = new java.util.ArrayList<String>();
+            names.addAll(first.get("suppliers").findValuesAsText("supplierName"));
+            names.addAll(second.get("suppliers").findValuesAsText("supplierName"));
+            assertThat(names).hasSize(3).doesNotHaveDuplicates()
+                    .allSatisfy(name -> assertThat(name).contains("Five"));
+        }
+
+        @Test
+        @DisplayName("reach=all still skips serviceability, and the filters still apply to it")
+        void reachAllSkipsServiceabilityNotFilters() throws Exception {
+            var outlet = newOutlet();
+            String run = "H" + System.nanoTime();
+            var farFive = newStore(run + " FarFive", FAR_LAT, FAR_LON);
+            var farThree = newStore(run + " FarThree", FAR_LAT, FAR_LON);
+            rateStore(outlet, farFive, 5);
+            rateStore(outlet, farThree, 3);
+
+            var serviceable = directory(outlet, "&q=" + run).get("suppliers").findValuesAsText("supplierName");
+            var everyone = directory(outlet, "&q=" + run + "&reach=all").get("suppliers").findValuesAsText("supplierName");
+            var everyoneFiltered = directory(outlet, "&q=" + run + "&reach=all&minRating=4")
+                    .get("suppliers").findValuesAsText("supplierName");
+
+            assertThat(serviceable).as("far stores are not serviceable").isEmpty();
+            assertThat(everyone).contains(run + " FarFive", run + " FarThree");
+            assertThat(everyoneFiltered).containsExactly(run + " FarFive");
+        }
+
+        @Test
+        @DisplayName("a minimum rating outside 1 to 5 is refused on both lists, as an unknown sort is")
+        void badFiltersAreRefused() throws Exception {
+            var outlet = newOutlet();
+
+            for (String bad : new String[] {"0", "6", "-1"}) {
+                var refused = api.get(outlet.token(),
+                        "/api/v1/search/suppliers?outletId=" + outlet.outletId() + "&minRating=" + bad);
+                assertThat(refused.at("/error/code").asText()).as("directory minRating=" + bad)
+                        .isEqualTo("VALIDATION_ERROR");
+                var popularRefused = api.get(outlet.token(),
+                        "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?minRating=" + bad);
+                assertThat(popularRefused.at("/error/code").asText()).as("popular minRating=" + bad)
+                        .isEqualTo("VALIDATION_ERROR");
+            }
+            var badSort = api.get(outlet.token(),
+                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?sort=bogus");
+            assertThat(badSort.at("/error/code").asText()).isEqualTo("VALIDATION_ERROR");
+        }
+    }
+
     // ── Popular suppliers ────────────────────────────────────────────────
 
     @Nested
     @DisplayName("popular suppliers")
     class Popular {
+
+        @Test
+        @DisplayName("ratings are looked up for the returned page only, unless a filter or sort needs every store's (D-147)")
+        void ratingsAreNotLoadedForEveryStoreWithoutAFilter() throws Exception {
+            var outlet = newOutlet();
+            long product = TestCatalog.freshProduct(jdbc, "ratingload");
+            for (int i = 1; i <= 4; i++) {
+                stock(newStore("Rated " + System.nanoTime() + " " + i, HYD_LAT, HYD_LON), product,
+                        code("RL" + i, product), "100");
+            }
+
+            org.mockito.Mockito.clearInvocations(performance);
+            api.get(outlet.token(), "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=2");
+            int largestWithoutFilter = largestRatingLookup();
+
+            org.mockito.Mockito.clearInvocations(performance);
+            api.get(outlet.token(), "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=2&minRating=1");
+            int largestWithFilter = largestRatingLookup();
+
+            assertThat(largestWithoutFilter).as("only the two returned suppliers").isLessThanOrEqualTo(2);
+            assertThat(largestWithFilter).as("every store, to filter on rating").isGreaterThan(2);
+        }
+
+        /** The most store ids passed to one rating lookup since the spy was last cleared. */
+        private int largestRatingLookup() {
+            return org.mockito.Mockito.mockingDetails(performance).getInvocations().stream()
+                    .filter(call -> call.getMethod().getName().equals("forStores"))
+                    .mapToInt(call -> ((java.util.Collection<?>) call.getArgument(0)).size())
+                    .max().orElse(0);
+        }
 
         @Test
         @DisplayName("a far supplier is excluded and does not eat the limit")
