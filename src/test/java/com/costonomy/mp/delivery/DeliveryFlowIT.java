@@ -46,6 +46,8 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private DeliveryJobs deliveryJobs;
     @Autowired private DeliveryRetryJobs retryJobs;
+    @Autowired private com.costonomy.mp.delivery.repository.DeliveryRepository deliveryRepository;
+    @Autowired private org.springframework.transaction.PlatformTransactionManager transactions;
     @Autowired private TestPaymentAccess payments;
 
     @Autowired
@@ -948,6 +950,34 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
                     Object.class, id)).isNull();
             assertThat(jdbc.queryForObject("select count(*) from delivery where supplier_order_id = ?",
                     Integer.class, order.orderId())).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the retry queries read the UTC clock: a database zone that is not UTC must not push a fresh "
+                + "delivery out of its retry window or straight into the own-delivery offer")
+        void retryClockIsUtcWhateverTheDatabaseZone() throws Exception {
+            var order = readyOrder();
+            long id = failedDelivery(order);
+
+            // One transaction so the session zone, the queries and the claim share a connection; the zone is put
+            // back before the connection returns to the pool. no_partner_since was stored as UTC by Hibernate, so
+            // against a +05:30 session now(6) would be five and a half hours ahead of it.
+            var seen = new org.springframework.transaction.support.TransactionTemplate(transactions).execute(status -> {
+                jdbc.execute("set time_zone = '+05:30'");
+                try {
+                    boolean dueForRetry = deliveryRepository.dueForRetry(1800, 120, 5, 100).contains(id);
+                    boolean dueForOffer = deliveryRepository.dueForOffer(2700, 100).contains(id);
+                    int claimed = deliveryRepository.claimRetry(id, 1800, 120, 5);
+                    return new boolean[] {dueForRetry, dueForOffer, claimed == 1};
+                } finally {
+                    jdbc.execute("set time_zone = '+00:00'");
+                }
+            });
+
+            assertThat(seen[0]).as("a delivery that failed seconds ago is due for a retry").isTrue();
+            assertThat(seen[1]).as("and is not yet due for the own-delivery offer").isFalse();
+            assertThat(seen[2]).as("and the retry can be claimed").isTrue();
+            assertThat(retries(id)).isEqualTo(1);
         }
 
         @Test

@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Deliveries with no partner (D-151): an automatic retry job (every 2 min for 30 min), an offer to the supplier after 45 min, `POST /deliveries/{id}/switch-to-own`, and notifications to both sides. V77.
 
 ### Fixed
+- Delivery (D-153): the no-partner retry and own-delivery offer compare UTC times (they never fired on a non-UTC database); a quote refused for distance no longer stalls the outbox.
 - Delivery with no partner available (D-150): the existing reassign endpoint re-quotes a `QUOTE_FAILED` delivery; test added. The supplier app now offers "Try again".
 - Supplier list filters (D-147): the popular list no longer computes every store's ratings unless a rating filter or sort needs them, and `minRating` outside 1 to 5 is refused on both lists.
 - Sending one request now re-checks its prices like the basket send, and the free-delivery threshold no longer waives Costonomy rider fees or overrides a charge the supplier offered (D-146).

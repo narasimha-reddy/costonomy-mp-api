@@ -34,6 +34,9 @@ import java.util.Optional;
 @Slf4j
 public class DeliveryQuotingService {
 
+    /** The provider_code on the quote recorded when the drop is beyond the radius and no provider is asked. */
+    static final String RADIUS_LIMIT_PROVIDER_CODE = "RADIUS_LIMIT";
+
     private final DeliveryProviderRegistry registry;
     private final DeliveryQuoteRepository quotes;
     private final ColdChainCarrierGate coldChainGate;
@@ -74,6 +77,10 @@ public class DeliveryQuotingService {
                     delivery.getId(), distanceKm, maxRadiusKm);
             var unserviceableQuote = new DeliveryQuote();
             unserviceableQuote.setDeliveryId(delivery.getId());
+            // No provider was asked, but delivery_quote.provider_code is NOT NULL. Leaving it null made this insert
+            // fail inside the outbox relay's one transaction, which rolled the whole batch back every two seconds
+            // and held every other event behind it.
+            unserviceableQuote.setProviderCode(RADIUS_LIMIT_PROVIDER_CODE);
             unserviceableQuote.setStatus("UNSERVICEABLE");
             unserviceableQuote.setDistanceKm(BigDecimal.valueOf(distanceKm).setScale(4, RoundingMode.HALF_UP));
             unserviceableQuote.setFailureReason("Exceeds %s km intra-city radius limit".formatted(maxRadiusKm));
