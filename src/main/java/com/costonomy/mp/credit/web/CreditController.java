@@ -7,6 +7,7 @@ import com.costonomy.mp.credit.domain.CreditClaimStatus;
 import com.costonomy.mp.credit.service.CreditAgreementService;
 import com.costonomy.mp.credit.service.CreditClaimService;
 import com.costonomy.mp.credit.service.CreditReadService;
+import com.costonomy.mp.credit.service.CreditSupplierPaymentService;
 import com.costonomy.mp.credit.service.CreditRepaymentService;
 import com.costonomy.mp.credit.service.CreditWalletRepaymentService;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
@@ -37,6 +38,7 @@ public class CreditController {
     private final CreditAgreementService agreements;
     private final CreditRepaymentService repayments;
     private final CreditWalletRepaymentService walletRepayments;
+    private final CreditSupplierPaymentService supplierPayments;
     private final CreditReadService reads;
     private final CreditClaimService claims;
 
@@ -315,6 +317,46 @@ public class CreditController {
 
         return ApiResponse.ok(repayments.record(
                 ActorContext.requireUserId(), id, body, idempotencyKey));
+    }
+
+    @PostMapping("/credit/agreements/{id}/payments/preview")
+    @Operation(summary = "What recording a payment would do",
+            description = """
+                    A pure read: nothing is written, no key is needed. Returns the allocations (oldest due date first,
+                    ties by invoice id; or only the chosen `invoiceIds`, in due-date order among them), each invoice's
+                    `statusAfter`, the line's position after (`due`, `overdue`, `available`, `status`), and
+                    `pendingClaims`: the restaurant's open "I paid" claims on the invoices that would be paid, which the
+                    supplier may prefer to confirm. More than the targeted invoices owe is `CREDIT_OVERPAYMENT`
+                    (details: `outstanding`). Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; others get 404.
+                    """)
+    public ApiResponse<CreditDtos.SupplierPaymentPreviewResponse> previewPayment(
+            @PathVariable Long id, @Valid @RequestBody CreditDtos.SupplierPaymentPreviewRequest body) {
+        return ApiResponse.ok(supplierPayments.preview(ActorContext.requireUserId(), id, body));
+    }
+
+    @PostMapping("/credit/agreements/{id}/payments")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Record a payment received for a credit line",
+            description = """
+                    Money the restaurant paid the supplier outside Mandi. One receipt, split over the open invoices
+                    oldest due date first (or the chosen `invoiceIds`), all in one transaction. `method` is CASH, UPI,
+                    BANK_TRANSFER, CHEQUE or CARD (never ADJUSTMENT); `reference` (4 to 64 characters, trimmed) is
+                    required for UPI, BANK_TRANSFER and CHEQUE. `paidOn` is an India calendar day, not in the future and
+                    not before the oldest targeted invoice was issued. Needs an `Idempotency-Key`; a repeat returns the
+                    first response. Allowed whatever the status of the line.
+
+                    Refused with `CREDIT_OVERPAYMENT` (details: `outstanding`) when more than is owed, and with 409
+                    `CREDIT_DUPLICATE_REFERENCE` (details: `receiptId`, `paidOn`, `amount`) when the same reference was
+                    recorded in this store in the last 90 days, unless `allowDuplicateReference` is true. In every
+                    refusal nothing moves. Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; others get 404.
+                    """)
+    public ApiResponse<CreditDtos.SupplierPaymentResponse> recordReceipt(
+            @PathVariable Long id,
+            @Valid @RequestBody CreditDtos.SupplierPaymentRequest body,
+            @Parameter(description = "Client-generated key, required for this operation, 1 to 100 characters")
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        requireKey(idempotencyKey);
+        return ApiResponse.ok(supplierPayments.record(ActorContext.requireUserId(), id, body, idempotencyKey));
     }
 
     /** Checked by hand: a @Size on a header parameter surfaces as a 500 on this stack, not the validation error. */

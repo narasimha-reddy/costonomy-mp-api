@@ -134,6 +134,14 @@ public enum ErrorCode {
             "That's more than you owe."),
 
     /**
+     * The supplier recorded a payment whose reference (a UTR or cheque number) is already on a payment in this store
+     * within 90 days (D-134). The details carry {@code receiptId} (null for a payment recorded one invoice at a time),
+     * {@code paidOn} and {@code amount} of the earlier one; sending {@code allowDuplicateReference: true} records it anyway.
+     */
+    CREDIT_DUPLICATE_REFERENCE(HttpStatus.CONFLICT,
+            "That payment reference was already recorded."),
+
+    /**
      * A claim that "I paid" is not in a state that allows this (D-125): it was already confirmed, rejected or
      * withdrawn, or the invoice it points at is already settled. Nothing was changed.
      */
