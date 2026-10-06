@@ -21,6 +21,8 @@ public interface CreditPaymentRepository extends JpaRepository<CreditPayment, Lo
 
     List<CreditPayment> findByCreditInvoiceIdOrderByIdAsc(Long creditInvoiceId);
 
+    List<CreditPayment> findByCreditInvoiceIdInOrderByIdAsc(java.util.Collection<Long> creditInvoiceIds);
+
     List<CreditPayment> findByCreditInvoiceIdOrderByPaidAtDescIdDesc(Long creditInvoiceId);
 
     /**

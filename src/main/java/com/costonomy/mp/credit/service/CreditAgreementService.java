@@ -52,6 +52,7 @@ public class CreditAgreementService {
     private final CreditTransactionRepository transactions;
     private final CreditInvoiceRepository invoices;
     private final CreditPaymentClaimRepository claims;
+    private final CreditAgreementLockRepository locks;
     private final CreditInvoiceService invoiceService;
     private final CreditDirectory directory;
     private final AccessControlService accessControl;
@@ -125,6 +126,9 @@ public class CreditAgreementService {
         agreement.setStatus(CreditAgreementStatus.REQUESTED);
         agreement.setSuspensionReason(null);
         agreement.setSuspensionSource(null);
+        // A new round is not a closed line (D-136).
+        agreement.setClosedAt(null);
+        agreement.setOfferMadeAt(null);
         boolean fresh = agreement.getId() == null;
         try {
             agreements.saveAndFlush(agreement);
@@ -183,6 +187,9 @@ public class CreditAgreementService {
      */
     @Transactional
     public CreditDtos.AgreementResponse accept(Long actorId, Long agreementId, Integer termsVersion) {
+        // The row is taken before it is read, so an acceptance and the offer-expiry job cannot both act on the same
+        // offer: whichever comes second finds the other's result (D-137).
+        locks.lockById(agreementId).orElseThrow(() -> new NotFoundException("CreditAgreement", agreementId));
         var agreement = loadForRestaurant(actorId, agreementId, Permissions.CREDIT_REQUEST);
 
         if (agreement.getStatus().canFund()) {
@@ -269,6 +276,7 @@ public class CreditAgreementService {
 
         if (modified) {
             agreement.setStatus(CreditAgreementStatus.APPROVED);
+            agreement.setOfferMadeAt(Instant.now());
             agreements.save(agreement);
             outbox.publish(CreditEvents.MODIFIED, "CREDIT_AGREEMENT", agreement.getId(),
                     Map.of("outletId", agreement.getOutletId(),
@@ -303,6 +311,7 @@ public class CreditAgreementService {
         }
 
         agreement.setStatus(CreditAgreementStatus.REJECTED);
+        agreement.setOfferMadeAt(null);
         agreements.save(agreement);
 
         if (request != null) {
@@ -377,6 +386,10 @@ public class CreditAgreementService {
         }
         agreement.setMaxSingleOrderCredit(body.maxSingleOrderCredit());
         agreement.setMaxOverdueAmount(body.maxOverdueAmount());
+        if (agreement.getStatus() == CreditAgreementStatus.APPROVED) {
+            // Editing an offer makes a new offer, with a new 14 days (D-137).
+            agreement.setOfferMadeAt(Instant.now());
+        }
         agreements.save(agreement);
 
         recordTerms(agreement, previousLimit, previousPeriod, actorId,
@@ -575,6 +588,7 @@ public class CreditAgreementService {
 
     private void activate(CreditAgreement agreement, Long actorId, String reason) {
         agreement.setStatus(CreditAgreementStatus.ACTIVE);
+        agreement.setOfferMadeAt(null);
         agreement.setActivatedAt(Instant.now());
         agreements.save(agreement);
 
@@ -669,6 +683,11 @@ public class CreditAgreementService {
         return km == null ? null : BigDecimal.valueOf(km).setScale(1, RoundingMode.HALF_UP);
     }
 
+    /** The agreement as the app reads it, for the lifecycle service that moves it (D-136). */
+    public CreditDtos.AgreementResponse toResponse(CreditAgreement agreement) {
+        return toResponse(agreement, agreement.getId() == null ? null : latestRequest(agreement.getId()));
+    }
+
     private CreditDtos.AgreementResponse toResponse(CreditAgreement agreement, CreditRequest request) {
         var store = directory.store(agreement.getSupplierStoreId());
         var outlet = directory.outlet(agreement.getOutletId());
@@ -709,6 +728,9 @@ public class CreditAgreementService {
                 agreement.getId() == null ? BigDecimal.ZERO
                         : claims.sumByAgreementAndStatus(agreement.getId(), CreditClaimStatus.SUBMITTED),
                 // What can still be reported, worked out per invoice by the same rule the claim endpoint enforces.
-                dues.reportable());
+                dues.reportable(),
+                agreement.getStatus() == CreditAgreementStatus.APPROVED ? agreement.getOfferMadeAt() : null,
+                agreement.getStatus() == CreditAgreementStatus.APPROVED && agreement.getOfferMadeAt() != null
+                        ? CreditOfferExpiry.expiresOn(agreement.getOfferMadeAt(), invoiceService.zone()) : null);
     }
 }

@@ -352,6 +352,33 @@ public final class NotificationRules {
                 "Credit available again",
                 "Your credit with {supplierName} is available again.", "CREDIT_AGREEMENT"));
 
+        // A supplier closed the line (D-136): the restaurant is told, with the supplier's reason. In-app and push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.CLOSED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit line closed",
+                "{supplierName} closed your credit line. {reason}", "CREDIT_AGREEMENT"));
+
+        // An offer nobody accepted lapsed (D-137): both sides are told, by a job, so nobody is left waiting on a dead
+        // offer. In-app and push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.OFFER_EXPIRED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit offer expired",
+                "The credit offer from {supplierName} expired because it wasn't accepted in time. You can ask again.",
+                "CREDIT_AGREEMENT"));
+
+        add(rules, new NotificationRule(CreditEvents.OFFER_EXPIRED, SUPPLIER_STORE, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit offer expired",
+                "Your credit offer to {restaurantName} expired without being accepted.", "CREDIT_AGREEMENT"));
+
+        // The supplier moved an invoice's due date (D-138). Good news for the restaurant, but a date it plans around:
+        // told in-app and by push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.DUE_DATE_EXTENDED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Due date extended",
+                "{supplierName} moved the due date of invoice {invoiceNumber} to {newDueDateText}.",
+                "CREDIT_INVOICE"));
+
         // CreditReserved, CreditUtilized and CreditReleased are exposure bookkeeping and stay
         // silent on purpose; NotificationRulesTest keeps that list explicit.
 

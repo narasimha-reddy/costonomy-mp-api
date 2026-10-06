@@ -17,6 +17,7 @@ import com.costonomy.mp.credit.repository.CreditPaymentRepository;
 import com.costonomy.mp.credit.repository.CreditRepaymentRepository;
 import com.costonomy.mp.credit.repository.CreditTransactionRepository;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
+import com.costonomy.mp.credit.web.dto.CreditLifecycleDtos;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -50,6 +51,7 @@ public class CreditReadService {
             List.of(CreditInvoiceStatus.ISSUED, CreditInvoiceStatus.PARTIALLY_PAID);
 
     private final CreditInvoiceRepository invoices;
+    private final com.costonomy.mp.credit.repository.CreditDueExtensionRepository extensions;
     private final CreditPaymentRepository payments;
     private final CreditRepaymentRepository repayments;
     private final CreditTransactionRepository transactions;
@@ -104,7 +106,11 @@ public class CreditReadService {
                 store == null ? null : store.storeName(),
                 paymentResponses,
                 claimService.forInvoice(invoice),
-                base.reportableAmount());
+                base.reportableAmount(),
+                extensions.findByCreditInvoiceIdOrderByIdDesc(invoiceId).stream()
+                        .map(x -> new CreditLifecycleDtos.DueExtensionResponse(x.getId(), x.getOldDueDate(),
+                                x.getNewDueDate(), x.getReason(), x.getExtendedBy(), x.getCreatedAt()))
+                        .toList());
     }
 
     /** Either party may read it; nobody else may learn it exists (404, like the agreement endpoints). */

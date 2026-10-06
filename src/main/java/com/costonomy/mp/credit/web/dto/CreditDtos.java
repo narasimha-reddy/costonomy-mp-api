@@ -137,7 +137,11 @@ public final class CreditDtos {
             /** What the restaurant says it has paid and the supplier has not answered yet (D-125); 0 when none. */
             BigDecimal openClaimsAmount,
             /** What can still be reported as paid across the open invoices (D-127); never below 0. */
-            BigDecimal reportableAmount) {
+            BigDecimal reportableAmount,
+            /** When the offer awaiting the restaurant was made; null unless APPROVED (D-137). */
+            Instant offerMadeAt,
+            /** The India day the offer lapses if still unaccepted; null unless APPROVED (D-137). */
+            LocalDate offerExpiresOn) {
     }
 
     public record RequestResponse(
@@ -254,7 +258,9 @@ public final class CreditDtos {
             /** Every "I paid" claim on this invoice, newest first (D-125). */
             List<ClaimResponse> claims,
             /** Outstanding less the "I paid" claims awaiting the supplier, never below 0; 0 once settled (D-127). */
-            BigDecimal reportableAmount) {
+            BigDecimal reportableAmount,
+            /** Every time the supplier moved the due date, newest first; empty when never (D-138). */
+            List<CreditLifecycleDtos.DueExtensionResponse> extensions) {
     }
 
     /** What the Home Credit tile needs: whether to show the attention dot. No amounts. */
@@ -496,7 +502,21 @@ public final class CreditDtos {
             BigDecimal confirmedAmount,
             Long creditPaymentId,
             Instant createdAt,
-            Instant decidedAt) {
+            Instant decidedAt,
+            /** India days since it was submitted, worked out here (D-139). */
+            int ageDays,
+            /** Still waiting for the supplier at 7 days or more. Never auto-rejected. */
+            boolean stale,
+            /** What is owed on the invoice now; 0 once settled. */
+            BigDecimal invoiceOutstanding,
+            /** All claims waiting for the supplier on the invoice, this one included while it waits. */
+            BigDecimal invoiceOpenClaimsAmount,
+            /** The same without this claim. */
+            BigDecimal invoiceOtherOpenClaimsAmount,
+            /** Another claim or a payment on this invoice with the same amount and the same reference or within 24h; else null. */
+            Long possibleDuplicateOf,
+            /** CLAIM or PAYMENT: which kind {@code possibleDuplicateOf} is; null when it is. */
+            String possibleDuplicateKind) {
     }
 
     // ── The supplier's receivables (plan B3) ─────────────────────────────
