@@ -433,20 +433,10 @@ public class PidgeApiClient {
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 var body = response.getBody();
                 var data = body.path("data");
-                var statusStr = data.path("status").asText("PENDING");
-                var status = mapPidgeStatus(statusStr);
-                var fulfillment = data.path("fulfillment");
-                var rider = fulfillment.path("rider");
-
-                String driverName = rider.path("name").isNull() ? null : rider.path("name").asText(null);
-                String driverPhone = rider.path("mobile").isNull() ? null : rider.path("mobile").asText(null);
-                String driverVehicle = null;
-                Integer eta = null;
-
+                var state = PidgeOrderState.parse(providerDeliveryId, data);
                 return new DeliveryProvider.ProviderDelivery(
-                        providerDeliveryId, status, driverName, driverPhone, driverVehicle,
-                        eta, null, null, null, List.of()
-                );
+                        providerDeliveryId, state.status(), state.riderName(), state.riderPhone(), null,
+                        null, null, null, null, state.events());
             }
             return new DeliveryProvider.ProviderDelivery(providerDeliveryId,
                     DeliveryProvider.ProviderDeliveryStatus.PENDING, null, null, null, null, null, null, null, List.of());
@@ -520,20 +510,8 @@ public class PidgeApiClient {
         }
     }
 
+    /** A Pidge stage name as our provider status; see {@link PidgeOrderState#mapStage}. */
     public static DeliveryProvider.ProviderDeliveryStatus mapPidgeStatus(String pidgeStatus) {
-        if (pidgeStatus == null) return DeliveryProvider.ProviderDeliveryStatus.PENDING;
-        return switch (pidgeStatus.toUpperCase().trim()) {
-            case "ORDER_CREATED", "PENDING", "SEARCHING_RIDER", "ALLOCATING" -> DeliveryProvider.ProviderDeliveryStatus.PENDING;
-            case "RIDER_ASSIGNED", "ALLOCATED" -> DeliveryProvider.ProviderDeliveryStatus.DRIVER_ASSIGNED;
-            case "REACHED_PICKUP", "DRIVER_AT_PICKUP" -> DeliveryProvider.ProviderDeliveryStatus.DRIVER_AT_PICKUP;
-            case "PICKED_UP", "IN_TRANSIT", "OUT_FOR_DELIVERY" -> DeliveryProvider.ProviderDeliveryStatus.PICKED_UP;
-            case "REACHED_DROP", "ARRIVED_AT_DESTINATION" -> DeliveryProvider.ProviderDeliveryStatus.ARRIVED_AT_DESTINATION;
-            case "DELIVERED", "COMPLETED" -> DeliveryProvider.ProviderDeliveryStatus.DELIVERED;
-            case "RIDER_CANCELLED", "DRIVER_CANCELLED" -> DeliveryProvider.ProviderDeliveryStatus.DRIVER_CANCELLED;
-            case "PICKUP_FAILED" -> DeliveryProvider.ProviderDeliveryStatus.PICKUP_FAILED;
-            case "DELIVERY_FAILED", "FAILED" -> DeliveryProvider.ProviderDeliveryStatus.DELIVERY_FAILED;
-            case "CANCELLED" -> DeliveryProvider.ProviderDeliveryStatus.CANCELLED;
-            default -> DeliveryProvider.ProviderDeliveryStatus.PENDING;
-        };
+        return PidgeOrderState.mapStage(pidgeStatus);
     }
 }

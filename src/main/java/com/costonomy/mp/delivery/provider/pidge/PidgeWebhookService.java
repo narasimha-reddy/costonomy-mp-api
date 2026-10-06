@@ -54,13 +54,12 @@ public class PidgeWebhookService {
         }
 
         try {
+            // Pidge posts the same order object the GET call returns, not wrapped in "data" (their webhook docs).
             JsonNode root = objectMapper.readTree(rawBody);
-            String eventId = root.path("event_id").asText(root.path("id").asText(null));
-            String deliveryId = root.path("pidge_delivery_id").asText(root.path("delivery_id").asText(null));
-            String statusStr = root.path("status").asText(root.path("event_type").asText(null));
+            String deliveryId = root.path("id").asText(null);
 
-            if (deliveryId == null || statusStr == null) {
-                log.warn("Pidge webhook payload missing required fields: {}", rawBody);
+            if (deliveryId == null || deliveryId.isBlank() || !root.hasNonNull("status")) {
+                log.warn("Pidge webhook payload missing id or status: {}", rawBody);
                 return false;
             }
 
@@ -72,52 +71,25 @@ public class PidgeWebhookService {
                 return true; // Acknowledge to prevent provider retries
             }
 
-            var providerStatus = PidgeApiClient.mapPidgeStatus(statusStr);
-            String description = root.path("description").asText("Status update: " + statusStr);
-            Instant occurredAt = root.has("timestamp")
-                    ? Instant.ofEpochMilli(root.path("timestamp").asLong())
-                    : Instant.now();
+            var state = PidgeOrderState.parse(deliveryId, root);
 
-            // Record tracking URL if present in webhook
-            if (root.has("tracking_url")) {
-                String trackingUrl = root.path("tracking_url").asText(null);
-                if (trackingUrl != null && !trackingUrl.isBlank()) {
-                    delivery.setTrackingUrl(trackingUrl);
-                    deliveries.save(delivery);
-                }
+            if (state.riderName() != null) {
+                eventService.recordDriver(delivery, state.riderName(), state.riderPhone(), null);
+            }
+            if (state.latitude() != null && state.longitude() != null) {
+                eventService.recordLocation(delivery, state.latitude(), state.longitude(), null, null,
+                        state.locationAt() == null ? Instant.now() : state.locationAt());
             }
 
-            // Record driver details if present in webhook
-            if (root.has("driver")) {
-                JsonNode driver = root.path("driver");
-                String name = driver.path("name").asText(null);
-                String phone = driver.path("phone").asText(null);
-                String vehicle = driver.path("vehicle_number").asText(null);
-                if (name != null) {
-                    eventService.recordDriver(delivery, name, phone, vehicle);
-                }
+            // Every stage Pidge reports, oldest first, so a delivery that moved several stages between two hits
+            // walks them in order (idempotent and out-of-order safe in DeliveryEventService).
+            var events = new java.util.ArrayList<>(state.events());
+            java.util.Collections.reverse(events);
+            for (var event : events) {
+                String disposition = eventService.apply(delivery, event);
+                log.info("Processed Pidge webhook event {} for delivery {}: disposition={}",
+                        event.providerEventId(), delivery.getId(), disposition);
             }
-
-            // Record location update if coordinates are present
-            if (root.has("location")) {
-                JsonNode loc = root.path("location");
-                if (loc.has("lat") && loc.has("lng")) {
-                    BigDecimal lat = new BigDecimal(loc.path("lat").asText());
-                    BigDecimal lng = new BigDecimal(loc.path("lng").asText());
-                    Double bearing = loc.has("bearing") ? loc.path("bearing").asDouble() : null;
-                    Double speed = loc.has("speed") ? loc.path("speed").asDouble() : null;
-                    eventService.recordLocation(delivery, lat, lng, bearing, speed, occurredAt);
-                }
-            }
-
-            // Apply lifecycle event via DeliveryEventService (idempotent & out-of-order safe)
-            var event = new DeliveryProvider.ProviderEvent(
-                    eventId != null ? eventId : "pidge_evt_" + deliveryId + "_" + statusStr + "_" + occurredAt.toEpochMilli(),
-                    providerStatus, description, occurredAt);
-
-            String disposition = eventService.apply(delivery, event);
-            log.info("Processed Pidge webhook event {} for delivery {}: disposition={}",
-                    eventId, delivery.getId(), disposition);
             return true;
 
         } catch (Exception ex) {
