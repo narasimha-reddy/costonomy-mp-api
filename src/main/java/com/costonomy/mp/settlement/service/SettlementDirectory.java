@@ -42,6 +42,12 @@ public class SettlementDirectory {
      * has checked it in: that is the last moment a shortfall can surface, and
      * paying a supplier before anyone has counted the goods would mean clawing it
      * back through an adjustment in the common case rather than the rare one.
+     *
+     * <p><b>PREPAID only (D-147).</b> Credit is funded and collected by the
+     * supplier: Costonomy took no money for it, so it owes the supplier no payout
+     * and earns no commission on it. An allow-list rather than "not CREDIT", so a
+     * funding method added later stays out of settlement until someone decides,
+     * deliberately, how it is paid out.
      */
     public List<SettleableOrder> settleableOrders(Instant from, Instant to) {
         List<SettleableOrder> orders = new ArrayList<>();
@@ -53,6 +59,7 @@ public class SettlementDirectory {
                   join supplier_store ss on ss.id = so.supplier_store_id
              left join commission_calculation c on c.supplier_order_id = so.id
                  where so.status = 'COMPLETED'
+                   and so.payment_method = 'PREPAID'
                    and so.updated_at >= ? and so.updated_at < ?
                    and c.id is null
                  order by so.id
@@ -165,7 +172,7 @@ public class SettlementDirectory {
                 """, String.class, settlementId);
     }
 
-    /** Stores with unsettled completed orders. */
+    /** Stores with unsettled completed PREPAID orders (credit is never settled, D-147). */
     public List<Long> storesWithSettleableOrders(Instant from, Instant to) {
         List<Long> stores = new ArrayList<>();
         jdbc.query("""
@@ -173,6 +180,7 @@ public class SettlementDirectory {
                   from supplier_order so
              left join commission_calculation c on c.supplier_order_id = so.id
                  where so.status = 'COMPLETED'
+                   and so.payment_method = 'PREPAID'
                    and so.updated_at >= ? and so.updated_at < ?
                    and c.id is null
                 """,
@@ -181,5 +189,29 @@ public class SettlementDirectory {
                 },
                 java.sql.Timestamp.from(from), java.sql.Timestamp.from(to));
         return stores;
+    }
+
+    /** What left restaurants' wallets as credit repayments in the window (D-152), by the debit's own time. */
+    public BigDecimal walletCreditRepaymentDebits(Instant from, Instant to) {
+        return jdbc.queryForObject("""
+                select coalesce(sum(amount), 0) from wallet_transaction
+                 where kind = 'CREDIT_REPAYMENT' and direction = 'DEBIT'
+                   and created_at >= ? and created_at < ?
+                """, BigDecimal.class, java.sql.Timestamp.from(from), java.sql.Timestamp.from(to));
+    }
+
+    /**
+     * What Mandi owes suppliers for those repayments (D-156): the payouts behind wallet debits in the window.
+     * Windowed by the wallet debit's time, not the payout's, so the two sums cannot differ by a clock edge.
+     */
+    public BigDecimal creditRepaymentPayoutsForDebits(Instant from, Instant to) {
+        return jdbc.queryForObject("""
+                select coalesce(sum(p.amount), 0)
+                  from credit_repayment_payout p
+                  join credit_repayment r on r.id = p.credit_repayment_id
+                  join wallet_transaction t on t.id = r.wallet_transaction_id
+                 where t.kind = 'CREDIT_REPAYMENT' and t.direction = 'DEBIT'
+                   and t.created_at >= ? and t.created_at < ?
+                """, BigDecimal.class, java.sql.Timestamp.from(from), java.sql.Timestamp.from(to));
     }
 }

@@ -63,6 +63,29 @@ public class NotificationAudience {
         return users;
     }
 
+    /**
+     * Everyone who can act for this supplier store AND holds {@code permission} through the role of that grant (D-173):
+     * a salesperson who may not see credit is not sent the credit digest.
+     */
+    @Transactional(readOnly = true)
+    public List<Long> forSupplierStoreWith(Long supplierStoreId, String permission) {
+        List<Long> users = new ArrayList<>();
+        jdbc.query("""
+                select distinct ur.user_id
+                  from user_role ur
+                  join supplier_store s on ((ur.scope_type = 'SUPPLIER_STORE' and ur.scope_id = s.id)
+                        or (ur.scope_type = 'SUPPLIER' and ur.scope_id = s.supplier_organization_id))
+                  join role_permission rp on rp.role_id = ur.role_id
+                  join permission p on p.id = rp.permission_id
+                 where s.id = ? and ur.status = 'ACTIVE' and p.code = ?
+                """,
+                rs -> {
+                    users.add(rs.getLong(1));
+                },
+                supplierStoreId, permission);
+        return users;
+    }
+
     /** A user's active push tokens, newest first. */
     public record Device(Long id, String pushToken) {
     }

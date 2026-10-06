@@ -1,5 +1,6 @@
 package com.costonomy.mp.credit.service;
 
+import com.costonomy.mp.credit.domain.CreditEvents;
 import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
@@ -50,11 +51,16 @@ public class CreditAgreementService {
     private final CreditLimitHistoryRepository limitHistory;
     private final CreditTransactionRepository transactions;
     private final CreditInvoiceRepository invoices;
+    private final CreditPaymentClaimRepository claims;
+    private final CreditAgreementLockRepository locks;
     private final CreditInvoiceService invoiceService;
     private final CreditDirectory directory;
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
+
+    @org.springframework.beans.factory.annotation.Value("${costonomy.mp.credit.wallet-repay.enabled:false}")
+    private boolean walletRepayEnabled;
 
     // ── The restaurant's side ────────────────────────────────────────────
 
@@ -101,9 +107,40 @@ public class CreditAgreementService {
                     "A request to this supplier is already waiting for a response.");
         }
 
+        if (agreement.getId() != null) {
+            if (!agreement.getStatus().canReRequest()) {
+                // SUSPENDED and APPROVED: re-asking would wipe a suspension or terms awaiting acceptance.
+                throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "This credit line is " + agreement.getStatus()
+                                + " and can't be requested again.");
+            }
+            boolean owes = agreement.getStatus() != CreditAgreementStatus.REJECTED
+                    && (agreement.getUtilizedAmount().signum() != 0
+                    || agreement.getReservedAmount().signum() != 0);
+            if (owes) {
+                throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "This credit line still has an amount owed or held and can't be requested again.");
+            }
+        }
+
         agreement.setStatus(CreditAgreementStatus.REQUESTED);
         agreement.setSuspensionReason(null);
-        agreements.save(agreement);
+        agreement.setSuspensionSource(null);
+        // A new round is not a closed line (D-165).
+        agreement.setClosedAt(null);
+        agreement.setOfferMadeAt(null);
+        boolean fresh = agreement.getId() == null;
+        try {
+            agreements.saveAndFlush(agreement);
+        } catch (org.springframework.dao.DataIntegrityViolationException raced) {
+            if (!fresh) {
+                throw raced;
+            }
+            // Two first requests for the same (outlet, store) at once: the other one inserted the pair first
+            // (uk_credit_agreement_pair). From this one's side that is a request already waiting (D-159).
+            throw new BusinessException(ErrorCode.CONCURRENT_MODIFICATION,
+                    "A request to this supplier is already waiting for a response.");
+        }
 
         var request = new CreditRequest();
         request.setCreditAgreementId(agreement.getId());
@@ -120,7 +157,7 @@ public class CreditAgreementService {
                 agreement.getId(), null, CreditAgreementStatus.REQUESTED.name(),
                 "%s for %d days".formatted(body.requestedLimit(), body.requestedDays()), "API");
 
-        outbox.publish("CreditRequested", "CREDIT_AGREEMENT", agreement.getId(),
+        outbox.publish(CreditEvents.REQUESTED, "CREDIT_AGREEMENT", agreement.getId(),
                 Map.of("supplierStoreId", body.supplierStoreId(),
                         "outletId", body.outletId(),
                         "requestedLimit", body.requestedLimit().toPlainString()),
@@ -141,6 +178,18 @@ public class CreditAgreementService {
      */
     @Transactional
     public CreditDtos.AgreementResponse accept(Long actorId, Long agreementId) {
+        return accept(actorId, agreementId, null);
+    }
+
+    /**
+     * As above, for a restaurant that says which terms version it saw (D-160). When it differs from the current
+     * one the supplier changed the terms after the restaurant looked, so nothing is activated.
+     */
+    @Transactional
+    public CreditDtos.AgreementResponse accept(Long actorId, Long agreementId, Integer termsVersion) {
+        // The row is taken before it is read, so an acceptance and the offer-expiry job cannot both act on the same
+        // offer: whichever comes second finds the other's result (D-166).
+        locks.lockById(agreementId).orElseThrow(() -> new NotFoundException("CreditAgreement", agreementId));
         var agreement = loadForRestaurant(actorId, agreementId, Permissions.CREDIT_REQUEST);
 
         if (agreement.getStatus().canFund()) {
@@ -149,6 +198,10 @@ public class CreditAgreementService {
         if (agreement.getStatus() != CreditAgreementStatus.APPROVED) {
             throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
                     "There are no approved terms to accept.");
+        }
+        if (termsVersion != null && !termsVersion.equals(agreement.getTermsVersion())) {
+            throw new BusinessException(ErrorCode.CREDIT_TERMS_CHANGED,
+                    "The supplier changed the terms. Please review them again.");
         }
 
         activate(agreement, actorId, "Terms accepted by the restaurant");
@@ -223,8 +276,9 @@ public class CreditAgreementService {
 
         if (modified) {
             agreement.setStatus(CreditAgreementStatus.APPROVED);
+            agreement.setOfferMadeAt(Instant.now());
             agreements.save(agreement);
-            outbox.publish("CreditModified", "CREDIT_AGREEMENT", agreement.getId(),
+            outbox.publish(CreditEvents.MODIFIED, "CREDIT_AGREEMENT", agreement.getId(),
                     Map.of("outletId", agreement.getOutletId(),
                             "approvedLimit", limit.toPlainString(),
                             "creditPeriodDays", periodDays),
@@ -257,6 +311,7 @@ public class CreditAgreementService {
         }
 
         agreement.setStatus(CreditAgreementStatus.REJECTED);
+        agreement.setOfferMadeAt(null);
         agreements.save(agreement);
 
         if (request != null) {
@@ -273,8 +328,14 @@ public class CreditAgreementService {
                 agreementId, CreditAgreementStatus.REQUESTED.name(),
                 CreditAgreementStatus.REJECTED.name(), body.reason(), "API");
 
-        outbox.publish("CreditRejected", "CREDIT_AGREEMENT", agreementId,
-                Map.of("outletId", agreement.getOutletId(), "reason", body.reason()),
+        // outletId and supplierStoreId scope the notification to the restaurant (D-150); the
+        // supplier's name and reason are what its text says.
+        var store = directory.store(agreement.getSupplierStoreId());
+        outbox.publish(CreditEvents.REJECTED, "CREDIT_AGREEMENT", agreementId,
+                Map.of("outletId", agreement.getOutletId(),
+                        "supplierStoreId", agreement.getSupplierStoreId(),
+                        "supplierName", store == null ? "" : store.supplierName(),
+                        "reason", body.reason()),
                 actorId);
 
         return toResponse(agreement, request);
@@ -325,6 +386,10 @@ public class CreditAgreementService {
         }
         agreement.setMaxSingleOrderCredit(body.maxSingleOrderCredit());
         agreement.setMaxOverdueAmount(body.maxOverdueAmount());
+        if (agreement.getStatus() == CreditAgreementStatus.APPROVED) {
+            // Editing an offer makes a new offer, with a new 14 days (D-166).
+            agreement.setOfferMadeAt(Instant.now());
+        }
         agreements.save(agreement);
 
         recordTerms(agreement, previousLimit, previousPeriod, actorId,
@@ -334,7 +399,7 @@ public class CreditAgreementService {
                 agreementId, previousLimit.toPlainString(),
                 body.approvedLimit().toPlainString(), body.reason(), "API");
 
-        outbox.publish("CreditModified", "CREDIT_AGREEMENT", agreementId,
+        outbox.publish(CreditEvents.MODIFIED, "CREDIT_AGREEMENT", agreementId,
                 Map.of("outletId", agreement.getOutletId(),
                         "approvedLimit", body.approvedLimit().toPlainString(),
                         "reason", body.reason()),
@@ -373,16 +438,37 @@ public class CreditAgreementService {
                     "This agreement can't be reinstated from " + agreement.getStatus() + ".");
         }
 
+        // Lifting the sweep's own suspension by hand is the supplier saying "I carry what is overdue now". Remember
+        // how much, so the next sweep does not undo it; only overdue beyond this suspends again (D-163). The server
+        // works the amount out; a supplier's own suspension has nothing to carry.
+        if (agreement.getSuspensionSource() == SuspensionSource.SYSTEM) {
+            BigDecimal overdue = invoiceService.duesFor(agreementId).overdue();
+            agreement.setOverdueFloor(overdue.signum() > 0 ? overdue : null);
+        }
         agreement.setStatus(CreditAgreementStatus.ACTIVE);
         agreement.setSuspendedAt(null);
         agreement.setSuspensionReason(null);
+        agreement.setSuspensionSource(null);
         agreements.save(agreement);
 
         auditService.recordTransition(actorId, "CREDIT_REINSTATED", "CREDIT_AGREEMENT",
                 agreementId, CreditAgreementStatus.SUSPENDED.name(),
                 CreditAgreementStatus.ACTIVE.name());
 
+        // The same event the overdue sweep's reinstate publishes, so the restaurant hears about this one too (D-160).
+        outbox.publish(CreditEvents.REINSTATED, "CREDIT_AGREEMENT", agreementId,
+                Map.of("creditAgreementId", agreementId,
+                        "outletId", agreement.getOutletId(),
+                        "supplierStoreId", agreement.getSupplierStoreId(),
+                        "supplierName", supplierNameOf(agreement.getSupplierStoreId())),
+                actorId);
+
         return toResponse(agreement, latestRequest(agreementId));
+    }
+
+    private String supplierNameOf(Long supplierStoreId) {
+        var store = directory.store(supplierStoreId);
+        return store == null || store.supplierName() == null ? "" : store.supplierName();
     }
 
     /** Used by the overdue sweep, which has no actor. */
@@ -399,6 +485,7 @@ public class CreditAgreementService {
         agreement.setStatus(CreditAgreementStatus.SUSPENDED);
         agreement.setSuspendedAt(Instant.now());
         agreement.setSuspensionReason(reason);
+        agreement.setSuspensionSource(actorId == null ? SuspensionSource.SYSTEM : SuspensionSource.SUPPLIER);
         agreements.save(agreement);
 
         auditService.record(actorId, null, "CREDIT_SUSPENDED", "CREDIT_AGREEMENT",
@@ -406,7 +493,7 @@ public class CreditAgreementService {
                 CreditAgreementStatus.SUSPENDED.name(), reason,
                 actorId == null ? "SYSTEM" : "API");
 
-        outbox.publish("CreditSuspended", "CREDIT_AGREEMENT", agreement.getId(),
+        outbox.publish(CreditEvents.SUSPENDED, "CREDIT_AGREEMENT", agreement.getId(),
                 Map.of("outletId", agreement.getOutletId(), "reason", reason), actorId);
     }
 
@@ -462,7 +549,11 @@ public class CreditAgreementService {
 
         return new CreditDtos.SummaryResponse(outletId,
                 total.approvedLimit(), total.reserved(), total.utilized(), total.available(),
-                total.due(), total.overdue(), responses);
+                total.due(), total.overdue(), responses, walletRepayEnabled,
+                responses.stream().map(CreditDtos.AgreementResponse::openClaimsAmount)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add),
+                responses.stream().map(CreditDtos.AgreementResponse::reportableAmount)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add));
     }
 
     @Transactional(readOnly = true)
@@ -480,13 +571,9 @@ public class CreditAgreementService {
     @Transactional(readOnly = true)
     public List<CreditDtos.InvoiceResponse> invoicesFor(Long actorId, Long agreementId) {
         loadForEitherSide(actorId, agreementId);
+        var openClaims = invoiceService.openClaimsByInvoice(agreementId);
         return invoices.findByCreditAgreementIdOrderByDueDateAsc(agreementId).stream()
-                .map(invoice -> new CreditDtos.InvoiceResponse(
-                        invoice.getId(), invoice.getInvoiceNumber(),
-                        invoice.getCreditAgreementId(), invoice.getSupplierOrderId(),
-                        invoice.getStatus(), invoice.getAmount(), invoice.getPaidAmount(),
-                        invoice.outstanding(), invoice.getDueDate(), invoice.getOverdueAfter(),
-                        invoice.getIssuedAt(), invoice.getSettledAt()))
+                .map(invoice -> invoiceService.toInvoiceResponse(invoice, openClaims.get(invoice.getId())))
                 .toList();
     }
 
@@ -501,6 +588,7 @@ public class CreditAgreementService {
 
     private void activate(CreditAgreement agreement, Long actorId, String reason) {
         agreement.setStatus(CreditAgreementStatus.ACTIVE);
+        agreement.setOfferMadeAt(null);
         agreement.setActivatedAt(Instant.now());
         agreements.save(agreement);
 
@@ -508,7 +596,7 @@ public class CreditAgreementService {
                 agreement.getId(), CreditAgreementStatus.APPROVED.name(),
                 CreditAgreementStatus.ACTIVE.name(), reason, "API");
 
-        outbox.publish("CreditApproved", "CREDIT_AGREEMENT", agreement.getId(),
+        outbox.publish(CreditEvents.APPROVED, "CREDIT_AGREEMENT", agreement.getId(),
                 Map.of("outletId", agreement.getOutletId(),
                         "supplierStoreId", agreement.getSupplierStoreId(),
                         "approvedLimit", agreement.getApprovedLimit().toPlainString(),
@@ -563,7 +651,7 @@ public class CreditAgreementService {
      * let a caller walk ids and map which restaurants have credit with which
      * suppliers, which is commercially sensitive in a way order ids are not.
      */
-    private CreditAgreement loadForEitherSide(Long actorId, Long agreementId) {
+    public CreditAgreement loadForEitherSide(Long actorId, Long agreementId) {
         var agreement = agreements.findById(agreementId)
                 .orElseThrow(() -> new NotFoundException("CreditAgreement", agreementId));
 
@@ -593,6 +681,11 @@ public class CreditAgreementService {
         Double km = Serviceability.distanceKm(
                 store.latitude(), store.longitude(), outlet.latitude(), outlet.longitude());
         return km == null ? null : BigDecimal.valueOf(km).setScale(1, RoundingMode.HALF_UP);
+    }
+
+    /** The agreement as the app reads it, for the lifecycle service that moves it (D-165). */
+    public CreditDtos.AgreementResponse toResponse(CreditAgreement agreement) {
+        return toResponse(agreement, agreement.getId() == null ? null : latestRequest(agreement.getId()));
     }
 
     private CreditDtos.AgreementResponse toResponse(CreditAgreement agreement, CreditRequest request) {
@@ -629,6 +722,15 @@ public class CreditAgreementService {
                         request.getSupplierStoreId(), request.getRequestedLimit(),
                         request.getRequestedPeriodDays(), request.getPurpose(), request.getNote(),
                         request.getStatus(), request.getResponseNote(),
-                        request.getRespondedAt(), request.getCreatedAt()));
+                        request.getRespondedAt(), request.getCreatedAt()),
+                dues.nextDueDate(), dues.nextDueAmount(), dues.openInvoices(),
+                // What the restaurant says it paid and the supplier has not answered. It changes no figure above.
+                agreement.getId() == null ? BigDecimal.ZERO
+                        : claims.sumByAgreementAndStatus(agreement.getId(), CreditClaimStatus.SUBMITTED),
+                // What can still be reported, worked out per invoice by the same rule the claim endpoint enforces.
+                dues.reportable(),
+                agreement.getStatus() == CreditAgreementStatus.APPROVED ? agreement.getOfferMadeAt() : null,
+                agreement.getStatus() == CreditAgreementStatus.APPROVED && agreement.getOfferMadeAt() != null
+                        ? CreditOfferExpiry.expiresOn(agreement.getOfferMadeAt(), invoiceService.zone()) : null);
     }
 }

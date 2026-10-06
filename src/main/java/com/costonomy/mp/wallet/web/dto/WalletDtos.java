@@ -47,7 +47,8 @@ public final class WalletDtos {
             WalletDirection direction,
             /**
              * Why it moved: TOP_UP, ORDER_PAYMENT, ORDER_REFUND, REFUND, WITHDRAWAL, DISPUTE_REFUND or
-             * WITHDRAWAL_REVERSAL (a withdrawal part the provider did not send, put back).
+             * WITHDRAWAL_REVERSAL (a withdrawal part the provider did not send, put back), QUICKSCAN_PAYMENT,
+             * QUICKSCAN_RETURN or CREDIT_REPAYMENT (a debit that repays a supplier's credit invoices).
              */
             String kind,
             BigDecimal amount,

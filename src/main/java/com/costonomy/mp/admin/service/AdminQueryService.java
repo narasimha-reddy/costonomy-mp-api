@@ -425,10 +425,10 @@ public class AdminQueryService {
                 select a.id, a.outlet_id, o.name, a.supplier_store_id, sorg.display_name,
                        a.status, a.approved_limit, a.reserved_amount, a.utilized_amount,
                        a.approved_limit - a.reserved_amount - a.utilized_amount   as available,
-                       coalesce((select sum(i.amount - i.paid_amount) from credit_invoice i
+                       coalesce((select sum(i.amount - i.paid_amount - i.credited_amount) from credit_invoice i
                                   where i.credit_agreement_id = a.id
                                     and i.status not in ('PAID','WRITTEN_OFF')), 0) as due,
-                       coalesce((select sum(i2.amount - i2.paid_amount) from credit_invoice i2
+                       coalesce((select sum(i2.amount - i2.paid_amount - i2.credited_amount) from credit_invoice i2
                                   where i2.credit_agreement_id = a.id
                                     and i2.status = 'OVERDUE'), 0)                  as overdue
                   from credit_agreement a

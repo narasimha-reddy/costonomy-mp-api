@@ -58,5 +58,11 @@ public enum WalletEntryKind {
     /**
      * Reversal of a failed bank payout back into the wallet.
      */
-    BANK_PAYOUT_REVERSAL
+    BANK_PAYOUT_REVERSAL,
+    /**
+     * Money leaving the wallet to repay a supplier-funded credit invoice (D-152). A debit that settles
+     * credit invoices; it never takes a bill. Unique per repayment (reference
+     * {@code credit-repayment-{repaymentId}}).
+     */
+    CREDIT_REPAYMENT
 }

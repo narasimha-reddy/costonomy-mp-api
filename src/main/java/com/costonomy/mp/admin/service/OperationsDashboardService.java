@@ -160,7 +160,7 @@ public class OperationsDashboardService {
                     where status in ('ACTIVE','SUSPENDED'))                                as approved,
                   (select coalesce(sum(utilized_amount), 0) from credit_agreement
                     where status in ('ACTIVE','SUSPENDED'))                                as utilized,
-                  (select coalesce(sum(amount - paid_amount), 0) from credit_invoice
+                  (select coalesce(sum(amount - paid_amount - credited_amount), 0) from credit_invoice
                     where status = 'OVERDUE')                                              as overdue,
                   (select count(*) from credit_invoice where status = 'OVERDUE')           as overdue_count,
                   (select count(*) from credit_agreement where status = 'SUSPENDED')       as suspended
