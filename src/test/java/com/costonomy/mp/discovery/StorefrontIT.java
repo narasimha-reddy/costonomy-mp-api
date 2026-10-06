@@ -478,6 +478,25 @@ class StorefrontIT extends AbstractIntegrationTest {
             stock(near2, p2, code("N2_2", p2), "120");
             stock(near2, p3, code("N2_3", p3), "120");
 
+            // Popularity is counted over the whole shared database, so stores left behind by other test classes
+            // (some stock several SKUs) would outrank these and eat the limit. Raise the three stores above the
+            // busiest other store, far one highest, so the test checks the filter and not the leftover data.
+            Integer busiest = jdbc.queryForObject("""
+                    select coalesce(max(n), 0) from (
+                        select count(distinct f.id) n from supplier_offer f
+                         where f.status = 'ACTIVE' and f.supplier_store_id not in (?, ?, ?)
+                         group by f.supplier_store_id) t
+                    """, Integer.class, farStore.storeId(), near1.storeId(), near2.storeId());
+            for (int i = 3; i < busiest + 1; i++) {
+                long extra = TestCatalog.freshProduct(jdbc, "popx" + i);
+                stock(near1, extra, code("N1X" + i, extra), "110");
+                stock(near2, extra, code("N2X" + i, extra), "120");
+            }
+            for (int i = 4; i < busiest + 2; i++) {
+                long extra = TestCatalog.freshProduct(jdbc, "popf" + i);
+                stock(farStore, extra, code("FARX" + i, extra), "100");
+            }
+
             // Far store is closer to top in SQL query (4 SKUs vs 3 SKUs vs earlier test stores with 1 SKU).
             // With limit=2: if farStore was not filtered out before limit, it would be included and eat the limit!
             // But because farStore is filtered by serviceability, both Near Popular 1 and Near Popular 2 are returned.
