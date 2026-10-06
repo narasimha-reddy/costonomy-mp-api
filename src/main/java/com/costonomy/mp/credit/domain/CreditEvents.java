@@ -34,6 +34,8 @@ public final class CreditEvents {
     public static final String OFFER_EXPIRED = "CreditOfferExpired";
     /** A supplier gave an invoice longer to be paid; the restaurant is told (D-138). */
     public static final String DUE_DATE_EXTENDED = "CreditDueDateExtended";
+    /** The supplier undid a payment it had recorded; the restaurant is told (D-140). */
+    public static final String PAYMENT_REVERSED = "CreditPaymentReversed";
     // Bookkeeping on the exposure ledger; nobody is told.
     public static final String RESERVED = "CreditReserved";
     public static final String UTILIZED = "CreditUtilized";
@@ -43,7 +45,7 @@ public final class CreditEvents {
     public static final List<String> ALL = List.of(
             REQUESTED, APPROVED, REJECTED, MODIFIED, SUSPENDED, REINSTATED, OVERDUE,
             INVOICE_ISSUED, REPAYMENT_RECORDED, REPAYMENT_RECEIVED, CLAIM_SUBMITTED, CLAIM_CONFIRMED,
-            CLAIM_REJECTED, CLOSED, OFFER_EXPIRED, DUE_DATE_EXTENDED, RESERVED, UTILIZED, RELEASED);
+            CLAIM_REJECTED, PAYMENT_REVERSED, CLOSED, OFFER_EXPIRED, DUE_DATE_EXTENDED, RESERVED, UTILIZED, RELEASED);
 
     private CreditEvents() {
     }

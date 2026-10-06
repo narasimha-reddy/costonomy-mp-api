@@ -14,6 +14,7 @@ import com.costonomy.mp.credit.domain.CreditTransaction;
 import com.costonomy.mp.credit.domain.CreditTransactionType;
 import com.costonomy.mp.credit.repository.CreditInvoiceRepository;
 import com.costonomy.mp.credit.repository.CreditPaymentRepository;
+import com.costonomy.mp.credit.repository.CreditPaymentReversalRepository;
 import com.costonomy.mp.credit.repository.CreditRepaymentRepository;
 import com.costonomy.mp.credit.repository.CreditTransactionRepository;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
@@ -53,6 +54,7 @@ public class CreditReadService {
     private final CreditInvoiceRepository invoices;
     private final com.costonomy.mp.credit.repository.CreditDueExtensionRepository extensions;
     private final CreditPaymentRepository payments;
+    private final CreditPaymentReversalRepository reversals;
     private final CreditRepaymentRepository repayments;
     private final CreditTransactionRepository transactions;
     private final CreditAgreementService agreements;
@@ -91,10 +93,13 @@ public class CreditReadService {
 
         var rows = payments.findByCreditInvoiceIdOrderByPaidAtDescIdDesc(invoiceId);
         var walletEntries = walletEntryIds(rows);
+        var reversedAt = reversals.findByCreditPaymentIdIn(rows.stream().map(CreditPayment::getId).toList()).stream()
+                .collect(Collectors.toMap(r -> r.getCreditPaymentId(), r -> r.getReversedAt()));
         var paymentResponses = rows.stream()
                 .map(p -> new CreditDtos.InvoicePaymentResponse(p.getId(), p.getAmount(), p.getSource(),
                         p.getMethod(), p.getReference(), p.getPaidAt(),
-                        p.getCreditRepaymentId() == null ? null : walletEntries.get(p.getCreditRepaymentId())))
+                        p.getCreditRepaymentId() == null ? null : walletEntries.get(p.getCreditRepaymentId()),
+                        reversedAt.get(p.getId())))
                 .toList();
 
         return new CreditDtos.InvoiceDetailResponse(
@@ -221,21 +226,42 @@ public class CreditReadService {
             paymentsByInvoice.put(invoiceId, list);
             walletEntries.putAll(walletEntryIds(list));
         }
+        // The same for a PAYMENT_REVERSED row: the n-th one of an invoice belongs to the n-th reversal of it (D-140).
+        var reversedPayment = new HashMap<Long, List<CreditPayment>>();
+        for (Long invoiceId : invoiceIds) {
+            var byId = paymentsByInvoice.get(invoiceId).stream().collect(Collectors.toMap(CreditPayment::getId, p -> p));
+            reversedPayment.put(invoiceId, reversals.findByCreditInvoiceIdOrderByIdAsc(invoiceId).stream()
+                    .map(r -> byId.get(r.getCreditPaymentId())).toList());
+        }
         var repaymentRank = new HashMap<Long, Integer>();
         var allRepaymentRows = new HashMap<Long, List<Long>>();
+        var reversalRank = new HashMap<Long, Integer>();
+        var allReversalRows = new HashMap<Long, List<Long>>();
         for (Long invoiceId : invoiceIds) {
             allRepaymentRows.put(invoiceId, new ArrayList<>());
+            allReversalRows.put(invoiceId, new ArrayList<>());
         }
         for (CreditTransaction row : transactions.findByCreditAgreementIdOrderByIdAsc(
                 visible.isEmpty() ? -1L : visible.get(0).row().getCreditAgreementId())) {
-            if (row.getTransactionType() == CreditTransactionType.REPAYMENT && row.getCreditInvoiceId() != null
+            if (row.getCreditInvoiceId() == null) {
+                continue;
+            }
+            if (row.getTransactionType() == CreditTransactionType.REPAYMENT
                     && allRepaymentRows.containsKey(row.getCreditInvoiceId())) {
                 allRepaymentRows.get(row.getCreditInvoiceId()).add(row.getId());
+            } else if (row.getTransactionType() == CreditTransactionType.PAYMENT_REVERSED
+                    && allReversalRows.containsKey(row.getCreditInvoiceId())) {
+                allReversalRows.get(row.getCreditInvoiceId()).add(row.getId());
             }
         }
         allRepaymentRows.forEach((invoiceId, ids) -> {
             for (int i = 0; i < ids.size(); i++) {
                 repaymentRank.put(ids.get(i), i);
+            }
+        });
+        allReversalRows.forEach((invoiceId, ids) -> {
+            for (int i = 0; i < ids.size(); i++) {
+                reversalRank.put(ids.get(i), i);
             }
         });
 
@@ -255,6 +281,12 @@ public class CreditReadService {
             if (row.getTransactionType() == CreditTransactionType.REPAYMENT && row.getCreditInvoiceId() != null) {
                 var list = paymentsByInvoice.get(row.getCreditInvoiceId());
                 Integer rank = repaymentRank.get(row.getId());
+                if (list != null && rank != null && rank < list.size()) {
+                    payment = list.get(rank);
+                }
+            } else if (row.getTransactionType() == CreditTransactionType.PAYMENT_REVERSED && row.getCreditInvoiceId() != null) {
+                var list = reversedPayment.get(row.getCreditInvoiceId());
+                Integer rank = reversalRank.get(row.getId());
                 if (list != null && rank != null && rank < list.size()) {
                     payment = list.get(rank);
                 }
@@ -282,6 +314,7 @@ public class CreditReadService {
             case ADJUSTMENT -> "Adjustment";
             case LIMIT_CHANGE -> "Limit change";
             case RESERVE -> "Reserved";
+            case PAYMENT_REVERSED -> "Payment reversed";
         };
     }
 }

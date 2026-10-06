@@ -347,6 +347,14 @@ public final class NotificationRules {
                 "Payment not confirmed",
                 "{supplierName} could not confirm your payment of {amount}. {reason}", "CREDIT_INVOICE"));
 
+        // The supplier undid a payment it recorded (D-140): the restaurant's debt is back, so it is told, with the
+        // reason. Never SMS; the overdue notice is the credit event that is.
+        add(rules, new NotificationRule(CreditEvents.PAYMENT_REVERSED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment cancelled",
+                "Your supplier cancelled the payment of {amount} recorded on {recordedOnLabel}. Reason: {reason}",
+                "CREDIT_INVOICE"));
+
         add(rules, new NotificationRule(CreditEvents.REINSTATED, OUTLET, CREDIT, false,
                 List.of(IN_APP, PUSH),
                 "Credit available again",

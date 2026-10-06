@@ -9,5 +9,7 @@ public enum CreditTransactionType {
     REPAYMENT,
     LIMIT_CHANGE,
     /** A supplier's manual correction. Always carries a reason (doc 01 §18). */
-    ADJUSTMENT
+    ADJUSTMENT,
+    /** The supplier undid a payment it recorded: the debt it had cleared is owed again (B6, D-140). */
+    PAYMENT_REVERSED
 }

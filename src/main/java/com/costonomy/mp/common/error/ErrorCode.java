@@ -148,6 +148,22 @@ public enum ErrorCode {
     CREDIT_CLAIM_STATE(HttpStatus.CONFLICT,
             "This payment claim has already been dealt with."),
 
+    // ── Undoing a recorded payment (B6, D-140) ───────────────────────────
+    /** The payment is not one a supplier may undo: paid through Mandi (WALLET), part of a receipt, or on a written-off invoice. */
+    CREDIT_REVERSAL_NOT_ALLOWED(HttpStatus.CONFLICT,
+            "This payment can't be undone here."),
+    /** Too late to undo: 7 India days after it was recorded, 30 for a cheque. The details carry {@code closedOn}, the first day it was closed. */
+    CREDIT_REVERSAL_WINDOW_CLOSED(HttpStatus.CONFLICT,
+            "It's too late to undo this payment."),
+    CREDIT_ALREADY_REVERSED(HttpStatus.CONFLICT,
+            "This payment was already undone."),
+    /**
+     * Putting the debt back would take the line past its limit, because the credit the payment freed has been used
+     * (or the limit was cut). The details carry {@code needed}, {@code available} and {@code shortBy}; nothing moved.
+     */
+    CREDIT_REVERSAL_NO_HEADROOM(HttpStatus.UNPROCESSABLE_ENTITY,
+            "The restaurant has used the credit this payment freed."),
+
     // ── Credit rules hardening (D-130) ───────────────────────────────────
     /** The restaurant accepted a terms version that is no longer the agreement's current one. Nothing changed. */
     CREDIT_TERMS_CHANGED(HttpStatus.CONFLICT,

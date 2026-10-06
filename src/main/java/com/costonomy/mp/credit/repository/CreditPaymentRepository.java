@@ -17,6 +17,9 @@ public interface CreditPaymentRepository extends JpaRepository<CreditPayment, Lo
 
     Optional<CreditPayment> findByIdempotencyKey(String idempotencyKey);
 
+    /** A receipt's payments, one per invoice. */
+    List<CreditPayment> findByCreditRepaymentIdOrderByIdAsc(Long creditRepaymentId);
+
     List<CreditPayment> findByCreditInvoiceIdOrderByPaidAtAsc(Long creditInvoiceId);
 
     List<CreditPayment> findByCreditInvoiceIdOrderByIdAsc(Long creditInvoiceId);
@@ -48,11 +51,12 @@ public interface CreditPaymentRepository extends JpaRepository<CreditPayment, Lo
     /** One agreement's payments, newest first, id breaking ties. */
     Page<CreditPayment> findByCreditAgreementIdOrderByPaidAtDescIdDesc(Long creditAgreementId, Pageable pageable);
 
-    /** What a store collected between two instants ({@code from} inclusive, {@code to} exclusive), whatever the source. */
+    /** What a store collected between two instants ({@code from} inclusive, {@code to} exclusive), whatever the source; a payment the supplier reversed is not collected (D-140). */
     @Query("""
             select coalesce(sum(p.amount), 0) from CreditPayment p, CreditAgreement a
              where a.id = p.creditAgreementId and a.supplierStoreId = :storeId
                and p.paidAt >= :from and p.paidAt < :to
+               and not exists (select 1 from CreditPaymentReversal r where r.creditPaymentId = p.id)
             """)
     BigDecimal sumForStoreBetween(@Param("storeId") Long storeId, @Param("from") Instant from,
                                   @Param("to") Instant to);
@@ -60,12 +64,13 @@ public interface CreditPaymentRepository extends JpaRepository<CreditPayment, Lo
     /**
      * Payments of this store that carry {@code reference} and were made since {@code since}, newest first (D-134).
      * Case-insensitive through the column collation. A payment that belongs to a receipt counts only while the
-     * receipt is completed, so a reversed one stops blocking its reference.
+     * receipt is completed, and a payment with a reversal row never counts, so a reversed one stops blocking its reference.
      */
     @Query("""
             select p from CreditPayment p
              where p.reference = :reference and p.paidAt >= :since
                and p.creditAgreementId in (select a.id from CreditAgreement a where a.supplierStoreId = :storeId)
+               and not exists (select 1 from CreditPaymentReversal v where v.creditPaymentId = p.id)
                and (p.creditRepaymentId is null
                     or exists (select 1 from CreditRepayment r
                                 where r.id = p.creditRepaymentId
