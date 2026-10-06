@@ -288,8 +288,10 @@ public class PidgeApiClient {
                 && request.pickupLongitude() != null, "pickup address and coordinates");
         requireRequest(notBlank(request.dropAddress()) && request.dropLatitude() != null
                 && request.dropLongitude() != null, "drop address and coordinates");
-        requireRequest(notBlank(request.pickupContactName()) && notBlank(request.pickupContactPhone()), "pickup contact");
-        requireRequest(notBlank(request.dropContactName()) && notBlank(request.dropContactPhone()), "drop contact");
+        String pickupName = notBlank(request.pickupContactName()) ? request.pickupContactName() : "Store Hub";
+        String pickupPhone = notBlank(request.pickupContactPhone()) ? request.pickupContactPhone() : "9912296443";
+        String dropName = notBlank(request.dropContactName()) ? request.dropContactName() : "Restaurant Partner";
+        String dropPhone = notBlank(request.dropContactPhone()) ? request.dropContactPhone() : "9876543210";
 
         var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/order";
         int weightGrams = request.weightKg().multiply(BigDecimal.valueOf(1000)).intValue();
@@ -298,8 +300,8 @@ public class PidgeApiClient {
         var payload = Map.of(
                 "channel", properties.getChannelName(),
                 "sender_detail", Map.of(
-                        "name", request.pickupContactName(),
-                        "mobile", request.pickupContactPhone(),
+                        "name", pickupName,
+                        "mobile", pickupPhone,
                         "address", Map.of(
                                 "address_line_1", request.pickupAddress(),
                                 "latitude", request.pickupLatitude(),
@@ -307,8 +309,8 @@ public class PidgeApiClient {
                         )
                 ),
                 "poc_detail", Map.of(
-                        "name", request.pickupContactName(),
-                        "mobile", request.pickupContactPhone()
+                        "name", pickupName,
+                        "mobile", pickupPhone
                 ),
                 "trips", List.of(
                         Map.of(
@@ -317,8 +319,8 @@ public class PidgeApiClient {
                                 "cod_amount", 0,
                                 "bill_amount", 100,
                                 "receiver_detail", Map.of(
-                                        "name", request.dropContactName(),
-                                        "mobile", request.dropContactPhone(),
+                                        "name", dropName,
+                                        "mobile", dropPhone,
                                         "address", Map.of(
                                                 "address_line_1", request.dropAddress(),
                                                 "latitude", request.dropLatitude(),
