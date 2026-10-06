@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - A basket can no longer end up with two drafts for one supplier, and adding, removing and sending now take turns on the draft, so a simultaneous add and send, or removal and add, loses no line. Removed lines and emptied drafts are audited (D-137).
 
 ### Added
+- A restaurant is warned when a supplier's own delivery charge is high (at least 10% of the goods and at least ₹100, both configurable). A prompt, not a limit (D-144).
 - A restaurant says, for each supplier's request, whether it wants delivery or will collect (default delivery). The supplier answers knowing it; a pickup needs no delivery offer, and a supplier can say "I can't deliver this order", leaving pickup only (D-143).
 - As soon as possible is a delivery time (no slot, no day). A delivery slot is now checked when the order is created (the store's, active, not started, free), and a slot that has already started today is not offered (D-142).
 - A supplier chooses how a request is delivered when they answer it: they deliver free, they deliver at a charge they set for that order (0 is free; up to a sanity bound of ₹5,000), or Costonomy riders (requested once the order is Ready). The buyer can choose only what was offered, and free delivery is stated as free. The buyer was previously shown the supplier's own fee as "Free" (D-141).

@@ -5995,3 +5995,13 @@ The restaurant's intent used to be unstated until order review, after the suppli
 4. **Not changed:** Costonomy rider fees are still quoted at order review (they depend on the drop point and weight); riders are still requested when the order is Ready for Pickup.
 5. **Tests** (`IntentFlowIT$DeliveryPreference`): delivery by default and the supplier sees which; locked once sent; unknown choice refused; a pickup request is answered with pickup only and delivery is refused at order creation; a supplier who cannot deliver leaves pickup only. Each rule mutation-checked. Mobile: `tests/cartSend.test.tsx`, `tests/deliveryOffer.test.tsx`.
 
+## D-144 — The buyer is warned when a supplier's own delivery charge is high
+
+D-141 lets the supplier type the delivery charge for each request, limited only by a ₹5,000 sanity bound, because the restaurant sees the amount before ordering. Nothing marked an unusual amount.
+
+1. **A charge is high when it is at least 10% of the goods value and at least ₹100.** Both tests, because the share alone would flag every small order (₹40 on ₹200 is 20%) and the floor alone would ignore a charge that doubles a small one. Goods value is before GST. The boundaries count as high.
+2. **The rule is on the server** (`DeliveryChargeWarning`), and the answer carries `highDeliveryCharge`, so every screen agrees. The percentage and the floor are configuration (`delivery.highCharge.percent`, `delivery.highCharge.minAmount`) with those defaults.
+3. **A prompt, not a limit.** The buyer's delivery picker shows the warning under the supplier's delivery, with the amount, and pickup stays one tap away. Free and missing charges are never high.
+4. **Not done:** the supplier is not warned when typing (they may mean it); a supplier-delivery charge from the store's standing fee (subscriptions, direct orders) is not warned about.
+5. **Tests:** `DeliveryChargeWarningTest` (both tests, boundaries, no warning for free or missing, configuration) and `IntentFlowIT$DeliveryOffer` (high, normal and free). Mutation-checked.
+

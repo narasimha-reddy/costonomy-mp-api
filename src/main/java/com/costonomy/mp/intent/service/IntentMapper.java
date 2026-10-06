@@ -48,6 +48,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class IntentMapper {
 
+    private final DeliveryChargeWarning chargeWarning;
     private final IntentItemRepository items;
     private final IntentAcceptanceRepository acceptances;
     private final IntentAcceptanceItemRepository acceptanceItems;
@@ -313,6 +314,7 @@ public class IntentMapper {
                 acceptance.getEtaMinutes(),
                 acceptance.getDeliveryModes(),
                 acceptance.getDeliveryOffer(),
+                chargeWarning.isHigh(acceptance.getDeliveryFee(), acceptance.getOfferedValue()),
                 acceptance.getNotes(),
                 acceptance.getSubmittedAt(),
                 acceptance.getExpiresAt());

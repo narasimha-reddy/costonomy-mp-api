@@ -443,6 +443,8 @@ public final class IntentDtos {
             String deliveryModes,
             /** SELF_FREE, SELF or COSTONOMY; null on an older answer (D-141). */
             String deliveryOffer,
+            /** The supplier's own delivery charge is high for this order: warn the restaurant (D-144). */
+            boolean highDeliveryCharge,
             String notes,
             Instant submittedAt,
             Instant expiresAt) {

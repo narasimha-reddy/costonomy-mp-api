@@ -718,6 +718,22 @@ class IntentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("a high delivery charge is flagged to the buyer, a normal one and a free one are not (D-144)")
+        void highChargeIsFlagged() throws Exception {
+            // 6 KG of paneer at 410 is 2,460 of goods: 10% is 246, so 300 is high and 45 is not.
+            var high = answered("SELF", "300", 1, 1);
+            var normal = answered("SELF", "45", 1, 1);
+            var free = answered("SELF_FREE", 1, 1);
+
+            assertThat(api.get(high.buyer().token(), "/api/v1/intents/" + high.intentId())
+                    .at("/data/acceptance/highDeliveryCharge").asBoolean()).isTrue();
+            assertThat(api.get(normal.buyer().token(), "/api/v1/intents/" + normal.intentId())
+                    .at("/data/acceptance/highDeliveryCharge").asBoolean()).isFalse();
+            assertThat(api.get(free.buyer().token(), "/api/v1/intents/" + free.intentId())
+                    .at("/data/acceptance/highDeliveryCharge").asBoolean()).isFalse();
+        }
+
+        @Test
         @DisplayName("a charge needs no store fee to be set, and a typo is stopped by a sanity bound")
         void chargeWithoutAStoreFeeAndSanityBound() throws Exception {
             var open = answered("SELF", "60", 0, 1);   // own delivery off, store fee 30 but irrelevant
