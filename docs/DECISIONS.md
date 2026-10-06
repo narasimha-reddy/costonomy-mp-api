@@ -5722,3 +5722,14 @@ A stale offer accepted months later is credit on terms nobody still means (decis
 - `CreditJobs.expireOffers`, hourly (`costonomy.mp.credit.offer-expiry-interval`, ShedLock `credit-offer-expiry`), moves each expired APPROVED offer to EXPIRED in its own transaction (`CreditLifecycleService.expireOffer`): audit `CREDIT_OFFER_EXPIRED` (SYSTEM) and event `CreditOfferExpired`. Both sides are told (restaurant and supplier store, in-app and push, never SMS). A failure on one offer is logged and retried next run.
 - **Accept racing the job.** Both take the agreement row `FOR UPDATE` before reading it (`CreditAgreementLockRepository`), and the job re-checks status and age on the locked row. Exactly one wins: an accept that comes second gets 409 `INVALID_STATE_TRANSITION` ("There are no approved terms to accept"), a job that comes second finds ACTIVE and does nothing. The loser changes and announces nothing.
 - An EXPIRED line is terminal for the supplier (approve and modify are refused) and the restaurant may ask again on the same (outlet, store) row, a new round. A REQUESTED request never expires (a request can wait; the digest nudges the supplier) and `reviewDate` stays a reminder.
+
+## D-138 — Credit: a supplier may give an invoice longer to be paid
+
+Restaurants ask for a few more days; without this the supplier could only wait for the invoice to go overdue (and the line to auto-suspend) or write the debt off.
+
+- `POST /credit/invoices/{id}/extend-due {newDueDate, reason}` with an `Idempotency-Key` (`CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; others 404). A retry replays; the same key with other details is 409 `IDEMPOTENCY_KEY_REUSE`.
+- **Later only**: strictly after the current due date, else 400. **At most 60 days past the ORIGINAL due date** (the first extension row's old date), however many extensions it takes, else 400. Not on PAID or WRITTEN_OFF (409).
+- The invoice's grace travels with the date (`overdue_after = new due + original grace`); nothing about the money, the exposure or the ledger changes.
+- **OVERDUE goes back to open** (ISSUED, or PARTIALLY_PAID when part is paid) when its new overdue-after day is today (India) or later, which is when the sweep would no longer mark it. This is the same moment as the spec's "new due date in the future" whenever grace is 0, and slightly wider when there is grace, so the status and `dueState` never disagree. While still late it stays OVERDUE.
+- A SYSTEM suspension whose overdue is now within tolerance lifts through the existing `reinstateIfOverdueCleared` (a supplier's own suspension never does).
+- V61 `credit_due_extension` (invoice, old and new due, old and new overdue-after, reason, actor, created_at; append-only). `GET /credit/invoices/{id}` gains `extensions[]`, newest first, for both sides. Audit `CREDIT_DUE_EXTENDED`; event `CreditDueDateExtended` tells the restaurant (in-app and push, never SMS).

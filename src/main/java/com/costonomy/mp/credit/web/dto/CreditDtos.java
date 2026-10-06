@@ -258,7 +258,9 @@ public final class CreditDtos {
             /** Every "I paid" claim on this invoice, newest first (D-125). */
             List<ClaimResponse> claims,
             /** Outstanding less the "I paid" claims awaiting the supplier, never below 0; 0 once settled (D-127). */
-            BigDecimal reportableAmount) {
+            BigDecimal reportableAmount,
+            /** Every time the supplier moved the due date, newest first; empty when never (D-138). */
+            List<CreditLifecycleDtos.DueExtensionResponse> extensions) {
     }
 
     /** What the Home Credit tile needs: whether to show the attention dot. No amounts. */

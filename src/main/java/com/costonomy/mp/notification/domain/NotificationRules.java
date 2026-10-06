@@ -371,6 +371,14 @@ public final class NotificationRules {
                 "Credit offer expired",
                 "Your credit offer to {restaurantName} expired without being accepted.", "CREDIT_AGREEMENT"));
 
+        // The supplier moved an invoice's due date (D-138). Good news for the restaurant, but a date it plans around:
+        // told in-app and by push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.DUE_DATE_EXTENDED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Due date extended",
+                "{supplierName} moved the due date of invoice {invoiceNumber} to {newDueDateText}.",
+                "CREDIT_INVOICE"));
+
         // CreditReserved, CreditUtilized and CreditReleased are exposure bookkeeping and stay
         // silent on purpose; NotificationRulesTest keeps that list explicit.
 
