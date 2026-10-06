@@ -57,6 +57,7 @@ public class CreditReadService {
     private final CreditPaymentReversalRepository reversals;
     private final CreditRepaymentRepository repayments;
     private final CreditTransactionRepository transactions;
+    private final com.costonomy.mp.credit.repository.CreditNoteRepository notes;
     private final CreditAgreementService agreements;
     private final CreditInvoiceService invoiceService;
     private final CreditClaimService claimService;
@@ -115,6 +116,10 @@ public class CreditReadService {
                 extensions.findByCreditInvoiceIdOrderByIdDesc(invoiceId).stream()
                         .map(x -> new CreditLifecycleDtos.DueExtensionResponse(x.getId(), x.getOldDueDate(),
                                 x.getNewDueDate(), x.getReason(), x.getExtendedBy(), x.getCreatedAt()))
+                        .toList(),
+                base.creditedAmount(),
+                notes.findByCreditInvoiceIdOrderByIdAsc(invoiceId).stream()
+                        .map(note -> CreditNoteService.summaryOf(note, invoice.getInvoiceNumber()))
                         .toList());
     }
 
@@ -265,6 +270,14 @@ public class CreditReadService {
             }
         });
 
+        // The number of each credit note or write-off the visible rows name (B7, B8).
+        var noteIds = visible.stream().map(v -> v.row().getCreditNoteId()).filter(java.util.Objects::nonNull)
+                .distinct().toList();
+        var noteNumbers = new HashMap<Long, String>();
+        for (var note : notes.findByIdIn(noteIds)) {
+            noteNumbers.put(note.getId(), note.getCreditNoteNumber());
+        }
+
         var lines = new ArrayList<CreditDtos.StatementLine>();
         for (Visible v : visible) {
             CreditTransaction row = v.row();
@@ -301,7 +314,8 @@ public class CreditReadService {
                     payment == null ? null : payment.getMethod(),
                     payment == null ? null : payment.getReference(),
                     payment == null || payment.getCreditRepaymentId() == null
-                            ? null : walletEntries.get(payment.getCreditRepaymentId())));
+                            ? null : walletEntries.get(payment.getCreditRepaymentId()),
+                    row.getCreditNoteId() == null ? null : noteNumbers.get(row.getCreditNoteId())));
         }
         return lines;
     }
@@ -315,6 +329,8 @@ public class CreditReadService {
             case LIMIT_CHANGE -> "Limit change";
             case RESERVE -> "Reserved";
             case PAYMENT_REVERSED -> "Payment reversed";
+            case CREDIT_NOTE -> "Credit note";
+            case WRITE_OFF -> "Written off";
         };
     }
 }

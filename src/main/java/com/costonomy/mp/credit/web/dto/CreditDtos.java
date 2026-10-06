@@ -220,7 +220,9 @@ public final class CreditDtos {
             /** Days until the due date (negative once past it); null for a settled invoice. */
             Integer daysToDue,
             /** Outstanding less the "I paid" claims awaiting the supplier, never below 0; 0 once settled (D-127). */
-            BigDecimal reportableAmount) {
+            BigDecimal reportableAmount,
+            /** What credit notes and write-offs took off the invoice (B7, B8): not paid, no longer owed. */
+            BigDecimal creditedAmount) {
     }
 
     /** One payment against an invoice. */
@@ -262,7 +264,11 @@ public final class CreditDtos {
             /** Outstanding less the "I paid" claims awaiting the supplier, never below 0; 0 once settled (D-127). */
             BigDecimal reportableAmount,
             /** Every time the supplier moved the due date, newest first; empty when never (D-138). */
-            List<CreditLifecycleDtos.DueExtensionResponse> extensions) {
+            List<CreditLifecycleDtos.DueExtensionResponse> extensions,
+            /** What credit notes and write-offs took off the invoice (B7, B8). */
+            BigDecimal creditedAmount,
+            /** Every credit note and write-off on this invoice, oldest first (B7, B8). */
+            List<CreditNoteDtos.CreditNoteSummary> creditNotes) {
     }
 
     /** What the Home Credit tile needs: whether to show the attention dot. No amounts. */
@@ -286,7 +292,18 @@ public final class CreditDtos {
             CreditPaymentSource source,
             String method,
             String reference,
-            Long walletEntryId) {
+            Long walletEntryId,
+            /** The number of the credit note or write-off, for a CREDIT_NOTE or WRITE_OFF line (B7, B8); null otherwise. */
+            String creditNoteNumber) {
+
+        /** The line without a credit note number: every row that is not a CREDIT_NOTE or WRITE_OFF. */
+        public StatementLine(Instant at, CreditTransactionType type, String label, BigDecimal amount,
+                             BigDecimal owedAfter, Long supplierOrderId, String orderNumber, Long creditInvoiceId,
+                             String invoiceNumber, CreditPaymentSource source, String method, String reference,
+                             Long walletEntryId) {
+            this(at, type, label, amount, owedAfter, supplierOrderId, orderNumber, creditInvoiceId, invoiceNumber,
+                    source, method, reference, walletEntryId, null);
+        }
     }
 
     public record StatementResponse(

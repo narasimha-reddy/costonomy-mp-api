@@ -117,7 +117,8 @@ public class CreditDueExtensionService {
         // An overdue invoice that is no longer late (India day) is open again, as the sweep would see it: it is late
         // only once overdue-after is behind today. It stays overdue while it still is.
         if (invoice.getStatus() == CreditInvoiceStatus.OVERDUE && !newOverdueAfter.isBefore(invoiceService.today())) {
-            invoice.setStatus(invoice.getPaidAmount().signum() > 0
+            // Anything paid or credited (a note, a write-off) was taken off it, so it is no longer untouched.
+            invoice.setStatus(invoice.reduced().signum() > 0
                     ? CreditInvoiceStatus.PARTIALLY_PAID : CreditInvoiceStatus.ISSUED);
         }
         invoices.save(invoice);

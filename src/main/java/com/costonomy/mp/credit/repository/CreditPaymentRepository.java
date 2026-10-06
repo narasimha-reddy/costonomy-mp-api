@@ -24,6 +24,15 @@ public interface CreditPaymentRepository extends JpaRepository<CreditPayment, Lo
 
     List<CreditPayment> findByCreditInvoiceIdOrderByIdAsc(Long creditInvoiceId);
 
+    /**
+     * What an invoice was paid from one source, read as the latest committed state and held. A plain read inside a
+     * transaction that has already read something uses its older snapshot and would miss a payment another transaction
+     * committed while this one waited for the invoice lock; the caller holds the invoice, so no more can arrive.
+     */
+    @Query(value = "select coalesce(sum(amount), 0) from credit_payment where credit_invoice_id = :invoiceId "
+            + "and source = :source for update", nativeQuery = true)
+    BigDecimal lockedSumByInvoiceAndSource(@Param("invoiceId") Long invoiceId, @Param("source") String source);
+
     List<CreditPayment> findByCreditInvoiceIdInOrderByIdAsc(java.util.Collection<Long> creditInvoiceIds);
 
     List<CreditPayment> findByCreditInvoiceIdOrderByPaidAtDescIdDesc(Long creditInvoiceId);

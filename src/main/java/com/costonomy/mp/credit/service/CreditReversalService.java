@@ -82,6 +82,7 @@ public class CreditReversalService {
     private final CreditPaymentRepository payments;
     private final CreditPaymentReversalRepository reversals;
     private final CreditPaymentClaimRepository claims;
+    private final com.costonomy.mp.credit.repository.CreditRefundDueRepository refundsDue;
     private final CreditLedger ledger;
     private final CreditExposureStore exposure;
     private final CreditInvoiceService invoiceService;
@@ -182,6 +183,14 @@ public class CreditReversalService {
                         "Invoice %s was written off, so a payment on it can't be undone.".formatted(invoice.getInvoiceNumber()));
             }
         }
+        // A cancelled order's payment is owed back (B7, D-153): the supplier refunds it, so it can no longer be put back as owed.
+        for (var invoice : locked.values()) {
+            if (refundsDue.existsByCreditInvoiceId(invoice.getId())) {
+                throw new BusinessException(ErrorCode.CREDIT_REVERSAL_NOT_ALLOWED,
+                        "The order for invoice %s was cancelled and this payment is owed back, so it can't be undone."
+                                .formatted(invoice.getInvoiceNumber()));
+            }
+        }
         LocalDate today = invoiceService.today();
         var zone = invoiceService.zone();
         LocalDate lastDay = ordered.stream().map(p -> CreditReversalRules.lastDay(p.getCreatedAt(), p.getMethod(), zone))
@@ -208,7 +217,8 @@ public class CreditReversalService {
                         .formatted(invoice.getId(), invoice.getPaidAmount(), p.getId(), p.getAmount()));
             }
             invoice.setPaidAmount(paidAfter);
-            invoice.setStatus(CreditReversalRules.statusAfter(invoice.getOverdueAfter(), paidAfter, today));
+            invoice.setStatus(CreditReversalRules.statusAfter(invoice.getOverdueAfter(),
+                    paidAfter.add(invoice.getCreditedAmount()), today));
             invoice.setSettledAt(null);
             if (invoice.getStatus() == CreditInvoiceStatus.OVERDUE && invoice.getMarkedOverdueAt() == null) {
                 invoice.setMarkedOverdueAt(now);

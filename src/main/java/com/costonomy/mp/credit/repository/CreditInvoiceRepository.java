@@ -49,6 +49,13 @@ public interface CreditInvoiceRepository extends JpaRepository<CreditInvoice, Lo
 
     Optional<CreditInvoice> findBySupplierOrderId(Long supplierOrderId);
 
+    /**
+     * The id of an order's invoice and nothing else, so the caller can take {@link #lockById} before the row is in the
+     * persistence context: a locking query does not refresh an instance the context already holds.
+     */
+    @Query("select i.id from CreditInvoice i where i.supplierOrderId = :orderId")
+    Optional<Long> findIdBySupplierOrderId(@Param("orderId") Long orderId);
+
     List<CreditInvoice> findByCreditAgreementIdOrderByDueDateAsc(Long creditAgreementId);
 
     /** Every invoice of the store whose status is not one of {@code settled}: what the supplier's receivables are made of. */

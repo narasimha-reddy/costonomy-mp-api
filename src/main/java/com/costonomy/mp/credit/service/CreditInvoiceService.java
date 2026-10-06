@@ -46,12 +46,18 @@ public class CreditInvoiceService {
 
     /** Why a claim was closed by the system because its invoice was settled first (D-130). */
     static final String SUPERSEDED_NOTE = "Invoice was settled before this was confirmed";
+    /** Why a claim was closed because the supplier wrote the invoice off first (D-155). */
+    static final String WRITTEN_OFF_NOTE = "Invoice was written off before this was confirmed";
+    /** Why a claim was closed because its order was cancelled and the invoice credited first (D-152). */
+    static final String CANCELLED_NOTE = "The order was cancelled before this was confirmed";
 
     private final CreditInvoiceRepository invoices;
     private final CreditPaymentRepository payments;
     private final com.costonomy.mp.credit.repository.CreditPaymentClaimRepository claims;
     private final CreditAgreementRepository agreements;
     private final InvoiceNumberGenerator invoiceNumbers;
+    private final CreditNoteNumberGenerator noteNumbers;
+    private final CreditNoteRepository notes;
     private final CreditDirectory directory;
     private final AccessControlService accessControl;
     private final AuditService auditService;
@@ -277,6 +283,71 @@ public class CreditInvoiceService {
     }
 
     /**
+     * The one place a credit note or a write-off reduces a debt (B7, B8, D-151): the credit_note row, the invoice's
+     * credited amount and status, the exposure ledger, and the auto-reinstate hook, all in the caller's transaction.
+     * The twin of {@link #applyPayment}, and like it: the invoice must already be locked
+     * ({@code CreditInvoiceRepository.lockById} or an agreement lock) and the amount already checked against what
+     * is outstanding. Audit and the outbox event stay with the caller.
+     *
+     * <p>Status rule: when nothing is left owed the invoice is PAID (paid + credited = amount), or WRITTEN_OFF when
+     * the last of it was a write-off; a partial credit note leaves it PARTIALLY_PAID (OVERDUE stays OVERDUE), a partial
+     * write-off leaves it as it was (plan S12). Waiting claims are superseded only when nothing is left owed: a claim
+     * on money still owed may be real, and its confirm is capped at what remains (D-127, D-130).
+     *
+     * @param reinstate whether to run the auto-reinstate hook; a write-off that is about to suspend the line itself
+     *                  passes false, so the line is not lifted and suspended again with two notices
+     */
+    public CreditNote applyCredit(CreditInvoice invoice, BigDecimal amount, CreditNoteKind kind, CreditNoteReason reason,
+                                  String note, Long disputeId, Long actorId, String idempotencyKey, boolean reinstate) {
+        var credit = new CreditNote();
+        credit.setCreditNoteNumber(noteNumbers.next());
+        credit.setCreditInvoiceId(invoice.getId());
+        credit.setCreditAgreementId(invoice.getCreditAgreementId());
+        credit.setOutletId(invoice.getOutletId());
+        credit.setSupplierStoreId(invoice.getSupplierStoreId());
+        credit.setAmount(amount);
+        credit.setReasonCode(reason);
+        credit.setKind(kind);
+        credit.setNote(note);
+        credit.setDisputeId(disputeId);
+        credit.setIdempotencyKey(idempotencyKey);
+        credit.setCreatedBy(actorId);
+        notes.saveAndFlush(credit);
+
+        invoice.setCreditedAmount(invoice.getCreditedAmount().add(amount));
+        boolean cleared = invoice.outstanding().signum() == 0;
+        if (cleared) {
+            invoice.setStatus(kind == CreditNoteKind.WRITE_OFF ? CreditInvoiceStatus.WRITTEN_OFF : CreditInvoiceStatus.PAID);
+            invoice.setSettledAt(Instant.now());
+        } else if (kind != CreditNoteKind.WRITE_OFF && invoice.getStatus() != CreditInvoiceStatus.OVERDUE) {
+            invoice.setStatus(CreditInvoiceStatus.PARTIALLY_PAID);
+        }
+        invoices.save(invoice);
+        if (cleared) {
+            var waiting = claims.lockFreeSubmittedIds(invoice.getId(), -1L);
+            if (!waiting.isEmpty()) {
+                claims.supersede(waiting, switch (kind) {
+                    case WRITE_OFF -> WRITTEN_OFF_NOTE;
+                    case SYSTEM_CANCEL -> CANCELLED_NOTE;
+                    case MANUAL -> SUPERSEDED_NOTE;
+                }, Instant.now());
+            }
+        }
+
+        // The debt and the exposure move together, exactly as a repayment moves them.
+        ledger.credit(invoice.getCreditAgreementId(), invoice.getId(), amount,
+                kind == CreditNoteKind.WRITE_OFF ? CreditTransactionType.WRITE_OFF : CreditTransactionType.CREDIT_NOTE,
+                credit.getId(),
+                (kind == CreditNoteKind.WRITE_OFF ? "Written off on invoice " : "Credit note " + credit.getCreditNoteNumber()
+                        + " on invoice ") + invoice.getInvoiceNumber(),
+                actorId);
+        if (reinstate) {
+            reinstateIfOverdueCleared(invoice.getCreditAgreementId());
+        }
+        return credit;
+    }
+
+    /**
      * Lift a suspension the overdue sweep imposed, once what is overdue is back within the supplier's tolerance.
      * Call it in the same transaction as any repayment. A suspension by a supplier user is never lifted here.
      */
@@ -440,7 +511,7 @@ public class CreditInvoiceService {
                 invoice.getIssuedAt(), invoice.getSettledAt(),
                 CreditDueState.of(invoice.getStatus(), invoice.getDueDate(), invoice.getOverdueAfter(), today),
                 CreditDueState.daysToDue(invoice.getStatus(), invoice.getDueDate(), today),
-                invoice.reportable(openClaims));
+                invoice.reportable(openClaims), invoice.getCreditedAmount());
     }
 
     /** Today in India, the day every due state is measured against. */

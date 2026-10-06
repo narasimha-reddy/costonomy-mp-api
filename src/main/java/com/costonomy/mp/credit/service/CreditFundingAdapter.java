@@ -37,6 +37,7 @@ public class CreditFundingAdapter implements OrderFundingPort {
     private final CreditLedgerService ledger;
     private final CreditAgreementService agreements;
     private final CreditReservationRepository reservations;
+    private final CreditCancellationService cancellation;
 
     @Override
     public String paymentMethod() {
@@ -112,6 +113,9 @@ public class CreditFundingAdapter implements OrderFundingPort {
     @Override
     @Transactional
     public void onOrderUnfulfilled(Long supplierOrderId, String reason) {
+        // A hold that was never drawn is given back; an order already drawn (D-091) owes nothing for goods that will
+        // not arrive, so a system credit note takes the debt off, in this same transaction (B7, D-152).
         ledger.release(supplierOrderId, reason);
+        cancellation.onCancelledAfterDraw(supplierOrderId, reason);
     }
 }

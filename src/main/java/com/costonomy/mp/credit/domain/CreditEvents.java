@@ -43,6 +43,12 @@ public final class CreditEvents {
     public static final String REMINDER = "CreditReminder";
     /** The supplier store's daily credit summary, in-app and push, never SMS (D-148). */
     public static final String SUPPLIER_DIGEST = "CreditSupplierDigest";
+    /** A credit note was issued on an invoice, by the supplier or automatically on a cancelled order; the restaurant is told (D-151). */
+    public static final String CREDIT_NOTE_ISSUED = "CreditNoteIssued";
+    /** The supplier wrote off what was still owed on an invoice; the restaurant is told, in-app only (D-155). */
+    public static final String WRITTEN_OFF = "CreditWrittenOff";
+    /** A cancelled order left money the restaurant had paid; the supplier is told it owes a refund (D-153). */
+    public static final String REFUND_DUE = "CreditRefundDue";
     // Bookkeeping on the exposure ledger; nobody is told.
     public static final String RESERVED = "CreditReserved";
     public static final String UTILIZED = "CreditUtilized";
@@ -53,7 +59,7 @@ public final class CreditEvents {
             REQUESTED, APPROVED, REJECTED, MODIFIED, SUSPENDED, REINSTATED, OVERDUE,
             INVOICE_ISSUED, REPAYMENT_RECORDED, REPAYMENT_RECEIVED, CLAIM_SUBMITTED, CLAIM_CONFIRMED,
             CLAIM_REJECTED, PAYMENT_REVERSED, CLOSED, OFFER_EXPIRED, DUE_DATE_EXTENDED, REMINDER, SUPPLIER_DIGEST,
-            RESERVED, UTILIZED, RELEASED);
+            CREDIT_NOTE_ISSUED, WRITTEN_OFF, REFUND_DUE, RESERVED, UTILIZED, RELEASED);
 
     private CreditEvents() {
     }

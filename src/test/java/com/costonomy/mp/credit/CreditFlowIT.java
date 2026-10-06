@@ -487,7 +487,7 @@ class CreditFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("a supplier cancelling gives the credit back")
+        @DisplayName("a supplier cancelling gives the credit back, by a credit note on the drawn invoice")
         void supplierCancellationReturnsTheCredit() throws Exception {
             var line = creditLine("200000");
             var submitted = orderOnCredit(line, "400", 100);
@@ -501,23 +501,13 @@ class CreditFlowIT extends AbstractIntegrationTest {
                     "select status from supplier_order where id = ?", String.class, orderId))
                     .isEqualTo("CANCELLED");
 
-            // The debt still stands, and this records that it does.
-            //
-            // Rejection used to happen before the draw, so releasing the hold was
-            // the whole reversal. D-091 confirms a credit order as it is created,
-            // which utilises it and raises the invoice -- so by the time a
-            // supplier backs out the money is drawn, and CreditLedgerService
-            // returns early because the reservation no longer holds exposure.
-            //
-            // This is the same shape as prepaid, where cancelling after capture
-            // needs a refund rather than a release. Credit's equivalent is a
-            // credit note, and it does not exist yet: until it does, a supplier
-            // cancelling a credit order leaves the restaurant owing for goods
-            // they will not receive. Asserted rather than hidden.
+            // By the time a supplier backs out the money is drawn (D-091), so releasing a hold is not the reversal.
+            // A system credit note, issued in the cancel transaction, takes the debt off (B7, D-152).
             var agreement = agreement(line);
             assertThat(agreement.get("utilized").asDouble())
-                    .describedAs("a credit note is still owed -- see D-091's open items")
-                    .isEqualTo(40000.0);
+                    .describedAs("the restaurant owes nothing for goods that will not arrive")
+                    .isEqualTo(0.0);
+            assertThat(agreement.get("available").asDouble()).isEqualTo(200000.0);
         }
 
 
