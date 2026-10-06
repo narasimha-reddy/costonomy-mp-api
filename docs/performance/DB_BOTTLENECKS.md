@@ -81,6 +81,8 @@ must be shared or invalidated across instances. Set `hibernate.default_batch_fet
 credit availability, draft basket prices (live by design), payment state, order status.
 
 ## Quick wins (small, low risk)
+
+**Status:** items 1 to 5 below were done in D-148 (V76 indexes; nightly retention for idempotency, outbox, live location, refresh tokens and OTP; realtime single-statement delete; typeahead prefix query; role-code cache; pool 30 with max-lifetime and leak detection). Not done: purges for `notification*` and `payment_webhook_event` (retention decisions for their owners), caching of categories, brands and store facts (needs an eviction design), and everything under "Fix first".
 1. Indexes: `supplier_offer(supplier_sku_id, status)`, `supplier_order(status, updated_at)`, `supplier_order(created_at)`,
    `payment(created_at)`, `payment(captured_at)`, `dispute(created_at)`, `dispute(resolved_at)`,
    `refund(late_success_at, late_success_resolved_at)`, `refund(status, reversed_at, id)`, `outbox_event(status, id)`,

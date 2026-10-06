@@ -1,7 +1,6 @@
 package com.costonomy.mp.access.service;
 
 import com.costonomy.mp.access.domain.ScopeType;
-import com.costonomy.mp.access.repository.RoleRepository;
 import com.costonomy.mp.access.repository.UserRoleRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -35,7 +34,7 @@ import java.util.TreeSet;
 public class MembershipService {
 
     private final UserRoleRepository userRoleRepository;
-    private final RoleRepository roleRepository;
+    private final RoleCodeCache roleCodeCache;
     private final RolePermissionCatalog catalog;
     private final JdbcTemplate jdbc;
 
@@ -64,8 +63,7 @@ public class MembershipService {
             return List.of();
         }
 
-        Map<Long, String> roleCodes = new HashMap<>();
-        roleRepository.findAll().forEach(role -> roleCodes.put(role.getId(), role.getCode()));
+        Map<Long, String> roleCodes = roleCodeCache.codesById();
 
         // LinkedHashMap so a user with several grants at one scope gets one entry,
         // and the order stays stable between calls — the client renders an outlet

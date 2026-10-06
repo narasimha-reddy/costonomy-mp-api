@@ -2,7 +2,6 @@ package com.costonomy.mp.access.service;
 
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.domain.UserRole;
-import com.costonomy.mp.access.repository.RoleRepository;
 import com.costonomy.mp.access.repository.UserRoleRepository;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
@@ -48,7 +47,7 @@ public class AccessControlService {
     private static final String ACTIVE = "ACTIVE";
 
     private final UserRoleRepository userRoleRepository;
-    private final RoleRepository roleRepository;
+    private final RoleCodeCache roleCodeCache;
     private final RolePermissionCatalog catalog;
     private final ScopeResolver scopeResolver;
 
@@ -159,8 +158,6 @@ public class AccessControlService {
     }
 
     private Map<Long, String> roleCodesById() {
-        Map<Long, String> codes = new HashMap<>();
-        roleRepository.findAll().forEach(role -> codes.put(role.getId(), role.getCode()));
-        return codes;
+        return roleCodeCache.codesById();
     }
 }

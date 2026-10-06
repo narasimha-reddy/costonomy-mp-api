@@ -44,7 +44,7 @@ public class RealtimeJobs {
         Instant now = Instant.now();
 
         long spentTickets = tickets.purgeExpired(now);
-        long oldEvents = events.deleteByCreatedAtBefore(now.minus(eventRetention));
+        long oldEvents = events.deleteOlderThan(now.minus(eventRetention));
 
         if (spentTickets > 0 || oldEvents > 0) {
             log.info("Realtime cleanup removed {} tickets and {} events",
