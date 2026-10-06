@@ -288,6 +288,16 @@ public class PidgeApiClient {
                 && request.pickupLongitude() != null, "pickup address and coordinates");
         requireRequest(notBlank(request.dropAddress()) && request.dropLatitude() != null
                 && request.dropLongitude() != null, "drop address and coordinates");
+        // Pidge refuses an address with no city, state or pincode (400 "is required"), so they are read from our own
+        // records and a missing one is named rather than sent blank.
+        requireRequest(request.pickupLocality() != null && notBlank(request.pickupLocality().city())
+                && notBlank(request.pickupLocality().state()) && notBlank(request.pickupLocality().pincode()),
+                "pickup city, state and pincode");
+        requireRequest(request.dropLocality() != null && notBlank(request.dropLocality().city())
+                && notBlank(request.dropLocality().state()) && notBlank(request.dropLocality().pincode()),
+                "drop city, state and pincode");
+        var pickupLocality = request.pickupLocality();
+        var dropLocality = request.dropLocality();
         String pickupName = notBlank(request.pickupContactName()) ? request.pickupContactName() : "Store Hub";
         String pickupPhone = notBlank(request.pickupContactPhone()) ? request.pickupContactPhone() : "9912296443";
         String dropName = notBlank(request.dropContactName()) ? request.dropContactName() : "Restaurant Partner";
@@ -304,6 +314,9 @@ public class PidgeApiClient {
                         "mobile", pickupPhone,
                         "address", Map.of(
                                 "address_line_1", request.pickupAddress(),
+                                "city", pickupLocality.city(),
+                                "state", pickupLocality.state(),
+                                "pincode", pickupLocality.pincode(),
                                 "latitude", request.pickupLatitude(),
                                 "longitude", request.pickupLongitude()
                         )
@@ -323,6 +336,9 @@ public class PidgeApiClient {
                                         "mobile", dropPhone,
                                         "address", Map.of(
                                                 "address_line_1", request.dropAddress(),
+                                                "city", dropLocality.city(),
+                                                "state", dropLocality.state(),
+                                                "pincode", dropLocality.pincode(),
                                                 "latitude", request.dropLatitude(),
                                                 "longitude", request.dropLongitude()
                                         )
