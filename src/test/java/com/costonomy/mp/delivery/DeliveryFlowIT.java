@@ -908,6 +908,10 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
         void retryBooks() throws Exception {
             var order = readyOrder();
             long id = failedDelivery(order);
+            // The response says when the search began and when it stops, for the app's progress bar.
+            var failing = tenantView(order, id);
+            assertThat(failing.get("searchStartedAt").isNull()).isFalse();
+            assertThat(failing.get("retryUntil").isNull()).isFalse();
             partnersBack();
 
             retryJobs.runOnce();

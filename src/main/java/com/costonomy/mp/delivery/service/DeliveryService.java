@@ -747,6 +747,7 @@ public class DeliveryService {
                 appliedEvents(delivery.getId()),
                 isNoPartner(delivery) && delivery.getNoPartnerSince() != null
                         ? delivery.getNoPartnerSince().plus(retryWindow) : null,
+                isNoPartner(delivery) ? delivery.getNoPartnerSince() : null,
                 isNoPartner(delivery) && delivery.getOwnDeliveryOfferedAt() != null);
     }
 }

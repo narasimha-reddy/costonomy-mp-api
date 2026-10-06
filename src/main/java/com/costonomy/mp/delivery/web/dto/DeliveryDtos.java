@@ -78,6 +78,8 @@ public final class DeliveryDtos {
             List<EventResponse> timeline,
             /** While no partner is found: when the automatic retries stop. Null otherwise (D-151). */
             Instant retryUntil,
+            /** When the search for a partner began; with {@code retryUntil} it is the span a progress bar shows. */
+            Instant searchStartedAt,
             /** The supplier may now choose to deliver this order themselves (D-151). */
             boolean canSwitchToOwn) {
     }
