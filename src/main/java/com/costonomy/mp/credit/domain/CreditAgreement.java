@@ -65,6 +65,14 @@ public class CreditAgreement extends BaseEntity {
     @Column(name = "max_overdue_amount", precision = 19, scale = 4)
     private BigDecimal maxOverdueAmount;
 
+    /**
+     * What was overdue when a supplier manually lifted an overdue-sweep suspension (D-133): carried, not undone. The
+     * sweep suspends again only above the larger of this and {@link #maxOverdueAmount}. Null unless such a reinstate
+     * happened since overdue was last zero. Set by the server, never by a request.
+     */
+    @Column(name = "overdue_floor", precision = 19, scale = 4)
+    private BigDecimal overdueFloor;
+
     @Column(name = "auto_suspend_enabled", nullable = false)
     private Boolean autoSuspendEnabled = true;
 
@@ -110,5 +118,13 @@ public class CreditAgreement extends BaseEntity {
     /** Live availability, before invoice-derived dues are attached. */
     public BigDecimal available() {
         return approvedLimit.subtract(reservedAmount).subtract(utilizedAmount);
+    }
+
+    /** The overdue amount above which the sweep suspends: the larger of the supplier's maximum and the floor. */
+    public BigDecimal overdueTolerance() {
+        if (maxOverdueAmount == null || overdueFloor == null) {
+            return maxOverdueAmount;
+        }
+        return maxOverdueAmount.max(overdueFloor);
     }
 }

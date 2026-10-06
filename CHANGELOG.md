@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 #### Added
 - [Credit] `GET /api/v1/supplier-stores/{storeId}/credit/payouts?status=PENDING|APPLIED|ALL&from&to&page&size` and `GET .../payouts/{payoutId}`: the wallet repayments Mandi collected for the store, with gross, the commission as snapshotted at repayment time, net, the invoices each settled, and the settlement once applied; plus `summary {pendingNet, appliedNetThisMonth}`. Read-only, no schema change. Needs `CREDIT_VIEW` or `SETTLEMENT_VIEW` on the store; others get 404.
 
+### [feat/sup-b1-b2-permissions-reinstate] - Supplier collect permission (D-132) and manual-reinstate floor (D-133)
+- V57: `CREDIT_COLLECT` (SUP_OWNER, SUP_ADMIN, SUP_FINANCE_STAFF, SUP_STORE_MANAGER) and `CREDIT_WRITE_OFF` (SUP_OWNER, SUP_ADMIN), granted explicitly. Recording a payment and confirming or rejecting a claim now accept `CREDIT_COLLECT` or `CREDIT_MODIFY`; terms, suspend and reinstate stay `CREDIT_MODIFY`.
+
+- V57: `credit_agreement.overdue_floor`. A supplier's manual reinstate of a SYSTEM (overdue-sweep) suspension stores the overdue amount at that moment; the sweep suspends again only above `max(maxOverdueAmount, overdue_floor)`, and the floor clears when overdue returns to zero. No API change.
+
 ---
 
 ## [Architecture & Security Audit]

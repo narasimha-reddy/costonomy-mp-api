@@ -60,6 +60,10 @@ public final class Permissions {
     public static final String CREDIT_APPROVE = "CREDIT_APPROVE";
     public static final String CREDIT_REJECT = "CREDIT_REJECT";
     public static final String CREDIT_MODIFY = "CREDIT_MODIFY";
+    /** Record a payment, confirm or reject a claim. {@link #CREDIT_MODIFY} is accepted wherever this is. V57. */
+    public static final String CREDIT_COLLECT = "CREDIT_COLLECT";
+    /** Write off a debt. Owner and admin only. V57. */
+    public static final String CREDIT_WRITE_OFF = "CREDIT_WRITE_OFF";
     /** Answer a dispute raised against this store's order. Doc 04 §16. */
     public static final String DISPUTE_RESPOND = "DISPUTE_RESPOND";
     /** Approve or decline a dispute refund; an approval comes out of the payout. D-104, V39. */
