@@ -531,6 +531,43 @@ class IntentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("sending one request refuses a price that moved, unless the buyer agrees, and then locks it (D-146)")
+        void singleSendChecksThePrice() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long sku = listSku(seller, "paneer", "410");
+            long intentId = addItem(buyer, sku, 2).at("/data/id").asLong();
+
+            // The supplier reprices after the line was added.
+            assertThat(api.patchStatus(seller.token(), "/api/v1/supplier-skus/" + sku,
+                    Map.of("sellingPrice", "450"))).isEqualTo(200);
+
+            var refused = api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send", Map.of());
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("PRICE_CHANGED");
+            assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, intentId))
+                    .isEqualTo("DRAFT");
+
+            var sent = api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send",
+                    Map.of("acceptPriceChanges", true));
+            assertThat(sent.at("/data/status").asText()).as(sent.toString()).isEqualTo("OPEN");
+            assertThat(jdbc.queryForObject(
+                    "select unit_price_snapshot from intent_item where intent_id = ?",
+                    java.math.BigDecimal.class, intentId)).isEqualByComparingTo("450");
+        }
+
+        @Test
+        @DisplayName("sending one request whose prices did not move needs no agreement")
+        void singleSendWithoutAChange() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long intentId = addItem(buyer, listSku(seller, "paneer", "410"), 2).at("/data/id").asLong();
+
+            var sent = api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send", Map.of());
+
+            assertThat(sent.at("/data/status").asText()).as(sent.toString()).isEqualTo("OPEN");
+        }
+
+        @Test
         @DisplayName("carries the price it was sent at, before any reply")
         void sentCarriesItsPrice() throws Exception {
             var open = sendRequest(3);
@@ -659,6 +696,11 @@ class IntentFlowIT extends AbstractIntegrationTest {
             return createOrder(open.buyer().token(), open.intentId(), Map.of("deliveryMode", mode));
         }
 
+        private JsonNode orderWith(OpenRequest open, String mode, String quoteReference) throws Exception {
+            return createOrder(open.buyer().token(), open.intentId(),
+                    Map.of("deliveryMode", mode, "deliveryQuoteReference", quoteReference));
+        }
+
         @Test
         @DisplayName("free delivery is stated as free and charged as nothing")
         void freeDelivery() throws Exception {
@@ -715,6 +757,31 @@ class IntentFlowIT extends AbstractIntegrationTest {
             long orderId = orderWith(open, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
             assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
                     java.math.BigDecimal.class, orderId)).isEqualByComparingTo("45");
+        }
+
+        @Test
+        @DisplayName("the free-delivery threshold does not waive Costonomy riders, and does not override a charge the supplier offered (D-146)")
+        void thresholdIsForTheSuppliersOwnDelivery() throws Exception {
+            // 6 KG of paneer is 2,460 of goods, well over a 100 threshold.
+            var riders = answered("COSTONOMY", 1, 1);
+            jdbc.update("update supplier_delivery_policy set free_delivery_threshold = 100 where supplier_store_id = ?",
+                    riders.seller().storeId());
+            var quote = api.post(riders.buyer().token(), "/api/v1/intents/" + riders.intentId() + "/delivery-quote",
+                    Map.of());
+            double quoted = quote.at("/data/fee").asDouble();
+            assertThat(quoted).as(quote.toString()).isPositive();
+
+            long ridersOrder = orderWith(riders, "COSTONOMY_DELIVERY", quote.at("/data/quoteReference").asText())
+                    .at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, ridersOrder).doubleValue()).isEqualTo(quoted);
+
+            var own = answered("SELF", "45", 1, 1);
+            jdbc.update("update supplier_delivery_policy set free_delivery_threshold = 100 where supplier_store_id = ?",
+                    own.seller().storeId());
+            long ownOrder = orderWith(own, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, ownOrder)).isEqualByComparingTo("45");
         }
 
         @Test

@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [phase6/known-bugs] - Known bugs (D-135 onward)
 
 ### Fixed
+- Sending one request now re-checks its prices like the basket send, and the free-delivery threshold no longer waives Costonomy rider fees or overrides a charge the supplier offered (D-146).
+- A rate-sheet row with no availability no longer puts a sold-out SKU back in stock; an item-variants update no longer relists a delisted SKU or resets GST and stock; a supplier can't list again a SKU Costonomy disabled (D-146).
 - A courier can no longer be booked for a pickup order, or for an order the supplier is delivering themselves: a delivery request used to override the order's own mode (D-145).
 - A truly simultaneous duplicate order no longer returns a 500: the intent is locked first, the loser gets the first order back, and a lock conflict that still occurs answers 409. Replaying an order key with a different delivery mode is now refused as a reused key (D-135).
 - The Razorpay checkout is opened after the order commits, not inside its transaction. If the gateway fails the caller is told nothing was charged, the unpaid order stays, and a retry opens the checkout; a payment never set up is ended after 30 minutes (D-136).

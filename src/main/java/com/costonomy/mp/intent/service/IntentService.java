@@ -382,6 +382,14 @@ public class IntentService {
 
         requireSensibleDeliveryDate(request.preferredDeliveryDate());
 
+        // The same price rule as sending the basket (D-146): a line whose price moved since it was added is shown and
+        // agreed to, never sent at a price nobody agreed to. Sending the basket does this itself and then passes
+        // acceptance down; this route used to skip it, so a caller could send at a stale snapshot.
+        if (!Boolean.TRUE.equals(request.acceptPriceChanges()) && !repricedLines(lines).isEmpty()) {
+            throw new BusinessException(ErrorCode.PRICE_CHANGED);
+        }
+        lines.forEach(this::lockPrice);
+
         Instant now = Instant.now();
         int windowSeconds = policy.responseWindowSecondsFor(store.responseSlaSeconds());
 
@@ -478,7 +486,7 @@ public class IntentService {
             lines.forEach(this::lockPrice);
             sent.add(send(actorId, draft.getId(),
                     new IntentDtos.SendRequest(request.requestedDeliveryTime(),
-                            request.preferredDeliveryDate(), request.notes())));
+                            request.preferredDeliveryDate(), request.notes(), true)));
         }
 
         return new IntentDtos.SendBasketResponse(sent, held);

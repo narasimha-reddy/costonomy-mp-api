@@ -196,7 +196,14 @@ public class SupplierCatalogService {
         if (request.imageUrl() != null) sku.setImageUrl(blankToNull(request.imageUrl()));
         applyDetail(sku, request.description(), request.lengthCm(), request.widthCm(),
                 request.heightCm(), request.weightGrams(), request.youtubeUrl());
-        if (request.status() != null) sku.setStatus(request.status());
+        if (request.status() != null) {
+            // Disabled is Costonomy's decision (moderation), not the supplier's to undo with a status change (D-146).
+            if ("DISABLED".equals(sku.getStatus()) && !"DISABLED".equals(request.status())) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "Costonomy disabled this product, so it can't be listed again from here. Contact support.");
+            }
+            sku.setStatus(request.status());
+        }
 
         try {
             skus.saveAndFlush(sku);
@@ -392,10 +399,13 @@ public class SupplierCatalogService {
                         null,
                         null,
                         null,
-                        "ACTIVE",
+                        // An update leaves what the entry does not mention as it is (D-146): no status (it used to
+                        // relist a delisted SKU), no GST (it used to reset to 5%), no availability (it used to put
+                        // an out-of-stock SKU back in stock). Only a new variant gets those defaults, below.
+                        null,
                         entry.sellingPrice(),
-                        entry.gstRate() != null ? entry.gstRate() : BigDecimal.valueOf(5),
-                        entry.availability() != null ? entry.availability() : SupplierOffer.Availability.AVAILABLE,
+                        entry.gstRate(),
+                        entry.availability(),
                         entry.availableQuantity()
                 ));
             } else {
@@ -731,7 +741,8 @@ public class SupplierCatalogService {
                     sku.getImageUrl(), sku.getDescription(), sku.getLengthCm(), sku.getWidthCm(),
                     sku.getHeightCm(), sku.getWeightGrams(), sku.getYoutubeUrl(), List.of(),
                     sku.getStatus(), item.sellingPrice(), gstRate,
-                    item.availability() != null ? item.availability() : "AVAILABLE",
+                    // A row with no availability leaves stock as it is (D-146); it used to mean "in stock".
+                    item.availability(),
                     item.availableQuantity()
             );
 

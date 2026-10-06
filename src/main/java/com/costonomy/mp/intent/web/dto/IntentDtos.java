@@ -81,7 +81,12 @@ public final class IntentDtos {
             Instant requestedDeliveryTime,
             /** The day it is wanted; absent means immediate (D-140). */
             java.time.LocalDate preferredDeliveryDate,
-            @Size(max = 1000) String notes) {
+            @Size(max = 1000) String notes,
+            /**
+             * Agreement to the prices as they are now. Absent or false, a request whose prices moved since the lines
+             * were added is refused (422 {@code PRICE_CHANGED}) rather than sent at a price nobody agreed to (D-146).
+             */
+            Boolean acceptPriceChanges) {
     }
 
     // ── Supplier: answering ──────────────────────────────────────────────

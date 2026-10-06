@@ -6014,3 +6014,15 @@ Verified before changing: `DeliveryService.resolveMode` took the mode named in t
 3. **Not changed:** riders are still requested automatically when the supplier marks Ready for an order sold with Costonomy delivery; reassignment after a failed booking is a separate path.
 4. **Tests:** `DeliveryFlowIT$Journey` (no courier for a pickup or for an own-delivery order, even when one is asked for by name); `tests/deliveryPartner.test.ts` in the app. The own-delivery test fails without the check.
 
+## D-146 — Three rules the server did not enforce
+
+Found by reading the code while fixing D-141 to D-145: each was a rule the app showed or assumed and the server did not hold.
+
+1. **Sending one request re-checks its prices.** `POST /intents/{id}/send` skipped the price check that the basket send and the direct order do, so it could send lines at a stale snapshot. It now refuses (422 `PRICE_CHANGED`) when a line's price or GST moved since it was added, unless the request carries `acceptPriceChanges: true`, and it locks every line at the live price when it sends. The basket send passes agreement down after its own check, so it is unchanged.
+2. **The free-delivery threshold is for the supplier's own delivery.** It used to waive the fee for Costonomy riders too, leaving nobody charged for the courier. That waiver is removed: a Costonomy delivery is charged its quoted fee. The threshold also no longer overrides a charge the supplier offered on the answer: the buyer was shown that amount (D-141), so that amount is what is charged. It still applies where no amount was offered (direct orders, older answers). The cart's nudge now says "free delivery by the supplier" and compares goods before GST, as the server does.
+3. **Bulk edits change only what they say, and Costonomy's disabling stands.** A rate-sheet row with no availability used to mean "in stock", putting a sold-out SKU back on sale. An item-variants update forced status ACTIVE (relisting a delisted SKU), reset GST to 5 percent and reset availability when the entry omitted them. All three now leave what is not mentioned as it is; a new variant keeps its defaults. A supplier can no longer list again a SKU an admin disabled (422 "Costonomy disabled this product, so it can't be listed again from here"); delisting and relisting their own SKU is unchanged.
+
+**Not changed:** subscriptions still use the store's standing own-delivery setting and fee; the single-request send is not used by the app (it sends the basket).
+
+**Tests:** `IntentFlowIT$Basket` (stale price refused, agreement sends and locks, no change needs no agreement), `IntentFlowIT$DeliveryOffer` (riders charged their quote above the threshold, an offered charge not waived), `CatalogMaintenanceIT` (rate sheet and variants leave stock, status and GST; disabled stays disabled; own delist and relist still work). Each mutation-checked.
+

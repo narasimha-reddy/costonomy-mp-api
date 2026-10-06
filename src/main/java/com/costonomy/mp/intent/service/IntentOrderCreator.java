@@ -577,10 +577,11 @@ public class IntentOrderCreator {
                 // refusals as any other supplier delivery.
                 boolean offered = mode == DeliveryMode.SUPPLIER_DELIVERY && acceptance != null
                         && acceptance.getDeliveryOffer() != null && acceptance.getDeliveryFee() != null;
-                // On a supplier's own delivery the amount they offered on this answer (zero when free, at most the
-                // store's fee) is what is charged, not the store's standing fee.
+                // On a supplier's own delivery the amount they offered on this answer (zero when free) is what is charged
+                // and what the buyer was shown, so the store's standing free-delivery threshold does not override it
+                // (D-146). The threshold applies where no amount was offered (direct orders, older answers).
                 if (offered) {
-                    fee = acceptance.getDeliveryFee();
+                    yield acceptance.getDeliveryFee();
                 }
                 yield DeliveryCharges.waivedByThreshold(policy, subtotal) ? BigDecimal.ZERO : fee;
             }
@@ -591,9 +592,8 @@ public class IntentOrderCreator {
                             "We can't deliver from this supplier. Choose pickup, or ask "
                                     + "them to deliver.");
                 }
-                if (DeliveryCharges.waivedByThreshold(policy, subtotal)) {
-                    yield BigDecimal.ZERO;
-                }
+                // No free-delivery threshold here (D-146): free delivery is the supplier's own to give, and a courier is
+                // paid for. The threshold used to waive this fee as well, leaving nobody charged for the rider.
                 if (request.deliveryQuoteReference() == null) {
                     // Creating: not defaulted to zero and not quoted on the fly —
                     // a delivery whose price nobody saw is a charge nobody agreed
