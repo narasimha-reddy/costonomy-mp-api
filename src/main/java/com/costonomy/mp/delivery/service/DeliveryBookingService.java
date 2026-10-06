@@ -82,10 +82,16 @@ public class DeliveryBookingService {
                 delivery.setDeliveryProviderId(quote.getDeliveryProviderId());
                 delivery.setProviderCode(quote.getProviderCode());
                 delivery.setProviderDeliveryId(booking.providerDeliveryId());
-                delivery.setFee(booking.amount());
-                delivery.setCurrency(booking.currency());
-                delivery.setEtaMinutes(booking.etaMinutes());
-                delivery.setEstimatedArrivalAt(booking.estimatedArrivalAt());
+                // A carrier that does not restate the fare or arrival time on booking (Pidge) is booked at the quote's.
+                var bookedAmount = booking.amount() != null ? booking.amount() : quote.getAmount();
+                var bookedCurrency = booking.currency() != null ? booking.currency() : quote.getCurrency();
+                var bookedEta = booking.etaMinutes() != null ? booking.etaMinutes() : quote.getEtaMinutes();
+                var bookedArrival = booking.estimatedArrivalAt() != null ? booking.estimatedArrivalAt()
+                        : bookedEta == null ? null : Instant.now().plusSeconds(bookedEta * 60L);
+                delivery.setFee(bookedAmount);
+                delivery.setCurrency(bookedCurrency);
+                delivery.setEtaMinutes(bookedEta);
+                delivery.setEstimatedArrivalAt(bookedArrival);
                 if (booking.trackingUrl() != null) {
                     delivery.setTrackingUrl(booking.trackingUrl());
                 }
@@ -117,8 +123,8 @@ public class DeliveryBookingService {
                 ledgerEntry.setProviderCode(quote.getProviderCode());
                 ledgerEntry.setProviderDeliveryId(booking.providerDeliveryId());
                 ledgerEntry.setEntryType("BOOKED");
-                ledgerEntry.setAmount(booking.amount());
-                ledgerEntry.setCurrency(booking.currency());
+                ledgerEntry.setAmount(bookedAmount);
+                ledgerEntry.setCurrency(bookedCurrency);
                 ledgerEntry.setDescription("Consignment booked with %s (Attempt %d)".formatted(quote.getProviderCode(), attemptNumber));
                 ledger.save(ledgerEntry);
 

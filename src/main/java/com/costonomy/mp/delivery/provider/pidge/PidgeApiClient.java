@@ -102,6 +102,20 @@ public class PidgeApiClient {
         }
     }
 
+    /** The 10 digits of an Indian mobile ("+919876543210", "09876543210", "98765 43210" all give 9876543210), else null. */
+    static String indianMobile(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String digits = raw.replaceAll("\\D", "");
+        if (digits.length() == 12 && digits.startsWith("91")) {
+            digits = digits.substring(2);
+        } else if (digits.length() == 11 && digits.startsWith("0")) {
+            digits = digits.substring(1);
+        }
+        return digits.matches("[6-9]\\d{9}") ? digits : null;
+    }
+
     private static boolean notBlank(String value) {
         return value != null && !value.isBlank();
     }
@@ -299,9 +313,15 @@ public class PidgeApiClient {
         var pickupLocality = request.pickupLocality();
         var dropLocality = request.dropLocality();
         String pickupName = notBlank(request.pickupContactName()) ? request.pickupContactName() : "Store Hub";
-        String pickupPhone = notBlank(request.pickupContactPhone()) ? request.pickupContactPhone() : "9912296443";
+        // A rider is sent to these numbers, so a missing or malformed one fails the booking by name rather than being
+        // replaced with somebody else's (D-121).
+        String pickupPhone = indianMobile(request.pickupContactPhone());
+        requireRequest(pickupPhone != null, "pickup contact phone (a 10-digit Indian mobile)");
         String dropName = notBlank(request.dropContactName()) ? request.dropContactName() : "Restaurant Partner";
-        String dropPhone = notBlank(request.dropContactPhone()) ? request.dropContactPhone() : "9876543210";
+        String dropPhone = indianMobile(request.dropContactPhone());
+        requireRequest(dropPhone != null, "drop contact phone (a 10-digit Indian mobile)");
+        // The goods' real value, from the order; never a placeholder.
+        requireRequest(request.goodsValue() != null && request.goodsValue().signum() > 0, "order value");
 
         var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/order";
         int weightGrams = request.weightKg().multiply(BigDecimal.valueOf(1000)).intValue();
@@ -330,7 +350,7 @@ public class PidgeApiClient {
                                 "source_order_id", sourceOrderId,
                                 "reference_id", "ref-" + request.idempotencyKey(),
                                 "cod_amount", 0,
-                                "bill_amount", 100,
+                                "bill_amount", request.goodsValue().setScale(2, java.math.RoundingMode.HALF_UP),
                                 "receiver_detail", Map.of(
                                         "name", dropName,
                                         "mobile", dropPhone,
@@ -373,12 +393,10 @@ public class PidgeApiClient {
                     throw missing("delivery_id");
                 }
 
-                BigDecimal amount = BigDecimal.valueOf(150); // Default estimate until quote confirmation
-                int eta = 45;
-                Instant etaTime = Instant.now().plusSeconds(eta * 60L);
+                // Pidge's create-order answer carries no fare or arrival time, so none is stated here: the booking
+                // keeps the fare and ETA of the quote that was booked (DeliveryBookingService), never a default.
                 String trackingUrl = "https://track.pidge.in/live/" + deliveryId;
-
-                return new DeliveryProvider.Booking(deliveryId, amount, "INR", eta, etaTime, trackingUrl);
+                return new DeliveryProvider.Booking(deliveryId, null, "INR", null, null, trackingUrl);
             }
             throw new DeliveryProviderException("PIDGE", "Failed to create delivery on Pidge", true);
 
