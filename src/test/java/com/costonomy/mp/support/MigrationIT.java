@@ -166,6 +166,7 @@ class MigrationIT extends AbstractIntegrationTest {
                         "credit_transaction",
                         "credit_limit_history",
                         "credit_payment",
+                        "credit_payment_reversal",
                         // Delivery's evidence trail. A courier's event, a driver's
                         // position and a booking attempt are records of what
                         // happened; editing one would rewrite the journey.
