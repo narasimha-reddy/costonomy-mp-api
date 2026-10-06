@@ -116,6 +116,27 @@ public class OrderFundingAdapter implements OrderFundingPort {
     }
 
     @Override
+    @Transactional
+    public void relinquishUnfunded(Long supplierOrderId) {
+        // Locked, so a card authorisation arriving now and this switch have one winner: whichever takes the row first.
+        var payment = payments.lockBySupplierOrderId(supplierOrderId).orElse(null);
+        if (payment == null) {
+            return;
+        }
+        if (payment.getStatus() != PaymentStatus.CREATED || payment.getCancelRequestedAt() != null) {
+            throw new com.costonomy.mp.common.error.BusinessException(
+                    com.costonomy.mp.common.error.ErrorCode.PAYMENT_STATE_CONFLICT,
+                    "Your card payment has already gone through.");
+        }
+        // The same mark a cancellation leaves (D-109): every guard that refuses to let a payment fund an order reads
+        // it, and money that still arrives is returned. Razorpay has no way to cancel an order, so it stays open there.
+        payment.setCancelRequestedAt(java.time.Instant.now());
+        payments.save(payment);
+        log.info("Payment {} of order {} superseded: the order is being paid another way",
+                payment.getId(), supplierOrderId);
+    }
+
+    @Override
     public void onOrderAccepted(Long supplierOrderId, BigDecimal acceptedAmount) {
         // Nothing, for prepaid, since D-103: the money stays held until the goods
         // are about to leave (onOrderDispatched). Credit still draws here.

@@ -30,6 +30,7 @@ import java.util.List;
 @Tag(name = "Payments")
 public class PaymentController {
 
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
     private final PaymentService paymentService;
     private final OrderReleaseService orderRelease;
     private final PaymentTransactionRepository transactions;
@@ -69,12 +70,17 @@ public class PaymentController {
         boolean payable = payment.getStatus() == com.costonomy.mp.payment.domain.PaymentStatus.CREATED
                 && payment.getProviderOrderId() != null
                 && payment.getCancelRequestedAt() == null;
+        var orderRow = jdbc.queryForList(
+                "select status, payment_method from supplier_order where id = ?", orderId);
+        String orderStatus = orderRow.isEmpty() ? null : (String) orderRow.get(0).get("status");
+        String orderMethod = orderRow.isEmpty() ? null : (String) orderRow.get(0).get("payment_method");
+        boolean switchable = payable && "DRAFT".equals(orderStatus) && "PREPAID".equals(orderMethod);
         return ApiResponse.ok(new PaymentDtos.PaymentIntentResponse(
                 payment.getId(), payment.getSupplierOrderId(), payment.getProvider(),
                 payment.getProviderOrderId(), payment.getAuthorizedAmount(), payment.getCurrency(),
                 payable ? publicKey(payment.getProvider()) : null,
                 payment.getStatus(), payment.fundsSecuredForOrder(), payable,
-                payment.getFailureReason()));
+                payment.getFailureReason(), orderStatus, orderMethod, switchable));
     }
 
     @PostMapping("/payments/{id}/confirm")

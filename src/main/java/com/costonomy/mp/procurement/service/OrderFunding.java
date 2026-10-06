@@ -71,6 +71,16 @@ public class OrderFunding {
         return intents;
     }
 
+    /** Funds one order through a named method, whatever the order says it was created with (D-152). */
+    public void arrangeFundingVia(String paymentMethod, SupplierOrder order) {
+        port(paymentMethod).arrangeFunding(List.of(order));
+    }
+
+    /** See {@link OrderFundingPort#relinquishUnfunded}. */
+    public void relinquishUnfunded(String paymentMethod, Long supplierOrderId) {
+        port(paymentMethod).relinquishUnfunded(supplierOrderId);
+    }
+
     public boolean isFundingSecured(Long supplierOrderId) {
         return forOrder(supplierOrderId).isFundingSecured(supplierOrderId);
     }

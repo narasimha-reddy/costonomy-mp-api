@@ -59,6 +59,7 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -10306,6 +10307,187 @@ class PaymentFlowIT extends AbstractIntegrationTest {
     private String orderPaymentStatus(Submitted submitted) throws Exception {
         return api.get(submitted.buyer().token(), "/api/v1/supplier-orders/" + submitted.orderId())
                 .at("/data/paymentStatus").asText();
+    }
+
+    // ── Pay an unpaid card order another way (D-152) ─────────────────────
+
+    @Nested
+    @DisplayName("paying an unpaid card order another way")
+    class AnotherWay {
+
+        private void topUp(Buyer buyer, String amount) throws Exception {
+            long userId = api.get(buyer.token(), "/api/v1/auth/me").at("/data/user/id").asLong();
+            var intent = walletTopUps.create(userId, buyer.outletId(), new BigDecimal(amount),
+                    UUID.randomUUID().toString());
+            var payment = mockProvider.completeCheckout(intent.razorpayOrderId());
+            walletTopUps.confirm(buyer.outletId(), intent.topUpId(), payment.providerPaymentId(),
+                    MockPaymentProvider.TEST_SIGNATURE);
+        }
+
+        private int switchTo(String token, long orderId, String method, String key) throws Exception {
+            return mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/supplier-orders/" + orderId + "/payment-method")
+                            .header("Authorization", "Bearer " + token)
+                            .header("Idempotency-Key", key)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("method", method))))
+                    .andReturn().getResponse().getStatus();
+        }
+
+        private String orderMethod(long orderId) {
+            return jdbc.queryForObject("select payment_method from supplier_order where id = ?", String.class, orderId);
+        }
+
+        @Test
+        @DisplayName("the wallet pays, the order is released, and the card payment can no longer fund it")
+        void cardToWallet() throws Exception {
+            var buyer = newBuyer();
+            topUp(buyer, "1000.00");
+            var submitted = submit(buyer, "400", 1);
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("DRAFT");
+
+            assertThat(switchTo(buyer.token(), submitted.orderId(), "WALLET", UUID.randomUUID().toString()))
+                    .isEqualTo(200);
+
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+            assertThat(orderMethod(submitted.orderId())).isEqualTo("WALLET");
+            assertThat(balance(buyer)).isEqualByComparingTo("600.00");
+            assertThat(jdbc.queryForObject("select cancel_requested_at is not null from payment where id = ?",
+                    Boolean.class, submitted.paymentId())).isTrue();
+            var intent = api.get(buyer.token(), "/api/v1/supplier-orders/" + submitted.orderId() + "/payment-intent")
+                    .at("/data");
+            assertThat(intent.get("payable").asBoolean()).isFalse();
+            assertThat(intent.get("switchable").asBoolean()).isFalse();
+            assertThat(intent.get("orderPaymentMethod").asText()).isEqualTo("WALLET");
+        }
+
+        @Test
+        @DisplayName("a wallet that is short changes nothing: still a card order, still payable")
+        void walletTooShort() throws Exception {
+            var buyer = newBuyer();
+            var submitted = submit(buyer, "400", 1);
+
+            assertThat(switchTo(buyer.token(), submitted.orderId(), "WALLET", UUID.randomUUID().toString()))
+                    .isGreaterThanOrEqualTo(400);
+
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("DRAFT");
+            assertThat(orderMethod(submitted.orderId())).isEqualTo("PREPAID");
+            assertThat(jdbc.queryForObject("select cancel_requested_at is null from payment where id = ?",
+                    Boolean.class, submitted.paymentId())).isTrue();
+            var intent = api.get(buyer.token(), "/api/v1/supplier-orders/" + submitted.orderId() + "/payment-intent")
+                    .at("/data");
+            assertThat(intent.get("payable").asBoolean()).isTrue();
+            assertThat(intent.get("switchable").asBoolean()).isTrue();
+        }
+
+        @Test
+        @DisplayName("an order already paid by card can't be switched, and the wallet is untouched")
+        void alreadyPaid() throws Exception {
+            var buyer = newBuyer();
+            topUp(buyer, "1000.00");
+            var submitted = submit(buyer, "400", 1);
+            payAndConfirm(submitted);
+
+            assertThat(switchTo(buyer.token(), submitted.orderId(), "WALLET", UUID.randomUUID().toString()))
+                    .isEqualTo(409);
+            assertThat(balance(buyer)).isEqualByComparingTo("1000.00");
+            assertThat(orderMethod(submitted.orderId())).isEqualTo("PREPAID");
+        }
+
+        @Test
+        @DisplayName("money that still arrives on the card afterwards is not taken for the order")
+        void lateCardMoney() throws Exception {
+            var buyer = newBuyer();
+            topUp(buyer, "1000.00");
+            var submitted = submit(buyer, "400", 1);
+            assertThat(switchTo(buyer.token(), submitted.orderId(), "WALLET", UUID.randomUUID().toString()))
+                    .isEqualTo(200);
+
+            payAndConfirm(submitted);
+
+            assertThat(orderMethod(submitted.orderId())).isEqualTo("WALLET");
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+            assertThat(jdbc.queryForObject("select status from payment where id = ?", String.class,
+                    submitted.paymentId())).isIn("CANCEL_PENDING", "CAPTURED", "RELEASED", "CREATED");
+            assertThat(balance(buyer)).isEqualByComparingTo("600.00");
+        }
+
+        @Test
+        @DisplayName("repeating the request with the same key debits once")
+        void replayDebitsOnce() throws Exception {
+            var buyer = newBuyer();
+            topUp(buyer, "1000.00");
+            var submitted = submit(buyer, "400", 1);
+            String key = UUID.randomUUID().toString();
+
+            assertThat(switchTo(buyer.token(), submitted.orderId(), "WALLET", key)).isEqualTo(200);
+            assertThat(switchTo(buyer.token(), submitted.orderId(), "WALLET", key)).isEqualTo(200);
+
+            assertThat(balance(buyer)).isEqualByComparingTo("600.00");
+        }
+
+        @Test
+        @DisplayName("somebody else's order is not found")
+        void otherTenant() throws Exception {
+            var buyer = newBuyer();
+            var stranger = newBuyer();
+            topUp(stranger, "1000.00");
+            var submitted = submit(buyer, "400", 1);
+
+            assertThat(switchTo(stranger.token(), submitted.orderId(), "WALLET", UUID.randomUUID().toString()))
+                    .isEqualTo(404);
+            assertThat(balance(stranger)).isEqualByComparingTo("1000.00");
+        }
+
+        @Test
+        @DisplayName("two switches at once fund the order once")
+        void racingSwitches() throws Exception {
+            var buyer = newBuyer();
+            topUp(buyer, "1000.00");
+            var submitted = submit(buyer, "400", 1);
+            var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+            var latch = new java.util.concurrent.CountDownLatch(1);
+            try {
+                var results = new ArrayList<java.util.concurrent.Future<Integer>>();
+                for (int i = 0; i < 2; i++) {
+                    results.add(pool.submit(() -> {
+                        latch.await();
+                        return switchTo(buyer.token(), submitted.orderId(), "WALLET", UUID.randomUUID().toString());
+                    }));
+                }
+                latch.countDown();
+                var codes = new ArrayList<Integer>();
+                for (var result : results) {
+                    codes.add(result.get());
+                }
+                assertThat(codes).contains(200).doesNotContain(500);
+            } finally {
+                pool.shutdownNow();
+            }
+            assertThat(balance(buyer)).isEqualByComparingTo("600.00");
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CONFIRMED");
+        }
+
+        @Test
+        @DisplayName("cancelling an unpaid order leaves nothing to pay")
+        void cancelUnpaid() throws Exception {
+            var buyer = newBuyer();
+            var submitted = submit(buyer, "400", 1);
+
+            int status = mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/supplier-orders/" + submitted.orderId() + "/cancel")
+                            .header("Authorization", "Bearer " + buyer.token())
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("reason", "Cancelled before paying"))))
+                    .andReturn().getResponse().getStatus();
+
+            assertThat(status).isEqualTo(200);
+            assertThat(orderStatus(submitted.orderId())).isEqualTo("CANCELLED");
+            var intent = api.get(buyer.token(), "/api/v1/supplier-orders/" + submitted.orderId() + "/payment-intent")
+                    .at("/data");
+            assertThat(intent.get("payable").asBoolean()).isFalse();
+        }
     }
 
     private BigDecimal balance(Buyer buyer) {
