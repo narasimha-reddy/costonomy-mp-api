@@ -133,7 +133,7 @@ public final class IntentDtos {
             String deliveryOffer,
             /**
              * With {@code SELF}: what this supplier charges the restaurant to deliver this request. Absent means the
-             * store's own delivery fee; it may be lower (zero is free) but never higher (D-141).
+             * store's own delivery fee. Any amount up to a sanity bound; zero is free (D-141).
              */
             @jakarta.validation.constraints.DecimalMin(value = "0", message = "A delivery fee cannot be negative.")
             BigDecimal deliveryFee,

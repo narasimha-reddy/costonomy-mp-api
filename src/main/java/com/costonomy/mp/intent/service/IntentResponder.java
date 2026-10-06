@@ -73,6 +73,9 @@ public class IntentResponder {
     private final IntentAcceptanceItemRepository acceptanceItems;
     private final SupplierOfferRepository offers;
     private final SkuDirectory skuDirectory;
+    /** A sanity bound on what a supplier may charge for their own delivery of one order (D-141). */
+    private static final BigDecimal MAX_OWN_DELIVERY_CHARGE = new BigDecimal("5000");
+
     private final IntentMapper mapper;
     private final IntentPolicy policy;
     private final AccessControlService accessControl;
@@ -459,13 +462,14 @@ public class IntentResponder {
                 acceptance.setDeliveryModes("PICKUP,SUPPLIER_DELIVERY");
                 BigDecimal storeFee = deliveryPolicy.ownDeliveryFee() == null
                         ? BigDecimal.ZERO : deliveryPolicy.ownDeliveryFee();
+                // The supplier sets what to charge for this order. Left out, it is the store's standing fee. The
+                // restaurant sees the amount before ordering, so the only limit here is a sanity bound against a typo.
                 BigDecimal fee = "SELF_FREE".equals(offer) ? BigDecimal.ZERO
                         : chosenFee == null ? storeFee : chosenFee;
-                // Lower or free for this request is the supplier's call; higher than the store's own fee is not.
-                if (fee.compareTo(storeFee) > 0) {
+                if (fee.compareTo(MAX_OWN_DELIVERY_CHARGE) > 0) {
                     throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                            "Your delivery charge can't be more than your store's delivery fee of %s."
-                                    .formatted(storeFee.stripTrailingZeros().toPlainString()));
+                            "A delivery charge can't be more than %s. Check the amount."
+                                    .formatted(MAX_OWN_DELIVERY_CHARGE.toPlainString()));
                 }
                 acceptance.setDeliveryFee(Pricing.money(fee));
             }

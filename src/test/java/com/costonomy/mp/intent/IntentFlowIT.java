@@ -705,17 +705,32 @@ class IntentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("a supplier cannot charge more than their store's delivery fee")
-        void chargeIsCapped() throws Exception {
-            var open = sendRequest(6);
-            policy(open.seller(), 1, 1);
+        @DisplayName("a supplier can charge more than their store's standing fee for one order, and that is what the buyer pays")
+        void chargeIsTheSuppliersCall() throws Exception {
+            var open = answered("SELF", "45", 1, 1);
 
-            var refused = respond(open.seller().token(), open.intentId(), Map.of(
-                    "lines", List.of(Map.of("intentItemId", open.itemId(), "offeredQuantity", 6)),
-                    "deliveryOffer", "SELF", "deliveryFee", "31"));
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).isEqualTo(45.0);
 
+            long orderId = orderWith(open, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("45");
+        }
+
+        @Test
+        @DisplayName("a charge needs no store fee to be set, and a typo is stopped by a sanity bound")
+        void chargeWithoutAStoreFeeAndSanityBound() throws Exception {
+            var open = answered("SELF", "60", 0, 1);   // own delivery off, store fee 30 but irrelevant
+            assertThat(api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId())
+                    .at("/data/acceptance/deliveryFee").asDouble()).isEqualTo(60.0);
+
+            var tooMuch = sendRequest(6);
+            policy(tooMuch.seller(), 1, 1);
+            var refused = respond(tooMuch.seller().token(), tooMuch.intentId(), Map.of(
+                    "lines", List.of(Map.of("intentItemId", tooMuch.itemId(), "offeredQuantity", 6)),
+                    "deliveryOffer", "SELF", "deliveryFee", "5001"));
             assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
-            assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, open.intentId()))
+            assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, tooMuch.intentId()))
                     .isEqualTo("OPEN");
         }
 
@@ -744,21 +759,6 @@ class IntentFlowIT extends AbstractIntegrationTest {
             assertThat(orderId).isPositive();
             assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
                     java.math.BigDecimal.class, orderId)).isEqualByComparingTo("0");
-        }
-
-        @Test
-        @DisplayName("without a store fee the charge for own delivery can only be nothing")
-        void noStoreFeeMeansNoCharge() throws Exception {
-            var open = sendRequest(6);
-            policy(open.seller(), 0, 1);
-            jdbc.update("update supplier_delivery_policy set own_delivery_fee = 0 where supplier_store_id = ?",
-                    open.seller().storeId());
-
-            var refused = respond(open.seller().token(), open.intentId(), Map.of(
-                    "lines", List.of(Map.of("intentItemId", open.itemId(), "offeredQuantity", 6)),
-                    "deliveryOffer", "SELF", "deliveryFee", "10"));
-
-            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
         }
 
         @Test
