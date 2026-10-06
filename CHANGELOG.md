@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Credit]
+
+### [Supplier payouts list] - B4
+#### Added
+- [Credit] `GET /api/v1/supplier-stores/{storeId}/credit/payouts?status=PENDING|APPLIED|ALL&from&to&page&size` and `GET .../payouts/{payoutId}`: the wallet repayments Mandi collected for the store, with gross, the commission as snapshotted at repayment time, net, the invoices each settled, and the settlement once applied; plus `summary {pendingNet, appliedNetThisMonth}`. Read-only, no schema change. Needs `CREDIT_VIEW` or `SETTLEMENT_VIEW` on the store; others get 404.
+
+---
+
 ## [Architecture & Security Audit]
 
 ### [Security Audit Report] - 2026-10-02

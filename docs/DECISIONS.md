@@ -5675,3 +5675,13 @@ Five rule gaps found by the credit edge-case review. No schema change (claim sta
   transaction (note "Invoice was settled before this was confirmed", no actor, no notification). They no longer count in
   `openClaimsAmount`/`reportableAmount`, are not in the supplier's SUBMITTED inbox, and stay in the claim lists as history. Confirm,
   reject and withdraw on one are 409 `CREDIT_CLAIM_STATE`. A claim larger than the new outstanding but not settled stays SUBMITTED.
+
+## D-131 — Supplier payouts list: stored commission, store-wide summary, IST month
+
+`GET /supplier-stores/{storeId}/credit/payouts` (and `/{payoutId}`) is read-only and adds no schema.
+
+- **Commission is the stored snapshot** (`credit_repayment_payout.commission_amount` and `commission_rate_percent`); net is `amount - commission_amount`. Nothing reads `commission_configuration` or the repayment-commission switch, so a later rate change never alters what a supplier sees.
+- **Summary is the store's position, not the filter's.** `pendingNet` is every PENDING payout of the store; `appliedNetThisMonth` is APPLIED payouts whose `applied_at` falls in the current India calendar month (credit clock). It does not change with `status`, `from`, `to` or `page`.
+- **`from`/`to`** are India calendar days on the payout's creation time, inclusive; `from` after `to` is a `VALIDATION_ERROR`. `size` defaults to 20, capped at 100.
+- **Access** matches the claims inbox: `CREDIT_VIEW` or `SETTLEMENT_VIEW` on the store, otherwise 404 (a restaurant user and another store's user look the same as a missing store).
+
