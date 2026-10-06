@@ -57,7 +57,9 @@ public record NotificationRule(
         /** Everyone with a grant on the outlet in the payload. */
         OUTLET,
         /** Everyone with a grant on the supplier store in the payload. */
-        SUPPLIER_STORE
+        SUPPLIER_STORE,
+        /** Only the people with a grant on the supplier store in the payload who hold CREDIT_VIEW there (D-148). */
+        SUPPLIER_STORE_CREDIT
     }
 
     /**

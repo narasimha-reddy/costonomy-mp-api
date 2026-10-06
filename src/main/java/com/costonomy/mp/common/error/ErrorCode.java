@@ -169,6 +169,23 @@ public enum ErrorCode {
     CREDIT_TERMS_CHANGED(HttpStatus.CONFLICT,
             "The supplier changed the terms. Please review them again."),
 
+    // ── Credit reminders and exports (D-142, D-146) ──────────────────────
+    /** A manual reminder was already sent on this line within 24 hours. Details: {@code nextAllowedAt}. */
+    CREDIT_REMINDER_TOO_SOON(HttpStatus.TOO_MANY_REQUESTS,
+            "You already reminded this restaurant in the last 24 hours."),
+    /**
+     * Too many reminders: 3 per line in a rolling 7 days ({@code limit} WEEK) or 50 per store in an India day
+     * ({@code limit} STORE_DAY). Details: {@code limit}, {@code max}, {@code nextAllowedAt}.
+     */
+    CREDIT_REMINDER_LIMIT(HttpStatus.TOO_MANY_REQUESTS,
+            "You have reached the reminder limit."),
+    /** Nothing to remind about: nothing overdue or due within 3 days, or every such invoice is covered by a claim. Details: {@code reason}, {@code skipped}. */
+    CREDIT_REMINDER_NOT_NEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "There is nothing to remind this restaurant about right now."),
+    /** An export of more than 20,000 rows. Details: {@code max}, {@code rows}. Narrow the dates. */
+    CREDIT_EXPORT_TOO_LARGE(HttpStatus.PAYLOAD_TOO_LARGE,
+            "That is too many rows for one export. Please choose a shorter period."),
+
     // ── Payments (422, 409) ──────────────────────────────────────────────
     PAYMENT_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
             "The payment didn't go through."),

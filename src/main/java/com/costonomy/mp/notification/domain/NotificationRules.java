@@ -9,6 +9,7 @@ import static com.costonomy.mp.notification.domain.NotificationCategory.*;
 import static com.costonomy.mp.notification.domain.NotificationChannel.*;
 import static com.costonomy.mp.notification.domain.NotificationRule.Audience.OUTLET;
 import static com.costonomy.mp.notification.domain.NotificationRule.Audience.SUPPLIER_STORE;
+import static com.costonomy.mp.notification.domain.NotificationRule.Audience.SUPPLIER_STORE_CREDIT;
 
 /**
  * The catalogue. Doc 08 §1's event list, mapped to doc 08 §4's notifications.
@@ -386,6 +387,30 @@ public final class NotificationRules {
                 "Due date extended",
                 "{supplierName} moved the due date of invoice {invoiceNumber} to {newDueDateText}.",
                 "CREDIT_INVOICE"));
+
+        // A reminder to pay (D-142). The text is composed on the server (money and dates formatted there, the same text
+        // the supplier previews), so the template is only {message}. Which channels depends on the reminder, so the
+        // producer names a variant: IN_APP (three days ahead), PUSH (due day, weekly while overdue, manual) and SMS
+        // (a manual reminder while something is overdue). Only the SMS variant is critical, like CreditOverdue: SMS
+        // costs money and is reserved for what must be acted on today (an SMS rule is always critical, and the SMS
+        // list in NotificationRulesTest is closed). The others a restaurant may mute.
+        add(rules, new NotificationRule(CreditEvents.REMINDER, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment reminder", "{message}", "CREDIT_AGREEMENT"));
+        add(rules, new NotificationRule(CreditEvents.REMINDER + "#IN_APP", OUTLET, CREDIT, false,
+                List.of(IN_APP),
+                "Payment reminder", "{message}", "CREDIT_AGREEMENT"));
+        add(rules, new NotificationRule(CreditEvents.REMINDER + "#PUSH", OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment reminder", "{message}", "CREDIT_AGREEMENT"));
+        add(rules, new NotificationRule(CreditEvents.REMINDER + "#SMS", OUTLET, CREDIT, true,
+                List.of(IN_APP, PUSH, SMS),
+                "Payment reminder", "{message}", "CREDIT_AGREEMENT"));
+
+        // The supplier's daily credit summary (D-148): only people who may see credit, in-app and push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.SUPPLIER_DIGEST, SUPPLIER_STORE_CREDIT, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit today", "{message}", "SUPPLIER_STORE"));
 
         // CreditReserved, CreditUtilized and CreditReleased are exposure bookkeeping and stay
         // silent on purpose; NotificationRulesTest keeps that list explicit.

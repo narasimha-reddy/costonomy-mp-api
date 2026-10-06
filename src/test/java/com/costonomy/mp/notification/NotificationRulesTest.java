@@ -77,7 +77,8 @@ class NotificationRulesTest {
         @DisplayName("every rule in the catalogue renders to something readable")
         void everyRuleRenders() {
             for (NotificationRule rule : NotificationRules.all()) {
-                String rendered = rule.render(Map.of());
+                // The reminder and the digest are composed whole on the server and carried in {message}.
+                String rendered = rule.render(Map.of("message", "A message composed by the server."));
                 assertThat(rendered)
                         .describedAs("%s renders", rule.eventType())
                         .isNotBlank()
@@ -213,7 +214,9 @@ class NotificationRulesTest {
             assertThat(smsEvents).containsExactlyInAnyOrder(
                     "SupplierOrderRejected", "SupplierOrderExpired",
                     "IntentDeclined", "IntentExpired",
-                    "PaymentFailed", "CreditOverdue");
+                    "PaymentFailed", "CreditOverdue",
+                    // A manual reminder while something is overdue (D-142); the other reminder variants have no SMS.
+                    "CreditReminder#SMS");
         }
 
         @Test
