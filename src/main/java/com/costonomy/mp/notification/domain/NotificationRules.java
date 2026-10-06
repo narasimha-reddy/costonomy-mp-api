@@ -358,6 +358,19 @@ public final class NotificationRules {
                 "Credit line closed",
                 "{supplierName} closed your credit line. {reason}", "CREDIT_AGREEMENT"));
 
+        // An offer nobody accepted lapsed (D-137): both sides are told, by a job, so nobody is left waiting on a dead
+        // offer. In-app and push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.OFFER_EXPIRED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit offer expired",
+                "The credit offer from {supplierName} expired because it wasn't accepted in time. You can ask again.",
+                "CREDIT_AGREEMENT"));
+
+        add(rules, new NotificationRule(CreditEvents.OFFER_EXPIRED, SUPPLIER_STORE, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit offer expired",
+                "Your credit offer to {restaurantName} expired without being accepted.", "CREDIT_AGREEMENT"));
+
         // CreditReserved, CreditUtilized and CreditReleased are exposure bookkeeping and stay
         // silent on purpose; NotificationRulesTest keeps that list explicit.
 

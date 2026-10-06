@@ -8,8 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Credit]
 
-### [feat/sup-b9-b12-lifecycle-context] - Close a credit line (B9, D-136)
+### [feat/sup-b9-b12-lifecycle-context] - Close a credit line (B9, D-136) and offer expiry (D-137)
 #### Added
+- [Credit] V61 `credit_agreement.offer_made_at`. An APPROVED offer the restaurant has not accepted for 14 India days becomes EXPIRED (hourly job, `costonomy.mp.credit.offer-expiry-interval`); both sides are told (`CreditOfferExpired`), an accept racing the job has exactly one winner, and the restaurant may ask again. `AgreementResponse` gains `offerMadeAt` and `offerExpiresOn` (null unless APPROVED).
 - [Credit] `POST /api/v1/credit/agreements/{id}/close {reason}`: a supplier closes an ACTIVE or SUSPENDED line. Refused with 409 `INVALID_STATE_TRANSITION` (details `owed`, `reserved`) while anything is owed or held for an order in flight. The restaurant is told (`CreditClosed`), a closed line takes no orders, and the restaurant may ask again. Needs `CREDIT_MODIFY` on the store; others get 404.
 
 ### [Supplier payouts list] - B4

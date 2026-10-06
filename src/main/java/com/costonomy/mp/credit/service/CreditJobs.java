@@ -9,6 +9,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 
 /**
  * Overdue invoices, and the suspensions that follow. Doc 01 §18, doc 08 §4.
@@ -27,6 +28,7 @@ public class CreditJobs {
     private final CreditInvoiceService invoices;
     private final CreditAgreementService agreementService;
     private final CreditAgreementRepository agreements;
+    private final CreditLifecycleService lifecycle;
 
     /**
      * Runs hourly rather than every minute: an invoice becomes overdue on a date
@@ -41,6 +43,34 @@ public class CreditJobs {
             log.info("Marked {} credit invoices overdue", marked);
         }
         suspendOverLimit();
+    }
+
+    /**
+     * Lapse the offers nobody accepted for 14 India days (D-137). Hourly like the overdue sweep: it is a date
+     * boundary. Each offer is expired in its own transaction, so one failure does not stop the rest, and an offer that
+     * fails is simply picked up by the next run.
+     */
+    @Scheduled(fixedDelayString = "${costonomy.mp.credit.offer-expiry-interval:PT1H}")
+    @SchedulerLock(name = "credit-offer-expiry", lockAtMostFor = "PT30M", lockAtLeastFor = "PT0S")
+    public void expireOffers() {
+        LocalDate today = invoices.today();
+        int expired = 0;
+        for (var agreement : agreements.findByStatus(CreditAgreementStatus.APPROVED)) {
+            // A cheap look first, without the lock; expireOffer looks again on the locked row.
+            if (!lifecycle.offerHasExpired(agreement, today)) {
+                continue;
+            }
+            try {
+                if (lifecycle.expireOffer(agreement.getId(), today)) {
+                    expired++;
+                }
+            } catch (RuntimeException ex) {
+                log.error("Could not expire credit offer {}", agreement.getId(), ex);
+            }
+        }
+        if (expired > 0) {
+            log.info("Expired {} unaccepted credit offers", expired);
+        }
     }
 
     /**

@@ -12,22 +12,25 @@ import com.costonomy.mp.common.text.Rupees;
 import com.costonomy.mp.credit.domain.CreditAgreement;
 import com.costonomy.mp.credit.domain.CreditAgreementStatus;
 import com.costonomy.mp.credit.domain.CreditEvents;
+import com.costonomy.mp.credit.domain.CreditOfferExpiry;
 import com.costonomy.mp.credit.repository.CreditAgreementLockRepository;
 import com.costonomy.mp.credit.repository.CreditAgreementRepository;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.Map;
 
 /**
- * The ends of a credit line: a supplier closing it (D-136).
+ * The ends of a credit line: a supplier closing it (D-136) and an unaccepted offer lapsing (D-137).
  *
- * <p>It takes the agreement row for update first, so the close and a concurrent order or repayment each
+ * <p>Both take the agreement row for update first, so the move and a concurrent order, acceptance or repayment each
  * see the other's result: an order reserves with {@code status = 'ACTIVE'} in the same statement, so it cannot slip in
  * after a close, and a close that finds credit already held refuses.
  */
@@ -104,6 +107,50 @@ public class CreditLifecycleService {
                         "reason", reason.trim()),
                 actorId);
         return agreementService.toResponse(agreement);
+    }
+
+    // ── Offer expiry ─────────────────────────────────────────────────────
+
+    /**
+     * Lapse one offer the restaurant has not accepted for 14 India days (D-137), in its own transaction so one
+     * failure leaves the rest of the sweep alone. The row is taken first and everything is re-checked on it: an
+     * acceptance that got there first leaves an ACTIVE line, which this skips; one that comes second finds EXPIRED
+     * and is refused. Exactly one of the two wins and the loser changes and announces nothing.
+     *
+     * @return true if this call expired the offer
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean expireOffer(Long agreementId, LocalDate today) {
+        var agreement = locks.lockById(agreementId).orElse(null);
+        if (agreement == null || agreement.getStatus() != CreditAgreementStatus.APPROVED
+                || !offerHasExpired(agreement, today)) {
+            return false;
+        }
+
+        agreement.setStatus(CreditAgreementStatus.EXPIRED);
+        agreement.setOfferMadeAt(null);
+        agreements.save(agreement);
+
+        auditService.record(null, null, "CREDIT_OFFER_EXPIRED", "CREDIT_AGREEMENT", agreementId,
+                CreditAgreementStatus.APPROVED.name(), CreditAgreementStatus.EXPIRED.name(),
+                "Not accepted within %d days".formatted(CreditOfferExpiry.DAYS), "SYSTEM");
+        var outlet = directory.outlet(agreement.getOutletId());
+        outbox.publish(CreditEvents.OFFER_EXPIRED, "CREDIT_AGREEMENT", agreementId,
+                Map.of("creditAgreementId", agreementId,
+                        "outletId", agreement.getOutletId(),
+                        "supplierStoreId", agreement.getSupplierStoreId(),
+                        "supplierName", supplierNameOf(agreement.getSupplierStoreId()),
+                        "restaurantName", outlet == null || outlet.restaurantName() == null ? "" : outlet.restaurantName()),
+                null);
+        log.info("Credit offer {} expired unaccepted", agreementId);
+        return true;
+    }
+
+    /** Whether an APPROVED agreement's offer is past its 14 India days as of {@code today}. */
+    public boolean offerHasExpired(CreditAgreement agreement, LocalDate today) {
+        // An offer from before the timestamp existed is dated from its last update (V61 backfills the same).
+        Instant offeredAt = agreement.getOfferMadeAt() != null ? agreement.getOfferMadeAt() : agreement.getUpdatedAt();
+        return CreditOfferExpiry.expired(offeredAt, today, invoiceService.zone());
     }
 
     private String supplierNameOf(Long supplierStoreId) {

@@ -30,6 +30,8 @@ public final class CreditEvents {
     public static final String CLAIM_REJECTED = "CreditClaimRejected";
     /** The supplier closed a credit line; the restaurant is told (D-136). */
     public static final String CLOSED = "CreditClosed";
+    /** An offer the restaurant never accepted lapsed after 14 India days; both sides are told (D-137). */
+    public static final String OFFER_EXPIRED = "CreditOfferExpired";
     // Bookkeeping on the exposure ledger; nobody is told.
     public static final String RESERVED = "CreditReserved";
     public static final String UTILIZED = "CreditUtilized";
@@ -39,7 +41,7 @@ public final class CreditEvents {
     public static final List<String> ALL = List.of(
             REQUESTED, APPROVED, REJECTED, MODIFIED, SUSPENDED, REINSTATED, OVERDUE,
             INVOICE_ISSUED, REPAYMENT_RECORDED, REPAYMENT_RECEIVED, CLAIM_SUBMITTED, CLAIM_CONFIRMED,
-            CLAIM_REJECTED, CLOSED, RESERVED, UTILIZED, RELEASED);
+            CLAIM_REJECTED, CLOSED, OFFER_EXPIRED, RESERVED, UTILIZED, RELEASED);
 
     private CreditEvents() {
     }

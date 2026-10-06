@@ -111,6 +111,13 @@ public class CreditAgreement extends BaseEntity {
     @Column(name = "closed_at")
     private Instant closedAt;
 
+    /**
+     * When the supplier made the offer the restaurant has not accepted yet (D-137); null unless APPROVED. The 14 days
+     * run from here, in India days. Restarted when the supplier edits the offer.
+     */
+    @Column(name = "offer_made_at")
+    private Instant offerMadeAt;
+
     /** Bumped on every supplier modification. Doc 04 §13. */
     @Column(name = "terms_version", nullable = false)
     private Integer termsVersion = 1;

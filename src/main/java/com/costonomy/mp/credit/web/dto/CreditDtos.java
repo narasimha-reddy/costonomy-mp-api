@@ -137,7 +137,11 @@ public final class CreditDtos {
             /** What the restaurant says it has paid and the supplier has not answered yet (D-125); 0 when none. */
             BigDecimal openClaimsAmount,
             /** What can still be reported as paid across the open invoices (D-127); never below 0. */
-            BigDecimal reportableAmount) {
+            BigDecimal reportableAmount,
+            /** When the offer awaiting the restaurant was made; null unless APPROVED (D-137). */
+            Instant offerMadeAt,
+            /** The India day the offer lapses if still unaccepted; null unless APPROVED (D-137). */
+            LocalDate offerExpiresOn) {
     }
 
     public record RequestResponse(
