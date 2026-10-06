@@ -34,6 +34,11 @@ public final class CreditEvents {
     public static final String OFFER_EXPIRED = "CreditOfferExpired";
     /** A supplier gave an invoice longer to be paid; the restaurant is told (D-138). */
     public static final String DUE_DATE_EXTENDED = "CreditDueDateExtended";
+    /**
+     * A supplier's or the system's reminder to a restaurant about what it owes (D-142). The channels depend on the
+     * reminder, so the payload names a {@code notificationVariant}: IN_APP, PUSH or SMS (see NotificationRules).
+     */
+    public static final String REMINDER = "CreditReminder";
     // Bookkeeping on the exposure ledger; nobody is told.
     public static final String RESERVED = "CreditReserved";
     public static final String UTILIZED = "CreditUtilized";
@@ -43,7 +48,7 @@ public final class CreditEvents {
     public static final List<String> ALL = List.of(
             REQUESTED, APPROVED, REJECTED, MODIFIED, SUSPENDED, REINSTATED, OVERDUE,
             INVOICE_ISSUED, REPAYMENT_RECORDED, REPAYMENT_RECEIVED, CLAIM_SUBMITTED, CLAIM_CONFIRMED,
-            CLAIM_REJECTED, CLOSED, OFFER_EXPIRED, DUE_DATE_EXTENDED, RESERVED, UTILIZED, RELEASED);
+            CLAIM_REJECTED, CLOSED, OFFER_EXPIRED, DUE_DATE_EXTENDED, REMINDER, RESERVED, UTILIZED, RELEASED);
 
     private CreditEvents() {
     }
