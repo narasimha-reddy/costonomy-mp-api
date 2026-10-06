@@ -76,9 +76,14 @@ public class PidgeApiClient {
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setAccept(List.of(MediaType.APPLICATION_JSON));
         if (properties.getApiToken() != null && !properties.getApiToken().isBlank()) {
-            headers.set("Authorization", "Bearer " + properties.getApiToken());
+            String token = properties.getApiToken().trim();
+            if (token.startsWith("Bearer ") || token.startsWith("bearer ")) {
+                token = token.substring(7).trim();
+            }
+            headers.set("Authorization", "Bearer " + token);
         }
         if (properties.getApiSecret() != null && !properties.getApiSecret().isBlank()) {
+
             headers.set("X-Api-Secret", properties.getApiSecret());
         }
         headers.set("X-Channel-Name", properties.getChannelName());
@@ -179,14 +184,23 @@ public class PidgeApiClient {
             return DeliveryProvider.Quote.unserviceable("Pidge quote needs a vehicle type");
         }
 
-        var url = properties.getBaseUrl() + "/v1/channel/quote";
+        var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/quote";
         var payload = Map.of(
-                "pickup", Map.of("lat", request.pickupLatitude(), "lng", request.pickupLongitude()),
-                "drop", Map.of("lat", request.dropLatitude(), "lng", request.dropLongitude()),
-                "weight_kg", request.weightKg(),
-                "vehicle_type", request.vehicleType().name(),
-                "channel_name", properties.getChannelName(),
-                "allocation_mode", properties.getAllocationMode()
+                "pickup", Map.of(
+                        "coordinates", Map.of("latitude", request.pickupLatitude(), "longitude", request.pickupLongitude())
+                ),
+                "drop", List.of(
+                        Map.of(
+                                "ref", "quote-ref-" + System.currentTimeMillis(),
+                                "location", Map.of(
+                                        "coordinates", Map.of("latitude", request.dropLatitude(), "longitude", request.dropLongitude())
+                                ),
+                                "attributes", Map.of(
+                                        "cod_amount", 0,
+                                        "weight", request.weightKg().multiply(BigDecimal.valueOf(1000)).intValue()
+                                )
+                        )
+                )
         );
 
         try {
@@ -195,20 +209,46 @@ public class PidgeApiClient {
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 var body = response.getBody();
-                if (!body.hasNonNull("serviceable")) {
-                    throw missing("serviceable");
-                }
-                if (!body.path("serviceable").asBoolean()) {
-                    return DeliveryProvider.Quote.unserviceable(body.path("decline_reason").asText("Pidge declined the route"));
-                }
-                String quoteId = requiredText(body, "quote_id");
-                BigDecimal amount = requiredAmount(body, "total_fare");
-                int eta = requiredInt(body, "eta_minutes");
-                double distance = requiredDouble(body, "distance_km");
-                Instant expiresAt = Instant.now().plusSeconds(requiredLong(body, "expires_in_seconds"));
+                var data = body.path("data");
+                var items = data.path("items");
+                if (items.isArray() && !items.isEmpty()) {
+                    // Pick the lowest priced serviceable quote
+                    JsonNode bestItem = null;
+                    BigDecimal lowestPrice = null;
+                    for (JsonNode item : items) {
+                        if (!item.hasNonNull("error") || item.path("error").isNull()) {
+                            var quoteNode = item.path("quote");
+                            if (quoteNode.hasNonNull("price")) {
+                                BigDecimal price = new BigDecimal(quoteNode.path("price").asText());
+                                if (lowestPrice == null || price.compareTo(lowestPrice) < 0) {
+                                    lowestPrice = price;
+                                    bestItem = item;
+                                }
+                            }
+                        }
+                    }
 
-                return new DeliveryProvider.Quote(quoteId, true, amount, "INR", eta, distance,
-                        expiresAt, null, request.vehicleType());
+                    if (bestItem != null && lowestPrice != null) {
+                        String networkName = bestItem.path("network_name").asText("Pidge");
+                        String quoteId = "pidg_q_" + bestItem.path("network_id").asText("1") + "_" + System.currentTimeMillis();
+                        int etaMinutes = 45; // Default estimate
+                        var etaNode = bestItem.path("quote").path("eta");
+                        if (etaNode.hasNonNull("pickup_min")) {
+                            etaMinutes = etaNode.path("pickup_min").asInt(45);
+                        }
+
+                        double distance = 5.0;
+                        var distArray = data.path("distance");
+                        if (distArray.isArray() && !distArray.isEmpty()) {
+                            distance = distArray.get(0).path("distance").asDouble(5000.0) / 1000.0;
+                        }
+
+                        Instant expiresAt = Instant.now().plusSeconds(900); // 15 mins
+                        return new DeliveryProvider.Quote(quoteId, true, lowestPrice, "INR", etaMinutes, distance,
+                                expiresAt, null, request.vehicleType());
+                    }
+                }
+                return DeliveryProvider.Quote.unserviceable("No serviceable delivery networks available from Pidge");
             }
             return DeliveryProvider.Quote.unserviceable("Could not obtain quote from Pidge");
 
@@ -250,28 +290,49 @@ public class PidgeApiClient {
         requireRequest(notBlank(request.pickupContactName()) && notBlank(request.pickupContactPhone()), "pickup contact");
         requireRequest(notBlank(request.dropContactName()) && notBlank(request.dropContactPhone()), "drop contact");
 
-        var url = properties.getBaseUrl() + "/v1/channel/order/create";
+        var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/order";
+        int weightGrams = request.weightKg().multiply(BigDecimal.valueOf(1000)).intValue();
+        String sourceOrderId = "SO-" + request.supplierOrderId();
+
         var payload = Map.of(
-                "order_reference", "SO-" + request.supplierOrderId(),
-                "idempotency_key", request.idempotencyKey(),
-                "quote_id", request.providerQuoteId(),
-                "channel_name", properties.getChannelName(),
-                "allocation_mode", properties.getAllocationMode(),
-                "vehicle_type", request.vehicleType().name(),
-                "weight_kg", request.weightKg(),
-                "pickup", Map.of(
-                        "address", request.pickupAddress(),
-                        "lat", request.pickupLatitude(),
-                        "lng", request.pickupLongitude(),
-                        "contact_name", request.pickupContactName(),
-                        "contact_phone", request.pickupContactPhone()
+                "channel", properties.getChannelName(),
+                "sender_detail", Map.of(
+                        "name", request.pickupContactName(),
+                        "mobile", request.pickupContactPhone(),
+                        "address", Map.of(
+                                "address_line_1", request.pickupAddress(),
+                                "latitude", request.pickupLatitude(),
+                                "longitude", request.pickupLongitude()
+                        )
                 ),
-                "drop", Map.of(
-                        "address", request.dropAddress(),
-                        "lat", request.dropLatitude(),
-                        "lng", request.dropLongitude(),
-                        "contact_name", request.dropContactName(),
-                        "contact_phone", request.dropContactPhone()
+                "poc_detail", Map.of(
+                        "name", request.pickupContactName(),
+                        "mobile", request.pickupContactPhone()
+                ),
+                "trips", List.of(
+                        Map.of(
+                                "source_order_id", sourceOrderId,
+                                "reference_id", "ref-" + request.idempotencyKey(),
+                                "cod_amount", 0,
+                                "bill_amount", 100,
+                                "receiver_detail", Map.of(
+                                        "name", request.dropContactName(),
+                                        "mobile", request.dropContactPhone(),
+                                        "address", Map.of(
+                                                "address_line_1", request.dropAddress(),
+                                                "latitude", request.dropLatitude(),
+                                                "longitude", request.dropLongitude()
+                                        )
+                                ),
+                                "packages", List.of(
+                                        Map.of(
+                                                "label", "Order #" + request.supplierOrderId(),
+                                                "quantity", 1,
+                                                "dead_weight", weightGrams,
+                                                "volumetric_weight", weightGrams
+                                        )
+                                )
+                        )
                 )
         );
 
@@ -281,11 +342,22 @@ public class PidgeApiClient {
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 var body = response.getBody();
-                String deliveryId = requiredText(body, "pidge_delivery_id");
-                BigDecimal amount = requiredAmount(body, "fare");
-                int eta = requiredInt(body, "eta_minutes");
+                var data = body.path("data");
+                String deliveryId = null;
+                if (data.has(sourceOrderId)) {
+                    deliveryId = data.path(sourceOrderId).asText();
+                } else if (data.fieldNames().hasNext()) {
+                    deliveryId = data.path(data.fieldNames().next()).asText();
+                }
+
+                if (deliveryId == null || deliveryId.isBlank()) {
+                    throw missing("delivery_id");
+                }
+
+                BigDecimal amount = BigDecimal.valueOf(150); // Default estimate until quote confirmation
+                int eta = 45;
                 Instant etaTime = Instant.now().plusSeconds(eta * 60L);
-                String trackingUrl = body.has("tracking_url") ? body.path("tracking_url").asText(null) : null;
+                String trackingUrl = "https://track.pidge.in/live/" + deliveryId;
 
                 return new DeliveryProvider.Booking(deliveryId, amount, "INR", eta, etaTime, trackingUrl);
             }
@@ -316,21 +388,23 @@ public class PidgeApiClient {
                     DeliveryProvider.ProviderDeliveryStatus.PENDING, null, null, null, null, null, null, null, List.of());
         }
 
-        var url = properties.getBaseUrl() + "/v1/channel/order/" + providerDeliveryId + "/status";
+        var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/order/" + providerDeliveryId;
         try {
             var entity = new HttpEntity<>(createHeaders());
             var response = restTemplate.exchange(url, HttpMethod.GET, entity, JsonNode.class);
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 var body = response.getBody();
-                var statusStr = body.path("status").asText("PENDING");
+                var data = body.path("data");
+                var statusStr = data.path("status").asText("PENDING");
                 var status = mapPidgeStatus(statusStr);
-                var driver = body.path("driver");
+                var fulfillment = data.path("fulfillment");
+                var rider = fulfillment.path("rider");
 
-                String driverName = driver.path("name").isNull() ? null : driver.path("name").asText(null);
-                String driverPhone = driver.path("phone").isNull() ? null : driver.path("phone").asText(null);
-                String driverVehicle = driver.path("vehicle_number").isNull() ? null : driver.path("vehicle_number").asText(null);
-                Integer eta = body.has("eta_minutes") ? body.path("eta_minutes").asInt() : null;
+                String driverName = rider.path("name").isNull() ? null : rider.path("name").asText(null);
+                String driverPhone = rider.path("mobile").isNull() ? null : rider.path("mobile").asText(null);
+                String driverVehicle = null;
+                Integer eta = null;
 
                 return new DeliveryProvider.ProviderDelivery(
                         providerDeliveryId, status, driverName, driverPhone, driverVehicle,
@@ -356,7 +430,7 @@ public class PidgeApiClient {
             return;
         }
 
-        var url = properties.getBaseUrl() + "/v1/channel/order/" + providerDeliveryId + "/cancel";
+        var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/" + providerDeliveryId + "/cancel";
         var payload = Map.of("reason", reason != null ? reason : "Customer cancelled");
 
         try {
