@@ -74,12 +74,15 @@ public class DiscoveryController {
             @RequestParam(required = false) BigDecimal radiusKm,
             @RequestParam(required = false) String reach,
             @RequestParam(required = false, defaultValue = "0") Integer offset,
-            @RequestParam(required = false, defaultValue = "50") Integer limit) {
+            @RequestParam(required = false, defaultValue = "50") Integer limit,
+            @RequestParam(required = false) Boolean openNow,
+            @RequestParam(required = false) Integer minRating,
+            @RequestParam(required = false) String sort) {
         if (outletId != null) {
             accessControl.requireScoped(ActorContext.requireUserId(),
                     Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "Outlet");
         }
-        return ApiResponse.ok(storefront.searchSuppliers(query, outletId, radiusKm, reach, offset, limit));
+        return ApiResponse.ok(storefront.searchSuppliers(query, outletId, radiusKm, reach, offset, limit, openNow, minRating, sort));
     }
 
     @GetMapping("/search/skus")
@@ -243,13 +246,18 @@ public class DiscoveryController {
             @Parameter(description = "How many to return. Defaults to 10.")
             @RequestParam(required = false) Integer limit,
             @Parameter(description = "Only suppliers stocking this aisle.")
-            @RequestParam(required = false) Long categoryId) {
+            @RequestParam(required = false) Long categoryId,
+            @RequestParam(required = false) BigDecimal radiusKm,
+            @RequestParam(required = false) Boolean openNow,
+            @RequestParam(required = false) Integer minRating,
+            @RequestParam(required = false) String sort) {
 
         Long actorId = ActorContext.requireUserId();
         accessControl.requireScoped(actorId, Permissions.ORDER_VIEW,
                 ScopeType.OUTLET, outletId, "Outlet");
 
         return ApiResponse.ok(
-                popular.forOutlet(outletId, limit == null ? 10 : limit, categoryId));
+                popular.forOutlet(outletId, limit == null ? 10 : limit, categoryId,
+                        radiusKm, openNow, minRating, sort));
     }
 }

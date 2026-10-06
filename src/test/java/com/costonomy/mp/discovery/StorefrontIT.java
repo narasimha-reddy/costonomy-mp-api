@@ -442,6 +442,64 @@ class StorefrontIT extends AbstractIntegrationTest {
             assertThat(clampedPage.get("suppliers")).hasSize(100); // clamped to 100
             assertThat(clampedPage.get("nextOffset").asInt()).isEqualTo(100);
         }
+
+        @Test
+        @DisplayName("filters by openNow=true and minRating, and sorts by rating with nearest and storeId as tie-breakers")
+        void filtersAndSortByRating() throws Exception {
+            var outlet = newOutlet();
+            String run = "F" + System.nanoTime();
+
+            // Store A: 5-star, open, near (HYD_LAT, HYD_LON ~0.5 km)
+            var storeA = newStore(run + " StoreA_5star_near", HYD_LAT, HYD_LON);
+            // Store B: 5-star, open, farther (NEARBY_LAT, NEARBY_LON ~7 km)
+            var storeB = newStore(run + " StoreB_5star_far", NEARBY_LAT, NEARBY_LON);
+            // Store C: 3-star, open, near
+            var storeC = newStore(run + " StoreC_3star_near", HYD_LAT, HYD_LON);
+            // Store D: unrated, open, near
+            var storeD = newStore(run + " StoreD_unrated_near", HYD_LAT, HYD_LON);
+            // Store E: 5-star, closed (custom hours 01:00-01:01), near
+            var storeE = newStore(run + " StoreE_5star_closed", HYD_LAT, HYD_LON);
+            jdbc.update("update supplier_store set operating_hours_json = ? where id = ?",
+                    "{\"days\":[\"MONDAY\",\"TUESDAY\",\"WEDNESDAY\",\"THURSDAY\",\"FRIDAY\",\"SATURDAY\",\"SUNDAY\"],\"opensAt\":\"01:00\",\"closesAt\":\"01:01\"}",
+                    storeE.storeId());
+
+            // Ratings:
+            rateStore(outlet, storeA, 5);
+            rateStore(outlet, storeB, 5);
+            rateStore(outlet, storeC, 3);
+            rateStore(outlet, storeE, 5);
+
+            // 1. sort=rating without filters: 5-star stores first (ordered by distance: A before B), then 3-star C, then unrated D
+            var sortedPage = directory(outlet, "&q=" + run + "&sort=rating");
+            var sortedNames = sortedPage.get("suppliers").findValuesAsText("supplierName");
+            assertThat(sortedNames).containsSubsequence(
+                    run + " StoreA_5star_near",
+                    run + " StoreB_5star_far",
+                    run + " StoreC_3star_near",
+                    run + " StoreD_unrated_near");
+
+            // 2. minRating=4: excludes Store C (3-star) and Store D (unrated), includes A, B, E
+            var minRatingPage = directory(outlet, "&q=" + run + "&minRating=4");
+            var minRatingNames = minRatingPage.get("suppliers").findValuesAsText("supplierName");
+            assertThat(minRatingNames).contains(run + " StoreA_5star_near", run + " StoreB_5star_far", run + " StoreE_5star_closed");
+            assertThat(minRatingNames).doesNotContain(run + " StoreC_3star_near", run + " StoreD_unrated_near");
+
+            // 3. openNow=true: excludes Store E (closed), includes A, B, C, D
+            var openNowPage = directory(outlet, "&q=" + run + "&openNow=true");
+            var openNowNames = openNowPage.get("suppliers").findValuesAsText("supplierName");
+            assertThat(openNowNames).contains(run + " StoreA_5star_near", run + " StoreB_5star_far", run + " StoreC_3star_near", run + " StoreD_unrated_near");
+            assertThat(openNowNames).doesNotContain(run + " StoreE_5star_closed");
+
+            // 4. Combined: openNow=true & minRating=4 & sort=rating: only A and B, in that order
+            var combinedPage = directory(outlet, "&q=" + run + "&openNow=true&minRating=4&sort=rating");
+            var combinedNames = combinedPage.get("suppliers").findValuesAsText("supplierName");
+            assertThat(combinedNames).containsExactly(run + " StoreA_5star_near", run + " StoreB_5star_far");
+
+            // 5. Unknown sort returns 422
+            var unknownSort = api.get(outlet.token(),
+                    "/api/v1/search/suppliers?outletId=" + outlet.outletId() + "&sort=bogus");
+            assertThat(unknownSort.at("/error/code").asText()).isEqualTo("VALIDATION_ERROR");
+        }
     }
 
     // ── Popular suppliers ────────────────────────────────────────────────
@@ -454,35 +512,71 @@ class StorefrontIT extends AbstractIntegrationTest {
         @DisplayName("a far supplier is excluded and does not eat the limit")
         void farSupplierIsExcludedAndDoesNotEatTheLimit() throws Exception {
             var outlet = newOutlet();
+            String catSlug = "cat-" + System.nanoTime();
+            jdbc.update("insert into product_category (name, slug, display_order, status, created_at, updated_at, version) values (?, ?, 10, 'ACTIVE', now(6), now(6), 0)",
+                    "Cat " + catSlug, catSlug);
+            long catId = jdbc.queryForObject("select id from product_category where slug = ?", Long.class, catSlug);
+
             long p1 = TestCatalog.freshProduct(jdbc, "pop1");
             long p2 = TestCatalog.freshProduct(jdbc, "pop2");
             long p3 = TestCatalog.freshProduct(jdbc, "pop3");
             long p4 = TestCatalog.freshProduct(jdbc, "pop4");
             long p5 = TestCatalog.freshProduct(jdbc, "pop5");
 
-            // 1 Far store (500 km away) with 4 SKUs (higher skuCount than other stores)
+            long p6 = TestCatalog.freshProduct(jdbc, "pop6");
+            long p7 = TestCatalog.freshProduct(jdbc, "pop7");
+            long p8 = TestCatalog.freshProduct(jdbc, "pop8");
+            long p9 = TestCatalog.freshProduct(jdbc, "pop9");
+            long p10 = TestCatalog.freshProduct(jdbc, "pop10");
+            long p11 = TestCatalog.freshProduct(jdbc, "pop11");
+
+            jdbc.update("update canonical_product set category_id = ? where id in (?,?,?,?,?,?,?,?,?,?,?)",
+                    catId, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11);
+
+            // 1 Far store (500 km away) with 11 SKUs (higher skuCount than other stores)
             var farStore = newStore("Far Popular Store", FAR_LAT, FAR_LON);
             stock(farStore, p1, code("FAR1", p1), "100");
             stock(farStore, p2, code("FAR2", p2), "100");
             stock(farStore, p3, code("FAR3", p3), "100");
             stock(farStore, p4, code("FAR4", p4), "100");
+            stock(farStore, p5, code("FAR5", p5), "100");
+            stock(farStore, p6, code("FAR6", p6), "100");
+            stock(farStore, p7, code("FAR7", p7), "100");
+            stock(farStore, p8, code("FAR8", p8), "100");
+            stock(farStore, p9, code("FAR9", p9), "100");
+            stock(farStore, p10, code("FAR10", p10), "100");
+            stock(farStore, p11, code("FAR11", p11), "100");
 
-            // 2 Near stores (7 km away) with 3 SKUs each
+            // 2 Near stores (7 km away) with 10 SKUs each
             var near1 = newStore("Near Popular 1", NEARBY_LAT, NEARBY_LON);
             stock(near1, p1, code("N1_1", p1), "110");
             stock(near1, p2, code("N1_2", p2), "110");
             stock(near1, p3, code("N1_3", p3), "110");
+            stock(near1, p4, code("N1_4", p4), "110");
+            stock(near1, p5, code("N1_5", p5), "110");
+            stock(near1, p6, code("N1_6", p6), "110");
+            stock(near1, p7, code("N1_7", p7), "110");
+            stock(near1, p8, code("N1_8", p8), "110");
+            stock(near1, p9, code("N1_9", p9), "110");
+            stock(near1, p10, code("N1_10", p10), "110");
 
             var near2 = newStore("Near Popular 2", NEARBY_LAT, NEARBY_LON);
             stock(near2, p1, code("N2_1", p1), "120");
             stock(near2, p2, code("N2_2", p2), "120");
             stock(near2, p3, code("N2_3", p3), "120");
+            stock(near2, p4, code("N2_4", p4), "120");
+            stock(near2, p5, code("N2_5", p5), "120");
+            stock(near2, p6, code("N2_6", p6), "120");
+            stock(near2, p7, code("N2_7", p7), "120");
+            stock(near2, p8, code("N2_8", p8), "120");
+            stock(near2, p9, code("N2_9", p9), "120");
+            stock(near2, p10, code("N2_10", p10), "120");
 
-            // Far store is closer to top in SQL query (4 SKUs vs 3 SKUs vs earlier test stores with 1 SKU).
+            // Far store is closer to top in SQL query (11 SKUs vs 10 SKUs).
             // With limit=2: if farStore was not filtered out before limit, it would be included and eat the limit!
             // But because farStore is filtered by serviceability, both Near Popular 1 and Near Popular 2 are returned.
             var res = api.get(outlet.token(),
-                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=2").at("/data");
+                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=2&categoryId=" + catId).at("/data");
 
             var names = res.findValuesAsText("supplierName");
             assertThat(names).doesNotContain("Far Popular Store");
@@ -499,6 +593,82 @@ class StorefrontIT extends AbstractIntegrationTest {
                     "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=200").at("/data");
             assertThat(res.isArray()).isTrue();
             assertThat(res.size()).isLessThanOrEqualTo(100);
+        }
+
+        @Test
+        @DisplayName("filters and sorts popular suppliers by openNow, minRating, radiusKm, and sort=rating")
+        void popularFiltersAndSort() throws Exception {
+            var outlet = newOutlet();
+            String run = "P" + System.nanoTime();
+            long[] prods = new long[10];
+            for (int i = 0; i < 10; i++) {
+                prods[i] = TestCatalog.freshProduct(jdbc, "popitem" + i);
+            }
+
+            // Store A: 5-star, open, near (HYD_LAT, HYD_LON ~0.5 km)
+            var storeA = newStore(run + " PopA_5star_near", HYD_LAT, HYD_LON);
+            for (int i = 0; i < 10; i++) stock(storeA, prods[i], code("PA" + i, prods[i]), "100");
+            // Store B: 5-star, open, farther (NEARBY_LAT, NEARBY_LON ~7 km)
+            var storeB = newStore(run + " PopB_5star_far", NEARBY_LAT, NEARBY_LON);
+            for (int i = 0; i < 10; i++) stock(storeB, prods[i], code("PB" + i, prods[i]), "100");
+            // Store C: 3-star, open, near
+            var storeC = newStore(run + " PopC_3star_near", HYD_LAT, HYD_LON);
+            for (int i = 0; i < 10; i++) stock(storeC, prods[i], code("PC" + i, prods[i]), "100");
+            // Store D: unrated, open, near
+            var storeD = newStore(run + " PopD_unrated_near", HYD_LAT, HYD_LON);
+            for (int i = 0; i < 10; i++) stock(storeD, prods[i], code("PD" + i, prods[i]), "100");
+            // Store E: 5-star, closed, near
+            var storeE = newStore(run + " PopE_5star_closed", HYD_LAT, HYD_LON);
+            for (int i = 0; i < 10; i++) stock(storeE, prods[i], code("PE" + i, prods[i]), "100");
+            jdbc.update("update supplier_store set operating_hours_json = ? where id = ?",
+                    "{\"days\":[\"MONDAY\",\"TUESDAY\",\"WEDNESDAY\",\"THURSDAY\",\"FRIDAY\",\"SATURDAY\",\"SUNDAY\"],\"opensAt\":\"01:00\",\"closesAt\":\"01:01\"}",
+                    storeE.storeId());
+
+            // Ratings
+            rateStore(outlet, storeA, 5);
+            rateStore(outlet, storeB, 5);
+            rateStore(outlet, storeC, 3);
+            rateStore(outlet, storeE, 5);
+
+            // 1. sort=rating: 5-star stores first (A before B), then 3-star C, then unrated D
+            var resRating = api.get(outlet.token(),
+                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=100&sort=rating").at("/data");
+            var namesRating = resRating.findValuesAsText("supplierName").stream()
+                    .filter(n -> n.startsWith(run)).toList();
+            assertThat(namesRating).containsSubsequence(
+                    run + " PopA_5star_near",
+                    run + " PopB_5star_far",
+                    run + " PopC_3star_near",
+                    run + " PopD_unrated_near");
+
+            // 2. minRating=4: excludes Store C (3-star) and Store D (unrated)
+            var resMinRating = api.get(outlet.token(),
+                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=100&minRating=4").at("/data");
+            var namesMinRating = resMinRating.findValuesAsText("supplierName").stream()
+                    .filter(n -> n.startsWith(run)).toList();
+            assertThat(namesMinRating).contains(run + " PopA_5star_near", run + " PopB_5star_far", run + " PopE_5star_closed");
+            assertThat(namesMinRating).doesNotContain(run + " PopC_3star_near", run + " PopD_unrated_near");
+
+            // 3. openNow=true: excludes Store E (closed)
+            var resOpenNow = api.get(outlet.token(),
+                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=100&openNow=true").at("/data");
+            var namesOpenNow = resOpenNow.findValuesAsText("supplierName").stream()
+                    .filter(n -> n.startsWith(run)).toList();
+            assertThat(namesOpenNow).contains(run + " PopA_5star_near", run + " PopB_5star_far", run + " PopC_3star_near", run + " PopD_unrated_near");
+            assertThat(namesOpenNow).doesNotContain(run + " PopE_5star_closed");
+
+            // 4. radiusKm=5: excludes Store B (~7 km away)
+            var resRadius = api.get(outlet.token(),
+                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=100&radiusKm=5").at("/data");
+            var namesRadius = resRadius.findValuesAsText("supplierName").stream()
+                    .filter(n -> n.startsWith(run)).toList();
+            assertThat(namesRadius).contains(run + " PopA_5star_near", run + " PopC_3star_near");
+            assertThat(namesRadius).doesNotContain(run + " PopB_5star_far");
+
+            // 5. Unknown sort returns 422
+            var unknownSort = api.get(outlet.token(),
+                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?sort=bogus");
+            assertThat(unknownSort.at("/error/code").asText()).isEqualTo("VALIDATION_ERROR");
         }
     }
 
@@ -666,5 +836,33 @@ class StorefrontIT extends AbstractIntegrationTest {
                         "packUnit", "KG",
                         "sellingPrice", price,
                         "gstRate", "5")).at("/data/id").asLong();
+    }
+
+    private void rateStore(Outlet outlet, Store store, int stars) {
+        Long buyerUserId = jdbc.queryForObject("select id from users limit 1", Long.class);
+
+        jdbc.update("""
+                insert into procurement (outlet_id, created_by, status, approval_status,
+                                          payment_method, payment_status, total_amount, created_at, updated_at, version)
+                values (?, ?, 'SUBMITTED', 'NOT_REQUIRED', 'PREPAID', 'CAPTURED', 500.00, now(6), now(6), 0)
+                """, outlet.outletId(), buyerUserId);
+        Long procurementId = jdbc.queryForObject(
+                "select id from procurement where outlet_id = ? order by id desc limit 1", Long.class, outlet.outletId());
+
+        String orderNumber = "SO-RATE-" + System.nanoTime();
+        jdbc.update("""
+                insert into supplier_order (procurement_id, supplier_store_id, outlet_id,
+                                            order_number, status, total_amount, accepted_amount,
+                                            delivery_mode, payment_method, payment_status, created_at, updated_at, version)
+                values (?, ?, ?, ?, 'COMPLETED', 500.00, 500.00, 'SUPPLIER_DELIVERY', 'PREPAID', 'CAPTURED', now(6), now(6), 0)
+                """, procurementId, store.storeId(), outlet.outletId(), orderNumber);
+        Long supplierOrderId = jdbc.queryForObject(
+                "select id from supplier_order where order_number = ?", Long.class, orderNumber);
+
+        jdbc.update("""
+                insert into rating (supplier_order_id, outlet_id, supplier_store_id,
+                                    overall_rating, moderation_status, rated_by, version)
+                values (?, ?, ?, ?, 'PUBLISHED', ?, 0)
+                """, supplierOrderId, outlet.outletId(), store.storeId(), stars, buyerUserId);
     }
 }

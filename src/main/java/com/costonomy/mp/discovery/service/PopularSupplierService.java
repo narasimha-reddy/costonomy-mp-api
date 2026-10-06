@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +57,19 @@ public class PopularSupplierService {
      */
     @Transactional(readOnly = true)
     public List<DiscoveryDtos.PopularSupplier> forOutlet(Long outletId, int limit, Long categoryId) {
+        return forOutlet(outletId, limit, categoryId, null, null, null, null);
+    }
+
+    @Transactional(readOnly = true)
+    public List<DiscoveryDtos.PopularSupplier> forOutlet(Long outletId, int limit, Long categoryId,
+                                                         BigDecimal radiusKm, Boolean openNow,
+                                                         Integer minRating, String sort) {
+        String effectiveSort = sort == null || sort.isBlank() ? "nearest" : sort.trim();
+        if (!"nearest".equalsIgnoreCase(effectiveSort) && !"rating".equalsIgnoreCase(effectiveSort)) {
+            throw new com.costonomy.mp.common.error.BusinessException(
+                    com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR, "Unknown sort: " + sort);
+        }
+
         var outlet = outletId == null ? null : directory.outlet(outletId).orElse(null);
 
         // One row per store, with what they list. Counted from purchasable
@@ -100,57 +114,84 @@ public class PopularSupplierService {
             return List.of();
         }
 
-        var storeInfo = directory.stores(stores.stream().map(StoreRow::id).toList());
+        var storeIdsAll = stores.stream().map(StoreRow::id).toList();
+        var storeInfo = directory.stores(storeIdsAll);
+        var ratingsAll = performance.forStores(storeIdsAll);
 
-        // Nearest first where both ends are located. A supplier with no
-        // coordinates sorts last rather than being dropped: they can still be
-        // ordered from, and a directory that hides them is wrong in a way a
-        // kitchen cannot see.
-        // Filter by serviceability BEFORE applying the limit (D-138).
+        // Filter by serviceability, distance radius, openNow, minRating BEFORE applying the limit.
         int clampedLimit = Math.min(Math.max(1, limit), 100);
-        var ranked = stores.stream()
-                .map(store -> new Ranked(store, outlet == null ? null : Serviceability.distanceKm(
-                        store.latitude(), store.longitude(),
-                        outlet.latitude(), outlet.longitude())))
-                .filter(entry -> {
-                    if (outlet == null) {
-                        return true;
-                    }
-                    var info = storeInfo.get(entry.store().id());
-                    return serviceabilityPolicy.serves(info, outlet.pincode(), entry.distanceKm());
-                })
-                .sorted((a, b) -> {
-                    if (a.distanceKm() == null && b.distanceKm() == null) return 0;
-                    if (a.distanceKm() == null) return 1;
-                    if (b.distanceKm() == null) return -1;
-                    return Double.compare(a.distanceKm(), b.distanceKm());
-                })
-                .limit(clampedLimit)
-                .toList();
+        record SizedPop(StoreRow store, Double distanceKm, BigDecimal avgRating, int ratingCount, boolean openNow, boolean directOrdersEnabled) {
+        }
 
-        var categories = categoriesFor(ranked.stream().map(entry -> entry.store().id()).toList());
-        var storeIds = ranked.stream().map(entry -> entry.store().id()).toList();
-        var ratings = performance.forStores(storeIds);
-        var stores2 = directory.stores(storeIds);
+        List<SizedPop> candidates = new ArrayList<>();
+        for (StoreRow store : stores) {
+            Double distance = outlet == null ? null : Serviceability.distanceKm(
+                    store.latitude(), store.longitude(),
+                    outlet.latitude(), outlet.longitude());
+
+            if (outlet != null) {
+                var info = storeInfo.get(store.id());
+                if (!serviceabilityPolicy.serves(info, outlet.pincode(), distance)) {
+                    continue;
+                }
+            }
+
+            if (radiusKm != null && distance != null && BigDecimal.valueOf(distance).compareTo(radiusKm) > 0) {
+                continue;
+            }
+
+            var info = storeInfo.get(store.id());
+            boolean isOpen = info == null || info.openNow();
+            if (Boolean.TRUE.equals(openNow) && !isOpen) {
+                continue;
+            }
+
+            var metrics = ratingsAll.get(store.id());
+            BigDecimal avgRating = metrics == null ? null : metrics.averageRating().orElse(null);
+            int ratingCount = metrics == null ? 0 : metrics.ratingCount();
+            if (minRating != null) {
+                if (avgRating == null || avgRating.compareTo(BigDecimal.valueOf(minRating)) < 0) {
+                    continue;
+                }
+            }
+
+            boolean directOrders = info != null && info.directOrdersEnabled();
+            candidates.add(new SizedPop(store, distance, avgRating, ratingCount, isOpen, directOrders));
+        }
+
+        if ("rating".equalsIgnoreCase(effectiveSort)) {
+            candidates.sort(Comparator.comparing(
+                    (SizedPop s) -> s.avgRating() == null ? BigDecimal.valueOf(-1) : s.avgRating(),
+                    Comparator.reverseOrder())
+                    .thenComparing(s -> s.distanceKm() == null ? Double.MAX_VALUE : s.distanceKm())
+                    .thenComparing(s -> s.store().id()));
+        } else {
+            candidates.sort((a, b) -> {
+                if (a.distanceKm() == null && b.distanceKm() == null) return 0;
+                if (a.distanceKm() == null) return 1;
+                if (b.distanceKm() == null) return -1;
+                return Double.compare(a.distanceKm(), b.distanceKm());
+            });
+        }
+
+        var ranked = candidates.stream().limit(clampedLimit).toList();
+
+        var selectedStoreIds = ranked.stream().map(entry -> entry.store().id()).toList();
+        var categories = categoriesFor(selectedStoreIds);
 
         var out = new ArrayList<DiscoveryDtos.PopularSupplier>(ranked.size());
-        for (Ranked entry : ranked) {
+        for (SizedPop entry : ranked) {
             var store = entry.store();
-            var metrics = ratings.get(store.id());
             out.add(new DiscoveryDtos.PopularSupplier(
                     store.id(), store.supplierName(), store.storeName(),
-                    // No locality on a store: the store's own name is the local
-                    // label ("Metro Fresh Supplies Koramangala"), and inventing
-                    // one from the address would repeat what the name says.
                     null, store.city(),
                     entry.distanceKm() == null ? null
                             : Serviceability.round(entry.distanceKm()),
-                    metrics == null ? null : metrics.averageRating().orElse(null),
-                    metrics == null ? 0 : metrics.ratingCount(),
+                    entry.avgRating(),
+                    entry.ratingCount(),
                     store.skuCount(),
-                    stores2.get(store.id()) == null || stores2.get(store.id()).openNow(),
-                    stores2.get(store.id()) != null
-                            && stores2.get(store.id()).directOrdersEnabled(),
+                    entry.openNow(),
+                    entry.directOrdersEnabled(),
                     categories.getOrDefault(store.id(), List.of())));
         }
         return out;

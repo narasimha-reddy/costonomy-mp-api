@@ -6026,3 +6026,17 @@ Found by reading the code while fixing D-141 to D-145: each was a rule the app s
 
 **Tests:** `IntentFlowIT$Basket` (stale price refused, agreement sends and locks, no change needs no agreement), `IntentFlowIT$DeliveryOffer` (riders charged their quote above the threshold, an offered charge not waived), `CatalogMaintenanceIT` (rate sheet and variants leave stock, status and GST; disabled stays disabled; own delist and relist still work). Each mutation-checked.
 
+## D-147 — Filters and sorting on the buyer's supplier lists
+
+The buyer's supplier lists (`GET /api/v1/search/suppliers` and `GET /api/v1/outlets/{outletId}/suppliers/popular`) were sorted by distance only and offered no filters for store hours or rating.
+
+1. **Server-side filtering before paging/limiting.**
+   - `radiusKm`: existing parameter, respected as an upper bound on distance.
+   - `openNow=true`: filters to stores currently open using the existing `DiscoveryDirectory` / `openNow` calculation.
+   - `minRating=3|4`: excludes stores with an average rating below the threshold. Stores without any rating yet are excluded only when `minRating` is specified.
+   - `sort=nearest` (default) vs `sort=rating` (highest average rating first, then nearest distance, then store id for deterministic tie-breaking). Unknown sort returns 422 `VALIDATION_ERROR`.
+   - `reach=all` (used by credit requests) continues to bypass serviceability and is only affected by the new filters if explicitly passed.
+2. **Popular suppliers remain unpaged.**
+   `GET /api/v1/outlets/{outletId}/suppliers/popular` is an unpaged showcase tile list capped at 100 entries (`limit`, clamped between 1 and 100, default 10). Because the frontend renders popular suppliers as a fixed horizontal or categorized showcase without infinite scroll or pagination, adding full offset/limit paging would add unnecessary complexity without user benefit. The filters (`radiusKm`, `openNow`, `minRating`) and sort (`sort=nearest|rating`) are applied to popular suppliers before clamping to the requested limit.
+3. **Tests:** `StorefrontIT$Suppliers.filtersAndSortByRating` and `StorefrontIT$Popular.popularFiltersAndSort`. Verified with mutation testing.
+

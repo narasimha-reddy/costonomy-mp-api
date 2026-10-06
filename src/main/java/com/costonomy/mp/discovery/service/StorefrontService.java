@@ -1,6 +1,8 @@
 package com.costonomy.mp.discovery.service;
 
 import com.costonomy.mp.common.domain.Serviceability;
+import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import lombok.RequiredArgsConstructor;
@@ -170,6 +172,19 @@ public class StorefrontService {
     public DiscoveryDtos.SupplierSearchPage searchSuppliers(String query, Long outletId,
                                                             BigDecimal radiusKm, String reach,
                                                             Integer offset, Integer limit) {
+        return searchSuppliers(query, outletId, radiusKm, reach, offset, limit, null, null, null);
+    }
+
+    @Transactional(readOnly = true)
+    public DiscoveryDtos.SupplierSearchPage searchSuppliers(String query, Long outletId,
+                                                            BigDecimal radiusKm, String reach,
+                                                            Integer offset, Integer limit,
+                                                            Boolean openNow, Integer minRating, String sort) {
+        String effectiveSort = sort == null || sort.isBlank() ? "nearest" : sort.trim();
+        if (!"nearest".equalsIgnoreCase(effectiveSort) && !"rating".equalsIgnoreCase(effectiveSort)) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "Unknown sort: " + sort);
+        }
+
         String term = query == null ? "" : query.trim().toLowerCase();
         boolean filtered = term.length() >= MIN_TERM;
         boolean reachAll = "all".equalsIgnoreCase(reach);
@@ -259,21 +274,42 @@ public class StorefrontService {
             }
 
             var metrics = ratings.get(row.storeId());
+            boolean isOpen = store == null || store.openNow();
+            if (Boolean.TRUE.equals(openNow) && !isOpen) {
+                continue;
+            }
+
+            BigDecimal avgRating = metrics == null ? null : metrics.averageRating().orElse(null);
+            if (minRating != null) {
+                if (avgRating == null || avgRating.compareTo(BigDecimal.valueOf(minRating)) < 0) {
+                    continue;
+                }
+            }
+
             sized.add(new Sized(new DiscoveryDtos.SupplierSearchResult(
                     row.storeId(), row.supplierName(), row.storeName(), row.city(),
                     Serviceability.round(distance), true, row.productCount(),
                     row.matchingCount(),
-                    metrics == null ? null : metrics.averageRating().orElse(null),
+                    avgRating,
                     metrics == null ? 0 : metrics.ratingCount(),
-                    store == null || store.openNow(),
+                    isOpen,
                     store == null ? null : store.opensAt()), distance));
         }
 
-        // Nearest first, tie-breaker store ID, and a store with no coordinates last:
-        // an unknown distance is not a short one.
-        sized.sort(Comparator.comparing(
-                (Sized s) -> s.distance() == null ? Double.MAX_VALUE : s.distance())
-                .thenComparing(s -> s.result().supplierStoreId()));
+        // Sort: nearest (default) or rating (highest first, then nearest, then store id)
+        if ("rating".equalsIgnoreCase(effectiveSort)) {
+            sized.sort(Comparator.comparing(
+                    (Sized s) -> s.result().averageRating() == null ? BigDecimal.valueOf(-1) : s.result().averageRating(),
+                    Comparator.reverseOrder())
+                    .thenComparing(s -> s.distance() == null ? Double.MAX_VALUE : s.distance())
+                    .thenComparing(s -> s.result().supplierStoreId()));
+        } else {
+            // Nearest first, tie-breaker store ID, and a store with no coordinates last:
+            // an unknown distance is not a short one.
+            sized.sort(Comparator.comparing(
+                    (Sized s) -> s.distance() == null ? Double.MAX_VALUE : s.distance())
+                    .thenComparing(s -> s.result().supplierStoreId()));
+        }
 
         int beyondRadius = 0;
         List<DiscoveryDtos.SupplierSearchResult> candidates;
