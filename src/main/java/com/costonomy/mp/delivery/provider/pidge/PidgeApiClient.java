@@ -197,7 +197,8 @@ public class PidgeApiClient {
                                 ),
                                 "attributes", Map.of(
                                         "cod_amount", 0,
-                                        "weight", request.weightKg().multiply(BigDecimal.valueOf(1000)).intValue()
+                                        "weight", request.weightKg().multiply(BigDecimal.valueOf(1000)).intValue(),
+                                        "volumetric_weight", request.weightKg().multiply(BigDecimal.valueOf(1000)).intValue()
                                 )
                         )
                 )
