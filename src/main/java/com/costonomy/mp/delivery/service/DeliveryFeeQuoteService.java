@@ -50,6 +50,7 @@ public class DeliveryFeeQuoteService {
     private final DeliveryDirectory directory;
     private final DeliveryProviderRegistry registry;
     private final AppConfigService config;
+    private final ColdChainCarrierGate coldChainGate;
 
     /** What a quote is worth, and what the caller may see of it. */
     public record Fee(
@@ -84,6 +85,12 @@ public class DeliveryFeeQuoteService {
                             + "or ask the supplier to deliver.");
         }
 
+        if (distanceKm > 30.0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Delivery location exceeds the 30 km intra-city limit (distance: %.1f km). Choose pickup, or ask the supplier to deliver."
+                            .formatted(distanceKm));
+        }
+
         var weight = ConsignmentWeight.of(
                 directory.intentLines(intentId), DeliveryDirectory.DEFAULT_PIECE_GRAMS);
 
@@ -98,11 +105,13 @@ public class DeliveryFeeQuoteService {
         quote.setDropLongitude(drop.longitude());
         quote.setDistanceKm(BigDecimal.valueOf(distanceKm).setScale(4, RoundingMode.HALF_UP));
         quote.setWeightGrams(weight.grams());
-        quote.setVehicleType(vehicleFor(weight.grams()));
+        boolean coldChain = intentId != null && directory.intentRequiresColdChain(intentId);
+        quote.setVehicleType(vehicleFor(weight.grams(), coldChain));
+        quote.setColdChain(coldChain);
         quote.setExpiresAt(Instant.now().plus(Duration.ofSeconds(
                 config.getInt("delivery.quoteTtlSeconds", 900))));
 
-        priceIt(quote, orderValue, weight.grams());
+        priceIt(quote, orderValue, weight.grams(), pickup.address(), drop.address(), coldChain);
         var saved = quotes.save(quote);
 
         return new Fee(saved.getReference(), saved.getFee(), saved.getCurrency(),
@@ -117,11 +126,16 @@ public class DeliveryFeeQuoteService {
      * still has to be placeable, so the rate card prices it and the quote records
      * that nobody quoted it.
      */
-    private void priceIt(DeliveryFeeQuote quote, BigDecimal orderValue, BigDecimal weightGrams) {
+    private void priceIt(DeliveryFeeQuote quote, BigDecimal orderValue, BigDecimal weightGrams,
+                         String pickupAddress, String dropAddress, boolean coldChain) {
+        if (coldChain) {
+            priceChilled(quote, orderValue, weightGrams, pickupAddress, dropAddress);
+            return;
+        }
         var request = new DeliveryProvider.QuoteRequest(
                 null, quote.getPickupLatitude(), quote.getPickupLongitude(),
                 quote.getDropLatitude(), quote.getDropLongitude(),
-                orderValue, weightGrams, null);
+                orderValue, weightGrams, null, pickupAddress, dropAddress);
 
         DeliveryProvider.Quote best = null;
         for (var available : registry.enabled()) {
@@ -151,6 +165,49 @@ public class DeliveryFeeQuoteService {
         quote.setEtaMinutes(estimatedMinutes(quote.getDistanceKm()));
         log.warn("No provider priced delivery for outlet {} from store {}; used the rate card",
                 quote.getOutletId(), quote.getSupplierStoreId());
+    }
+
+    /**
+     * Price a chilled consignment (D-134). Only a carrier verified for it is asked, in a vehicle it is verified for,
+     * and its quote counts only if it states that vehicle. There is <b>no rate-card fallback</b>: a rate card prices
+     * a delivery nobody has said they can carry, and a chilled order must never be sold carriage that cannot be
+     * provided. With no qualifying carrier the request is refused before any quote is saved.
+     */
+    private void priceChilled(DeliveryFeeQuote quote, BigDecimal orderValue, BigDecimal weightGrams,
+                              String pickupAddress, String dropAddress) {
+        BigDecimal weightKg = weightGrams.divide(BigDecimal.valueOf(1000), 4, RoundingMode.HALF_UP);
+        DeliveryProvider.Quote best = null;
+        for (var available : registry.enabled()) {
+            var vehicle = coldChainGate.vehicleFor(available.record().getId(), weightKg);
+            if (vehicle.isEmpty()) {
+                continue;
+            }
+            var request = new DeliveryProvider.QuoteRequest(
+                    null, quote.getPickupLatitude(), quote.getPickupLongitude(),
+                    quote.getDropLatitude(), quote.getDropLongitude(),
+                    orderValue, weightGrams, null, weightKg, null, vehicle.get(), pickupAddress, dropAddress);
+            try {
+                var answer = available.adapter().quote(request);
+                boolean qualifies = answer.serviceable() && answer.amount() != null
+                        && coldChainGate.qualifies(available.record().getId(), answer.vehicleType());
+                if (qualifies && (best == null || answer.amount().compareTo(best.amount()) < 0)) {
+                    best = answer;
+                }
+            } catch (RuntimeException ex) {
+                log.info("Provider {} could not price a chilled fee quote: {}",
+                        available.record().getCode(), ex.getMessage());
+            }
+        }
+        if (best == null) {
+            throw new BusinessException(ErrorCode.DELIVERY_UNAVAILABLE,
+                    "No delivery partner can carry chilled goods on this route yet. Choose pickup, "
+                            + "or ask the supplier to deliver.");
+        }
+        quote.setSource(DeliveryQuoteSource.QUOTED);
+        quote.setFee(best.amount().setScale(2, RoundingMode.HALF_UP));
+        quote.setCurrency(best.currency() == null ? "INR" : best.currency());
+        quote.setEtaMinutes(best.etaMinutes());
+        quote.setProviderReference(best.providerQuoteId());
     }
 
     /**
@@ -189,8 +246,14 @@ public class DeliveryFeeQuoteService {
      * Which vehicle this needs. Internal — it sets the platform's cost, not the
      * restaurant's price, and a kitchen has no use for the answer.
      */
-    private String vehicleFor(BigDecimal weightGrams) {
+    private String vehicleFor(BigDecimal weightGrams, boolean coldChain) {
         BigDecimal kg = weightGrams.divide(BigDecimal.valueOf(1000), 4, RoundingMode.HALF_UP);
+        if (coldChain) {
+            if (kg.compareTo(config.getDecimal("delivery.threeWheelerMaxKg", BigDecimal.valueOf(150))) <= 0) {
+                return "THREE_WHEELER";
+            }
+            return "TRUCK";
+        }
         if (kg.compareTo(config.getDecimal("delivery.bikeMaxKg", BigDecimal.valueOf(20))) <= 0) {
             return "BIKE";
         }
@@ -250,6 +313,12 @@ public class DeliveryFeeQuoteService {
         if (mismatched) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "That delivery quote belongs to a different request.");
+        }
+        // A quote priced for ordinary goods cannot be spent on an order that is chilled by now (the supplier declared
+        // cold chain after the fee was shown): it was priced without a carrier that can carry it.
+        if (intentId != null && !quote.isColdChain() && directory.intentRequiresColdChain(intentId)) {
+            throw new BusinessException(ErrorCode.PRICE_CHANGED,
+                    "This order now needs temperature-controlled delivery. Please check the delivery fee again.");
         }
         // Said separately because it is a different thing: a quote already spent
         // usually means this order was placed a moment ago, by a repeated tap. One

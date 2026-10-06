@@ -32,9 +32,22 @@ public class TrustDirectory {
     }
 
     public OrderInfo order(Long supplierOrderId) {
+        return order(supplierOrderId, false);
+    }
+
+    /**
+     * The order, locked for the rest of the transaction. Receiving takes this first, as its very first statement,
+     * so a duplicate check-in queues behind the first and then sees it, and so the lock order is the same as the
+     * ready transition's (D-129): order, then adjustment, then wallet, then payment.
+     */
+    public OrderInfo orderForUpdate(Long supplierOrderId) {
+        return order(supplierOrderId, true);
+    }
+
+    private OrderInfo order(Long supplierOrderId, boolean lock) {
         var rows = jdbc.query("""
                 select id, order_number, status, outlet_id, supplier_store_id, delivery_mode
-                  from supplier_order where id = ?
+                  from supplier_order where id = ?""" + (lock ? " for update" : "") + """
                 """,
                 (rs, row) -> new OrderInfo(rs.getLong(1), rs.getString(2), rs.getString(3),
                         rs.getLong(4), rs.getLong(5),
@@ -55,20 +68,52 @@ public class TrustDirectory {
             String productName,
             BigDecimal requestedQuantity,
             BigDecimal acceptedQuantity,
-            String unit) {
+            String unit,
+            BigDecimal unitPrice,
+            BigDecimal gstRate,
+            BigDecimal doorstepRefundAmount,
+            String doorstepRejectionReason,
+            /** The line's stored total: the quantity billed, at its price, with GST (D-128). */
+            BigDecimal lineTotal,
+            boolean catchWeight,
+            /** What a weighed catch-weight line is billed for; null until weighed. */
+            BigDecimal billableQuantity,
+            /** The line's stored taxable value and GST (D-128), the base of a rejection's refund. */
+            BigDecimal lineItemValue,
+            BigDecimal lineGst) {
+
+        /**
+         * What the restaurant must account for at the door: the billed weight on a weighed catch-weight
+         * line, the accepted quantity otherwise (D-128). Checking against the accepted quantity on a line that
+         * weighed lighter would have the buyer enter the shortfall as "missing" and be refunded for it twice.
+         */
+        public BigDecimal receivableQuantity() {
+            if (catchWeight && billableQuantity != null) {
+                return billableQuantity;
+            }
+            return acceptedQuantity == null ? BigDecimal.ZERO : acceptedQuantity;
+        }
     }
 
     public List<OrderLine> linesOf(Long supplierOrderId) {
         List<OrderLine> lines = new ArrayList<>();
         jdbc.query("""
-                select i.id, p.name, i.requested_quantity, i.accepted_quantity, i.unit
+                select i.id, p.name, i.requested_quantity, i.accepted_quantity, i.unit,
+                       i.unit_price_snapshot, i.gst_rate_snapshot,
+                       i.doorstep_refund_amount, i.doorstep_rejection_reason,
+                       i.line_total, i.is_catch_weight, i.billable_quantity,
+                       i.line_item_value, i.line_gst
                   from supplier_order_item i
                   join canonical_product p on p.id = i.canonical_product_id
                  where i.supplier_order_id = ? order by i.id
                 """,
                 rs -> {
                     lines.add(new OrderLine(rs.getLong(1), rs.getString(2),
-                            rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getString(5)));
+                            rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getString(5),
+                            rs.getBigDecimal(6), rs.getBigDecimal(7),
+                            rs.getBigDecimal(8), rs.getString(9),
+                            rs.getBigDecimal(10), rs.getBoolean(11), rs.getBigDecimal(12),
+                            rs.getBigDecimal(13), rs.getBigDecimal(14)));
                 },
                 supplierOrderId);
         return lines;
@@ -91,6 +136,26 @@ public class TrustDirectory {
                 """, fulfilledQuantity, supplierOrderItemId);
     }
 
+    public void recordDoorstepReconciliation(Long supplierOrderItemId, BigDecimal acceptedQty,
+                                             BigDecimal rejectedQty, String reason, BigDecimal refundAmount) {
+        jdbc.update("""
+                update supplier_order_item
+                   set doorstep_accepted_qty = ?,
+                       doorstep_rejected_qty = ?,
+                       doorstep_rejection_reason = ?,
+                       doorstep_refund_amount = ?
+                 where id = ?
+                """, acceptedQty, rejectedQty, reason, refundAmount, supplierOrderItemId);
+    }
+
+    /** The credit note raised for this order's doorstep rejection, or null when none exists (D-128). */
+    public String creditNoteNumberFor(Long supplierOrderId) {
+        var numbers = jdbc.queryForList(
+                "select credit_note_number from credit_note where supplier_order_id = ? order by id limit 1",
+                String.class, supplierOrderId);
+        return numbers.isEmpty() ? null : numbers.get(0);
+    }
+
     /**
      * Move the order to COMPLETED, guarded on where it is allowed to come from.
      *
@@ -105,7 +170,9 @@ public class TrustDirectory {
     public boolean completeOrder(Long supplierOrderId, SupplierOrderStatus from) {
         return jdbc.update("""
                 update supplier_order
-                   set status = ?, version = version + 1, updated_at = now(6)
+                   set status = ?,
+                       final_payable_amount = coalesce(final_payable_amount, accepted_amount - coalesce(weight_adjustment_amount, 0) - coalesce(doorstep_refund_amount, 0)),
+                       version = version + 1, updated_at = now(6)
                  where id = ? and status = ?
                 """, SupplierOrderStatus.COMPLETED.name(), supplierOrderId, from.name()) == 1;
     }

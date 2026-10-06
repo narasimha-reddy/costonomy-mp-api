@@ -73,11 +73,15 @@ public class IntentResponder {
     private final IntentAcceptanceItemRepository acceptanceItems;
     private final SupplierOfferRepository offers;
     private final SkuDirectory skuDirectory;
+    /** A sanity bound on what a supplier may charge for their own delivery of one order (D-141). */
+    private static final BigDecimal MAX_OWN_DELIVERY_CHARGE = new BigDecimal("5000");
+
     private final IntentMapper mapper;
     private final IntentPolicy policy;
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
+    private final com.costonomy.mp.delivery.service.DeliveryDirectory deliveryPolicies;
 
     @Transactional
     public IntentDtos.IntentResponse respond(
@@ -154,15 +158,15 @@ public class IntentResponder {
         acceptance.setStatus(IntentAcceptanceStatus.SUBMITTED);
         acceptance.setEtaMinutes(request.etaMinutes());
         acceptance.setDeliveryModes(request.deliveryModes());
+        applyDeliveryOffer(acceptance, intent.getSupplierStoreId(),
+                "PICKUP".equals(intent.getDeliveryPreference()) ? "NONE" : request.deliveryOffer(), request.deliveryFee());
         acceptance.setNotes(request.notes());
         acceptance.setSubmittedAt(now);
         // The same instant as the order-creation deadline, deliberately: an offer
         // stands for exactly as long as it can be ordered against. See IntentPolicy.
         acceptance.setExpiresAt(deadline);
-        // Delivery is quoted when a courier is assigned, not here. Doc 06 §4 and
-        // OPEN-005: a figure invented now would appear on the restaurant's total
-        // and then change.
-        acceptance.setDeliveryFee(null);
+        // A courier's fee is quoted when the restaurant asks for it (Doc 06 §4, OPEN-005), so it is not set here. The
+        // supplier's own fee is known and is set by applyDeliveryOffer.
         acceptances.saveAndFlush(acceptance);
 
         var priced = priceLines(intent, lines, answers);
@@ -432,5 +436,54 @@ public class IntentResponder {
 
         var found = intents.findForStore(storeId, statuses);
         return mapper.toResponses(found.size() > limit ? found.subList(0, limit) : found);
+    }
+
+    /**
+     * What this answer says about delivery (D-141). The supplier chooses, bounded by their store's delivery policy:
+     * deliver themselves free, deliver themselves at their own fee, or use Costonomy riders. Pickup is always offered.
+     * The buyer then sees only what was offered, and a free offer is stated as free. Without a choice the answer
+     * offers whatever the policy enables, as before.
+     */
+    private void applyDeliveryOffer(IntentAcceptance acceptance, Long storeId, String offer, BigDecimal chosenFee) {
+        var deliveryPolicy = deliveryPolicies.deliveryPolicy(storeId);
+        if (offer == null) {
+            acceptance.setDeliveryFee(null);
+            return;
+        }
+        switch (offer) {
+            // Pickup was asked for, or the supplier cannot deliver this one: only pickup is on offer (D-143).
+            case "NONE" -> {
+                acceptance.setDeliveryModes("PICKUP");
+                acceptance.setDeliveryFee(null);
+            }
+            case "SELF_FREE", "SELF" -> {
+                // Offering to deliver on this request is the supplier's own decision and needs no standing setting. What
+                // they may charge is capped by the store's own fee, which is nothing if none is set.
+                acceptance.setDeliveryModes("PICKUP,SUPPLIER_DELIVERY");
+                BigDecimal storeFee = deliveryPolicy.ownDeliveryFee() == null
+                        ? BigDecimal.ZERO : deliveryPolicy.ownDeliveryFee();
+                // The supplier sets what to charge for this order. Left out, it is the store's standing fee. The
+                // restaurant sees the amount before ordering, so the only limit here is a sanity bound against a typo.
+                BigDecimal fee = "SELF_FREE".equals(offer) ? BigDecimal.ZERO
+                        : chosenFee == null ? storeFee : chosenFee;
+                if (fee.compareTo(MAX_OWN_DELIVERY_CHARGE) > 0) {
+                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                            "A delivery charge can't be more than %s. Check the amount."
+                                    .formatted(MAX_OWN_DELIVERY_CHARGE.toPlainString()));
+                }
+                acceptance.setDeliveryFee(Pricing.money(fee));
+            }
+            case "COSTONOMY" -> {
+                if (!deliveryPolicy.costonomyDeliveryEnabled()) {
+                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                            "Costonomy delivery is turned off for this store.");
+                }
+                acceptance.setDeliveryModes("PICKUP,COSTONOMY_DELIVERY");
+                acceptance.setDeliveryFee(null);
+            }
+            default -> throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Delivery must be SELF_FREE, SELF, COSTONOMY or NONE.");
+        }
+        acceptance.setDeliveryOffer(offer);
     }
 }

@@ -21,9 +21,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import com.costonomy.mp.procurement.domain.Pricing;
 
 /**
  * A supplier store's own catalog.
@@ -46,10 +49,12 @@ public class SupplierCatalogService {
     private final SupplierOfferRepository offers;
     private final SupplierSkuImageRepository skuImages;
     private final CanonicalProductRepository products;
+    private final ProductCategoryRepository productCategories;
     private final CatalogQueryService catalogQuery;
     private final CatalogDirectory directory;
     private final AccessControlService accessControl;
     private final AuditService auditService;
+    private final SkuHandlingService skuHandling;
 
     @Transactional(readOnly = true)
     public List<CatalogDtos.SkuResponse> listSkus(Long actorId, Long storeId, String status,
@@ -86,11 +91,15 @@ public class SupplierCatalogService {
         sku.setSkuCode(blankToNull(request.skuCode()));
         sku.setName(request.name());
         sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
+        sku.setGrade(blankToNull(request.grade()));
+        // Handling (cold chain, catch-weight) is declared below, once the SKU has an id, through the one service that
+        // writes it (D-134): the first declaration, raised to the product's own cold-chain floor.
         sku.setPackSize(request.packSize());
 
         var pack = Unit.parse(request.packUnit(), "Pack unit");
         sku.setPackUnit(pack.name());
         applyMeasure(sku, pack, request.measureValue(), request.measureUnit(), true);
+        sku.setMrp(zeroToNull(request.mrp()));
 
         sku.setImageUrl(blankToNull(request.imageUrl()));
         applyDetail(sku, request.description(), request.lengthCm(), request.widthCm(),
@@ -104,7 +113,10 @@ public class SupplierCatalogService {
             throw new BusinessException(ErrorCode.DUPLICATE_SKU_CODE);
         }
 
-        openOffer(sku, request.sellingPrice(), request.gstRate(),
+        skuHandling.declareInitial(sku, request.requiresColdChain(),
+                Boolean.TRUE.equals(request.isCatchWeight()), actorId);
+
+        openOffer(sku, request.sellingPrice(), zeroToNull(request.mrp()), request.gstRate(),
                 request.availability() == null ? SupplierOffer.Availability.AVAILABLE : request.availability(),
                 request.availableQuantity(), actorId);
 
@@ -113,6 +125,15 @@ public class SupplierCatalogService {
         auditService.record(actorId, null, "SKU_CREATED", "SUPPLIER_SKU",
                 sku.getId(), null, "ACTIVE", null, "API");
 
+        return toResponse(sku);
+    }
+
+    /** Supersede a SKU's cold-chain and catch-weight declaration (D-134). */
+    @Transactional
+    public CatalogDtos.SkuResponse declareHandling(Long actorId, Long skuId,
+                                                   CatalogDtos.HandlingDeclarationRequest request) {
+        var sku = skuHandling.declare(actorId, skuId, request.requiresColdChain(), request.isCatchWeight(),
+                request.reason());
         return toResponse(sku);
     }
 
@@ -132,11 +153,24 @@ public class SupplierCatalogService {
                 throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                         "That product isn't in the Mandi catalog.");
             }
+            if (!sku.isRequiresColdChain() && skuHandling.productRequiresColdChain(request.canonicalProductId())) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "That product always needs cold chain, so this item must be declared as chilled first.");
+            }
             sku.setCanonicalProductId(request.canonicalProductId());
         }
         if (request.skuCode() != null) sku.setSkuCode(blankToNull(request.skuCode()));
         if (request.name() != null) sku.setName(request.name());
         if (request.brandName() != null) sku.setBrandId(catalogQuery.resolveBrandId(request.brandName()));
+        if (request.grade() != null) sku.setGrade(blankToNull(request.grade()));
+        // Handling is not edited in place (D-134). A save that passes the current values back (a rate sheet, a batch
+        // variant) changes nothing; a different value has to go through the handling declaration, with a reason.
+        if ((request.isCatchWeight() != null && request.isCatchWeight() != sku.isCatchWeight())
+                || (request.requiresColdChain() != null && request.requiresColdChain() != sku.isRequiresColdChain())) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Cold chain and catch-weight are changed with a handling declaration, which needs a reason. "
+                            + "Use PUT /supplier-skus/{id}/handling.");
+        }
         if (request.packSize() != null) sku.setPackSize(request.packSize());
         // The pack unit and its measure are validated together even when only one
         // of them was sent: changing KG to PKT without saying what is in the
@@ -154,6 +188,7 @@ public class SupplierCatalogService {
                     request.measureUnit() != null ? request.measureUnit() : sku.getMeasureUnit(),
                     supplied);
         }
+        if (request.mrp() != null) sku.setMrp(zeroToNull(request.mrp()));
         // blankToNull, as for skuCode: an empty string is how a supplier takes
         // their own photo back down, and it has to store as absent. Stored as ""
         // the field is present-but-empty, and every client falling back with
@@ -161,7 +196,14 @@ public class SupplierCatalogService {
         if (request.imageUrl() != null) sku.setImageUrl(blankToNull(request.imageUrl()));
         applyDetail(sku, request.description(), request.lengthCm(), request.widthCm(),
                 request.heightCm(), request.weightGrams(), request.youtubeUrl());
-        if (request.status() != null) sku.setStatus(request.status());
+        if (request.status() != null) {
+            // Disabled is Costonomy's decision (moderation), not the supplier's to undo with a status change (D-146).
+            if ("DISABLED".equals(sku.getStatus()) && !"DISABLED".equals(request.status())) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "Costonomy disabled this product, so it can't be listed again from here. Contact support.");
+            }
+            sku.setStatus(request.status());
+        }
 
         try {
             skus.saveAndFlush(sku);
@@ -174,7 +216,7 @@ public class SupplierCatalogService {
         // history entry.
         applyImages(sku.getId(), request.images());
 
-        if (request.sellingPrice() != null || request.gstRate() != null
+        if (request.sellingPrice() != null || request.mrp() != null || request.gstRate() != null
                 || request.availability() != null || request.availableQuantity() != null) {
             supersedeOffer(sku, request, actorId);
         }
@@ -216,6 +258,8 @@ public class SupplierCatalogService {
 
         BigDecimal price = request.sellingPrice() != null ? request.sellingPrice()
                 : current.map(SupplierOffer::getSellingPrice).orElse(null);
+        BigDecimal mrp = request.mrp() != null ? zeroToNull(request.mrp())
+                : current.map(SupplierOffer::getMrp).orElse(sku.getMrp());
         BigDecimal gst = request.gstRate() != null ? request.gstRate()
                 : current.map(SupplierOffer::getGstRate).orElse(null);
         String availability = request.availability() != null ? request.availability()
@@ -230,7 +274,7 @@ public class SupplierCatalogService {
         }
 
         // Nothing actually changed: don't manufacture a history entry.
-        if (current.isPresent() && unchanged(current.get(), price, gst, availability, quantity)) {
+        if (current.isPresent() && unchanged(current.get(), price, mrp, gst, availability, quantity)) {
             return current.get();
         }
 
@@ -241,23 +285,26 @@ public class SupplierCatalogService {
             offers.save(offer);
         });
 
-        return openOffer(sku, price, gst, availability, quantity, actorId);
+        return openOffer(sku, price, mrp, gst, availability, quantity, actorId);
     }
 
-    private static boolean unchanged(SupplierOffer offer, BigDecimal price, BigDecimal gst,
-                                     String availability, BigDecimal quantity) {
+    private static boolean unchanged(SupplierOffer offer, BigDecimal price, BigDecimal mrp,
+                                     BigDecimal gst, String availability, BigDecimal quantity) {
         // compareTo, not equals: BigDecimal("410.00").equals(new BigDecimal("410.0000"))
         // is false, and a supplier re-uploading the same file must not generate a
         // price-change event for every row.
         return offer.getSellingPrice().compareTo(price) == 0
+                && java.util.Objects.compare(offer.getMrp(), mrp,
+                        java.util.Comparator.nullsFirst(BigDecimal::compareTo)) == 0
                 && offer.getGstRate().compareTo(gst) == 0
                 && offer.getAvailability().equals(availability)
                 && java.util.Objects.compare(offer.getAvailableQuantity(), quantity,
                         java.util.Comparator.nullsFirst(BigDecimal::compareTo)) == 0;
     }
 
-    private SupplierOffer openOffer(SupplierSku sku, BigDecimal price, BigDecimal gst,
-                                    String availability, BigDecimal quantity, Long actorId) {
+    private SupplierOffer openOffer(SupplierSku sku, BigDecimal price, BigDecimal mrp,
+                                    BigDecimal gst, String availability, BigDecimal quantity,
+                                    Long actorId) {
 
         if (!SupplierOffer.Availability.isValid(availability)) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
@@ -269,6 +316,7 @@ public class SupplierCatalogService {
         offer.setSupplierStoreId(sku.getSupplierStoreId());
         offer.setCanonicalProductId(sku.getCanonicalProductId());
         offer.setSellingPrice(price);
+        offer.setMrp(mrp);
         offer.setGstRate(gst);
         offer.setAvailability(availability);
         offer.setAvailableQuantity(quantity);
@@ -276,6 +324,181 @@ public class SupplierCatalogService {
         offer.setStatus("ACTIVE");
         offer.setCreatedBy(actorId);
         return offers.save(offer);
+    }
+
+    /**
+     * Item-Centric Variant Management: Get all brand and grade variants for an item
+     * with top-selling combination presets first.
+     */
+    @Transactional(readOnly = true)
+    public CatalogDtos.ItemVariantGroupResponse getItemVariants(
+            Long actorId, Long storeId, Long canonicalProductId) {
+
+        accessControl.requireScoped(actorId, Permissions.CATALOG_VIEW,
+                ScopeType.SUPPLIER_STORE, storeId, "SupplierStore");
+
+        var product = products.findById(canonicalProductId)
+                .orElseThrow(() -> new NotFoundException("CanonicalProduct", canonicalProductId));
+
+        var variants = skus.findBySupplierStoreIdAndCanonicalProductId(storeId, canonicalProductId).stream()
+                .map(this::toResponse)
+                .sorted(Comparator.comparing(
+                        (CatalogDtos.SkuResponse s) -> s.sellingPrice() != null ? s.sellingPrice() : BigDecimal.valueOf(Long.MAX_VALUE)))
+                .toList();
+
+        var presets = generatePresetsForProduct(product);
+        String categoryName = null;
+        if (product.getCategoryId() != null) {
+            categoryName = productCategories.findById(product.getCategoryId())
+                    .map(com.costonomy.mp.catalog.domain.ProductCategory::getName).orElse(null);
+        }
+
+        return new CatalogDtos.ItemVariantGroupResponse(
+                product.getId(),
+                product.getName(),
+                product.getCategoryId(),
+                categoryName,
+                product.getImageUrl(),
+                product.getBaseUnit(),
+                variants,
+                presets);
+    }
+
+    /**
+     * Batch save / update variants under an item in one unified screen action.
+     */
+    @Transactional
+    public CatalogDtos.ItemVariantGroupResponse batchUpdateVariants(
+            Long actorId, Long storeId, CatalogDtos.BatchUpdateVariantsRequest request) {
+
+        accessControl.requireScoped(actorId, Permissions.CATALOG_EDIT,
+                ScopeType.SUPPLIER_STORE, storeId, "SupplierStore");
+
+        var product = products.findById(request.canonicalProductId())
+                .orElseThrow(() -> new NotFoundException("CanonicalProduct", request.canonicalProductId()));
+
+        for (var entry : request.variants()) {
+            if (entry.skuId() != null) {
+                // Update existing variant
+                updateSku(actorId, entry.skuId(), new CatalogDtos.UpdateSkuRequest(
+                        request.canonicalProductId(),
+                        entry.skuCode(),
+                        entry.name(),
+                        entry.brandName(),
+                        entry.grade(),
+                        entry.packSize(),
+                        entry.packUnit(),
+                        null,
+                        null,
+                        entry.mrp(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        // An update leaves what the entry does not mention as it is (D-146): no status (it used to
+                        // relist a delisted SKU), no GST (it used to reset to 5%), no availability (it used to put
+                        // an out-of-stock SKU back in stock). Only a new variant gets those defaults, below.
+                        null,
+                        entry.sellingPrice(),
+                        entry.gstRate(),
+                        entry.availability(),
+                        entry.availableQuantity()
+                ));
+            } else {
+                // Create new variant
+                String skuName = entry.name();
+                if (skuName == null || skuName.isBlank()) {
+                    String brandPart = (entry.brandName() != null && !entry.brandName().isBlank())
+                            ? entry.brandName() + " " : "";
+                    String gradePart = (entry.grade() != null && !entry.grade().isBlank())
+                            ? " (" + entry.grade() + ")" : "";
+                    skuName = (brandPart + product.getName() + gradePart).trim();
+                }
+
+                BigDecimal packSize = entry.packSize() != null ? entry.packSize()
+                        : (product.getBasePackSize() != null ? product.getBasePackSize() : BigDecimal.ONE);
+                String packUnit = entry.packUnit() != null ? entry.packUnit()
+                        : (product.getBaseUnit() != null ? product.getBaseUnit() : "KG");
+
+                createSku(actorId, storeId, new CatalogDtos.CreateSkuRequest(
+                        request.canonicalProductId(),
+                        entry.skuCode(),
+                        skuName,
+                        entry.brandName(),
+                        entry.grade(),
+                        packSize,
+                        packUnit,
+                        null,
+                        null,
+                        entry.mrp(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        entry.sellingPrice(),
+                        entry.gstRate() != null ? entry.gstRate() : BigDecimal.valueOf(5),
+                        entry.availability() != null ? entry.availability() : SupplierOffer.Availability.AVAILABLE,
+                        entry.availableQuantity()
+                ));
+            }
+        }
+
+        return getItemVariants(actorId, storeId, request.canonicalProductId());
+    }
+
+    private List<CatalogDtos.VariantPreset> generatePresetsForProduct(com.costonomy.mp.catalog.domain.CanonicalProduct product) {
+        String name = product.getName().toLowerCase();
+        List<CatalogDtos.VariantPreset> presets = new ArrayList<>();
+
+        if (name.contains("paneer")) {
+            presets.add(new CatalogDtos.VariantPreset("Amul", "Grade A", BigDecimal.ONE, "KG", new BigDecimal("450.00"), true));
+            presets.add(new CatalogDtos.VariantPreset("Nandini", "Grade A", BigDecimal.ONE, "KG", new BigDecimal("420.00"), true));
+            presets.add(new CatalogDtos.VariantPreset("Mother Dairy", "Grade A", BigDecimal.ONE, "KG", new BigDecimal("440.00"), false));
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade A", BigDecimal.ONE, "KG", new BigDecimal("380.00"), true));
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade B", BigDecimal.ONE, "KG", new BigDecimal("340.00"), false));
+        } else if (name.contains("rice") || name.contains("biryani")) {
+            BigDecimal size = product.getBasePackSize() != null ? product.getBasePackSize() : new BigDecimal("25.00");
+            presets.add(new CatalogDtos.VariantPreset("India Gate", "Grade A (Classic)", size, "KG", new BigDecimal("3200.00"), true));
+            presets.add(new CatalogDtos.VariantPreset("Daawat", "Grade A (Biryani)", size, "KG", new BigDecimal("3100.00"), true));
+            presets.add(new CatalogDtos.VariantPreset("Fortune", "Grade A (Special)", size, "KG", new BigDecimal("2800.00"), false));
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade A", size, "KG", new BigDecimal("2600.00"), true));
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade B", size, "KG", new BigDecimal("2300.00"), false));
+        } else if (name.contains("cleaner") || name.contains("floor") || name.contains("phenyl")) {
+            presets.add(new CatalogDtos.VariantPreset("Lizol", "Standard", new BigDecimal("5.00"), "LTR", new BigDecimal("850.00"), true));
+            presets.add(new CatalogDtos.VariantPreset("Colin", "Standard", new BigDecimal("5.00"), "LTR", new BigDecimal("790.00"), false));
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade A (Concentrate)", new BigDecimal("5.00"), "LTR", new BigDecimal("550.00"), true));
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade B (Standard)", new BigDecimal("5.00"), "LTR", new BigDecimal("420.00"), true));
+        } else if (name.contains("spice") || name.contains("elachi") || name.contains("cardamom") || name.contains("pepper") || name.contains("jeera")) {
+            presets.add(new CatalogDtos.VariantPreset("Everest", "Grade A", new BigDecimal("500.00"), "GM", new BigDecimal("1600.00"), true));
+            presets.add(new CatalogDtos.VariantPreset("Catch", "Grade A", new BigDecimal("500.00"), "GM", new BigDecimal("1650.00"), false));
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade A (Bold)", BigDecimal.ONE, "KG", new BigDecimal("2800.00"), true));
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade B (Medium)", BigDecimal.ONE, "KG", new BigDecimal("2400.00"), true));
+        } else if (name.contains("milk") || name.contains("dairy")) {
+            presets.add(new CatalogDtos.VariantPreset("Amul", "Grade A (Taaza)", BigDecimal.ONE, "LTR", new BigDecimal("56.00"), true));
+            presets.add(new CatalogDtos.VariantPreset("Nandini", "Grade A (Special)", BigDecimal.ONE, "LTR", new BigDecimal("52.00"), true));
+            presets.add(new CatalogDtos.VariantPreset("Mother Dairy", "Grade A (Toned)", BigDecimal.ONE, "LTR", new BigDecimal("54.00"), false));
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade A (Bulk Cow Milk)", new BigDecimal("10.00"), "LTR", new BigDecimal("480.00"), true));
+        } else if (name.contains("meat") || name.contains("chicken") || name.contains("mutton")) {
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade A (Fresh Tender)", BigDecimal.ONE, "KG", new BigDecimal("260.00"), true));
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade B (Standard)", BigDecimal.ONE, "KG", new BigDecimal("220.00"), true));
+            presets.add(new CatalogDtos.VariantPreset("Zorabian", "Grade A (Curry Cut)", BigDecimal.ONE, "KG", new BigDecimal("320.00"), false));
+            presets.add(new CatalogDtos.VariantPreset("Godrej Real Good", "Grade A", BigDecimal.ONE, "KG", new BigDecimal("310.00"), false));
+        } else {
+            BigDecimal size = product.getBasePackSize() != null ? product.getBasePackSize() : BigDecimal.ONE;
+            String unit = product.getBaseUnit() != null ? product.getBaseUnit() : "KG";
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade A", size, unit, null, true));
+            presets.add(new CatalogDtos.VariantPreset(null, "Grade B", size, unit, null, true));
+            presets.add(new CatalogDtos.VariantPreset("Popular Brand", "Grade A", size, unit, null, false));
+        }
+        return presets;
     }
 
     /**
@@ -339,9 +562,16 @@ public class SupplierCatalogService {
         String brandName = sku.getBrandId() == null ? null
                 : directory.brandNames(List.of(sku.getBrandId())).get(sku.getBrandId());
 
+        BigDecimal mrp = offer.map(SupplierOffer::getMrp).filter(java.util.Objects::nonNull).orElse(sku.getMrp());
+        BigDecimal sellingPrice = offer.map(SupplierOffer::getSellingPrice).orElse(null);
+        BigDecimal discountAmount = Pricing.discountAmount(mrp, sellingPrice);
+        Integer discountPercent = Pricing.discountPercent(mrp, sellingPrice);
+
         return new CatalogDtos.SkuResponse(
                 sku.getId(), sku.getSupplierStoreId(), sku.getCanonicalProductId(), productName,
-                categoryId, sku.getSkuCode(), sku.getName(), brandName,
+                categoryId, sku.getSkuCode(), sku.getName(), brandName, sku.getGrade(),
+                sku.isCatchWeight(),
+                sku.isRequiresColdChain(),
                 sku.getPackSize(), sku.getPackUnit(),
                 sku.getMeasureValue(), sku.getMeasureUnit(),
                 sku.getImageUrl(), productImage,
@@ -351,7 +581,10 @@ public class SupplierCatalogService {
                 skuImages.findBySupplierSkuIdOrderByPositionAscIdAsc(sku.getId()).stream()
                         .map(SupplierSkuImage::getUrl).toList(),
                 sku.getStatus(),
-                offer.map(SupplierOffer::getSellingPrice).orElse(null),
+                mrp,
+                sellingPrice,
+                discountAmount,
+                discountPercent,
                 offer.map(SupplierOffer::getGstRate).orElse(null),
                 offer.map(SupplierOffer::getAvailability).orElse(null),
                 offer.map(SupplierOffer::getAvailableQuantity).orElse(null),
@@ -426,5 +659,100 @@ public class SupplierCatalogService {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
+    }
+
+    // ── Morning Mandi Fast Rate Sheet (60-second Repricing Grid) ────────
+
+    @Transactional(readOnly = true)
+    public CatalogDtos.RateSheetResponse getRateSheet(Long actorId, Long storeId) {
+        accessControl.requireScoped(actorId, Permissions.CATALOG_VIEW,
+                ScopeType.SUPPLIER_STORE, storeId, "SupplierStore");
+
+        var storeSkus = skus.findBySupplierStoreIdAndStatus(storeId, "ACTIVE", org.springframework.data.domain.Pageable.unpaged()).getContent();
+        if (storeSkus.isEmpty()) {
+            storeSkus = skus.findBySupplierStoreId(storeId, org.springframework.data.domain.Pageable.unpaged()).getContent();
+        }
+
+        var productMap = products.findAllById(storeSkus.stream().map(SupplierSku::getCanonicalProductId).distinct().toList())
+                .stream().collect(java.util.stream.Collectors.toMap(p -> p.getId(), p -> p.getName()));
+
+        var brandIds = storeSkus.stream().map(SupplierSku::getBrandId).filter(java.util.Objects::nonNull).distinct().toList();
+        var brandMap = directory.brandNames(brandIds);
+
+        var offersBySku = offers.findBySupplierStoreIdAndStatus(storeId, "ACTIVE").stream()
+                .collect(java.util.stream.Collectors.toMap(SupplierOffer::getSupplierSkuId, o -> o, (first, second) -> first));
+
+        var rows = storeSkus.stream()
+                .map(sku -> {
+                    SupplierOffer offer = offersBySku.get(sku.getId());
+                    BigDecimal sellingPrice = offer != null ? offer.getSellingPrice() : null;
+                    BigDecimal mrp = offer != null && offer.getMrp() != null ? offer.getMrp() : sku.getMrp();
+                    BigDecimal gstRate = offer != null ? offer.getGstRate() : BigDecimal.ZERO;
+                    String availability = offer != null ? offer.getAvailability() : "AVAILABLE";
+                    BigDecimal availableQty = offer != null ? offer.getAvailableQuantity() : null;
+                    Instant updatedAt = offer != null ? offer.getEffectiveFrom() : sku.getUpdatedAt();
+
+                    return new CatalogDtos.RateSheetRow(
+                            sku.getId(),
+                            sku.getCanonicalProductId(),
+                            productMap.get(sku.getCanonicalProductId()),
+                            sku.getName(),
+                            sku.getBrandId() != null ? brandMap.get(sku.getBrandId()) : null,
+                            sku.getGrade(),
+                            sku.isCatchWeight(),
+                            sku.isRequiresColdChain(),
+                            sku.getPackSize(),
+                            sku.getPackUnit(),
+                            mrp,
+                            sellingPrice,
+                            gstRate,
+                            availability,
+                            availableQty,
+                            updatedAt
+                    );
+                })
+                .sorted(Comparator.comparing(CatalogDtos.RateSheetRow::productName, Comparator.nullsLast(String.CASE_INSENSITIVE_ORDER)))
+                .toList();
+
+        return new CatalogDtos.RateSheetResponse(storeId, rows);
+    }
+
+    @Transactional
+    public CatalogDtos.UpdateRateSheetResponse updateRateSheet(
+            Long actorId, Long storeId, CatalogDtos.UpdateRateSheetRequest request) {
+
+        accessControl.requireScoped(actorId, Permissions.CATALOG_EDIT,
+                ScopeType.SUPPLIER_STORE, storeId, "SupplierStore");
+
+        int updatedCount = 0;
+        for (CatalogDtos.UpdateRateSheetItem item : request.rows()) {
+            var skuOpt = skus.findById(item.skuId());
+            if (skuOpt.isEmpty() || !skuOpt.get().getSupplierStoreId().equals(storeId)) {
+                continue;
+            }
+            SupplierSku sku = skuOpt.get();
+            var currentOffer = offers.findBySupplierSkuIdAndStatus(sku.getId(), "ACTIVE");
+            BigDecimal gstRate = currentOffer.map(SupplierOffer::getGstRate).orElse(BigDecimal.ZERO);
+
+            CatalogDtos.UpdateSkuRequest updateReq = new CatalogDtos.UpdateSkuRequest(
+                    sku.getCanonicalProductId(), sku.getSkuCode(), sku.getName(),
+                    null, sku.getGrade(), sku.isCatchWeight(), sku.isRequiresColdChain(), sku.getPackSize(), sku.getPackUnit(),
+                    sku.getMeasureValue(), sku.getMeasureUnit(), item.mrp() != null ? item.mrp() : sku.getMrp(),
+                    sku.getImageUrl(), sku.getDescription(), sku.getLengthCm(), sku.getWidthCm(),
+                    sku.getHeightCm(), sku.getWeightGrams(), sku.getYoutubeUrl(), List.of(),
+                    sku.getStatus(), item.sellingPrice(), gstRate,
+                    // A row with no availability leaves stock as it is (D-146); it used to mean "in stock".
+                    item.availability(),
+                    item.availableQuantity()
+            );
+
+            supersedeOffer(sku, updateReq, actorId);
+            updatedCount++;
+        }
+
+        auditService.record(actorId, null, "RATE_SHEET_UPDATED", "SUPPLIER_STORE",
+                storeId, null, null, "Repriced " + updatedCount + " lines in morning rate sheet", "API");
+
+        return new CatalogDtos.UpdateRateSheetResponse(updatedCount, getRateSheet(actorId, storeId).rows());
     }
 }

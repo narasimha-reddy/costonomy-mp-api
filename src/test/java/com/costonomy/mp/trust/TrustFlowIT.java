@@ -43,6 +43,7 @@ class TrustFlowIT extends AbstractIntegrationTest {
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private MockPaymentProvider paymentProvider;
+    @Autowired private com.costonomy.mp.payment.service.PaymentJobs paymentJobs;
 
     private ApiClient api;
     private TestCheckout checkout;
@@ -143,6 +144,9 @@ class TrustFlowIT extends AbstractIntegrationTest {
         long orderId = placed.orderId();
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/preparing");
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/ready");
+        // The money is taken at ready by a job that runs every few seconds in production. A doorstep
+        // rejection refunds against a captured payment (D-128), so the fixture lets the capture land first.
+        paymentJobs.capturePending();
 
         long deliveryId = mvcPostDelivery(seller, orderId);
         api.post(seller.token(), "/api/v1/deliveries/" + deliveryId + "/dispatched", Map.of());

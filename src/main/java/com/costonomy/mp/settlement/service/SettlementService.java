@@ -61,6 +61,7 @@ public class SettlementService {
     private final JdbcTemplate jdbc;
     private final SettlementTotals totals;
     private final SupplierRefundLedger refundLedger;
+    private final SettlementReconciliationService reconciliation;
 
     // ── Generation ───────────────────────────────────────────────────────
 
@@ -158,7 +159,7 @@ public class SettlementService {
 
     @Transactional
     public SettlementDtos.SettlementResponse approve(Long actorId, Long settlementId,
-                                                     String note) {
+                                                     String note, String acknowledgeMismatchNote) {
         accessControl.require(actorId, Permissions.SETTLEMENT_OPERATE, ScopeType.PLATFORM, null);
 
         var settlement = load(settlementId);
@@ -185,6 +186,20 @@ public class SettlementService {
                     "Refunds on this settlement are more than its payout. It needs a correction first.");
         }
 
+        // A fresh answer, not the last hourly one: a capture can fail between sweeps. Inline, in
+        // this transaction: its locking read sees the current row, where a separate transaction
+        // would leave this one's snapshot stale and the later save would lose to its version bump.
+        var check = reconciliation.reconcileInternal(settlementId, actorId);
+        if (!check.matched()) {
+            if (acknowledgeMismatchNote == null || acknowledgeMismatchNote.isBlank()) {
+                throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "Settlement does not reconcile with what was collected ("
+                                + check.note() + "). Resolve it, or approve with acknowledgeMismatchNote.");
+            }
+            auditService.record(actorId, null, "SETTLEMENT_APPROVED_WITH_MISMATCH", "SETTLEMENT",
+                    settlementId, check.settlementGross().toPlainString(),
+                    check.capturedGross().toPlainString(), acknowledgeMismatchNote, "ADMIN");
+        }
         transition(settlement, SettlementStatus.APPROVED);
         settlement.setApprovedBy(actorId);
         settlement.setApprovedAt(Instant.now());

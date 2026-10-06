@@ -27,9 +27,21 @@ public interface WalletTransactionRepository extends JpaRepository<WalletTransac
             @org.springframework.data.repository.query.Param("orderId") Long supplierOrderId,
             @org.springframework.data.repository.query.Param("kind") com.costonomy.mp.wallet.domain.WalletEntryKind kind);
 
+    @org.springframework.data.jpa.repository.Query("""
+            select coalesce(sum(t.amount), 0) from WalletTransaction t
+             where t.supplierOrderId = :orderId and t.kind = :kind and t.direction = :direction
+            """)
+    java.math.BigDecimal sumBySupplierOrderIdAndKindAndDirection(
+            @org.springframework.data.repository.query.Param("orderId") Long supplierOrderId,
+            @org.springframework.data.repository.query.Param("kind") com.costonomy.mp.wallet.domain.WalletEntryKind kind,
+            @org.springframework.data.repository.query.Param("direction") com.costonomy.mp.wallet.domain.WalletDirection direction);
+
     /** One entry of an order's ledger, as {@link #lockedLedgerOf} returns it: what the dispute refund decides on. */
     interface LedgerLine {
         String getKind();
+
+        /** CREDIT or DEBIT: an adjustment can be either, and the two move what is refundable opposite ways. */
+        String getDirection();
 
         java.math.BigDecimal getAmount();
 
@@ -54,7 +66,7 @@ public interface WalletTransactionRepository extends JpaRepository<WalletTransac
      * every other order's new entry goes: the deadlock is back. It is the order's own index or nothing.
      */
     @org.springframework.data.jpa.repository.Query(nativeQuery = true, value = """
-            select kind as kind, amount as amount, reference as reference
+            select kind as kind, direction as direction, amount as amount, reference as reference
               from wallet_transaction force index (ix_wallet_txn_order) where supplier_order_id = :orderId for share
             """)
     List<LedgerLine> lockedLedgerOf(@org.springframework.data.repository.query.Param("orderId") Long supplierOrderId);

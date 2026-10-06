@@ -253,9 +253,9 @@ app is built across both roles.
 
 ### Latest: Razorpay payments (D-098 … D-104)
 
-Stacked PRs. **Three migrations**: `V37` (`refund.attempts`), `V38` (refunds to
+Stacked PRs. **Three migrations**: `V41` (`refund.attempts`), `V42` (refunds to
 the wallet: `refund.destination`, the wallet ledger's kind and reference, the
-`WALLET_WITHDRAW` permission) and `V39` (`dispute_refund`, `supplier_deduction`,
+`WALLET_WITHDRAW` permission) and `V43` (`dispute_refund`, `supplier_deduction`,
 `DISPUTE_REFUND_DECIDE`, `REFUND_DECIDE`). Otherwise the payment tables from `V11`
 are used as they were.
 
@@ -271,8 +271,8 @@ are used as they were.
 | `feat/razorpay-11-dispute-refunds` | **Refunds go to the wallet; a withdrawal goes back to the card** (D-104, part one). The restaurant's own refund endpoint is gone. `POST /outlets/{id}/wallet/withdraw` sends refund money back to the payments it came from. Part two is the next PR |
 | `feat/razorpay-12-dispute-refund-requests` | **Refunds are asked for on a dispute** (D-104 part two). The supplier approves or declines; operations decides after a decline or 48 hours. An approval credits the wallet and is taken from the supplier's payout for the order — capped at it, refused once it is approved, and a payout cannot be approved while a refund on it is undecided. **Costonomy never funds a refund.** Dispute lists per outlet and per store |
 | `feat/razorpay-15-order-payment-status` | **An order's payment status is read live from how it was paid** (D-105). It was a copy written once as "AUTHORIZED" for every order: wallet orders, credit orders and card orders already charged, refunded or released all said "Authorized" |
-| `feat/quickscan-1-wallet-payments` | **QuickScan, part one: pay any UPI merchant from the wallet** (D-106), sandbox only — behind `costonomy.mp.quickscan.enabled` (default off), which `ProductionProviderGuard` now refuses under a production profile until legal has signed off. `V40` adds `quickscan_payment` and `QUICKSCAN_PAY`. A `PayoutProvider` port (mock only, RazorpayX later) sends the payout after the wallet debit, in the `RefundService.process` shape — `PAYOUT_PENDING` → `PAID`/`FAILED` (money returned) or `NEEDS_REVIEW` after 5 attempts (money left out — the payout may have reached the shop) |
-| `feat/wallet-1-razorpay-top-up` | **Add money to the wallet through Razorpay** (D-107). `POST /outlets/{id}/wallet/top-ups` opens an auto-captured Razorpay order; `.../{id}/confirm` verifies the checkout signature, asks Razorpay what the payment is and credits the wallet once; `GET .../{id}` gives the status. Limits (max balance, monthly, min/max single — a stand-in for KYC) are checked at creation and again at credit time; a captured payment that would break one is refunded to its source, never dropped. `WalletTopUpJobs` credits a captured payment whose confirm never arrived. `V41` adds `wallet_top_up`; `GET /outlets/{id}/wallet` gains `limits` |
+| `feat/quickscan-1-wallet-payments` | **QuickScan, part one: pay any UPI merchant from the wallet** (D-106), sandbox only — behind `costonomy.mp.quickscan.enabled` (default off), which `ProductionProviderGuard` now refuses under a production profile until legal has signed off. `V44` adds `quickscan_payment` and `QUICKSCAN_PAY`. A `PayoutProvider` port (mock only, RazorpayX later) sends the payout after the wallet debit, in the `RefundService.process` shape — `PAYOUT_PENDING` → `PAID`/`FAILED` (money returned) or `NEEDS_REVIEW` after 5 attempts (money left out — the payout may have reached the shop) |
+| `feat/wallet-1-razorpay-top-up` | **Add money to the wallet through Razorpay** (D-107). `POST /outlets/{id}/wallet/top-ups` opens an auto-captured Razorpay order; `.../{id}/confirm` verifies the checkout signature, asks Razorpay what the payment is and credits the wallet once; `GET .../{id}` gives the status. Limits (max balance, monthly, min/max single — a stand-in for KYC) are checked at creation and again at credit time; a captured payment that would break one is refunded to its source, never dropped. `WalletTopUpJobs` credits a captured payment whose confirm never arrived. `V45` adds `wallet_top_up`; `GET /outlets/{id}/wallet` gains `limits` |
 
 What you will notice:
 
@@ -328,9 +328,11 @@ These are live questions, not omissions. Do not close one silently.
 1. **Chat has no realtime channel.** Events are on the outbox ready for one, but
    both chat screens poll — 8s in a thread, 20s in the inbox. Wiring it to the
    existing realtime projection (D-031) is the obvious next step.
-2. **Supplier and popular lists do not filter by serviceability.** Product
-   comparison does. So a restaurant can be shown a supplier who cannot deliver to
-   them. Whether that is a bug or deliberate reach is undecided.
+2. **Resolved (D-138): Supplier and popular lists filter by serviceability.** Serviceability
+   is governed by one shared ServiceabilityPolicy (declared pincode list > store radius > default
+   radius fallback; missing coordinates serviceable). Popular suppliers filter before applying the limit
+   (clamped to 100). Credit request supplier search stays unfiltered via `reach=all`. Unscoped outletId
+   returns 404.
 3. **`V36` deliberately has no `NOT NULL`.** Only one of seven existing stores had
    anything to backfill from. D-089 keeps a backfill separate from the constraint
    that depends on it; the constraint still needs to be added once the data is
@@ -341,14 +343,13 @@ These are live questions, not omissions. Do not close one silently.
 5. **OPEN-005 in `DECISIONS.md`** — the delivery fee is never charged to the
    restaurant, because it is only known after the payment is authorised. Read it
    before touching the payment flow.
-6. **Order creation still calls Razorpay inside its transaction.**
-   `IntentOrderCreator.create` keeps the order and its payment atomic, so the
-   provider call holds a connection there — the one place D-099 left alone.
-   Changing it changes the order flow.
-7. **A truly simultaneous duplicate order gets a 500.** Exactly one order is
-   created, as `IntentFlowIT$Concurrency` requires, but the losing call surfaces
-   the lock error rather than a clean conflict. The app no longer sends one
-   (mobile, D-099).
+6. **Resolved (D-136): Razorpay inside the order transaction.** Order creation records the payment;
+   the checkout opens after commit. A gateway failure leaves an unpaid draft (422, "Nothing was
+   charged"), a retry opens it, and the sweep ends a payment never set up after 30 minutes.
+7. **Resolved (D-135): a simultaneous duplicate order.** `IntentOrderCreator.create` locks the
+   intent first, so the second creation waits for the first and gets its order back; a deadlock that
+   still happens answers 409, not 500. `IntentFlowIT$Concurrency` races five times and asserts both
+   callers name the same order.
 8. **Not yet tested:** UPI (not offered on the test account's checkout), native
    checkout on a phone (needs a dev build), and a webhook actually delivered by
    Razorpay — the suite sends correctly signed ones instead.
@@ -356,9 +357,9 @@ These are live questions, not omissions. Do not close one silently.
    reference typed in; nothing moves money to a supplier. A design with three
    options (Route, Payouts, a wallet with virtual accounts) is with the team; it
    has a legal question to answer first.
-10. **The supplier directory lists the first 100 suppliers by name, then sorts by
-    distance** — so the nearest can be missing where there are more than 100
-    (D-101). A discovery fix, not a payments one.
+10. **Resolved (D-139): The supplier directory sorts nearest first with offset pagination.**
+    The SQL 100-name cap is removed; results are ordered nearest first (null distance last, tie-breaker
+    store ID) and paginated with offset and limit (default 50, max 100), returning total and nextOffset.
 11. **Refund money held in a wallet needs a legal answer** (D-104) — RBI's rules on
     prepaid payment instruments. Do not go live with wallet refunds until someone
     qualified has said it is allowed.

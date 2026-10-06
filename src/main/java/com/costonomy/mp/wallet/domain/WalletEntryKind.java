@@ -43,5 +43,20 @@ public enum WalletEntryKind {
      * A QuickScan payment's money given back — the payout was refused or
      * reversed. No card behind it, like an order's return.
      */
-    QUICKSCAN_RETURN
+    QUICKSCAN_RETURN,
+    /**
+     * A catch-weight or doorstep-rejection adjustment against an order, in either direction.
+     * Not unique per order (a re-weigh and a rejection can both land), so it stays out of the
+     * order-movement key that makes an order's payment and return one row each. Like a dispute
+     * refund on a wallet order it has no card behind it: spendable, not withdrawable.
+     */
+    ORDER_ADJUSTMENT,
+    /**
+     * Payout from wallet balance directly to restaurant's verified bank account via IMPS/NEFT.
+     */
+    BANK_PAYOUT,
+    /**
+     * Reversal of a failed bank payout back into the wallet.
+     */
+    BANK_PAYOUT_REVERSAL
 }

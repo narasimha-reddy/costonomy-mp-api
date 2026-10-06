@@ -185,6 +185,12 @@ public enum ErrorCode {
     IMPORT_VALIDATION_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
             "Some rows in that file couldn't be imported."),
 
+    // ── Tax invoices (D-133, 422) ────────────────────────────────────────
+    TAX_INVOICE_DATA_MISSING(HttpStatus.UNPROCESSABLE_ENTITY,
+            "This tax invoice can't be issued until some details are filled in."),
+    TAX_INVOICE_NOT_ALLOWED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "A tax invoice can't be issued for this order yet."),
+
     // ── Wallet bills (D-113) ─────────────────────────────────────────────
     INVOICE_EXISTS(HttpStatus.CONFLICT,
             "This payment already has a bill. Remove it first to add another."),

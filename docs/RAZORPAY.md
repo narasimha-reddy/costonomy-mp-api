@@ -396,7 +396,7 @@ until `POST /api/v1/admin/refunds/{id}/resolve-late-success` (`REFUND_OPERATE`, 
 wallet first if it should be). It claws nothing back (the balance may be spent). A refund in review after an
 ambiguous send is read again hourly for a week (`reconcileAmbiguousRefunds`) and adopted if Razorpay made it.
 
-**One provider refund completes one of ours.** `refund.provider_refund_id` is uniquely indexed (V44) and adoption,
+**One provider refund completes one of ours.** `refund.provider_refund_id` is uniquely indexed (V48) and adoption,
 mark-completed and the legacy amount-and-time match all check, inside the locked transaction, that no other refund of ours
 holds it; if one does, the refund goes to review (`PROVIDER_REFUND_TAKEN`) and is not completed.
 
@@ -482,7 +482,7 @@ late-success watch, and only if the payment is readable by the keys then in use.
 | `POST .../payments/{id}/returned-outside` | limitation 3 above |
 | `POST .../payments/{id}/refund-block` / `refund-unblock` | `{reason}`: correct a block, or stop drawing from a payment |
 
-**Deploying V44.** `V44__withdrawal_failure_reversal.sql` has never been applied outside the tests, so it is edited in place
+**Deploying V48.** `V48__withdrawal_failure_reversal.sql` has never been applied outside the tests, so it is edited in place
 (there is no V45). Its last statement before the permissions is a **unique index on `refund.provider_refund_id`**, which
 fails if any value is held twice, and MySQL does not roll DDL back: the columns added above it would stay and the migration
 could not be re-run. Before deploying, on every database:

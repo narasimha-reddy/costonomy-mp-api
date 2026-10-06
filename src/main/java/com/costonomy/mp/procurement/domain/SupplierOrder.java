@@ -10,6 +10,7 @@ import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 
 /** One supplier's share of a procurement. Doc 02 §4, doc 03 §5. */
 @Entity
@@ -95,6 +96,30 @@ public class SupplierOrder extends BaseEntity {
     @Column(name = "accepted_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal acceptedAmount = BigDecimal.ZERO;
 
+    /**
+     * Adjustment for catch-weight variance at dispatch. Positive = refund to buyer, negative = surcharge.
+     */
+    @Column(name = "weight_adjustment_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal weightAdjustmentAmount = BigDecimal.ZERO;
+
+    /**
+     * Total refund credited back to buyer for goods rejected at the doorstep.
+     */
+    @Column(name = "doorstep_refund_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal doorstepRefundAmount = BigDecimal.ZERO;
+
+    /**
+     * Final reconciled payable amount after weight adjustments and doorstep rejections.
+     */
+    @Column(name = "final_payable_amount", precision = 19, scale = 4)
+    private BigDecimal finalPayableAmount;
+
+    /**
+     * Whether this order contains temperature-sensitive cold-chain items.
+     */
+    @Column(name = "has_cold_chain_items", nullable = false)
+    private boolean hasColdChainItems = false;
+
     @Column(name = "payment_method", nullable = false, length = 32)
     private String paymentMethod = "PREPAID";
 
@@ -114,6 +139,18 @@ public class SupplierOrder extends BaseEntity {
     @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "delivery_mode", nullable = false, length = 32)
     private DeliveryMode deliveryMode = DeliveryMode.PICKUP;
+
+    @Column(name = "delivery_slot_id")
+    private Long deliverySlotId;
+
+    @Column(name = "scheduled_delivery_date")
+    private LocalDate scheduledDeliveryDate;
+
+    @Column(name = "is_subscription_order", nullable = false)
+    private boolean isSubscriptionOrder = false;
+
+    @Column(name = "subscription_id")
+    private Long subscriptionId;
 
     /**
      * Who cancelled, when this order was. Null otherwise.

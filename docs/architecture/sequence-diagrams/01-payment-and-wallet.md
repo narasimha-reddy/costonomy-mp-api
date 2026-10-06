@@ -227,3 +227,44 @@ sequenceDiagram
         end
     end
 ```
+
+---
+
+## 8. `POST /api/v1/outlets/{outletId}/wallet/bank-payout`
+**Description**: Initiates payout from general wallet balance (including catch-weight refunds, doorstep rejections, and direct top-ups) directly to the restaurant's verified bank account via IMPS/NEFT.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Restaurant Finance / Owner
+    participant WC as WalletController
+    participant AC as AccessControlService
+    participant IS as IdempotencyService
+    participant BPS as WalletBankPayoutService
+    participant WS as WalletService
+    participant OB as OutboxService
+    participant DB as MySQL (wallet, wallet_transaction, outbox_event)
+
+    Client->>WC: POST /api/v1/outlets/{outletId}/wallet/bank-payout (amount, account, ifsc, beneficiaryName)
+    WC->>AC: requireScoped(actorId, WALLET_WITHDRAW, OUTLET, outletId)
+    WC->>IS: execute(actorId, "wallet.bank-payout", idempotencyKey, payload)
+    IS->>BPS: initiatePayout(actorId, outletId, request, key)
+    
+    BPS->>WS: lock(outletId)
+    WS->>DB: SELECT * FROM wallet WHERE outlet_id = outletId FOR UPDATE
+    
+    alt Balance < Requested Amount
+        WS-->>BPS: Insufficient balance
+        BPS-->>WC: 400 Bad Request (Insufficient funds)
+        WC-->>Client: Error response
+    else Balance Sufficient
+        BPS->>WS: debitBankPayout(outletId, payoutRef, amount, maskedAccount)
+        WS->>DB: UPDATE wallet SET balance = balance - amount, version = version + 1 WHERE id = walletId
+        WS->>DB: INSERT INTO wallet_transaction (direction=DEBIT, kind=BANK_PAYOUT, amount, ref=payoutRef)
+        BPS->>OB: publish("WalletBankPayoutInitiated", payload)
+        OB->>DB: INSERT INTO outbox_event (topic="WalletBankPayoutInitiated", payload)
+        BPS-->>IS: BankPayoutResponse(INITIATED, balanceAfter, maskedAccount)
+        IS-->>WC: BankPayoutResponse
+        WC-->>Client: 200 OK (Transfer Initiated)
+    end
+```

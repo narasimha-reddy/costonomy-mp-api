@@ -22,6 +22,7 @@ public class IntentOrderService {
 
     private final IntentOrderCreator creator;
     private final IdempotencyService idempotency;
+    private final com.costonomy.mp.procurement.service.OrderFunding funding;
 
     /** What ordering this right now would cost. Changes nothing. */
     public IntentDtos.OrderPreviewResponse preview(
@@ -57,6 +58,13 @@ public class IntentOrderService {
         Map<String, Object> fingerprint = new HashMap<>();
         fingerprint.put("intentId", intentId);
         fingerprint.put("paymentMethod", request == null ? null : request.paymentMethod());
+        // How it travels and when are part of what was asked for: the same key with a different delivery is a different
+        // order, and must be refused as a reused key rather than answered with the first one (D-135).
+        fingerprint.put("deliveryMode", request == null ? null : request.deliveryMode());
+        fingerprint.put("deliveryQuoteReference", request == null ? null : request.deliveryQuoteReference());
+        fingerprint.put("deliverySlotId", request == null ? null : request.deliverySlotId());
+        fingerprint.put("scheduledDeliveryDate", request == null || request.scheduledDeliveryDate() == null
+                ? null : request.scheduledDeliveryDate().toString());
         if (request != null && request.lines() != null) {
             fingerprint.put("lines", request.lines().stream()
                     .map(line -> "%d:%s".formatted(
@@ -65,9 +73,36 @@ public class IntentOrderService {
                     .toList());
         }
 
-        return idempotency.execute(actorId, "intent.createOrder", idempotencyKey,
+        var response = idempotency.execute(actorId, "intent.createOrder", idempotencyKey,
                 fingerprint, IntentDtos.CreateOrderResponse.class,
                 () -> creator.create(actorId, intentId, request));
+        return withCheckout(response);
+    }
+
+    /**
+     * The checkout the client has to complete, opened now that the order has committed (D-136).
+     *
+     * <p>Opening it used to happen inside the order's transaction, holding a connection across a call to the payment
+     * provider and rolling the whole order back if the provider failed. It happens here instead, for a fresh creation
+     * and for a replay alike, so the stored idempotent response never has to carry a checkout and a replay always gets
+     * a live one. If the provider cannot be reached, the order stays an unpaid DRAFT the supplier cannot see, the caller
+     * is told nothing was charged (422), and trying again (a new key, or this one) lands here and opens it.
+     */
+    private IntentDtos.CreateOrderResponse withCheckout(IntentDtos.CreateOrderResponse response) {
+        if (!"PREPAID".equals(response.paymentMethod())
+                || (response.payment() != null && response.payment().providerOrderId() != null)) {
+            return response;
+        }
+        var opened = funding.prepareCheckout(response.supplierOrderId());
+        if (opened.isEmpty()) {
+            return response;
+        }
+        var checkout = opened.get();
+        return new IntentDtos.CreateOrderResponse(
+                response.intentId(), response.supplierOrderId(), response.orderNumber(), response.totalAmount(),
+                response.paymentMethod(), response.paymentStatus(),
+                new IntentDtos.PaymentIntent(checkout.supplierOrderId(), checkout.paymentId(), checkout.provider(),
+                        checkout.providerOrderId(), checkout.amount(), checkout.currency(), checkout.publicKey()));
     }
 
     /**

@@ -36,6 +36,26 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
     @Query("select p from Payment p where p.id = :id")
     Optional<Payment> lockById(@Param("id") Long id);
 
+    /**
+     * Record the provider's order on a payment that has none, only if it is still CREATED and still has none (D-136).
+     * A conditional update, so a caller racing another to open the same checkout cannot overwrite the winner, and one
+     * that finds the payment ended meanwhile writes nothing. Clears the persistence context: an entity loaded before it
+     * would otherwise be handed back stale by the next read.
+     *
+     * @return rows written: 1 if this call recorded it, 0 if somebody else had
+     */
+    @org.springframework.data.jpa.repository.Modifying(clearAutomatically = true, flushAutomatically = true)
+    @org.springframework.transaction.annotation.Transactional
+    @Query("""
+            update Payment p
+               set p.providerOrderId = :providerOrderId, p.holdMinutes = :holdMinutes, p.version = p.version + 1
+             where p.id = :id
+               and p.status = com.costonomy.mp.payment.domain.PaymentStatus.CREATED
+               and p.providerOrderId is null
+            """)
+    int openCheckoutIfUnopened(@Param("id") Long id, @Param("providerOrderId") String providerOrderId,
+                               @Param("holdMinutes") Integer holdMinutes);
+
     /** The order's payment, locked. For writers that start from the order. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from Payment p where p.supplierOrderId = :supplierOrderId")

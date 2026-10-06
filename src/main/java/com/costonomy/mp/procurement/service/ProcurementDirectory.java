@@ -51,7 +51,9 @@ public class ProcurementDirectory {
              * <p>The request round trip is how we find out whether the goods are
              * there; a store holding stock has already answered that.
              */
-            boolean directOrdersEnabled) {
+            boolean directOrdersEnabled,
+            BigDecimal minOrderValue,
+            BigDecimal freeDeliveryThreshold) {
     }
 
     public Map<Long, StoreInfo> stores(List<Long> storeIds) {
@@ -64,9 +66,11 @@ public class ProcurementDirectory {
         jdbc.query("""
                 select s.id, s.name, o.display_name, s.status, o.lifecycle_status,
                        s.response_sla_seconds, s.latitude, s.longitude,
-                       s.operating_hours_json, s.direct_orders_enabled
+                       s.operating_hours_json, s.direct_orders_enabled,
+                       d.min_order_value, d.free_delivery_threshold
                   from supplier_store s
                   join supplier_organization o on o.id = s.supplier_organization_id
+                  left join supplier_delivery_policy d on d.supplier_store_id = s.id
                  where s.id in (%s)
                 """.formatted(placeholders),
                 // A statement block, not an expression: Map.put returns a value,
@@ -81,7 +85,9 @@ public class ProcurementDirectory {
                             "ACTIVE".equals(rs.getString(4)) && "ACTIVE".equals(rs.getString(5))
                                     && open,
                             rs.getInt(6), rs.getBigDecimal(7), rs.getBigDecimal(8),
-                            open, hours.opensAt().toString(), rs.getBoolean(10)));
+                            open, hours.opensAt().toString(), rs.getBoolean(10),
+                            rs.getBigDecimal(11) != null ? rs.getBigDecimal(11) : BigDecimal.ZERO,
+                            rs.getBigDecimal(12)));
                 },
                 storeIds.toArray());
         return result;

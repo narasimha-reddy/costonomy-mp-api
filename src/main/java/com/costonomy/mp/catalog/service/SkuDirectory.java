@@ -54,7 +54,11 @@ public class SkuDirectory {
             BigDecimal measureValue,
             String measureUnit,
             String imageUrl,
-            String status) {
+            String status,
+            /** Sold by weight: the price shown is an estimate until the scale weight fixes it (D-128). */
+            boolean isCatchWeight,
+            /** Needs temperature-controlled carriage (D-134). */
+            boolean requiresColdChain) {
     }
 
     @Transactional(readOnly = true)
@@ -72,7 +76,7 @@ public class SkuDirectory {
         jdbc.query("""
                 select s.id, s.name as sku_name, p.name as product_name, b.name as brand_name,
                        s.pack_size, s.pack_unit, s.measure_value, s.measure_unit,
-                       s.status,
+                       s.status, s.is_catch_weight, s.requires_cold_chain,
                        coalesce(s.image_url, p.image_url) as image_url
                   from supplier_sku s
                   join canonical_product p on p.id = s.canonical_product_id
@@ -93,7 +97,9 @@ public class SkuDirectory {
                             rs.getBigDecimal("measure_value"),
                             rs.getString("measure_unit"),
                             rs.getString("image_url"),
-                            rs.getString("status")));
+                            rs.getString("status"),
+                            rs.getBoolean("is_catch_weight"),
+                            rs.getBoolean("requires_cold_chain")));
                 },
                 distinct.toArray());
         return result;

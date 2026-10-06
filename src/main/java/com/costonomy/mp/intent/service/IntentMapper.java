@@ -48,6 +48,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class IntentMapper {
 
+    private final DeliveryChargeWarning chargeWarning;
     private final IntentItemRepository items;
     private final IntentAcceptanceRepository acceptances;
     private final IntentAcceptanceItemRepository acceptanceItems;
@@ -259,6 +260,8 @@ public class IntentMapper {
                     intent.getSource(),
                     intent.getClonedFromId(),
                     intent.getRequestedDeliveryTime(),
+                    intent.getPreferredDeliveryDate(),
+                    intent.getDeliveryPreference(),
                     intent.getNotes(),
                     intent.getSentAt(),
                     intent.getResponseDeadline(),
@@ -283,7 +286,9 @@ public class IntentMapper {
                     anyPriceChanged,
                     toAcceptance(acceptance),
                     link == null ? null : link.getSupplierOrderId(),
-                    link == null ? null : orderNumbers.get(link.getSupplierOrderId())));
+                    link == null ? null : orderNumbers.get(link.getSupplierOrderId()),
+                    store == null ? BigDecimal.ZERO : store.minOrderValue(),
+                    store == null ? null : store.freeDeliveryThreshold()));
         }
         return responses;
     }
@@ -308,6 +313,8 @@ public class IntentMapper {
                 acceptance.getDeliveryFee(),
                 acceptance.getEtaMinutes(),
                 acceptance.getDeliveryModes(),
+                acceptance.getDeliveryOffer(),
+                chargeWarning.isHigh(acceptance.getDeliveryFee(), acceptance.getOfferedValue()),
                 acceptance.getNotes(),
                 acceptance.getSubmittedAt(),
                 acceptance.getExpiresAt());

@@ -29,4 +29,13 @@ public interface CreditInvoiceRepository extends JpaRepository<CreditInvoice, Lo
             """)
     List<CreditInvoice> findNewlyOverdue(@Param("openStatuses") List<CreditInvoiceStatus> openStatuses,
                                          @Param("today") LocalDate today);
+
+    /** The order's invoice, locked, so a repayment and a reduction queue instead of failing on the version check. */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.Query("select i from CreditInvoice i where i.supplierOrderId = :orderId")
+    Optional<CreditInvoice> lockBySupplierOrderId(@org.springframework.data.repository.query.Param("orderId") Long supplierOrderId);
+
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.Query("select i from CreditInvoice i where i.id = :id")
+    Optional<CreditInvoice> lockById(@org.springframework.data.repository.query.Param("id") Long id);
 }

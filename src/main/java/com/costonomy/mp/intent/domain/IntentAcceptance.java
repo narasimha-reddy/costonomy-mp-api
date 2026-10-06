@@ -83,6 +83,13 @@ public class IntentAcceptance extends BaseEntity {
     @Column(name = "delivery_modes", length = 120)
     private String deliveryModes;
 
+    /**
+     * What the supplier chose to offer for delivery on this answer: SELF_FREE, SELF or COSTONOMY. Null on an older
+     * answer or a direct order, which offer what the store's policy enables (D-141).
+     */
+    @Column(name = "delivery_offer", length = 16)
+    private String deliveryOffer;
+
     @Column(name = "notes", length = 1000)
     private String notes;
 

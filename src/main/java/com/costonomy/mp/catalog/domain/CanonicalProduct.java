@@ -45,6 +45,15 @@ public class CanonicalProduct extends BaseEntity {
     @Column(name = "base_pack_size", precision = 19, scale = 4)
     private BigDecimal basePackSize;
 
+    @Column(name = "hsn_code", length = 16)
+    private String hsnCode;
+
+    /**
+     * Whether this product requires temperature-controlled cold chain handling (dairy, poultry, meat, seafood).
+     */
+    @Column(name = "requires_cold_chain", nullable = false)
+    private boolean requiresColdChain = false;
+
     /** Platform-owned imagery (doc 01 §7), so comparison is not a parade of mismatched photos. */
     @Column(name = "image_url", length = 1000)
     private String imageUrl;

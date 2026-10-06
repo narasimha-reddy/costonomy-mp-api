@@ -22,11 +22,16 @@ public final class WalletEntryCopy {
             case TOP_UP -> "Money added";
             case ORDER_PAYMENT -> "Paid for an order";
             case ORDER_REFUND -> "Order cancelled · money back";
-            case REFUND, DISPUTE_REFUND -> "Refund";
+            case REFUND -> "Refund";
+            case DISPUTE_REFUND -> "Refund from a dispute";
             case WITHDRAWAL -> "Sent back to your card or bank";
             case QUICKSCAN_PAYMENT -> "Paid a shop (QuickScan)";
             case QUICKSCAN_RETURN -> "QuickScan payment returned";
             case WITHDRAWAL_REVERSAL -> "Withdrawal returned to your wallet";
+            case ORDER_ADJUSTMENT -> direction == WalletDirection.CREDIT
+                    ? "Order adjusted · money back" : "Order adjusted · extra charge";
+            case BANK_PAYOUT -> "Transferred to verified bank account";
+            case BANK_PAYOUT_REVERSAL -> "Bank transfer returned to wallet";
         };
     }
 }

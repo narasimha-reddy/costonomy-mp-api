@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import com.costonomy.mp.procurement.domain.Pricing;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -141,13 +142,21 @@ public class CatalogQueryService {
                 .map(offer -> {
                     var sku = skuById.get(offer.getSupplierSkuId());
                     var store = storeInfo.get(offer.getSupplierStoreId());
+                    BigDecimal mrp = offer.getMrp() != null ? offer.getMrp() : (sku != null ? sku.getMrp() : null);
+                    BigDecimal discountAmount = Pricing.discountAmount(mrp, offer.getSellingPrice());
+                    Integer discountPercent = Pricing.discountPercent(mrp, offer.getSellingPrice());
                     return new CatalogDtos.OfferResponse(
                             offer.getId(), sku.getId(), offer.getSupplierStoreId(),
                             store.storeName(), store.supplierName(),
                             sku.getName(),
                             sku.getBrandId() == null ? null : brandNames.get(sku.getBrandId()),
+                            sku.getGrade(),
                             sku.getPackSize(), sku.getPackUnit(),
-                            offer.getSellingPrice(), offer.getGstRate(),
+                            mrp,
+                            offer.getSellingPrice(),
+                            discountAmount,
+                            discountPercent,
+                            offer.getGstRate(),
                             offer.getAvailability(), offer.getAvailableQuantity(),
                             store.responseSlaSeconds(), store.preparationMinutes());
                 })

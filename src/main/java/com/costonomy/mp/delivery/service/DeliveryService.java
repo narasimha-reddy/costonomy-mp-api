@@ -115,7 +115,8 @@ public class DeliveryService {
         delivery.setDropContactPhone(drop.contactPhone());
         delivery.setWeightKg(order.estimatedWeightKg());
         delivery.setVolumeCbm(order.estimatedVolumeCbm());
-        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg()));
+        delivery.setRequiresColdChain(order.requiresColdChain());
+        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg(), order.requiresColdChain()));
         delivery.setRequestedAt(Instant.now());
         deliveries.save(delivery);
 
@@ -127,8 +128,8 @@ public class DeliveryService {
             // theirs — usually zero, which doc 01 §20 says the restaurant then
             // pays. The delivery goes straight to the state where someone is
             // expected to collect it.
-            delivery.setFee(policy.ownDeliveryFee() == null
-                    ? BigDecimal.ZERO : policy.ownDeliveryFee());
+            // What the order was charged, which is zero when the supplier offered free delivery (D-141).
+            delivery.setFee(order.deliveryFee() == null ? BigDecimal.ZERO : order.deliveryFee());
             delivery.setStatus(DeliveryStatus.DRIVER_ASSIGNED);
             delivery.setAssignedAt(Instant.now());
             delivery.setDriverName(pickup.contactName());
@@ -168,6 +169,11 @@ public class DeliveryService {
             return null;
         }
 
+        if ("PICKUP".equalsIgnoreCase(order.deliveryMode())) {
+            log.info("Auto-dispatch skipped: order {} is customer pickup", supplierOrderId);
+            return null;
+        }
+
         var pickup = directory.pickupFor(order.supplierStoreId());
         var drop = directory.dropFor(order.outletId());
         if (pickup == null || drop == null) {
@@ -195,7 +201,8 @@ public class DeliveryService {
         delivery.setDropContactPhone(drop.contactPhone());
         delivery.setWeightKg(order.estimatedWeightKg());
         delivery.setVolumeCbm(order.estimatedVolumeCbm());
-        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg()));
+        delivery.setRequiresColdChain(order.requiresColdChain());
+        delivery.setVehicleType(VehicleType.fromWeight(order.estimatedWeightKg(), order.requiresColdChain()));
         delivery.setRequestedAt(Instant.now());
         deliveries.save(delivery);
 
@@ -203,7 +210,7 @@ public class DeliveryService {
                 "Automated dispatch initiated");
 
         if (mode == DeliveryMode.SUPPLIER_OWN) {
-            delivery.setFee(policy.ownDeliveryFee() == null ? BigDecimal.ZERO : policy.ownDeliveryFee());
+            delivery.setFee(order.deliveryFee() == null ? BigDecimal.ZERO : order.deliveryFee());
             delivery.setStatus(DeliveryStatus.DRIVER_ASSIGNED);
             delivery.setAssignedAt(Instant.now());
             delivery.setDriverName(pickup.contactName());
@@ -237,8 +244,14 @@ public class DeliveryService {
 
         if (!outcome.anyServiceable()) {
             delivery.setStatus(DeliveryStatus.QUOTE_FAILED);
-            delivery.setFailureCode("NO_SERVICEABLE_PROVIDER");
-            delivery.setFailureReason("No delivery partner covers this route right now.");
+            if (delivery.isRequiresColdChain()) {
+                delivery.setFailureCode("NO_COLD_CHAIN_CARRIER");
+                delivery.setFailureReason("No delivery partner with verified temperature-controlled transport "
+                        + "covers this route.");
+            } else {
+                delivery.setFailureCode("NO_SERVICEABLE_PROVIDER");
+                delivery.setFailureReason("No delivery partner covers this route right now.");
+            }
             deliveries.save(delivery);
             timeline.record(delivery, DeliveryStatus.QUOTE_FAILED.eventName(),
                     DeliveryStatus.QUOTE_FAILED,
@@ -264,12 +277,24 @@ public class DeliveryService {
     private DeliveryMode resolveMode(String requested, String onOrder,
                                      DeliveryDirectory.DeliveryPolicy policy) {
 
+        // What the buyer was told and charged for, read first: it refuses a collected order, and a request cannot
+        // override it. Before this, naming a mode skipped the order's own, so a courier could be booked for a pickup or
+        // for an order the supplier said they would deliver themselves (D-145).
+        DeliveryMode agreed = fromOrder(onOrder);
         DeliveryMode asked = parseMode(requested);
+        boolean agreedOnOrder = false;
         if (asked == null) {
-            asked = fromOrder(onOrder);
+            asked = agreed;
+            agreedOnOrder = asked != null;
+        } else if (agreed != null && asked != agreed) {
+            throw new BusinessException(ErrorCode.DELIVERY_UNAVAILABLE, agreed == DeliveryMode.SUPPLIER_OWN
+                    ? "The supplier is delivering this order themselves, so no delivery partner is needed."
+                    : "This order was sold with Costonomy delivery and can't be switched to the supplier's own.");
         }
 
-        if (asked == DeliveryMode.SUPPLIER_OWN && !policy.ownDeliveryEnabled()) {
+        // A supplier who offered to deliver this order themselves (D-141) agreed to it when they answered, whatever the
+        // store's standing switch says now; only a mode picked at dispatch is checked against it.
+        if (asked == DeliveryMode.SUPPLIER_OWN && !agreedOnOrder && !policy.ownDeliveryEnabled()) {
             throw new BusinessException(ErrorCode.DELIVERY_UNAVAILABLE,
                     "This supplier doesn't deliver orders themselves.");
         }
@@ -366,7 +391,7 @@ public class DeliveryService {
 
         // Excluding the couriers already tried is the whole point: handing it back
         // to the one that just cancelled is not a reassignment.
-        var usable = quoting.usableQuotes(deliveryId, tried);
+        var usable = quoting.usableQuotes(deliveryId, tried, delivery.isRequiresColdChain());
         if (usable.isEmpty()) {
             quoteAndBook(delivery, order, null, tried, "REASSIGNMENT");
         } else {

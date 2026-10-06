@@ -39,11 +39,40 @@ public class SupplierSku extends BaseEntity {
     @Column(name = "brand_id")
     private Long brandId;
 
+    /**
+     * Quality / variant grade of the product or brand (e.g. "Grade A", "Grade B",
+     * "Grade C", "Premium", "Standard", or loose commodity grade like "Elaichi Grade A").
+     */
+    @Column(name = "grade", length = 100)
+    private String grade;
+
+    /**
+     * Whether this SKU is variable / catch weight (e.g. whole fish, poultry, cuts of meat,
+     * paneer blocks, fresh produce) requiring exact weighing at dispatch.
+     */
+    @Column(name = "is_catch_weight", nullable = false)
+    private boolean isCatchWeight = false;
+
+    /**
+     * Whether this SKU requires temperature-controlled cold chain handling (refrigerated/insulated carrier).
+     */
+    @Column(name = "requires_cold_chain", nullable = false)
+    private boolean requiresColdChain = false;
+
     @Column(name = "pack_size", nullable = false, precision = 19, scale = 4)
     private BigDecimal packSize;
 
+    @Column(name = "hsn_code", length = 16)
+    private String hsnCode;
+
     @Column(name = "pack_unit", nullable = false, length = 32)
     private String packUnit;
+
+    /**
+     * Printed MRP or benchmark market retail price. Optional for loose/unbranded commodities.
+     */
+    @Column(name = "mrp", precision = 19, scale = 4)
+    private BigDecimal mrp;
 
     /**
      * How much is inside one pack, when the pack unit does not say.

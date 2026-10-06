@@ -226,6 +226,21 @@ public final class NotificationRules {
                 "Payment failed",
                 "Payment for your order didn't go through. {reason}", "SUPPLIER_ORDER"));
 
+        // A subscription's delivery could not be arranged. Critical: a missed morning delivery is the cost, and
+        // the restaurant can still fix a funding failure the same evening (generation retries hourly until
+        // 23:00 India time). Told once per date, by the producer (D-132).
+        add(rules, new NotificationRule("SubscriptionFundingFailed", OUTLET, PAYMENTS, true,
+                List.of(IN_APP, PUSH),
+                "Subscription delivery not arranged",
+                "Your subscription delivery for {scheduledDate} couldn't be paid for. {reason}",
+                "SUBSCRIPTION"));
+
+        add(rules, new NotificationRule("SubscriptionOrderSkipped", OUTLET, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Subscription delivery skipped",
+                "Your subscription delivery for {scheduledDate} was skipped. {reason}",
+                "SUBSCRIPTION"));
+
         add(rules, new NotificationRule("RefundCompleted", OUTLET, PAYMENTS, false,
                 List.of(IN_APP, PUSH),
                 "Refund sent",

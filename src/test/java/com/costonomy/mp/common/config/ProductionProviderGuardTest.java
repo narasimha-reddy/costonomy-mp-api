@@ -145,6 +145,7 @@ class ProductionProviderGuardTest {
         env.setProperty("costonomy.mp.invoices.reader.user-id", "6");
         env.setProperty("costonomy.mp.invoices.reader.outlet", "5");
         env.setProperty("costonomy.mp.invoices.cost-outlet-map", "1:5");
+        env.setProperty("costonomy.mp.jwt.secret", "placeholder-secret-of-at-least-32-bytes-long");
     }
 
     private static MockEnvironment production() {
@@ -279,5 +280,43 @@ class ProductionProviderGuardTest {
         local.setProperty("costonomy.mp.invoices.cost-outlet-fallback", "true");
         local.setProperty("costonomy.mp.invoices.reader.token", "placeholder-static-token-4471");
         assertThatCode(() -> ProductionProviderGuard.check(local)).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("a production profile with no JWT secret, a short one, or the one that was committed is refused")
+    void productionJwtSecretMustBeReal() {
+        for (String bad : new String[] {"", "short",
+                "SWt/kWYyraXKIm3nlqnJSL9vSqmPLkCT7GdZyKa4jDU="}) {
+            var env = new MockEnvironment();
+            env.setActiveProfiles("prod");
+            env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+            env.setProperty("costonomy.mp.providers.otp", "MSG91");
+            env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+            realInvoices(env);
+            env.setProperty("costonomy.mp.jwt.secret", bad);
+
+            assertThatThrownBy(() -> ProductionProviderGuard.check(env))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("jwt.secret");
+        }
+    }
+
+    @Test
+    @DisplayName("production with Pidge as delivery provider but no webhook secret is refused")
+    void productionPidgeNeedsWebhookSecret() {
+        var env = new MockEnvironment();
+        env.setActiveProfiles("prod");
+        env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+        env.setProperty("costonomy.mp.providers.otp", "MSG91");
+        env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        realInvoices(env);
+        env.setProperty("costonomy.mp.providers.delivery", "PIDGE");
+
+        assertThatThrownBy(() -> ProductionProviderGuard.check(env))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("pidge.webhook-secret");
+
+        env.setProperty("costonomy.mp.pidge.webhook-secret", "placeholder-not-a-secret");
+        assertThatCode(() -> ProductionProviderGuard.check(env)).doesNotThrowAnyException();
     }
 }

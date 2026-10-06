@@ -49,7 +49,7 @@ public class WalletTopUp extends BaseEntity {
 
     /**
      * How the payment was made, as the provider reported it when the top-up was credited
-     * or returned (D-108): {@code card}, {@code upi}, {@code netbanking}... Null before V42.
+     * or returned (D-108): {@code card}, {@code upi}, {@code netbanking}... Null before V46.
      */
     @Column(name = "payment_method", length = 32)
     private String paymentMethod;

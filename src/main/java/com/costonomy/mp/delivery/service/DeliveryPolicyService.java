@@ -47,6 +47,8 @@ public class DeliveryPolicyService {
                 policy.costonomyDeliveryEnabled(),
                 policy.ownDeliveryFee(),
                 policy.ownDeliveryMinOrderValue(),
+                policy.minOrderValue(),
+                policy.freeDeliveryThreshold(),
                 policy.maxDeliveryRadiusKm());
     }
 
@@ -74,20 +76,25 @@ public class DeliveryPolicyService {
         jdbc.update("""
                 insert into supplier_delivery_policy
                     (supplier_store_id, own_delivery_enabled, costonomy_delivery_enabled,
-                     own_delivery_fee, own_delivery_min_order_value, max_delivery_radius_km,
+                     own_delivery_fee, own_delivery_min_order_value, min_order_value,
+                     free_delivery_threshold, max_delivery_radius_km,
                      created_at, updated_at, version)
-                values (?, ?, ?, ?, ?, ?, now(6), now(6), 0)
+                values (?, ?, ?, ?, ?, ?, ?, ?, now(6), now(6), 0)
                 on duplicate key update
                     own_delivery_enabled = values(own_delivery_enabled),
                     costonomy_delivery_enabled = values(costonomy_delivery_enabled),
                     own_delivery_fee = values(own_delivery_fee),
                     own_delivery_min_order_value = values(own_delivery_min_order_value),
+                    min_order_value = values(min_order_value),
+                    free_delivery_threshold = values(free_delivery_threshold),
                     max_delivery_radius_km = values(max_delivery_radius_km),
                     updated_at = now(6), version = version + 1
                 """,
                 storeId, own, costonomy,
                 request.ownDeliveryFee() == null ? BigDecimal.ZERO : request.ownDeliveryFee(),
                 request.ownDeliveryMinOrderValue(),
+                request.minOrderValue() == null ? BigDecimal.ZERO : request.minOrderValue(),
+                request.freeDeliveryThreshold(),
                 request.maxDeliveryRadiusKm());
 
         auditService.recordChange(actorId, "DELIVERY_POLICY_UPDATED", "SUPPLIER_STORE", storeId,

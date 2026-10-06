@@ -59,6 +59,12 @@ public class PaymentJobs {
     private static final Duration INTENT_LOOKUP_WINDOW = Duration.ofDays(1);
 
     /**
+     * How long a payment may sit with no provider checkout before it is ended. A failed create is retried by the app
+     * within seconds, so this only catches a customer who walked away (D-136).
+     */
+    private static final Duration CHECKOUT_NEVER_OPENED_AFTER = Duration.ofMinutes(30);
+
+    /**
      * Per run. A run takes the oldest first and the next run takes the rest, so a
      * backlog drains in order without one run holding the scheduler for minutes.
      */
@@ -242,6 +248,15 @@ public class PaymentJobs {
         for (var payment : stale) {
             try (var trace = PaymentTrace.of(payment)) {
                 if (payment.getProviderPaymentId() == null && payment.getProviderOrderId() == null) {
+                    // No checkout was ever opened: the create call that made this payment failed to reach the provider
+                    // (D-136) and nobody retried. There is nothing to ask the provider about, so past a short grace it
+                    // ends, and its order, which the supplier never saw, is abandoned.
+                    if (payment.getStatus() == PaymentStatus.CREATED
+                            && payment.getCreatedAt().isBefore(Instant.now().minus(CHECKOUT_NEVER_OPENED_AFTER))
+                            && paymentService.expireIntent(payment.getId())) {
+                        orderRelease.abandonUnfunded(payment.getSupplierOrderId(),
+                                "Payment was never set up");
+                    }
                     continue;
                 }
                 try {

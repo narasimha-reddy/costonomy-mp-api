@@ -22,6 +22,7 @@ import com.costonomy.mp.intent.repository.IntentItemRepository;
 import com.costonomy.mp.intent.repository.IntentOrderLinkRepository;
 import com.costonomy.mp.intent.repository.IntentRepository;
 import com.costonomy.mp.intent.web.dto.IntentDtos;
+import com.costonomy.mp.delivery.service.DeliveryCharges;
 import com.costonomy.mp.delivery.service.DeliveryDirectory;
 import com.costonomy.mp.delivery.service.DeliveryFeeQuoteService;
 import com.costonomy.mp.procurement.domain.DeliveryMode;
@@ -94,6 +95,9 @@ public class IntentOrderCreator {
     /** What a Costonomy delivery costs, and what the store is willing to carry. */
     private final DeliveryFeeQuoteService deliveryQuotes;
     private final DeliveryDirectory deliveryPolicies;
+    private final com.costonomy.mp.delivery.slot.DeliverySlotService deliverySlots;
+    private final DeliveryCharges deliveryCharges;
+    private final com.costonomy.mp.procurement.service.OrderLineStamper lineStamper;
 
     /** What the caller asked to order, resolved against what was offered. */
     private record Plan(
@@ -174,7 +178,9 @@ public class IntentOrderCreator {
                             line.offer().getGstRate(),
                             line.lineValue(),
                             line.lineGst(),
-                            line.lineTotal());
+                            line.lineTotal(),
+                            label != null && label.isCatchWeight(),
+                            label != null && label.requiresColdChain());
                 })
                 .toList();
 
@@ -186,8 +192,10 @@ public class IntentOrderCreator {
         // order itself will need.
         BigDecimal deliveryFee = BigDecimal.ZERO;
         if (request != null && request.deliveryMode() != null) {
+            requireOffered(request.deliveryMode(), plan.acceptance());
             deliveryFee = deliveryFeeFor(
-                    request.deliveryMode(), plan.intent(), request, Instant.now(), false);
+                    request.deliveryMode(), plan.intent(), request, Instant.now(), false, plan.subtotal(),
+                    plan.acceptance());
         }
 
         return new IntentDtos.OrderPreviewResponse(
@@ -209,6 +217,13 @@ public class IntentOrderCreator {
     @Transactional
     public IntentDtos.CreateOrderResponse create(
             Long actorId, Long intentId, IntentDtos.CreateOrderRequest request) {
+
+        // The intent first, locked (D-135). Two creations for one intent used to both pass the check below, both build
+        // an order, and then deadlock on the intent row (the link insert takes a shared lock on it, the status update
+        // wants an exclusive one) and the loser surfaced as a 500. Taken here, the second waits for the first to commit,
+        // then sees its link and gets its order back. The lock comes before any consistent read, so what the check below
+        // reads is the state after the first one committed. Lock order is intent, then order, then payment.
+        intents.lockById(intentId).orElseThrow(() -> new NotFoundException("Intent", intentId));
 
         // Already ordered. Return the order rather than failing — a retry whose
         // idempotency key was lost asks "did my order go through?", and that has a
@@ -268,7 +283,9 @@ public class IntentOrderCreator {
                     "Choose how this order should reach you.");
         }
         DeliveryMode mode = request.deliveryMode();
-        BigDecimal deliveryFee = deliveryFeeFor(mode, intent, request, now, true);
+        requireOffered(mode, plan.acceptance());
+        BigDecimal deliveryFee = deliveryFeeFor(mode, intent, request, now, true, plan.subtotal(),
+                plan.acceptance());
 
         var order = new SupplierOrder();
         // No procurement: the intent was the basket. The link to where this came
@@ -288,6 +305,13 @@ public class IntentOrderCreator {
         order.setGstAmount(Pricing.money(plan.gst()));
         order.setDeliveryMode(mode);
         order.setDeliveryFee(Pricing.money(deliveryFee));
+        // A slot is checked here as well as offered by the picker (D-142); no slot and no day means as soon as possible.
+        if (request.deliverySlotId() != null) {
+            deliverySlots.requireBookable(intent.getSupplierStoreId(), request.deliverySlotId(),
+                    request.scheduledDeliveryDate());
+        }
+        order.setDeliverySlotId(request.deliverySlotId());
+        order.setScheduledDeliveryDate(request.scheduledDeliveryDate());
         // The goods plus the carriage. What the restaurant pays is one figure, and
         // it is this one -- the fee cannot be collected later without charging
         // twice for a single order.
@@ -304,6 +328,7 @@ public class IntentOrderCreator {
                     intent.getOutletId(), intent.getSupplierStoreId(), order.getId(), now);
         }
 
+        var orderLines = new java.util.ArrayList<SupplierOrderItem>();
         for (PlannedLine line : plan.lines()) {
             if (line.quantity().signum() == 0) {
                 continue;
@@ -327,8 +352,13 @@ public class IntentOrderCreator {
             item.setLineGst(line.lineGst());
             item.setLineTotal(line.lineTotal());
             item.setStatus(OrderItemStatus.ACCEPTED);
-            supplierOrderItems.save(item);
+            orderLines.add(item);
         }
+
+        // Cold chain, catch-weight and HSN come from one place for every path that creates lines (D-134).
+        lineStamper.stamp(order, orderLines);
+        supplierOrderItems.saveAll(orderLines);
+        supplierOrders.saveAndFlush(order);
 
         var link = new IntentOrderLink();
         link.setIntentId(intent.getId());
@@ -481,6 +511,18 @@ public class IntentOrderCreator {
             gst = gst.add(lineGst);
         }
 
+        var deliveryPolicy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
+        if (deliveryPolicy.minOrderValue() != null
+                && deliveryPolicy.minOrderValue().compareTo(BigDecimal.ZERO) > 0
+                && subtotal.compareTo(deliveryPolicy.minOrderValue()) < 0) {
+            blockers.add(new IntentDtos.Blocker(null, null,
+                    ErrorCode.VALIDATION_ERROR.name(),
+                    "Minimum order value for %s is ₹%s (current items total: ₹%s)."
+                            .formatted(store == null ? "this store" : store.storeName(),
+                                    deliveryPolicy.minOrderValue().stripTrailingZeros().toPlainString(),
+                                    Pricing.money(subtotal).stripTrailingZeros().toPlainString())));
+        }
+
         return new Plan(intent, acceptance, lines,
                 Pricing.money(subtotal), Pricing.money(gst),
                 Pricing.money(subtotal.add(gst)), blockers);
@@ -501,21 +543,47 @@ public class IntentOrderCreator {
      *       showed it and the charge that collected it.</li>
      * </ul>
      */
+    /** The buyer may choose only what the supplier offered on this answer (D-141); pickup is always offered. */
+    private void requireOffered(DeliveryMode mode, IntentAcceptance acceptance) {
+        if (mode == DeliveryMode.PICKUP || acceptance == null || acceptance.getDeliveryOffer() == null) {
+            return;
+        }
+        if ("NONE".equals(acceptance.getDeliveryOffer())) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "This supplier is not delivering this order. Choose pickup.");
+        }
+        boolean self = "SELF_FREE".equals(acceptance.getDeliveryOffer()) || "SELF".equals(acceptance.getDeliveryOffer());
+        if ((mode == DeliveryMode.SUPPLIER_DELIVERY) != self) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, self
+                    ? "This supplier will deliver it themselves. Choose their delivery, or pickup."
+                    : "This supplier is using Costonomy delivery. Choose that, or pickup.");
+        }
+    }
+
     private BigDecimal deliveryFeeFor(DeliveryMode mode, com.costonomy.mp.intent.domain.Intent intent,
                                       IntentDtos.CreateOrderRequest request, Instant now,
-                                      boolean requireQuote) {
+                                      boolean requireQuote, BigDecimal subtotal, IntentAcceptance acceptance) {
 
         var policy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
 
+        // The checks that refuse an order (a supplier that doesn't deliver, an order below their minimum) come
+        // before the free-delivery threshold: waiving the fee must not also waive whether delivery is offered.
         return switch (mode) {
-            case PICKUP -> BigDecimal.ZERO;
-
-            case SUPPLIER_DELIVERY -> {
-                if (!policy.ownDeliveryEnabled()) {
-                    throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                            "This supplier doesn't deliver. Choose pickup or our delivery.");
+            case PICKUP, SUPPLIER_DELIVERY -> {
+                boolean offeredOnAnswer = mode == DeliveryMode.SUPPLIER_DELIVERY && acceptance != null
+                        && acceptance.getDeliveryOffer() != null && !"COSTONOMY".equals(acceptance.getDeliveryOffer());
+                BigDecimal fee = deliveryCharges.supplierCarriedFee(policy, mode, subtotal, offeredOnAnswer);
+                // A supplier who offered free delivery on this answer (D-141) charges nothing, after the same
+                // refusals as any other supplier delivery.
+                boolean offered = mode == DeliveryMode.SUPPLIER_DELIVERY && acceptance != null
+                        && acceptance.getDeliveryOffer() != null && acceptance.getDeliveryFee() != null;
+                // On a supplier's own delivery the amount they offered on this answer (zero when free) is what is charged
+                // and what the buyer was shown, so the store's standing free-delivery threshold does not override it
+                // (D-146). The threshold applies where no amount was offered (direct orders, older answers).
+                if (offered) {
+                    yield acceptance.getDeliveryFee();
                 }
-                yield policy.ownDeliveryFee() == null ? BigDecimal.ZERO : policy.ownDeliveryFee();
+                yield DeliveryCharges.waivedByThreshold(policy, subtotal) ? BigDecimal.ZERO : fee;
             }
 
             case COSTONOMY_DELIVERY -> {
@@ -524,6 +592,8 @@ public class IntentOrderCreator {
                             "We can't deliver from this supplier. Choose pickup, or ask "
                                     + "them to deliver.");
                 }
+                // No free-delivery threshold here (D-146): free delivery is the supplier's own to give, and a courier is
+                // paid for. The threshold used to waive this fee as well, leaving nobody charged for the rider.
                 if (request.deliveryQuoteReference() == null) {
                     // Creating: not defaulted to zero and not quoted on the fly —
                     // a delivery whose price nobody saw is a charge nobody agreed

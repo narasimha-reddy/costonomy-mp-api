@@ -131,6 +131,33 @@ public final class TestOrder {
                         ? null : payment.at("/providerOrderId").asText());
     }
 
+    /**
+     * A request the supplier has answered in full, ready to be ordered: everything {@code place} does before it makes
+     * the order, for a test that needs the order call itself (its status, its key, its retry).
+     */
+    public long answeredIntent(String buyerToken, long outletId, String sellerToken,
+                               long skuId, int quantity) throws Exception {
+        var draft = api.post(buyerToken, "/api/v1/outlets/" + outletId + "/intent-items",
+                Map.of("supplierSkuId", skuId, "quantity", quantity));
+        long intentId = draft.at("/data/id").asLong();
+        long itemId = draft.at("/data/items/0/id").asLong();
+        api.post(buyerToken, "/api/v1/intents/" + intentId + "/send", Map.of());
+        keyed(sellerToken, "/api/v1/intents/" + intentId + "/respond",
+                Map.of("lines", List.of(Map.of("intentItemId", itemId, "offeredQuantity", quantity))));
+        return intentId;
+    }
+
+    /** The order call for an answered request, with the caller's own key, returning the raw HTTP response. */
+    public org.springframework.mock.web.MockHttpServletResponse createOrderRaw(
+            String buyerToken, long intentId, String idempotencyKey, Object body) throws Exception {
+        return mvc.perform(MockMvcRequestBuilders.post("/api/v1/intents/" + intentId + "/orders")
+                        .header("Authorization", "Bearer " + buyerToken)
+                        .header("Idempotency-Key", idempotencyKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(body)))
+                .andReturn().getResponse();
+    }
+
     /** A POST that needs an idempotency key, which {@link ApiClient} does not send. */
     private JsonNode keyed(String token, String path, Object body) throws Exception {
         return json.readTree(mvc.perform(MockMvcRequestBuilders

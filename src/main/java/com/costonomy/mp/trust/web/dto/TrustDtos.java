@@ -35,6 +35,7 @@ public final class TrustDtos {
             @NotNull @DecimalMin(value = "0.00") BigDecimal receivedQuantity,
             @NotNull @DecimalMin(value = "0.00") BigDecimal damagedQuantity,
             @NotNull @DecimalMin(value = "0.00") BigDecimal missingQuantity,
+            String rejectionReason,
             @Size(max = 500) String note) {
     }
 
@@ -48,9 +49,16 @@ public final class TrustDtos {
             BigDecimal totalReceivedQuantity,
             BigDecimal totalDamagedQuantity,
             BigDecimal totalMissingQuantity,
+            BigDecimal instantRefundAmount,
+            String creditNoteNumber,
             String notes,
             Instant receivedAt,
-            List<ReceivingItemResponse> items) {
+            List<ReceivingItemResponse> items,
+            /**
+             * Where the doorstep refund stands: {@code APPLIED}, or {@code PENDING_CAPTURE} while a card payment
+             * is still being captured and the refund waits for it (D-129). Null when nothing was rejected.
+             */
+            String refundStatus) {
     }
 
     public record ReceivingItemResponse(
@@ -62,6 +70,8 @@ public final class TrustDtos {
             BigDecimal receivedQuantity,
             BigDecimal damagedQuantity,
             BigDecimal missingQuantity,
+            String rejectionReason,
+            BigDecimal refundAmount,
             String unit,
             String note) {
     }

@@ -115,3 +115,40 @@ sequenceDiagram
     SS-->>SC: SettlementDto
     SC-->>Finance: 200 OK
 ```
+
+---
+
+## 5. `GET /api/v1/supplier-orders/{id}/tax-invoice` (Statutory GST Billing)
+**Description**: Generates statutory GST B2B tax invoice (Section 31 CGST Act) on delivered/completed orders, verifying scoped access control, calculating CGST/SGST/IGST breakdown, and rendering printable HTML/PDF.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Restaurant / Supplier / Admin
+    participant TIC as TaxInvoiceController
+    participant AC as AccessControlService
+    participant TIS as TaxInvoiceService
+    participant DB as MySQL (tax_invoice, supplier_order, supplier_store, outlet)
+
+    Client->>TIC: GET /api/v1/supplier-orders/{id}/tax-invoice?format=HTML
+    TIC->>AC: requireAnyScoped(actorId, ORDER_VIEW, [OUTLET, SUPPLIER_STORE])
+    TIC->>TIS: getOrGenerateInvoice(actorId, orderId)
+    TIS->>DB: SELECT * FROM supplier_order WHERE id = orderId
+    
+    alt Order Status != DELIVERED and != COMPLETED
+        TIS-->>TIC: 400 Bad Request (Invoice requires delivered goods)
+        TIC-->>Client: Error
+    else Order Delivered/Completed
+        TIS->>DB: SELECT * FROM tax_invoice WHERE supplier_order_id = orderId
+        alt Invoice already generated
+            TIS->>DB: Return existing TaxInvoice
+        else First generation
+            TIS->>TIS: Determine intra-state (CGST+SGST) vs inter-state (IGST) from GSTINs
+            TIS->>DB: Calculate reconciled amounts (less doorstep rejections & weight deltas)
+            TIS->>DB: INSERT INTO tax_invoice (invoice_number, supplier_order_id, taxable_amount, gst_amount)
+        end
+        TIS-->>TIC: TaxInvoiceDetailDto
+        TIC->>TIS: renderHtml(invoiceDto)
+        TIC-->>Client: 200 OK (HTML/PDF Tax Invoice)
+    end
+```

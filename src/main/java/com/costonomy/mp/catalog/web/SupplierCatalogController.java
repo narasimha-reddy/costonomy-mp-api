@@ -69,10 +69,54 @@ public class SupplierCatalogController {
                 ActorContext.requireUserId(), skuId, request));
     }
 
+    @PutMapping("/supplier-skus/{skuId}/handling")
+    @Operation(
+            summary = "Declare how a SKU must be handled (cold chain, catch-weight)",
+            description = """
+                    Superseding, never an in-place edit: the current declaration is closed and a new one opened,
+                    with who declared it and why, and the change is audited with before and after. Orders already
+                    placed keep what they were placed with. A chilled product's SKU cannot be declared as not chilled.
+                    """)
+    public ApiResponse<CatalogDtos.SkuResponse> declareHandling(
+            @PathVariable Long skuId,
+            @Valid @RequestBody CatalogDtos.HandlingDeclarationRequest request) {
+        return ApiResponse.ok(supplierCatalog.declareHandling(ActorContext.requireUserId(), skuId, request));
+    }
+
     @GetMapping("/supplier-skus/{skuId}/price-history")
     @Operation(summary = "Price and availability history for a SKU")
     public ApiResponse<List<CatalogDtos.PriceHistoryEntry>> priceHistory(@PathVariable Long skuId) {
         return ApiResponse.ok(supplierCatalog.priceHistory(ActorContext.requireUserId(), skuId));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/products/{productId}/variants")
+    @Operation(
+            summary = "Get item variants and brand options",
+            description = """
+                    Unified Item Variant Manager: retrieves all brand and grade variants for
+                    a canonical item under this store, sorted with lowest priced first, plus
+                    top-selling preset recommendations.
+                    """)
+    public ApiResponse<CatalogDtos.ItemVariantGroupResponse> getItemVariants(
+            @PathVariable Long storeId,
+            @PathVariable Long productId) {
+        return ApiResponse.ok(supplierCatalog.getItemVariants(
+                ActorContext.requireUserId(), storeId, productId));
+    }
+
+    @PostMapping("/supplier-stores/{storeId}/products/{productId}/variants/batch")
+    @Operation(
+            summary = "Batch save or update variants under an item",
+            description = """
+                    Unified Item Variant Manager: batch creates or updates multiple brand & grade
+                    variants with individual MRP, selling price, stock and pack size in one screen action.
+                    """)
+    public ApiResponse<CatalogDtos.ItemVariantGroupResponse> batchUpdateVariants(
+            @PathVariable Long storeId,
+            @PathVariable Long productId,
+            @Valid @RequestBody CatalogDtos.BatchUpdateVariantsRequest request) {
+        return ApiResponse.ok(supplierCatalog.batchUpdateVariants(
+                ActorContext.requireUserId(), storeId, request));
     }
 
     // ── Bulk import ──────────────────────────────────────────────────────
@@ -126,5 +170,24 @@ public class SupplierCatalogController {
     public ApiResponse<List<CatalogDtos.ImportSummaryResponse>> importHistory(
             @PathVariable Long storeId) {
         return ApiResponse.ok(importService.history(ActorContext.requireUserId(), storeId));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/rate-sheet")
+    @Operation(
+            summary = "Get daily morning rate sheet for fast repricing",
+            description = "Returns all catalog SKUs for the store formatted as a spreadsheet-like pricing grid.")
+    public ApiResponse<CatalogDtos.RateSheetResponse> getRateSheet(
+            @PathVariable Long storeId) {
+        return ApiResponse.ok(supplierCatalog.getRateSheet(ActorContext.requireUserId(), storeId));
+    }
+
+    @PostMapping("/supplier-stores/{storeId}/rate-sheet")
+    @Operation(
+            summary = "Batch reprice multiple SKUs in the morning rate sheet (60-second repricing)",
+            description = "Atomically updates selling prices, MRPs, and availability for multiple items in under a minute.")
+    public ApiResponse<CatalogDtos.UpdateRateSheetResponse> updateRateSheet(
+            @PathVariable Long storeId,
+            @Valid @RequestBody CatalogDtos.UpdateRateSheetRequest request) {
+        return ApiResponse.ok(supplierCatalog.updateRateSheet(ActorContext.requireUserId(), storeId, request));
     }
 }

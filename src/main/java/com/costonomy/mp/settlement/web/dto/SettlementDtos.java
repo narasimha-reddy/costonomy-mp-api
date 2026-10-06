@@ -75,7 +75,9 @@ public final class SettlementDtos {
     // ── Operations ───────────────────────────────────────────────────────
 
     public record ApproveSettlementRequest(
-            @Size(max = 500) String note) {
+            @Size(max = 500) String note,
+            /** Required to approve a settlement whose payments do not reconcile. */
+            @Size(max = 500) String acknowledgeMismatchNote) {
     }
 
     public record MarkPaidRequest(

@@ -209,6 +209,9 @@ class MigrationIT extends AbstractIntegrationTest {
                         "role_permission",
                         "restaurant_user_outlet",
                         "supplier_user_store",
+                        // A subscription's excluded dates are immutable entries in
+                        // the schedule, not independently updated entities.
+                        "subscription_skip_date",
                         "delivery_ledger",
                         "delivery_provider_stats",
                         "delivery_provider_metrics",

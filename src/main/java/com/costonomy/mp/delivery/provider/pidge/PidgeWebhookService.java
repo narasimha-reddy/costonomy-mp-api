@@ -132,8 +132,10 @@ public class PidgeWebhookService {
     public boolean verifySignature(String rawBody, String signature) {
         String secret = properties.getWebhookSecret();
         if (secret == null || secret.isBlank()) {
-            // Local development mode: allow when webhook secret is unconfigured
-            return true;
+            // Fail closed: an unconfigured secret accepts nothing. An unsigned webhook can mark a
+            // delivery delivered, and ProductionProviderGuard refuses to start without a secret.
+            log.warn("Pidge webhook rejected: no webhook secret configured");
+            return false;
         }
         if (signature == null || signature.isBlank()) {
             return false;

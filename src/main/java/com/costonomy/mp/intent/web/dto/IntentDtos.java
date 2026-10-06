@@ -13,6 +13,7 @@ import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -67,10 +68,25 @@ public final class IntentDtos {
             BigDecimal quantity) {
     }
 
+    /** Whether the restaurant wants this supplier's request delivered or will collect it (D-143). */
+    public record DeliveryPreferenceRequest(
+            @jakarta.validation.constraints.NotNull
+            @jakarta.validation.constraints.Pattern(regexp = "DELIVERY|PICKUP",
+                    message = "Choose DELIVERY or PICKUP.")
+            String preference) {
+    }
+
     /** Send a draft to the supplier. */
     public record SendRequest(
             Instant requestedDeliveryTime,
-            @Size(max = 1000) String notes) {
+            /** The day it is wanted; absent means immediate (D-140). */
+            java.time.LocalDate preferredDeliveryDate,
+            @Size(max = 1000) String notes,
+            /**
+             * Agreement to the prices as they are now. Absent or false, a request whose prices moved since the lines
+             * were added is refused (422 {@code PRICE_CHANGED}) rather than sent at a price nobody agreed to (D-146).
+             */
+            Boolean acceptPriceChanges) {
     }
 
     // ── Supplier: answering ──────────────────────────────────────────────
@@ -112,6 +128,20 @@ public final class IntentDtos {
              * the restaurant pays the delivery fee.
              */
             @Size(max = 120) String deliveryModes,
+            /**
+             * How this supplier will deliver this request: SELF_FREE (they deliver, no charge to the buyer), SELF
+             * (they deliver at their own fee), COSTONOMY (Costonomy riders, requested at Ready for Pickup) or NONE (they cannot deliver this one; only pickup). Pickup
+             * is always offered. Absent keeps what the store's policy enables (D-141).
+             */
+            @jakarta.validation.constraints.Pattern(regexp = "SELF_FREE|SELF|COSTONOMY|NONE",
+                    message = "Delivery must be SELF_FREE, SELF, COSTONOMY or NONE.")
+            String deliveryOffer,
+            /**
+             * With {@code SELF}: what this supplier charges the restaurant to deliver this request. Absent means the
+             * store's own delivery fee. Any amount up to a sanity bound; zero is free (D-141).
+             */
+            @jakarta.validation.constraints.DecimalMin(value = "0", message = "A delivery fee cannot be negative.")
+            BigDecimal deliveryFee,
             @Size(max = 1000) String notes) {
     }
 
@@ -164,7 +194,17 @@ public final class IntentDtos {
              * recalculated between the screen that showed it and the charge that
              * collected it is a silent reprice (§23A.16).
              */
-            @Size(max = 64) String deliveryQuoteReference) {
+            @Size(max = 64) String deliveryQuoteReference,
+            Long deliverySlotId,
+            LocalDate scheduledDeliveryDate) {
+
+        public CreateOrderRequest(
+                List<OrderLine> lines,
+                String paymentMethod,
+                DeliveryMode deliveryMode,
+                String deliveryQuoteReference) {
+            this(lines, paymentMethod, deliveryMode, deliveryQuoteReference, null, null);
+        }
     }
 
     /** What a Costonomy delivery would cost for this request. D-091. */
@@ -259,6 +299,10 @@ public final class IntentDtos {
             String source,
             Long clonedFromId,
             Instant requestedDeliveryTime,
+            /** The day the buyer asked for; null is immediate (D-140). */
+            java.time.LocalDate preferredDeliveryDate,
+            /** DELIVERY or PICKUP: what the restaurant asked for on this request (D-143). */
+            String deliveryPreference,
             String notes,
             Instant sentAt,
             /**
@@ -315,7 +359,9 @@ public final class IntentDtos {
             AcceptanceResponse acceptance,
             /** The order this became, if it became one. */
             Long supplierOrderId,
-            String supplierOrderNumber) {
+            String supplierOrderNumber,
+            BigDecimal minOrderValue,
+            BigDecimal freeDeliveryThreshold) {
     }
 
     /**
@@ -400,6 +446,10 @@ public final class IntentDtos {
             BigDecimal deliveryFee,
             Integer etaMinutes,
             String deliveryModes,
+            /** SELF_FREE, SELF or COSTONOMY; null on an older answer (D-141). */
+            String deliveryOffer,
+            /** The supplier's own delivery charge is high for this order: warn the restaurant (D-144). */
+            boolean highDeliveryCharge,
             String notes,
             Instant submittedAt,
             Instant expiresAt) {
@@ -449,6 +499,8 @@ public final class IntentDtos {
              */
             boolean acceptPriceChanges,
             Instant requestedDeliveryTime,
+            /** The day it is wanted, for every request sent; absent means immediate (D-140). */
+            java.time.LocalDate preferredDeliveryDate,
             @Size(max = 1000) String notes,
             /**
              * Send only this draft, rather than every draft in the outlet.
@@ -568,7 +620,11 @@ public final class IntentDtos {
             BigDecimal gstRate,
             BigDecimal lineValue,
             BigDecimal lineGst,
-            BigDecimal lineTotal) {
+            BigDecimal lineTotal,
+            /** Sold by weight: this line's price is an estimate until the scale weight fixes it (D-128). */
+            boolean isCatchWeight,
+            /** Needs temperature-controlled carriage (D-134). */
+            boolean requiresColdChain) {
     }
 
     public record Blocker(Long intentItemId, String productName, String code, String message) {

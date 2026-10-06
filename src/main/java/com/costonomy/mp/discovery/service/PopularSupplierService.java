@@ -35,6 +35,7 @@ public class PopularSupplierService {
     private final JdbcTemplate jdbc;
     private final DiscoveryDirectory directory;
     private final SupplierPerformanceProvider performance;
+    private final ServiceabilityPolicy serviceabilityPolicy;
 
     /** How many aisles to name per supplier before the tail stops earning space. */
     private static final int CATEGORIES_PER_SUPPLIER = 6;
@@ -82,9 +83,9 @@ public class PopularSupplierService {
                   join supplier_organization o on o.id = s.supplier_organization_id
                   join supplier_offer f on f.supplier_store_id = s.id and f.status = 'ACTIVE'
                   join supplier_sku k on k.id = f.supplier_sku_id and k.status = 'ACTIVE'
-                 where s.status = 'ACTIVE'
-                   and o.lifecycle_status = 'ACTIVE'
-                   and (f.effective_to is null or f.effective_to > now())
+                  where s.status = 'ACTIVE'
+                    and o.lifecycle_status = 'ACTIVE'
+                    and (f.effective_to is null or f.effective_to > now())
                 %s
                  group by s.id, o.display_name, s.name, s.city, s.latitude, s.longitude
                  order by sku_count desc, s.id
@@ -99,21 +100,32 @@ public class PopularSupplierService {
             return List.of();
         }
 
+        var storeInfo = directory.stores(stores.stream().map(StoreRow::id).toList());
+
         // Nearest first where both ends are located. A supplier with no
         // coordinates sorts last rather than being dropped: they can still be
         // ordered from, and a directory that hides them is wrong in a way a
         // kitchen cannot see.
+        // Filter by serviceability BEFORE applying the limit (D-138).
+        int clampedLimit = Math.min(Math.max(1, limit), 100);
         var ranked = stores.stream()
                 .map(store -> new Ranked(store, outlet == null ? null : Serviceability.distanceKm(
                         store.latitude(), store.longitude(),
                         outlet.latitude(), outlet.longitude())))
+                .filter(entry -> {
+                    if (outlet == null) {
+                        return true;
+                    }
+                    var info = storeInfo.get(entry.store().id());
+                    return serviceabilityPolicy.serves(info, outlet.pincode(), entry.distanceKm());
+                })
                 .sorted((a, b) -> {
                     if (a.distanceKm() == null && b.distanceKm() == null) return 0;
                     if (a.distanceKm() == null) return 1;
                     if (b.distanceKm() == null) return -1;
                     return Double.compare(a.distanceKm(), b.distanceKm());
                 })
-                .limit(Math.max(1, limit))
+                .limit(clampedLimit)
                 .toList();
 
         var categories = categoriesFor(ranked.stream().map(entry -> entry.store().id()).toList());

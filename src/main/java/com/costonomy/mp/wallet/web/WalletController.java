@@ -19,6 +19,7 @@ import com.costonomy.mp.wallet.statement.WalletStatementPdf;
 import com.costonomy.mp.wallet.statement.WalletStatementService;
 import com.costonomy.mp.wallet.service.WalletTopUpService;
 import com.costonomy.mp.wallet.service.WalletWithdrawalService;
+import com.costonomy.mp.wallet.service.WalletBankPayoutService;
 import com.costonomy.mp.wallet.web.dto.WalletDtos;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -52,6 +53,7 @@ public class WalletController {
     private final WalletService wallets;
     private final WalletWithdrawalService withdrawals;
     private final WalletTopUpService topUps;
+    private final WalletBankPayoutService bankPayouts;
     private final RefundService refunds;
     private final IdempotencyService idempotency;
     private final AccessControlService accessControl;
@@ -358,6 +360,33 @@ public class WalletController {
                     Map.of("outletId", outletId, "amount", request.amount().toPlainString()),
                     WalletDtos.WithdrawalResponse.class,
                     () -> withdrawals.withdraw(actorId, outletId, request.amount(), idempotencyKey)));
+        }
+    }
+
+    @PostMapping("/outlets/{outletId}/wallet/bank-payout")
+    @Operation(
+            summary = "Transfer wallet balance to verified restaurant bank account",
+            description = """
+                    Enables payout of general wallet balances (including catch-weight refunds,
+                    doorstep rejections, and direct top-ups) to the restaurant's bank account via IMPS/NEFT.
+                    Needs `WALLET_WITHDRAW` and an `Idempotency-Key`.
+                    """)
+    public ApiResponse<WalletDtos.BankPayoutResponse> bankPayout(
+            @PathVariable Long outletId,
+            @Valid @RequestBody WalletDtos.BankPayoutRequest request,
+            @Parameter(description = "Client-generated key, required for this operation")
+            @RequestHeader("Idempotency-Key") @NotBlank @Size(max = 100) String idempotencyKey) {
+
+        Long actorId = ActorContext.requireUserId();
+        accessControl.requireScoped(actorId, Permissions.WALLET_WITHDRAW,
+                ScopeType.OUTLET, outletId, "Outlet");
+
+        try (var trace = TraceScope.of("outlet", outletId)) {
+            return ApiResponse.ok(idempotency.execute(actorId, "wallet.bank-payout", idempotencyKey,
+                    Map.of("outletId", outletId, "amount", request.amount().toPlainString(),
+                            "account", request.accountNumber()),
+                    WalletDtos.BankPayoutResponse.class,
+                    () -> bankPayouts.initiatePayout(actorId, outletId, request, idempotencyKey)));
         }
     }
 }

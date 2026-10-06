@@ -81,13 +81,21 @@ public class SkuDetailService {
         String brandName = sku.getBrandId() == null ? null
                 : brands.brandNames(List.of(sku.getBrandId())).get(sku.getBrandId());
 
+        BigDecimal mrp = offer != null && offer.getMrp() != null ? offer.getMrp() : sku.getMrp();
+        BigDecimal sellingPrice = offer == null ? null : offer.getSellingPrice();
+        BigDecimal discountAmount = Pricing.discountAmount(mrp, sellingPrice);
+        Integer discountPercent = Pricing.discountPercent(mrp, sellingPrice);
+
         return new DiscoveryDtos.SkuDetail(
                 sku.getId(),
                 offer == null ? null : offer.getId(),
-                sku.getName(), brandName,
+                sku.getName(), brandName, sku.getGrade(),
                 sku.getPackSize(), sku.getPackUnit(),
                 sku.getMeasureValue(), sku.getMeasureUnit(),
-                offer == null ? null : offer.getSellingPrice(),
+                mrp,
+                sellingPrice,
+                discountAmount,
+                discountPercent,
                 offer == null ? null : offer.getGstRate(),
                 // The one figure computed here, and computed the way the order
                 // will be: price plus GST on it, rounded once. Guardrail 3 puts
@@ -118,7 +126,8 @@ public class SkuDetailService {
                 metrics == null ? 0 : metrics.ratingCount(),
                 average(published), published.size(),
                 published.stream().limit(REVIEWS).map(this::toResponse).toList(),
-                siblings(sku));
+                siblings(sku),
+                brandOptions(sku, product == null ? null : product.getImageUrl()));
     }
 
     /**
@@ -132,20 +141,95 @@ public class SkuDetailService {
     private List<DiscoveryDtos.SkuSibling> siblings(SupplierSku sku) {
         return jdbc.query("""
                 select k.id, k.name, k.pack_size, k.pack_unit,
-                       f.selling_price, k.image_url, f.availability
+                       f.selling_price, k.image_url, f.availability,
+                       b.name as brand_name, f.gst_rate, f.id as offer_id,
+                       k.grade, coalesce(f.mrp, k.mrp) as mrp
                   from supplier_sku k
                   left join supplier_offer f
                          on f.supplier_sku_id = k.id and f.status = 'ACTIVE'
+                  left join brand b
+                         on b.id = k.brand_id
                  where k.supplier_store_id = ?
                    and k.canonical_product_id = ?
                    and k.id <> ?
                    and k.status = 'ACTIVE'
-                 order by f.selling_price
+                 order by f.selling_price asc
                 """,
-                (rs, i) -> new DiscoveryDtos.SkuSibling(
-                        rs.getLong(1), rs.getString(2), rs.getBigDecimal(3), rs.getString(4),
-                        rs.getBigDecimal(5), rs.getString(6), rs.getString(7)),
+                (rs, i) -> {
+                    BigDecimal price = rs.getBigDecimal(5);
+                    BigDecimal gst = rs.getBigDecimal(9);
+                    BigDecimal incl = price != null ? inclusivePrice(price, gst) : null;
+                    String grade = rs.getString(11);
+                    BigDecimal mrp = rs.getBigDecimal(12);
+                    BigDecimal discountAmount = Pricing.discountAmount(mrp, price);
+                    Integer discountPercent = Pricing.discountPercent(mrp, price);
+                    return new DiscoveryDtos.SkuSibling(
+                            rs.getLong(1), rs.getString(2), rs.getBigDecimal(3), rs.getString(4),
+                            mrp, price, discountAmount, discountPercent,
+                            rs.getString(6), rs.getString(7),
+                            rs.getString(8), grade, gst, incl, (Long) rs.getObject(10));
+                },
                 sku.getSupplierStoreId(), sku.getCanonicalProductId(), sku.getId());
+    }
+
+    /**
+     * All brand options from this supplier for this item, sorted with lowest priced first.
+     */
+    private List<DiscoveryDtos.BrandOption> brandOptions(SupplierSku sku, String canonicalImageUrl) {
+        return jdbc.query("""
+                select k.id, f.id, k.name, b.name,
+                       k.pack_size, k.pack_unit, f.selling_price, f.gst_rate,
+                       k.image_url, f.availability, f.available_quantity,
+                       k.measure_value, k.measure_unit,
+                       k.grade, coalesce(f.mrp, k.mrp) as mrp
+                  from supplier_sku k
+                  left join supplier_offer f
+                         on f.supplier_sku_id = k.id and f.status = 'ACTIVE'
+                  left join brand b
+                         on b.id = k.brand_id
+                 where k.supplier_store_id = ?
+                   and k.canonical_product_id = ?
+                   and k.status = 'ACTIVE'
+                 order by f.selling_price asc
+                """,
+                (rs, i) -> {
+                    BigDecimal price = rs.getBigDecimal(7);
+                    BigDecimal gst = rs.getBigDecimal(8);
+                    BigDecimal incl = price != null ? inclusivePrice(price, gst) : null;
+                    String skuImg = rs.getString(9);
+                    String img = (skuImg != null && !skuImg.isBlank()) ? skuImg : canonicalImageUrl;
+                    String grade = rs.getString(14);
+                    BigDecimal mrp = rs.getBigDecimal(15);
+                    BigDecimal discountAmount = Pricing.discountAmount(mrp, price);
+                    Integer discountPercent = Pricing.discountPercent(mrp, price);
+                    return new DiscoveryDtos.BrandOption(
+                            rs.getLong(1),
+                            (Long) rs.getObject(2),
+                            rs.getString(3),
+                            rs.getString(4),
+                            grade,
+                            rs.getBigDecimal(5),
+                            rs.getString(6),
+                            mrp,
+                            price,
+                            discountAmount,
+                            discountPercent,
+                            gst,
+                            incl,
+                            img,
+                            rs.getString(10),
+                            rs.getBigDecimal(11),
+                            rs.getBigDecimal(12),
+                            rs.getString(13)
+                    );
+                },
+                sku.getSupplierStoreId(), sku.getCanonicalProductId());
+    }
+
+    private static BigDecimal inclusivePrice(BigDecimal sellingPrice, BigDecimal gstRate) {
+        BigDecimal rate = gstRate == null ? BigDecimal.ZERO : gstRate;
+        BigDecimal value = Pricing.lineItemValue(sellingPrice, BigDecimal.ONE);
+        return Pricing.lineTotal(value, Pricing.lineGst(value, rate));
     }
 
     private String categoryName(Long categoryId) {

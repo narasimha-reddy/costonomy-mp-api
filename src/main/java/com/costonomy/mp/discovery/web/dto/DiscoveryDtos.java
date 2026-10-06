@@ -14,6 +14,42 @@ public final class DiscoveryDtos {
     }
 
     /**
+     * A brand option / variant for an item from a supplier.
+     * When an item is fulfilled by multiple brands, all options are listed with lowest priced first.
+     */
+    public record BrandOption(
+            Long supplierSkuId,
+            Long offerId,
+            String skuName,
+            String brandName,
+            String grade,
+            BigDecimal packSize,
+            String packUnit,
+            BigDecimal mrp,
+            BigDecimal sellingPrice,
+            BigDecimal discountAmount,
+            Integer discountPercent,
+            BigDecimal gstRate,
+            BigDecimal unitPriceInclusiveGst,
+            String imageUrl,
+            String availability,
+            BigDecimal availableQuantity,
+            BigDecimal measureValue,
+            String measureUnit) {
+
+        public BrandOption(
+                Long supplierSkuId, Long offerId, String skuName, String brandName,
+                BigDecimal packSize, String packUnit, BigDecimal sellingPrice,
+                BigDecimal gstRate, BigDecimal unitPriceInclusiveGst, String imageUrl,
+                String availability, BigDecimal availableQuantity, BigDecimal measureValue,
+                String measureUnit) {
+            this(supplierSkuId, offerId, skuName, brandName, null, packSize, packUnit,
+                    null, sellingPrice, null, null, gstRate, unitPriceInclusiveGst,
+                    imageUrl, availability, availableQuantity, measureValue, measureUnit);
+        }
+    }
+
+    /**
      * A ranked supplier offer. Doc 07 §8.
      *
      * <p>Everything a restaurant needs to compare commercially (§23A.13), plus the
@@ -28,9 +64,13 @@ public final class DiscoveryDtos {
             String storeName,
             String skuName,
             String brandName,
+            String grade,
             BigDecimal packSize,
             String packUnit,
+            BigDecimal mrp,
             BigDecimal unitPrice,
+            BigDecimal discountAmount,
+            Integer discountPercent,
             BigDecimal gstRate,
             /** Item value for the requested quantity, before GST. */
             BigDecimal itemTotal,
@@ -59,43 +99,60 @@ public final class DiscoveryDtos {
             int ratingCount,
             /**
              * One pack, with GST — what a restaurant actually pays for it.
-             *
-             * <p>{@code unitPrice} is the supplier's price before tax, which is
-             * the figure the order is built from and the wrong one to lead a card
-             * with: it sat beside a line total that *did* include GST, so the same
-             * card showed two numbers on two different bases.
-             *
-             * <p>Computed through {@link Pricing}, the same path the cart and the
-             * invoice take, so this figure and the line total for one pack cannot
-             * disagree in the last paisa.
              */
             BigDecimal unitPriceInclusiveGst,
             /**
              * What one base unit costs, with GST — "₹404.67 per KG".
-             *
-             * <p>What makes two offers comparable when one is a 1 kg pack and the
-             * other a 25 kg sack, which is the whole job of this screen. Inclusive
-             * for the same reason as above: two figures on one card, on two
-             * different tax bases, is a comparison nobody can make.
-             *
-             * <p>Computed here rather than in the app: guardrail 3 puts every money
-             * calculation on the server, and a client dividing rupees is exactly
-             * the arithmetic that rule exists to prevent.
-             *
-             * <p>Null when the pack is not measured in the product's own unit — a
-             * price "per PKT" where the product is sold per KG says nothing, and a
-             * number that says nothing is worse on a comparison screen than a gap.
              */
             BigDecimal pricePerBaseUnit,
             /**
              * How many other packs of this product the same store lists. D-096.
-             *
-             * <p>The comparison ranks one card per supplier — their best pack —
-             * because every pack competing turns a comparison of suppliers into a
-             * comparison of one supplier's shelf. This is what the card says
-             * instead, and the rest are on that pack's detail page.
              */
-            int otherPackCount) {
+            int otherPackCount,
+            /**
+             * All brand options from this supplier for this item, sorted with lowest priced first.
+             */
+            List<BrandOption> brandOptions) {
+
+        public RecommendedOffer(
+                Long offerId, Long supplierSkuId, Long supplierStoreId, String supplierName,
+                String storeName, String skuName, String brandName, BigDecimal packSize,
+                String packUnit, BigDecimal unitPrice, BigDecimal gstRate, BigDecimal itemTotal,
+                BigDecimal gstAmount, BigDecimal effectiveTotal, String availability,
+                BigDecimal availableQuantity, boolean coversFullQuantity, Integer etaMinutes,
+                BigDecimal distanceKm, Integer responseSlaSeconds,
+                List<ExplanationCode> explanations, BigDecimal score,
+                Map<String, BigDecimal> scoreComponents, String imageUrl,
+                BigDecimal averageRating, int ratingCount, BigDecimal unitPriceInclusiveGst,
+                BigDecimal pricePerBaseUnit, int otherPackCount) {
+            this(offerId, supplierSkuId, supplierStoreId, supplierName, storeName, skuName,
+                    brandName, null, packSize, packUnit, null, unitPrice, null, null,
+                    gstRate, itemTotal, gstAmount, effectiveTotal, availability,
+                    availableQuantity, coversFullQuantity, etaMinutes, distanceKm,
+                    responseSlaSeconds, explanations, score, scoreComponents, imageUrl,
+                    averageRating, ratingCount, unitPriceInclusiveGst, pricePerBaseUnit,
+                    otherPackCount, List.of());
+        }
+
+        public RecommendedOffer(
+                Long offerId, Long supplierSkuId, Long supplierStoreId, String supplierName,
+                String storeName, String skuName, String brandName, BigDecimal packSize,
+                String packUnit, BigDecimal unitPrice, BigDecimal gstRate, BigDecimal itemTotal,
+                BigDecimal gstAmount, BigDecimal effectiveTotal, String availability,
+                BigDecimal availableQuantity, boolean coversFullQuantity, Integer etaMinutes,
+                BigDecimal distanceKm, Integer responseSlaSeconds,
+                List<ExplanationCode> explanations, BigDecimal score,
+                Map<String, BigDecimal> scoreComponents, String imageUrl,
+                BigDecimal averageRating, int ratingCount, BigDecimal unitPriceInclusiveGst,
+                BigDecimal pricePerBaseUnit, int otherPackCount, List<BrandOption> brandOptions) {
+            this(offerId, supplierSkuId, supplierStoreId, supplierName, storeName, skuName,
+                    brandName, null, packSize, packUnit, null, unitPrice, null, null,
+                    gstRate, itemTotal, gstAmount, effectiveTotal, availability,
+                    availableQuantity, coversFullQuantity, etaMinutes, distanceKm,
+                    responseSlaSeconds, explanations, score, scoreComponents, imageUrl,
+                    averageRating, ratingCount, unitPriceInclusiveGst, pricePerBaseUnit,
+                    otherPackCount, brandOptions);
+        }
     }
 
     /**
@@ -152,7 +209,13 @@ public final class DiscoveryDtos {
      */
     public record SupplierSearchPage(
             List<SupplierSearchResult> suppliers,
-            int beyondRadius) {
+            int beyondRadius,
+            int total,
+            Integer nextOffset) {
+
+        public SupplierSearchPage(List<SupplierSearchResult> suppliers, int beyondRadius) {
+            this(suppliers, beyondRadius, suppliers.size(), null);
+        }
     }
 
     /**
@@ -170,9 +233,13 @@ public final class DiscoveryDtos {
             Long supplierSkuId,
             String skuName,
             String brandName,
+            String grade,
             BigDecimal packSize,
             String packUnit,
+            BigDecimal mrp,
             BigDecimal sellingPrice,
+            BigDecimal discountAmount,
+            Integer discountPercent,
             BigDecimal gstRate,
             String availability,
             BigDecimal availableQuantity,
@@ -191,16 +258,52 @@ public final class DiscoveryDtos {
             int ratingCount,
             /**
              * What aisle this belongs in, for a storefront that groups by it.
-             *
-             * <p>From the canonical product, not the supplier's listing: two
-             * suppliers' paneer has to land in the same tab or the tabs sort by
-             * whoever typed what.
              */
             Long categoryId,
             String categoryName,
             /** The amount inside one pack, where a pack has one. */
             BigDecimal measureValue,
-            String measureUnit) {
+            String measureUnit,
+            /**
+             * All brand options from this supplier for this item, sorted with lowest priced first.
+             */
+            List<BrandOption> brandOptions) {
+
+        public StorefrontSku(
+                Long offerId, Long supplierSkuId, String skuName, String brandName,
+                BigDecimal packSize, String packUnit, BigDecimal sellingPrice,
+                BigDecimal gstRate, String availability, BigDecimal availableQuantity,
+                String imageUrl, Long canonicalProductId, String canonicalProductName,
+                Long supplierStoreId, String supplierName, String storeName,
+                BigDecimal distanceKm, boolean openNow, String opensAt,
+                Integer preparationMinutes, BigDecimal averageRating, int ratingCount,
+                Long categoryId, String categoryName, BigDecimal measureValue,
+                String measureUnit) {
+            this(offerId, supplierSkuId, skuName, brandName, null, packSize, packUnit,
+                    null, sellingPrice, null, null, gstRate, availability,
+                    availableQuantity, imageUrl, canonicalProductId, canonicalProductName,
+                    supplierStoreId, supplierName, storeName, distanceKm, openNow,
+                    opensAt, preparationMinutes, averageRating, ratingCount, categoryId,
+                    categoryName, measureValue, measureUnit, List.of());
+        }
+
+        public StorefrontSku(
+                Long offerId, Long supplierSkuId, String skuName, String brandName,
+                BigDecimal packSize, String packUnit, BigDecimal sellingPrice,
+                BigDecimal gstRate, String availability, BigDecimal availableQuantity,
+                String imageUrl, Long canonicalProductId, String canonicalProductName,
+                Long supplierStoreId, String supplierName, String storeName,
+                BigDecimal distanceKm, boolean openNow, String opensAt,
+                Integer preparationMinutes, BigDecimal averageRating, int ratingCount,
+                Long categoryId, String categoryName, BigDecimal measureValue,
+                String measureUnit, List<BrandOption> brandOptions) {
+            this(offerId, supplierSkuId, skuName, brandName, null, packSize, packUnit,
+                    null, sellingPrice, null, null, gstRate, availability,
+                    availableQuantity, imageUrl, canonicalProductId, canonicalProductName,
+                    supplierStoreId, supplierName, storeName, distanceKm, openNow,
+                    opensAt, preparationMinutes, averageRating, ratingCount, categoryId,
+                    categoryName, measureValue, measureUnit, brandOptions);
+        }
     }
 
     /**
@@ -328,11 +431,15 @@ public final class DiscoveryDtos {
             Long offerId,
             String skuName,
             String brandName,
+            String grade,
             BigDecimal packSize,
             String packUnit,
             BigDecimal measureValue,
             String measureUnit,
+            BigDecimal mrp,
             BigDecimal sellingPrice,
+            BigDecimal discountAmount,
+            Integer discountPercent,
             BigDecimal gstRate,
             BigDecimal unitPriceInclusiveGst,
             String availability,
@@ -366,12 +473,61 @@ public final class DiscoveryDtos {
             List<SkuReviewResponse> reviews,
             /**
              * Other packs of the same product from this same store.
-             *
-             * <p>A supplier listing a 200g tub and a 5kg block has listed two
-             * things a kitchen might want, and the comparison only shows their
-             * best one — this is where the rest of them are.
              */
-            List<SkuSibling> otherPacks) {
+            List<SkuSibling> otherPacks,
+            /**
+             * All brand options from this supplier for this item, sorted with lowest priced first.
+             */
+            List<BrandOption> brandOptions) {
+
+        public SkuDetail(
+                Long supplierSkuId, Long offerId, String skuName, String brandName,
+                BigDecimal packSize, String packUnit, BigDecimal measureValue,
+                String measureUnit, BigDecimal sellingPrice, BigDecimal gstRate,
+                BigDecimal unitPriceInclusiveGst, String availability,
+                BigDecimal availableQuantity, String imageUrl, List<String> images,
+                String youtubeUrl, String description, BigDecimal lengthCm,
+                BigDecimal widthCm, BigDecimal heightCm, BigDecimal weightGrams,
+                Long canonicalProductId, String canonicalProductName, Long categoryId,
+                String categoryName, Long supplierStoreId, String storeName,
+                String supplierName, BigDecimal distanceKm, boolean openNow,
+                String opensAt, Integer etaMinutes, BigDecimal storeRating,
+                int storeRatingCount, BigDecimal averageRating, int reviewCount,
+                List<SkuReviewResponse> reviews, List<SkuSibling> otherPacks) {
+            this(supplierSkuId, offerId, skuName, brandName, null, packSize, packUnit,
+                    measureValue, measureUnit, null, sellingPrice, null, null, gstRate,
+                    unitPriceInclusiveGst, availability, availableQuantity, imageUrl,
+                    images, youtubeUrl, description, lengthCm, widthCm, heightCm,
+                    weightGrams, canonicalProductId, canonicalProductName, categoryId,
+                    categoryName, supplierStoreId, storeName, supplierName, distanceKm,
+                    openNow, opensAt, etaMinutes, storeRating, storeRatingCount,
+                    averageRating, reviewCount, reviews, otherPacks, List.of());
+        }
+
+        public SkuDetail(
+                Long supplierSkuId, Long offerId, String skuName, String brandName,
+                BigDecimal packSize, String packUnit, BigDecimal measureValue,
+                String measureUnit, BigDecimal sellingPrice, BigDecimal gstRate,
+                BigDecimal unitPriceInclusiveGst, String availability,
+                BigDecimal availableQuantity, String imageUrl, List<String> images,
+                String youtubeUrl, String description, BigDecimal lengthCm,
+                BigDecimal widthCm, BigDecimal heightCm, BigDecimal weightGrams,
+                Long canonicalProductId, String canonicalProductName, Long categoryId,
+                String categoryName, Long supplierStoreId, String storeName,
+                String supplierName, BigDecimal distanceKm, boolean openNow,
+                String opensAt, Integer etaMinutes, BigDecimal storeRating,
+                int storeRatingCount, BigDecimal averageRating, int reviewCount,
+                List<SkuReviewResponse> reviews, List<SkuSibling> otherPacks,
+                List<BrandOption> brandOptions) {
+            this(supplierSkuId, offerId, skuName, brandName, null, packSize, packUnit,
+                    measureValue, measureUnit, null, sellingPrice, null, null, gstRate,
+                    unitPriceInclusiveGst, availability, availableQuantity, imageUrl,
+                    images, youtubeUrl, description, lengthCm, widthCm, heightCm,
+                    weightGrams, canonicalProductId, canonicalProductName, categoryId,
+                    categoryName, supplierStoreId, storeName, supplierName, distanceKm,
+                    openNow, opensAt, etaMinutes, storeRating, storeRatingCount,
+                    averageRating, reviewCount, reviews, otherPacks, brandOptions);
+        }
     }
 
     /** One kitchen's verdict on a pack. */
@@ -390,9 +546,35 @@ public final class DiscoveryDtos {
             String skuName,
             BigDecimal packSize,
             String packUnit,
+            BigDecimal mrp,
             BigDecimal sellingPrice,
+            BigDecimal discountAmount,
+            Integer discountPercent,
             String imageUrl,
-            String availability) {
+            String availability,
+            String brandName,
+            String grade,
+            BigDecimal gstRate,
+            BigDecimal unitPriceInclusiveGst,
+            Long offerId) {
+
+        public SkuSibling(
+                Long supplierSkuId, String skuName, BigDecimal packSize,
+                String packUnit, BigDecimal sellingPrice, String imageUrl,
+                String availability) {
+            this(supplierSkuId, skuName, packSize, packUnit, null, sellingPrice,
+                    null, null, imageUrl, availability, null, null, null, null, null);
+        }
+
+        public SkuSibling(
+                Long supplierSkuId, String skuName, BigDecimal packSize,
+                String packUnit, BigDecimal sellingPrice, String imageUrl,
+                String availability, String brandName, BigDecimal gstRate,
+                BigDecimal unitPriceInclusiveGst, Long offerId) {
+            this(supplierSkuId, skuName, packSize, packUnit, null, sellingPrice,
+                    null, null, imageUrl, availability, brandName, null, gstRate,
+                    unitPriceInclusiveGst, offerId);
+        }
     }
 
     /** One aisle a supplier stocks, and how deep it goes. */

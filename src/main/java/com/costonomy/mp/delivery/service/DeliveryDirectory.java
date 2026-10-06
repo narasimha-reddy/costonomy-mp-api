@@ -30,20 +30,38 @@ public class DeliveryDirectory {
             BigDecimal deliveryFee,
             String deliveryMode,
             BigDecimal estimatedWeightKg,
-            BigDecimal estimatedVolumeCbm) {
+            BigDecimal estimatedVolumeCbm,
+            boolean requiresColdChain) {
+
+        public OrderInfo(Long orderId, String orderNumber, String status, Long outletId,
+                         Long supplierStoreId, BigDecimal deliveryFee, String deliveryMode,
+                         BigDecimal estimatedWeightKg, BigDecimal estimatedVolumeCbm) {
+            this(orderId, orderNumber, status, outletId, supplierStoreId, deliveryFee, deliveryMode,
+                 estimatedWeightKg, estimatedVolumeCbm, false);
+        }
     }
 
     public OrderInfo order(Long supplierOrderId) {
         var rows = jdbc.query("""
                 select id, order_number, status, outlet_id, supplier_store_id,
-                       delivery_fee, delivery_mode
+                       delivery_fee, delivery_mode, coalesce(has_cold_chain_items, 0)
                   from supplier_order where id = ?
                 """,
                 (rs, row) -> new OrderInfo(rs.getLong(1), rs.getString(2), rs.getString(3),
                         rs.getLong(4), rs.getLong(5), rs.getBigDecimal(6), rs.getString(7),
-                        calculateWeightKg(rs.getLong(1)), null),
+                        calculateWeightKg(rs.getLong(1)), null, rs.getBoolean(8)),
                 supplierOrderId);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public boolean intentRequiresColdChain(Long intentId) {
+        Integer count = jdbc.queryForObject("""
+                select count(*)
+                  from intent_item i
+                  join supplier_sku s on s.id = i.supplier_sku_id
+                 where i.intent_id = ? and s.requires_cold_chain = 1
+                """, Integer.class, intentId);
+        return count != null && count > 0;
     }
 
     /**
@@ -152,6 +170,44 @@ public class DeliveryDirectory {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** City, state and pincode of a supplier store, or null when there is no such store. */
+    public com.costonomy.mp.delivery.provider.DeliveryProvider.Locality pickupLocality(Long supplierStoreId) {
+        var rows = jdbc.query("""
+                select city, state, pincode from supplier_store where id = ?
+                """,
+                (rs, row) -> new com.costonomy.mp.delivery.provider.DeliveryProvider.Locality(
+                        rs.getString(1), rs.getString(2), rs.getString(3)),
+                supplierStoreId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** City, state and pincode of an outlet, or null when there is no such outlet. */
+    public com.costonomy.mp.delivery.provider.DeliveryProvider.Locality dropLocality(Long outletId) {
+        var rows = jdbc.query("""
+                select city, state, pincode from outlet where id = ?
+                """,
+                (rs, row) -> new com.costonomy.mp.delivery.provider.DeliveryProvider.Locality(
+                        rs.getString(1), rs.getString(2), rs.getString(3)),
+                outletId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * The value of the goods in a supplier order: accepted amount including GST, excluding
+     * delivery. Same convention as commission (CommissionService). Null when the order
+     * does not exist or has no accepted amount yet; never a default.
+     */
+    public BigDecimal goodsValue(Long supplierOrderId) {
+        if (supplierOrderId == null) {
+            return null;
+        }
+        var rows = jdbc.query("""
+                select accepted_amount - delivery_fee from supplier_order where id = ?
+                """,
+                (rs, row) -> rs.getBigDecimal(1), supplierOrderId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     /**
      * A store's delivery settings. Doc 01 §20.
      *
@@ -164,20 +220,24 @@ public class DeliveryDirectory {
             boolean costonomyDeliveryEnabled,
             BigDecimal ownDeliveryFee,
             BigDecimal ownDeliveryMinOrderValue,
+            BigDecimal minOrderValue,
+            BigDecimal freeDeliveryThreshold,
             BigDecimal maxDeliveryRadiusKm) {
 
         public static final DeliveryPolicy DEFAULT = new DeliveryPolicy(
-                false, true, BigDecimal.ZERO, null, null);
+                false, true, BigDecimal.ZERO, null, BigDecimal.ZERO, null, null);
     }
 
     public DeliveryPolicy deliveryPolicy(Long supplierStoreId) {
         var rows = jdbc.query("""
                 select own_delivery_enabled, costonomy_delivery_enabled, own_delivery_fee,
-                       own_delivery_min_order_value, max_delivery_radius_km
+                       own_delivery_min_order_value, coalesce(min_order_value, 0), free_delivery_threshold,
+                       max_delivery_radius_km
                   from supplier_delivery_policy where supplier_store_id = ?
                 """,
                 (rs, row) -> new DeliveryPolicy(rs.getBoolean(1), rs.getBoolean(2),
-                        rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getBigDecimal(5)),
+                        rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getBigDecimal(5),
+                        rs.getBigDecimal(6), rs.getBigDecimal(7)),
                 supplierStoreId);
         return rows.isEmpty() ? DeliveryPolicy.DEFAULT : rows.get(0);
     }

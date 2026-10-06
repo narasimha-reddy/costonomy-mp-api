@@ -61,7 +61,6 @@ public class SettlementJobs {
      */
     @Scheduled(fixedDelayString = "${costonomy.mp.settlement.reconcile-interval:PT1H}")
     @SchedulerLock(name = "settlement-reconcile", lockAtMostFor = "PT30M", lockAtLeastFor = "PT0S")
-    @Transactional
     public void reconcileOpenSettlements() {
         for (SettlementStatus status : new SettlementStatus[] {
                 SettlementStatus.CALCULATED, SettlementStatus.APPROVED}) {

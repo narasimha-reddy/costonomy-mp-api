@@ -351,6 +351,44 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
                     "select count(*) from delivery where supplier_order_id = ?",
                     Integer.class, order.orderId())).isEqualTo(1);
         }
+
+        /** Ask for a delivery partner by name, as the supplier's app does. */
+        private JsonNode requestDeliveryAs(ReadyOrder order, String mode) throws Exception {
+            return json.readTree(mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/supplier-orders/" + order.orderId() + "/delivery")
+                            .header("Authorization", "Bearer " + order.seller().token())
+                            .header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("mode", mode))))
+                    .andReturn().getResponse().getContentAsString());
+        }
+
+        private int couriersFor(ReadyOrder order) {
+            return jdbc.queryForObject(
+                    "select count(*) from delivery where supplier_order_id = ? and mode = 'COSTONOMY'",
+                    Integer.class, order.orderId());
+        }
+
+        @Test
+        @DisplayName("a courier cannot be booked for a pickup order, even when one is asked for by name (D-145)")
+        void noCourierForAPickup() throws Exception {
+            var order = readyOrder("PICKUP");
+
+            var refused = requestDeliveryAs(order, "COSTONOMY");
+
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("DELIVERY_UNAVAILABLE");
+            assertThat(couriersFor(order)).isZero();
+        }
+
+        @Test
+        @DisplayName("a courier cannot be booked for an order the supplier is delivering themselves (D-145)")
+        void noCourierForOwnDelivery() throws Exception {
+            var order = readyOrder("SUPPLIER_DELIVERY");
+
+            requestDeliveryAs(order, "COSTONOMY");
+
+            assertThat(couriersFor(order)).isZero();
+        }
     }
 
     // ── Selection and the internal-only rule ─────────────────────────────

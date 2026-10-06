@@ -188,19 +188,22 @@ class StorefrontIT extends AbstractIntegrationTest {
         @DisplayName("lists who delivers here with no search term at all")
         void listsWithoutATerm() throws Exception {
             var outlet = newOutlet();
-            // Named to sort first. The directory takes the first 100 suppliers by
-            // name before it sorts by distance (StorefrontService, "limit 100"), and
-            // the suite shares one database — so a store named later in the
-            // alphabet falls off the page once enough other tests have run, and a
-            // doesNotContain below would then pass without checking anything.
-            // That cap is a product question, recorded in D-101; this keeps the
-            // test about what it is about.
+            // The suite shares one database, so many stores sit at the same distance and this one may not be on the
+            // first page. Read every page (D-139) rather than depend on where it sorts.
             String run = "000 " + System.nanoTime();
             newStore(run + " ABC Foods", NEARBY_LAT, NEARBY_LON);
             newStore(run + " Chennai Foods", FAR_LAT, FAR_LON);
 
-            var page = directory(outlet, "");
-            var names = page.get("suppliers").findValuesAsText("supplierName");
+            var names = new java.util.ArrayList<String>();
+            int offset = 0;
+            while (true) {
+                var page = directory(outlet, "&limit=100&offset=" + offset);
+                names.addAll(page.get("suppliers").findValuesAsText("supplierName"));
+                if (page.get("nextOffset").isNull()) {
+                    break;
+                }
+                offset = page.get("nextOffset").asInt();
+            }
 
             assertThat(names).contains(run + " ABC Foods");
             // Five hundred kilometres away is not a supplier of yours.
@@ -338,6 +341,164 @@ class StorefrontIT extends AbstractIntegrationTest {
             assertThat(matched.findValuesAsText("supplierName")).containsExactly("Gupta Provisions");
             // Nothing they sell matched, so the row will not claim otherwise.
             assertThat(matched.get(0).get("matchingProductCount").asInt()).isZero();
+        }
+
+        @Test
+        @DisplayName("an outlet the caller cannot see returns 404, not 403")
+        void unscopedOutletReturnsNotFound() throws Exception {
+            var outlet = newOutlet();
+            String otherToken = api.loginFresh();
+
+            // When an outletId is supplied that the caller is not scoped to, requireScoped
+            // throws NotFoundException, mapped to 404.
+            int status = api.getStatus(otherToken, "/api/v1/search/suppliers?outletId=" + outlet.outletId());
+            assertThat(status).isEqualTo(404);
+        }
+
+        @Test
+        @DisplayName("reach=all bypasses serviceability filter for credit flow")
+        void reachAllBypassesServiceability() throws Exception {
+            var outlet = newOutlet();
+            String run = "R" + System.nanoTime();
+            newStore(run + " Chennai Foods", FAR_LAT, FAR_LON);
+
+            var page = directory(outlet, "&reach=all&q=" + run);
+            var names = page.get("suppliers").findValuesAsText("supplierName");
+            assertThat(names).contains(run + " Chennai Foods");
+        }
+
+        @Test
+        @DisplayName("100 AAA stores at 2-5 km plus one ZZZ at 0.5 km: ZZZ must be first on page 1, disjoint pages cover all with no repeats, limit clamped, nextOffset null at end")
+        void paginationAndNearestSorting() throws Exception {
+            var outlet = newOutlet();
+            String run = "D139_" + System.currentTimeMillis();
+
+            // Insert 100 AAA stores directly via SQL into database to be fast
+            // Distances around 2 to 5 km from HYD (17.4156, 78.4347).
+            // A delta of 0.02 to 0.04 deg lat is ~2.2 km to 4.5 km.
+            String insertOrg = """
+                    insert into supplier_organization (legal_name, display_name, contact_name, contact_phone, lifecycle_status, verification_status)
+                    values (?, ?, 'Desk', '+919876500000', 'ACTIVE', 'VERIFIED')
+                    """;
+            String insertStore = """
+                    insert into supplier_store (supplier_organization_id, name, address_line1, city, state, pincode, latitude, longitude, preparation_minutes, status)
+                    values (?, ?, 'Street', 'Hyderabad', 'Telangana', '500034', ?, ?, 30, 'ACTIVE')
+                    """;
+
+            for (int i = 0; i < 100; i++) {
+                String orgName = String.format("%s_AAA_%03d", run, i);
+                jdbc.update(insertOrg, orgName + " Ltd", orgName);
+                Long orgId = jdbc.queryForObject("select id from supplier_organization where display_name = ?", Long.class, orgName);
+                double lat = 17.4350 + (i * 0.0001); // ~2.2 km away
+                double lon = 78.4350;
+                jdbc.update(insertStore, orgId, orgName + " Store", String.valueOf(lat), String.valueOf(lon));
+                Long storeId = jdbc.queryForObject("select id from supplier_store where supplier_organization_id = ?", Long.class, orgId);
+                TestCatalog.tradesAroundTheClock(jdbc, orgId);
+            }
+
+            // Insert one ZZZ store at 0.5 km (~0.004 deg lat)
+            String zzzName = run + "_ZZZ_Near";
+            jdbc.update(insertOrg, zzzName + " Ltd", zzzName);
+            Long zzzOrgId = jdbc.queryForObject("select id from supplier_organization where display_name = ?", Long.class, zzzName);
+            double zzzLat = 17.4200; // ~0.5 km away
+            double zzzLon = 78.4347;
+            jdbc.update(insertStore, zzzOrgId, zzzName + " Store", String.valueOf(zzzLat), String.valueOf(zzzLon));
+            TestCatalog.tradesAroundTheClock(jdbc, zzzOrgId);
+
+            // Total stores matching run is 101.
+            // Page 1 with default limit 50, offset 0:
+            var page1 = directory(outlet, "&q=" + run + "&offset=0&limit=50");
+            assertThat(page1.get("total").asInt()).isEqualTo(101);
+            assertThat(page1.get("nextOffset").asInt()).isEqualTo(50);
+            var page1Suppliers = page1.get("suppliers");
+            assertThat(page1Suppliers).hasSize(50);
+            // ZZZ must be first on page 1 because it's nearest (0.5 km vs 2+ km)!
+            assertThat(page1Suppliers.get(0).get("supplierName").asText()).isEqualTo(zzzName);
+
+            // Page 2 with limit 50, offset 50:
+            var page2 = directory(outlet, "&q=" + run + "&offset=50&limit=50");
+            assertThat(page2.get("total").asInt()).isEqualTo(101);
+            assertThat(page2.get("nextOffset").asInt()).isEqualTo(100);
+            var page2Suppliers = page2.get("suppliers");
+            assertThat(page2Suppliers).hasSize(50);
+
+            // Page 3 with limit 50, offset 100:
+            var page3 = directory(outlet, "&q=" + run + "&offset=100&limit=50");
+            assertThat(page3.get("total").asInt()).isEqualTo(101);
+            assertThat(page3.get("nextOffset").isNull()).isTrue();
+            var page3Suppliers = page3.get("suppliers");
+            assertThat(page3Suppliers).hasSize(1);
+
+            // Verify disjoint pages cover all stores with no repeats:
+            var allNames = new java.util.ArrayList<String>();
+            allNames.addAll(page1Suppliers.findValuesAsText("supplierName"));
+            allNames.addAll(page2Suppliers.findValuesAsText("supplierName"));
+            allNames.addAll(page3Suppliers.findValuesAsText("supplierName"));
+            assertThat(allNames).hasSize(101);
+            assertThat(new java.util.HashSet<>(allNames)).hasSize(101);
+
+            // Limit above 100 is clamped: request limit=200
+            var clampedPage = directory(outlet, "&q=" + run + "&offset=0&limit=200");
+            assertThat(clampedPage.get("suppliers")).hasSize(100); // clamped to 100
+            assertThat(clampedPage.get("nextOffset").asInt()).isEqualTo(100);
+        }
+    }
+
+    // ── Popular suppliers ────────────────────────────────────────────────
+
+    @Nested
+    @DisplayName("popular suppliers")
+    class Popular {
+
+        @Test
+        @DisplayName("a far supplier is excluded and does not eat the limit")
+        void farSupplierIsExcludedAndDoesNotEatTheLimit() throws Exception {
+            var outlet = newOutlet();
+            long p1 = TestCatalog.freshProduct(jdbc, "pop1");
+            long p2 = TestCatalog.freshProduct(jdbc, "pop2");
+            long p3 = TestCatalog.freshProduct(jdbc, "pop3");
+            long p4 = TestCatalog.freshProduct(jdbc, "pop4");
+            long p5 = TestCatalog.freshProduct(jdbc, "pop5");
+
+            // 1 Far store (500 km away) with 4 SKUs (higher skuCount than other stores)
+            var farStore = newStore("Far Popular Store", FAR_LAT, FAR_LON);
+            stock(farStore, p1, code("FAR1", p1), "100");
+            stock(farStore, p2, code("FAR2", p2), "100");
+            stock(farStore, p3, code("FAR3", p3), "100");
+            stock(farStore, p4, code("FAR4", p4), "100");
+
+            // 2 Near stores (7 km away) with 3 SKUs each
+            var near1 = newStore("Near Popular 1", NEARBY_LAT, NEARBY_LON);
+            stock(near1, p1, code("N1_1", p1), "110");
+            stock(near1, p2, code("N1_2", p2), "110");
+            stock(near1, p3, code("N1_3", p3), "110");
+
+            var near2 = newStore("Near Popular 2", NEARBY_LAT, NEARBY_LON);
+            stock(near2, p1, code("N2_1", p1), "120");
+            stock(near2, p2, code("N2_2", p2), "120");
+            stock(near2, p3, code("N2_3", p3), "120");
+
+            // Far store is closer to top in SQL query (4 SKUs vs 3 SKUs vs earlier test stores with 1 SKU).
+            // With limit=2: if farStore was not filtered out before limit, it would be included and eat the limit!
+            // But because farStore is filtered by serviceability, both Near Popular 1 and Near Popular 2 are returned.
+            var res = api.get(outlet.token(),
+                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=2").at("/data");
+
+            var names = res.findValuesAsText("supplierName");
+            assertThat(names).doesNotContain("Far Popular Store");
+            assertThat(names).contains("Near Popular 1", "Near Popular 2");
+            assertThat(res.size()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("limit is clamped to at most 100")
+        void limitIsClampedToAtMost100() throws Exception {
+            var outlet = newOutlet();
+            // Request limit=200, ensure endpoint does not fail and returns valid list
+            var res = api.get(outlet.token(),
+                    "/api/v1/outlets/" + outlet.outletId() + "/suppliers/popular?limit=200").at("/data");
+            assertThat(res.isArray()).isTrue();
+            assertThat(res.size()).isLessThanOrEqualTo(100);
         }
     }
 

@@ -7,6 +7,7 @@ import com.costonomy.mp.catalog.repository.SupplierOfferRepository;
 import com.costonomy.mp.catalog.repository.SupplierSkuRepository;
 import com.costonomy.mp.catalog.service.SkuDirectory;
 import com.costonomy.mp.common.audit.AuditService;
+import org.springframework.dao.DataIntegrityViolationException;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 
@@ -74,7 +75,6 @@ import java.util.Map;
 @Slf4j
 public class IntentService {
 
-    private static final DateTimeFormatter REFERENCE_DATE = DateTimeFormatter.ofPattern("yyMMdd");
 
     private final IntentRepository intents;
     private final IntentItemRepository intentItems;
@@ -86,6 +86,7 @@ public class IntentService {
     private final ProcurementDirectory directory;
     private final AccessControlService accessControl;
     private final AuditService auditService;
+    private final IntentDraftStore draftStore;
 
     /**
      * Only for {@link #updateItem}'s forced version bump on a sent request. A
@@ -132,7 +133,9 @@ public class IntentService {
 
         var intent = openDraft(actorId, outletId, sku.getSupplierStoreId());
 
-        var existing = intentItems.findByIntentIdAndSupplierSkuId(intent.getId(), sku.getId());
+        // Locking read: the draft is locked, so no one else is adding this SKU, and a plain read could miss a line the
+        // last holder of the lock just committed (D-137).
+        var existing = intentItems.lockByIntentIdAndSupplierSkuId(intent.getId(), sku.getId());
         if (existing.isPresent()) {
             // Adding the same pack again increases the quantity. Two lines for one
             // SKU is two answers to one question, and the supplier would have to
@@ -171,9 +174,13 @@ public class IntentService {
      */
     @Transactional
     public IntentDtos.IntentResponse updateItem(Long actorId, Long itemId, BigDecimal quantity) {
-        var item = intentItems.findById(itemId)
+        // Intent first, then the line, as everywhere (D-137). Only the line's intent id is read before the lock, and
+        // it never changes; the line itself is read under the lock so a concurrent removal or edit is seen.
+        var intentId = intentItems.findIntentIdById(itemId)
                 .orElseThrow(() -> new NotFoundException("IntentItem", itemId));
-        var intent = loadForWrite(actorId, item.getIntentId(), Permissions.PROCUREMENT_CREATE);
+        var intent = loadForWrite(actorId, intentId, Permissions.PROCUREMENT_CREATE);
+        var item = intentItems.lockById(itemId)
+                .orElseThrow(() -> new NotFoundException("IntentItem", itemId));
         requireQuantityEditable(intent);
 
         boolean sent = intent.getStatus() == IntentStatus.OPEN;
@@ -190,7 +197,7 @@ public class IntentService {
                         "A sent request must keep at least this line. "
                                 + "Withdraw the request instead of emptying it.");
             }
-            return removeLine(intent, item);
+            return removeLine(actorId, intent, item);
         }
 
         item.setRequestedQuantity(quantity);
@@ -205,21 +212,41 @@ public class IntentService {
             // pricing quantities that changed underneath them. This is the
             // "already approved?" re-check, enforced by the database rather than
             // by a second read that a race can still slip between.
-            entityManager.lock(intent, LockModeType.OPTIMISTIC_FORCE_INCREMENT);
-            // The forced bump lands at commit, so the response has to be told
-            // about it — otherwise the caller is handed the revision it had
-            // *before* its own edit, sends that back, and is refused by the very
-            // check its edit triggered.
-            return mapper.toResponseAfterForcedBump(intent);
+            entityManager.lock(intent, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
+            // The intent is already locked (D-137), so the bump is a pessimistic force-increment, which writes the new
+            // version immediately: the response carries the revision after the caller's own edit, not the one before
+            // it, or sending it back would be refused by the very check the edit triggered. (An optimistic force-
+            // increment on an already pessimistically locked row does not bump at all.)
+            return mapper.toResponse(intent);
         }
+        return mapper.toResponse(intent);
+    }
+
+    /**
+     * Whether the restaurant wants this supplier's request delivered or will collect it (D-143). Chosen per supplier,
+     * on the draft, before it is sent; the supplier then answers knowing it (a pickup needs no delivery offer).
+     */
+    @Transactional
+    public IntentDtos.IntentResponse setDeliveryPreference(Long actorId, Long intentId, String preference) {
+        var intent = loadForWrite(actorId, intentId, Permissions.PROCUREMENT_CREATE);
+        if (intent.getStatus() != IntentStatus.DRAFT) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "This request has already been sent. Withdraw it to change how it should reach you.");
+        }
+        intent.setDeliveryPreference(preference);
+        intents.save(intent);
         return mapper.toResponse(intent);
     }
 
     @Transactional
     public IntentDtos.IntentResponse removeItem(Long actorId, Long itemId) {
-        var item = intentItems.findById(itemId)
+        // Intent first, then the line, as everywhere (D-137). Only the line's intent id is read before the lock, and
+        // it never changes; the line itself is read under the lock so a concurrent removal or edit is seen.
+        var intentId = intentItems.findIntentIdById(itemId)
                 .orElseThrow(() -> new NotFoundException("IntentItem", itemId));
-        var intent = loadForWrite(actorId, item.getIntentId(), Permissions.PROCUREMENT_CREATE);
+        var intent = loadForWrite(actorId, intentId, Permissions.PROCUREMENT_CREATE);
+        var item = intentItems.lockById(itemId)
+                .orElseThrow(() -> new NotFoundException("IntentItem", itemId));
         requireQuantityEditable(intent);
 
         boolean sent = intent.getStatus() == IntentStatus.OPEN;
@@ -228,7 +255,7 @@ public class IntentService {
             // same reason: a request may shrink while a supplier is reading it,
             // but it may not become empty. An empty request is a clock running
             // against nothing, and withdrawing is what says so to the supplier.
-            if (intentItems.countByIntentId(intent.getId()) <= 1) {
+            if (intentItems.lockByIntentId(intent.getId()).size() <= 1) {
                 throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                         "A sent request must keep at least one line. "
                                 + "Withdraw the request instead of emptying it.");
@@ -236,13 +263,14 @@ public class IntentService {
             // Same forced bump as a quantity edit: removing a line touches the
             // line, not the intent, so without this a supplier answering
             // concurrently would never collide with the removal.
-            entityManager.lock(intent, LockModeType.OPTIMISTIC_FORCE_INCREMENT);
+            entityManager.lock(intent, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
             intentItems.delete(item);
             intentItems.flush();
-            return mapper.toResponseAfterForcedBump(intent);
+            auditItemRemoved(actorId, intent, item);
+            return mapper.toResponse(intent);
         }
 
-        return removeLine(intent, item);
+        return removeLine(actorId, intent, item);
     }
 
     /**
@@ -257,16 +285,29 @@ public class IntentService {
      * <p>Emptying a draft removes the draft too, so the basket does not keep a
      * card for a supplier the restaurant has cleared out.
      */
-    private IntentDtos.IntentResponse removeLine(Intent intent, IntentItem item) {
+    private IntentDtos.IntentResponse removeLine(Long actorId, Intent intent, IntentItem item) {
         intentItems.delete(item);
         intentItems.flush();
+        auditItemRemoved(actorId, intent, item);
 
-        if (intentItems.countByIntentId(intent.getId()) == 0) {
+        // Counted under the lock, from the latest committed lines: a line a concurrent add committed first must stop
+        // this from deleting a draft that is no longer empty (D-137).
+        if (intentItems.lockByIntentId(intent.getId()).isEmpty()) {
             var emptied = mapper.toResponse(intent);
+            auditService.record(actorId, null, "INTENT_DRAFT_DELETED", "INTENT", intent.getId(),
+                    intent.getStatus().name(), null, intent.getReference(), "API");
             intents.delete(intent);
+            intents.flush();
             return emptied;
         }
         return mapper.toResponse(intent);
+    }
+
+    /** A removed line leaves no row behind, so the audit log is the only record that it existed. */
+    private void auditItemRemoved(Long actorId, Intent intent, IntentItem item) {
+        auditService.record(actorId, null, "INTENT_ITEM_REMOVED", "INTENT_ITEM", item.getId(),
+                "sku %d x %s".formatted(item.getSupplierSkuId(), item.getRequestedQuantity().toPlainString()),
+                null, intent.getReference(), "API");
     }
 
     /**
@@ -276,30 +317,34 @@ public class IntentService {
      * caller here creates one only because it is about to put something on it.
      */
     private Intent openDraft(Long actorId, Long outletId, Long supplierStoreId) {
-        return intents
-                .findByOutletIdAndSupplierStoreIdAndStatus(outletId, supplierStoreId,
-                        IntentStatus.DRAFT)
-                .orElseGet(() -> create(actorId, outletId, supplierStoreId, "MANUAL", null));
-    }
-
-    private Intent create(Long actorId, Long outletId, Long supplierStoreId,
-                          String source, Long clonedFromId) {
-        var intent = new Intent();
-        intent.setOutletId(outletId);
-        intent.setSupplierStoreId(supplierStoreId);
-        intent.setCreatedBy(actorId);
-        intent.setStatus(IntentStatus.DRAFT);
-        intent.setSource(source);
-        intent.setClonedFromId(clonedFromId);
-        // Placeholder for one statement. The reference embeds the id, so it cannot
-        // be known before the insert — and deriving it from the id is what makes it
-        // collision-free without a second sequence table to keep in step.
-        intent.setReference("PENDING");
-        intents.saveAndFlush(intent);
-
-        intent.setReference("RQ-%s-%06d".formatted(
-                LocalDate.now(ZoneOffset.UTC).format(REFERENCE_DATE), intent.getId()));
-        return intents.saveAndFlush(intent);
+        // At most one draft exists per outlet and store (V72). Find its id without loading it, lock it, and if there
+        // is none insert one in a transaction of its own: a loser of that race gets a duplicate-key error that does
+        // not poison this transaction, and simply locks the winner's draft on the next pass. A draft sent or deleted
+        // between the lookup and the lock is no longer a draft, so look again (D-137).
+        for (int attempt = 0; attempt < 5; attempt++) {
+            // The first look is plain and cheap. If what it found was sent or deleted since, this transaction's snapshot
+            // would keep showing it, so every later pass reads the latest committed rows instead.
+            var id = (attempt == 0
+                    ? intents.findDraftId(outletId, supplierStoreId)
+                    : draftStore.currentDraftId(outletId, supplierStoreId)).orElse(null);
+            if (id == null) {
+                try {
+                    id = draftStore.insertDraft(actorId, outletId, supplierStoreId, "MANUAL", null);
+                } catch (DataIntegrityViolationException raced) {
+                    // Someone else's insert won; their row is committed, and a read in a fresh transaction sees it.
+                    id = draftStore.currentDraftId(outletId, supplierStoreId).orElse(null);
+                    if (id == null) {
+                        continue;
+                    }
+                }
+            }
+            var locked = intents.lockById(id).orElse(null);
+            if (locked != null && locked.getStatus() == IntentStatus.DRAFT) {
+                return locked;
+            }
+        }
+        throw new BusinessException(ErrorCode.CONCURRENT_MODIFICATION,
+                "Your basket was changed at the same moment. Try again.");
     }
 
     // ── Sending ──────────────────────────────────────────────────────────
@@ -319,7 +364,7 @@ public class IntentService {
         var intent = loadForWrite(actorId, intentId, Permissions.PROCUREMENT_SUBMIT);
         requireEditable(intent);
 
-        var lines = intentItems.findByIntentIdOrderByIdAsc(intentId);
+        var lines = intentItems.lockByIntentId(intentId);
         if (lines.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "Add something before sending this request.");
@@ -335,6 +380,16 @@ public class IntentService {
                             : "This supplier isn't taking requests right now.");
         }
 
+        requireSensibleDeliveryDate(request.preferredDeliveryDate());
+
+        // The same price rule as sending the basket (D-146): a line whose price moved since it was added is shown and
+        // agreed to, never sent at a price nobody agreed to. Sending the basket does this itself and then passes
+        // acceptance down; this route used to skip it, so a caller could send at a stale snapshot.
+        if (!Boolean.TRUE.equals(request.acceptPriceChanges()) && !repricedLines(lines).isEmpty()) {
+            throw new BusinessException(ErrorCode.PRICE_CHANGED);
+        }
+        lines.forEach(this::lockPrice);
+
         Instant now = Instant.now();
         int windowSeconds = policy.responseWindowSecondsFor(store.responseSlaSeconds());
 
@@ -346,6 +401,7 @@ public class IntentService {
         intent.setResponseWindowSeconds(windowSeconds);
         intent.setResponseDeadline(policy.responseDeadline(now, windowSeconds));
         intent.setRequestedDeliveryTime(request.requestedDeliveryTime());
+        intent.setPreferredDeliveryDate(request.preferredDeliveryDate());
         if (request.notes() != null) {
             intent.setNotes(request.notes());
         }
@@ -383,8 +439,8 @@ public class IntentService {
         accessControl.requireScoped(actorId, Permissions.PROCUREMENT_SUBMIT,
                 ScopeType.OUTLET, outletId, "Outlet");
 
-        var drafts = intents.findByOutletIdAndStatus(outletId, IntentStatus.DRAFT);
-        if (drafts.isEmpty()) {
+        var draftIds = intents.findDraftIds(outletId);
+        if (draftIds.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "There's nothing to send.");
         }
@@ -393,10 +449,10 @@ public class IntentService {
         // else's outlet is not found rather than refused — the id is not a way
         // to reach a request the caller could not otherwise see.
         if (request.intentId() != null) {
-            drafts = drafts.stream()
-                    .filter(draft -> request.intentId().equals(draft.getId()))
+            draftIds = draftIds.stream()
+                    .filter(id -> request.intentId().equals(id))
                     .toList();
-            if (drafts.isEmpty()) {
+            if (draftIds.isEmpty()) {
                 throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND,
                         "That request is no longer a draft.");
             }
@@ -405,8 +461,14 @@ public class IntentService {
         var sent = new ArrayList<IntentDtos.IntentResponse>();
         var held = new ArrayList<IntentDtos.HeldRequest>();
 
-        for (Intent draft : drafts) {
-            var lines = intentItems.findByIntentIdOrderByIdAsc(draft.getId());
+        for (Long draftId : draftIds) {
+            // Each draft is locked before it is read, and what was a draft a moment ago may not be now (sent from
+            // another screen, or emptied). Lines are read under the lock so a concurrent add is priced too (D-137).
+            var draft = intents.lockById(draftId).orElse(null);
+            if (draft == null || draft.getStatus() != IntentStatus.DRAFT) {
+                continue;
+            }
+            var lines = intentItems.lockByIntentId(draft.getId());
             if (lines.isEmpty()) {
                 continue;
             }
@@ -423,7 +485,8 @@ public class IntentService {
             // Agreed, so the line now carries the price it will be answered at.
             lines.forEach(this::lockPrice);
             sent.add(send(actorId, draft.getId(),
-                    new IntentDtos.SendRequest(request.requestedDeliveryTime(), request.notes())));
+                    new IntentDtos.SendRequest(request.requestedDeliveryTime(),
+                            request.preferredDeliveryDate(), request.notes(), true)));
         }
 
         return new IntentDtos.SendBasketResponse(sent, held);
@@ -498,7 +561,7 @@ public class IntentService {
         accessControl.requireScoped(actorId, Permissions.PROCUREMENT_CREATE,
                 ScopeType.OUTLET, outletId, "Outlet");
         return mapper.toBasket(
-                intents.findByOutletIdAndStatus(outletId, IntentStatus.DRAFT));
+                intents.findFilledDrafts(outletId));
     }
 
     /**
@@ -576,6 +639,7 @@ public class IntentService {
                 source.directOrdersEnabled(),
                 source.status(), source.fulfilment(),
                 source.source(), source.clonedFromId(), source.requestedDeliveryTime(),
+                source.preferredDeliveryDate(), source.deliveryPreference(),
                 source.notes(), source.sentAt(), source.responseDeadline(),
                 source.responseWindowSeconds(), source.acceptedAt(),
                 source.orderCreationDeadline(), source.orderCreationWindowSeconds(),
@@ -584,7 +648,8 @@ public class IntentService {
                 source.withinOrderWindow(), source.items(),
                 source.agreedValue(), source.agreedGst(), source.agreedTotal(),
                 source.pricedComplete(), source.priceChanged(),
-                null, source.supplierOrderId(), source.supplierOrderNumber());
+                null, source.supplierOrderId(), source.supplierOrderNumber(),
+                source.minOrderValue(), source.freeDeliveryThreshold());
     }
 
     // ── Ending and repeating ─────────────────────────────────────────────
@@ -670,7 +735,7 @@ public class IntentService {
                 continue;
             }
             var existing = intentItems
-                    .findByIntentIdAndSupplierSkuId(target.getId(), line.getSupplierSkuId());
+                    .lockByIntentIdAndSupplierSkuId(target.getId(), line.getSupplierSkuId());
             if (existing.isPresent()) {
                 var item = existing.get();
                 item.setRequestedQuantity(
@@ -697,11 +762,28 @@ public class IntentService {
     // ── Shared ───────────────────────────────────────────────────────────
 
     private Intent loadForWrite(Long actorId, Long intentId, String permission) {
-        var intent = intents.findById(intentId)
+        // Locked, so two edits of one request take turns and the second sees what the first committed (D-137).
+        var intent = intents.lockById(intentId)
                 .orElseThrow(() -> new NotFoundException("Intent", intentId));
         accessControl.requireScoped(actorId, permission,
                 ScopeType.OUTLET, intent.getOutletId(), "Intent");
         return intent;
+    }
+
+    /** India's calendar day, which is the day a kitchen means by "today". */
+    private static final java.time.ZoneId BUSINESS_ZONE = java.time.ZoneId.of("Asia/Kolkata");
+    private static final int MAX_DAYS_AHEAD = 30;
+
+    /** A day wanted for delivery must be today or later, and not further out than a month (D-140). */
+    private void requireSensibleDeliveryDate(java.time.LocalDate wanted) {
+        if (wanted == null) {
+            return;
+        }
+        var today = LocalDate.now(BUSINESS_ZONE);
+        if (wanted.isBefore(today) || wanted.isAfter(today.plusDays(MAX_DAYS_AHEAD))) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Choose a delivery day from today to %d days ahead.".formatted(MAX_DAYS_AHEAD));
+        }
     }
 
     private void requireEditable(Intent intent) {

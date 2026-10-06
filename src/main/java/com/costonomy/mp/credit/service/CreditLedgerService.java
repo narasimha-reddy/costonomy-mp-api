@@ -175,6 +175,38 @@ public class CreditLedgerService {
                 null);
     }
 
+    /**
+     * Bring a drawn order down to what it finally comes to (D-128, D-129): the invoice, what is drawn against the
+     * limit, and the reservation's record of it, together. Idempotent: it acts only on the difference.
+     *
+     * @return what the invoice did, or null when this is not a drawn credit order
+     */
+    @Transactional
+    public CreditInvoiceService.Reduction reduceDrawnTo(Long supplierOrderId, BigDecimal finalPayable,
+                                                        BigDecimal adjustmentAmount, String reason) {
+        var reservation = reservations.findBySupplierOrderId(supplierOrderId).orElse(null);
+        if (reservation == null || reservation.getStatus() != CreditReservationStatus.UTILIZED) {
+            // Not a credit order, or not drawn yet (nothing to bring down).
+            return null;
+        }
+        var reduction = invoices.reduceTo(supplierOrderId, finalPayable, adjustmentAmount);
+        if (reduction == null || reduction.reduced().signum() <= 0) {
+            // Nothing came off the debt (already at the target, or already repaid beyond it). Exposure only ever
+            // comes down by what the invoice came down: the repayment has already freed the rest.
+            return reduction;
+        }
+        ledger.reduceDrawn(reduction.agreementId(), reservation.getId(), supplierOrderId,
+                reduction.invoiceId(), reduction.reduced(), reason);
+        reservation.setUtilizedAmount(reservation.getUtilizedAmount().subtract(reduction.reduced()));
+        reservations.save(reservation);
+
+        outbox.publish("CreditAdjusted", "CREDIT_AGREEMENT", reduction.agreementId(),
+                Map.of("supplierOrderId", supplierOrderId,
+                        "reduced", reduction.reduced().toPlainString()),
+                null);
+        return reduction;
+    }
+
     /** The order will never be supplied. Give the whole hold back. */
     @Transactional
     public void release(Long supplierOrderId, String reason) {

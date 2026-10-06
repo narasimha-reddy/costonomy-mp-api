@@ -66,15 +66,17 @@ public class SettlementReconciliationService {
     @Transactional
     public SettlementDtos.ReconciliationResponse reconcileInternal(Long settlementId,
                                                                    Long actorId) {
-        var settlement = settlements.findById(settlementId)
+        var settlement = settlements.lockById(settlementId)
                 .orElseThrow(() -> new NotFoundException("Settlement", settlementId));
 
         var orderIds = calculations.findBySettlementId(settlementId).stream()
                 .map(CommissionCalculation::getSupplierOrderId)
                 .toList();
 
-        BigDecimal captured = directory.capturedFor(orderIds);
-        BigDecimal difference = settlement.getGrossAmount().subtract(captured);
+        BigDecimal captured = directory.collectedFor(orderIds);
+        BigDecimal expected = settlement.getGrossAmount()
+                .subtract(directory.refundsDeductedFrom(settlementId));
+        BigDecimal difference = expected.subtract(captured);
         // compareTo, never equals: 4000.00 and 4000.0000 are the same money and
         // equals would call them a discrepancy.
         boolean matched = difference.compareTo(BigDecimal.ZERO) == 0;

@@ -93,7 +93,9 @@ public class DirectOrderService {
     public IntentDtos.DirectOrderResponse prepare(
             Long actorId, Long intentId, boolean acceptPriceChanges) {
 
-        var intent = intents.findById(intentId)
+        // Locked first (D-137): an add or removal in flight finishes before this reads the lines, and the status
+        // check below sees a send that beat us.
+        var intent = intents.lockById(intentId)
                 .orElseThrow(() -> new NotFoundException("Intent", intentId));
 
         accessControl.requireScoped(actorId, Permissions.PROCUREMENT_SUBMIT,
@@ -106,7 +108,7 @@ public class DirectOrderService {
                             : "This request has already been sent.");
         }
 
-        var lines = intentItems.findByIntentIdOrderByIdAsc(intentId);
+        var lines = intentItems.lockByIntentId(intentId);
         if (lines.isEmpty()) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "Add something before ordering.");
@@ -155,9 +157,18 @@ public class DirectOrderService {
         acceptance.setStatus(IntentAcceptanceStatus.SUBMITTED);
         acceptance.setSubmittedAt(now);
         acceptance.setExpiresAt(deadline);
-        acceptance.setDeliveryModes(modesFor(intent.getSupplierStoreId()));
-        // Quoted when a courier is assigned, never invented here. Doc 06 §4.
-        acceptance.setDeliveryFee(null);
+        if ("PICKUP".equals(intent.getDeliveryPreference())) {
+            // The restaurant will collect it (D-143): no delivery is offered.
+            acceptance.setDeliveryModes("PICKUP");
+            acceptance.setDeliveryOffer("NONE");
+        } else {
+            acceptance.setDeliveryModes(modesFor(intent.getSupplierStoreId()));
+        }
+        // A courier's fee is quoted when asked for (Doc 06 §4). The store's own fee is known, so a buyer is shown it
+        // rather than "Free" (D-141).
+        var ownPolicy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
+        acceptance.setDeliveryFee("PICKUP".equals(intent.getDeliveryPreference()) || !ownPolicy.ownDeliveryEnabled()
+                ? null : ownPolicy.ownDeliveryFee());
         acceptances.saveAndFlush(acceptance);
 
         BigDecimal value = BigDecimal.ZERO;

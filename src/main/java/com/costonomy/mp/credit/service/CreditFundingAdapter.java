@@ -44,6 +44,11 @@ public class CreditFundingAdapter implements OrderFundingPort {
     }
 
     @Override
+    public boolean canFund(Long outletId, Long supplierStoreId) {
+        return agreements.fundingAgreement(outletId, supplierStoreId) != null;
+    }
+
+    @Override
     @Transactional
     public List<FundingIntent> arrangeFunding(List<SupplierOrder> orders) {
         for (SupplierOrder order : orders) {
@@ -113,5 +118,25 @@ public class CreditFundingAdapter implements OrderFundingPort {
     @Transactional
     public void onOrderUnfulfilled(Long supplierOrderId, String reason) {
         ledger.release(supplierOrderId, reason);
+    }
+
+    /** Credit draws the accepted value at acceptance; at ready it comes down to the final payable (D-128). */
+    @Override
+    @Transactional
+    public Reduction onOrderDispatched(Long supplierOrderId, BigDecimal finalPayable, BigDecimal reductionAmount) {
+        return toReduction(ledger.reduceDrawnTo(supplierOrderId, finalPayable, reductionAmount,
+                "Order weighed lighter than ordered: invoice reduced"));
+    }
+
+    @Override
+    @Transactional
+    public Reduction reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
+                                         String key, Long actorId, String reason) {
+        return toReduction(ledger.reduceDrawnTo(supplierOrderId, newFinalPayable, amount, reason));
+    }
+
+    private static Reduction toReduction(CreditInvoiceService.Reduction r) {
+        return r == null ? Reduction.applied(null)
+                : Reduction.applied("credit_invoice:" + r.invoiceId(), r.settledOutside());
     }
 }

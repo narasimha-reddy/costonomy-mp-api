@@ -3625,10 +3625,8 @@ bypass the proxy. A refund is claimed as PROCESSING and committed before the
 call; one left there by a process that died mid-call is resent after five
 minutes, which the per-refund provider key makes safe.
 
-*Not changed:* order creation still calls the provider inside
-`IntentOrderCreator.create`, because that transaction keeps the order and its
-payment atomic. Moving the call out changes the order flow and is for its owner
-to decide.
+*Not changed (superseded by D-136):* order creation still called the provider inside
+`IntentOrderCreator.create`; D-136 moves the call out.
 
 **A retryable capture failure stranded the payment.** It returned the payment to
 AUTHORIZED "so the job tries again", but the capture job reads only
@@ -3764,7 +3762,7 @@ and is asked about (`GET /v1/refunds/{id}`), never resent.
 **Refunds cannot be over-promised, and stop being retried when retrying cannot
 help.** What can be refunded now subtracts refunds still on their way, under the
 payment's lock. A provider's outright refusal goes to `NEEDS_REVIEW` at once, and
-a transient failure after five attempts (`refund.attempts`, `V37`); both log at
+a transient failure after five attempts (`refund.attempts`, `V45`); both log at
 error for an alert to match. Every claim changes the row, so two job runs cannot
 both send one refund. A refund key now belongs to its payment.
 
@@ -4110,7 +4108,7 @@ check — `payments.save` on an entity with no changed field is a Hibernate
 no-op, so a PENDING "touch" and an already-PAID row confirmed still PAID never
 moved `updated_at` — so every open QuickScan payout was re-fetched from the
 provider on every ten-second job run forever, a rate-limit and cost problem
-against a real provider. Fixed with a `checked_at` column (V40, edited before
+against a real provider. Fixed with a `checked_at` column (V48, edited before
 it shipped) that `settlePending` sets explicitly on every outcome it gets an
 answer for, and a bounded, named backoff: a PENDING row is asked about at most
 once a minute (`PENDING_CHECK_EVERY`), and a PAID row at most once every six
@@ -4157,7 +4155,7 @@ why the mock top-up (D-099) is refused on a real provider.
 
 **What.** `POST /outlets/{id}/wallet/top-ups` (`PROCUREMENT_SUBMIT`, scoped to the
 outlet, `Idempotency-Key` required) validates the amount and the limits, writes a
-`wallet_top_up` row (V41) and opens a Razorpay order for exactly that amount with
+`wallet_top_up` row (V45) and opens a Razorpay order for exactly that amount with
 **`payment.capture = automatic`** — a top-up is captured when paid, unlike an
 order (D-103), because there is nothing to wait for and a held authorisation
 would lapse into money we never took. `PaymentProvider.AuthorizationRequest`
@@ -4261,7 +4259,7 @@ purpose, and the history and statements read only the first two:
 | What | Where | Notes |
 |---|---|---|
 | Every change to the wallet balance | `wallet_transaction` (the ledger) | Append-only. Every row has `direction`, `kind`, `amount` and `balance_after`, written under the wallet lock in the same transaction as the balance, so `(created_at, id)` order is balance order. The source of truth for history and statements. |
-| A payment made to add money | `wallet_top_up` (V41, D-107) | The attempt. A credited one also has a ledger row (`reference = topup-{id}`); one that was paid and *returned* (status REFUNDED) has none, because the balance never moved. |
+| A payment made to add money | `wallet_top_up` (V45, D-107) | The attempt. A credited one also has a ledger row (`reference = topup-{id}`); one that was paid and *returned* (status REFUNDED) has none, because the balance never moved. |
 | Money paid for an order | `payment`, `payment_transaction`, `refund` | Card, prepaid and credit orders. A refund credited to the wallet writes a ledger row (`REFUND`); a withdrawal writes a `WITHDRAWAL` ledger row pointing at its `refund`. The refund row's status is what says whether a withdrawal has reached the card. |
 | A wallet-paid order | `wallet_transaction` (`ORDER_PAYMENT`, `ORDER_REFUND`, `DISPUTE_REFUND`) | No `payment` row: the ledger *is* the record (D-105). |
 | QuickScan | `quickscan_payment` (D-106) | The payment and its payout. Its wallet effect is a `QUICKSCAN_PAYMENT` debit and, if returned, a `QUICKSCAN_RETURN` credit in the ledger. |
@@ -4297,12 +4295,12 @@ optional. Newest first.
   that month says, so the header and the file cannot disagree because a filter was on.
   `availableMonths` lists every month with anything to show, whatever the filters.
 - **`instrument`** ("Card •1007", "UPI", "Netbanking") says where a top-up's money came
-  from. V42 adds `wallet_top_up.payment_method` and `payment_detail`, set once, from the
+  from. V46 adds `wallet_top_up.payment_method` and `payment_detail`, set once, from the
   payment Razorpay returns, at the moment the top-up is credited or returned
   (`PaymentProvider.ProviderPayment` gained `method` and `methodDetail`). Only a card's last
   four digits or a provider wallet's name is kept; never a full card number, a UPI address
   or a bank account, and anything that is not exactly four digits is dropped at the
-  adapter. Null for every top-up before V42 and for a method Razorpay did not report; the
+  adapter. Null for every top-up before V46 and for a method Razorpay did not report; the
   history shows those without an instrument rather than guessing.
 
 **Statement: `GET /outlets/{id}/wallet/statement`** (same permission). `range` LAST_30,
@@ -4622,7 +4620,7 @@ hour). See `docs/RAZORPAY.md` section 7 for what each does.
 and is back in the wallet, or was redirected to it by operations). `withdrawableByPayment` counts a withdrawal
 part as spent unless it is `REVERSED`, and marks blocked payments. New refund columns `failure_kind`, `sent_at`,
 `verified_at`/`verified_result`, `failed_at`, `reversed_at`/`reversed_by` and a pending second-approver request; new
-payment columns `provider_refund_blocked_at`/`_reason` (V44).
+payment columns `provider_refund_blocked_at`/`_reason` (V48).
 
 **Verify before every resend.** A refund claimed before (`sent_at` set, or attempts above zero) is never sent on a hunch: the
 job lists the payment's refunds by receipt first, adopts one of ours (completing it, or following it while pending),
@@ -4638,7 +4636,7 @@ person, publishes `WithdrawalDoubleCredit`, and **pauses the outlet's withdrawal
 resolves it (`resolve-late-success`); spending stays allowed. It does not claw back: the balance may be spent and cannot go negative.
 A refund in review after an ambiguous send is read hourly for a week and adopted if Razorpay made it.
 
-**Operations** (`REFUND_OPERATE` for `OPS_FINANCE` and `OPS_ADMIN`, V44; read needs `PAYMENT_INSPECT`; a note on
+**Operations** (`REFUND_OPERATE` for `OPS_FINANCE` and `OPS_ADMIN`, V48; read needs `PAYMENT_INSPECT`; a note on
 every action; audited with the actor). Verify, retry (reads first), **re-credit** a withdrawal part (a verification under
 ten minutes old showing none of ours, an explicit confirmation, evidence when the outcome was never known, and **a
 second person above ₹10,000**, E-9, accepted), **send a cancellation refund to the wallet** (`cancel-wallet-{id}`, same
@@ -4672,7 +4670,7 @@ limitations 3 to 5 are closed by this decision.
    ("exceeds the refundable balance") is classified before the balance one so it is never read as our account's balance.
    `ALREADY_REFUNDED` and `OVER_REFUND` are no longer special cases: they pass through the same proof, so an over-refund whose
    payment holds only our own refunds (an over-estimated allowance) is put back instead of stranded in review.
-2. `refund.provider_refund_id` is uniquely indexed (V44); adoption, mark-completed and the legacy match refuse (to review) when
+2. `refund.provider_refund_id` is uniquely indexed (V48); adoption, mark-completed and the legacy match refuse (to review) when
    another refund holds the provider refund, inside the locked transaction.
 3. The late-success schedule and pause, above.
 4. The amount a refusal offers is computed with the formula the plan uses, so asking for it is accepted.
@@ -4721,8 +4719,8 @@ limitations 3 to 5 are closed by this decision.
    locking reads (`FOR SHARE`) on the connection the transaction holds, which see what is committed now whatever the
    transaction's own snapshot. *(The first version read by the new reference and deadlocked two outlets' refunds every
    time they overlapped; see the fourth review.)*
-9. *V44 is edited in place* (it has never been applied outside the tests), with a pre-deploy check for a duplicate
-   `provider_refund_id` (RAZORPAY.md, "Deploying V44") and the instruction that an environment that ran an earlier V44 needs
+9. *V48 is edited in place* (it has never been applied outside the tests), with a pre-deploy check for a duplicate
+   `provider_refund_id` (RAZORPAY.md, "Deploying V48") and the instruction that an environment that ran an earlier V48 needs
    `flyway repair` or a V45.
 10. *A payment read without `amount_refunded` (or `amount`) is unreadable*, not "nothing refunded".
 
@@ -4805,7 +4803,7 @@ limitations 3 to 5 are closed by this decision.
 5. *The expected stale-update release line is quiet too (F4).* `HHH100503` (INFO) is dropped only as the release of the very
    batch whose `HHH100501` stale-state error was just dropped on the same thread (within five seconds, once).
 
-**Amended after the check of the unknown-payment ops path (round 5; no schema change, V44 untouched).**
+**Amended after the check of the unknown-payment ops path (round 5; no schema change, V48 untouched).**
 1. *The operator's audit and the money move together, and the audit text always fits.* The `REFUND_OPS_RECREDIT` audit of a
    put-back is now written by the reversal itself, inside its transaction (`WithdrawalReversalService.run(..., reversedAudit)`):
    it cannot fail after the money has moved (before, a note and evidence of 400 characters each overflowed
@@ -4855,7 +4853,7 @@ limitations 3 to 5 are closed by this decision.
    an exclusion always needs two different people, whatever the part is worth, each with evidence* (at least 15 characters:
    what shows the payer was not refunded this part's money). Before, below the threshold one person finished it alone.
 8. *The minimum age of a legacy row no longer re-arms itself (live round 3, B1).* A refund from before `last_sent_at` existed
-   (every pre-V43 row, refunds 24 and 25) was aged from `updated_at`, which recording or voiding an approval and every
+   (every pre-V47 row, refunds 24 and 25) was aged from `updated_at`, which recording or voiding an approval and every
    verification move: the 30-minute minimum could not be met inside the ten-minute freshness of the verification, so the
    two-person re-credit could never complete. Now `last_sent_at`, else `sent_at` (the first send), else `created_at`: timestamps
    no action of a person moves. The consequence for a legacy row is that the age is counted from its first known send; such
@@ -4870,7 +4868,7 @@ limitations 3 to 5 are closed by this decision.
    and per send would close it; it is future work. One person holding two operator accounts passes the two-person rule; that is
    organisational.
 
-**Amended after the fifth check (a fourth independent review, `review-api17e.md`; no schema change, V44 untouched).**
+**Amended after the fifth check (a fourth independent review, `review-api17e.md`; no schema change, V48 untouched).**
 1. *F1 (money): which foreign refunds can be excluded.* The fourth round let a refund made by hand for exactly the failed part
    be excluded whenever the whole payment still had room (payment 1000, part 400 refused, 400 refunded by hand: two people
    excluded it and put the part back: wallet 400 and payer 400). **Rule: every refund named, together with those already recorded on the
@@ -4906,10 +4904,10 @@ limitations 3 to 5 are closed by this decision.
    part's exact amount (500 against a part of 400 on a payment of 1000; two refunds of 300 against a part of 400), can be neither excluded
    (strictly-less rule) nor closed by `mark-completed` (same amount, or the payment refunded in full). `retry` works while Razorpay can still
    take the part; otherwise it stays in review for engineering. The alternative (excluding them) is exactly the double payout of F1.
-No schema change (V44 is untouched).
+No schema change (V48 is untouched).
 
 **Amended after the sixth check (a fifth independent review of the same commit, `review-api17f.md`: READY WITH FIXES; no schema change,
-V44 untouched).**
+V48 untouched).**
 1. *F2 (HIGH): `retry` pays a covered part twice, so the gap of item 5 gets a code exit and the runbook stops naming `retry` for it.* Payment
    1000, part 400 refused, support refunded 500 by hand (the 400 and 100 goodwill): the exclusion is refused (500 >= 400), `mark-completed`
    refused (500 != 400, payment not refunded in full) and `retry`, with 500 of room at Razorpay, sends 400 more: the payer holds 900 against 400 owed.
@@ -4988,12 +4986,431 @@ each side must do for the other:
    an order's payment. A `payout` provider left at MOCK under a production profile refuses to start, as does `withdraw-precheck`
    set to anything but true.
 
-**Migrations.** V40 to V42 (QuickScan, top-ups, top-up payment method) and V43 and V44 (the stack) are independent and apply in that order
-on a fresh database and on one already at V42, where V43 and V44 are simply the next two.
+**Migrations.** V48 to V46 (QuickScan, top-ups, top-up payment method) and V47 and V48 (the stack) are independent and apply in that order
+on a fresh database and on one already at V46, where V47 and V48 are simply the next two.
 
 **Tests.** `PaymentFlowIT$WalletInterplay`: top-up money and QuickScan returns against the withdrawal pre-check, a reversal on
 the history and a statement, a QuickScan payment and a withdrawal of one wallet at once, and top-ups, QuickScan, withdrawals and a
 reversal together (ledger equals balance). `WalletEntryCopyTest`.
+
+---
+
+## D-117 — Borzo joins the auction alongside Pidge, verified live instead of assumed
+**Raised 2026-10-01 · Settled 2026-10-01**
+
+Pidge's contract was never checked against a real response — its own
+implementation plan required that and it was skipped, and `PidgeApiClient`
+silently defaults a missing or renamed field to a plausible fake value
+(`new BigDecimal(body.path("total_fare").asText("50.00"))`) instead of
+failing. Borzo sandbox credentials were materially easier to obtain, so it is
+added as a second `DeliveryProvider` — **alongside** Pidge, not replacing it —
+with every request/response field checked against the live sandbox
+(`robotapitest-in.borzodelivery.com`) before being relied on.
+
+### Two independent switches, not one shared one
+`PidgeDeliveryProvider` is `@ConditionalOnProperty(name =
+"costonomy.mp.providers.delivery", havingValue = "PIDGE")` — a single-valued
+switch that cannot also equal `"BORZO"`. Rather than widen that property into a
+list (touching Pidge's tested activation path for no reason), Borzo gets its
+own flag, `costonomy.mp.borzo.enabled`, so it can run next to Pidge, next to
+the mocks, or alone. Both still need the matching `delivery_provider.enabled`
+row (V53, seeded `0`) before `DeliveryProviderRegistry` actually offers the
+adapter a quote — the same dual-gate Pidge already uses.
+`BorzoPidgeCoexistenceTest` proves the two switches don't interfere.
+
+### Borzo has no idempotency-key mechanism of its own — ours is what protects a retry
+Pidge's `createOrder` sends `idempotency_key` in the payload, trusting Pidge to
+deduplicate server-side — unverified, but at least a documented field. Borzo's
+`create-order` has no equivalent. What it does have is `client_order_id`, an
+echoed-back per-point reference with no documented dedup semantics. Rather than
+lean on an unconfirmed provider behaviour, protection against a duplicate
+booking stays where it already lived for every provider: `uk_delivery_order`
+(one delivery per supplier order), `DeliveryService.request()`'s pre-check for
+an existing delivery, `DeliveryBookingService`'s per-attempt idempotency key,
+and no automatic HTTP retry client. `BorzoApiClient.createOrder` sends that
+same deterministic key as `client_order_id` on every point anyway — it costs
+nothing and gives a reconciliation handle if a human ever has to match a
+Borzo order back to an attempt — but it is not treated as the thing preventing
+a double-booking. The residual gap is identical to Pidge's, not new: a
+read-timeout on `create-order` after Borzo already created the order leaves
+our system unable to tell, and both adapters fail loud into "try the next
+provider" rather than silently retrying.
+
+### Quoting needed an address, which `QuoteRequest` never carried
+`calculate-order` rejects a point with no `address` string even when lat/lng
+are both present — confirmed live: a coordinates-only request comes back
+`is_successful: true` with an empty `points` array and
+`parameter_warnings.points[].address: ["required"]`. `DeliveryProvider.QuoteRequest`
+carried only coordinates, because Pidge and the mocks never needed more.
+Extended it with `pickupAddress`/`dropAddress` — sourced from `Delivery`'s own
+(already-`NOT NULL`) address columns in `DeliveryQuotingService`, and from
+`DeliveryDirectory.Place.address()` in `DeliveryFeeQuoteService` — via a new
+constructor overload, so Pidge and the mocks, which never read the field,
+are unaffected.
+
+### No duration ETA exists; a per-point deadline stands in for one
+`calculate-order` never returns an ETA field at all — confirmed by multiple
+live calls, not an undocumented gap assumed from reading the docs. What it
+does return is `points[].required_finish_datetime`, a deadline that moves with
+real route distance (a 19 km test route pushed it out further than a 6 km
+one, confirmed side by side). `BorzoApiClient` reports `etaMinutes` as the
+minutes between now and the **drop point's** `required_finish_datetime`. This
+is a real, provider-computed figure in a different shape — not the invented
+value doc 06 §8 forbids, and not Pidge's own `eta_minutes.asInt(25)` default
+either.
+
+### Only vehicle_type_id 8 is verified; everything else declines rather than guesses
+Borzo's `vehicle_type_id` presumably has values for larger vehicles, but none
+were confirmed against the sandbox. `BorzoApiClient` answers `Quote.unserviceable`
+for any `VehicleType` other than `TWO_WHEELER` rather than sending an
+unverified id — a decline doc 06 §4 already treats as a normal answer, not a
+new failure mode.
+
+### Status polling synthesizes events so DeliveryJobs advances delivery and order
+Borzo's `GET /orders` reports a single current status rather than an append-only event log.
+`BorzoApiClient` synthesizes a deterministic `ProviderEvent` (e.g. `borzo_evt_{id}_driver_assigned`,
+`borzo_evt_{id}_delivered`, with `PICKED_UP` preceding `DELIVERED` newest-first) so `DeliveryJobs.pollActiveDeliveries()`
+can apply events through `DeliveryEventService`, advancing the delivery state machine and moving the supplier
+order through `OUT_FOR_DELIVERY` to `DELIVERED` while relying on `uk_delivery_event_provider` for duplicate suppression.
+
+### Still open, blocking a second PR
+The webhook/callback payload and signature scheme are not verified — Borzo's
+documentation is too thin to trust, the same mistake this whole effort exists
+to avoid repeating for Pidge. `BorzoWebhookService` and the `/borzo` webhook
+route are not implemented until that contract is confirmed live (a reachable
+callback URL against a real sandbox order, or direct confirmation from Borzo
+support). Until then, `BorzoDeliveryProvider` reports status only by polling
+`GET /orders`, same as doc 06 §9 says any provider should be able to fall back
+to.
+
+---
+
+## D-118 — Shadowfax delivery provider integration alongside Pidge and Borzo
+**2026-10-02 · Settled**
+
+Shadowfax is integrated as a third carrier in the multi-carrier delivery auction,
+joining Pidge and Borzo. The implementation follows the provider SPI pattern
+established in doc 06 §4 and decisions D-117.
+
+### Dual-gate activation
+Like Borzo, Shadowfax is protected by two distinct gates:
+1. **Application configuration gate**: `costonomy.mp.shadowfax.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `ShadowfaxDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`provider_code = 'SHADOWFAX'`),
+   seeded disabled (`is_active = 0`) via migration `V46__delivery_provider_shadowfax.sql`.
+   Both gates must be active for Shadowfax to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: `Authorization: Token {token}` header on every request.
+- **Serviceability & Quoting**: `GET /v1/clients/serviceability/?service=Regular&pincodes={pincode}`
+  validates drop point serviceability. Distance-based delivery fees and ETAs are computed
+  from pickup/drop coordinates and configured baseline rates.
+- **Booking**: `POST /v3/clients/orders/` with `order_type: "marketplace"`. The response
+  `awb_number` serves as the platform's `providerDeliveryId`.
+- **Status tracking & Polling**: `GET /v4/clients/orders/{awb_number}/track/` inspects
+  `order_details.status` and `order_details.tracking_details`.
+  The status mapper transforms Shadowfax states (`allocating`, `assigned`, `arrived`,
+  `picked_up`, `out_for_delivery`, `delivered`, `cancelled`) into platform `DeliveryStatus`.
+  Historic events from `tracking_details` are synthesized newest-first with deterministic IDs
+  (`sfx_evt_{awb}_{status}_{timestamp}`), guaranteeing that `PICKED_UP` precedes `DELIVERED`
+  so that `DeliveryOrderBridge` transitions the supplier order through `OUT_FOR_DELIVERY`
+  to `DELIVERED`.
+- **Cancellation**: `POST /v3/clients/orders/cancel/` sending `request_id: {awb_number}`.
+  Mapped errors (e.g. already picked up or out for delivery) translate into `CANCEL_WINDOW_ELAPSED`.
+
+### Webhook ingestion deferred
+Shadowfax webhook ingestion is deferred pending live payload and HMAC verification confirmation,
+relying on polling via `DeliveryJobs.pollActiveDeliveries()` for status advancement.
+
+*Corrected by D-121: Shadowfax fares and ETAs are no longer computed from baseline rates; quote and booking fail closed until a carrier fare is verified.*
+
+---
+
+## D-119 — Porter delivery provider integration alongside Pidge, Borzo and Shadowfax
+**2026-10-02 · Settled**
+
+Porter is integrated as a fourth carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, and Shadowfax. The implementation adheres to the provider SPI pattern
+established in doc 06 §4 and decisions D-117 and D-118.
+
+### Dual-gate activation
+Porter is gated by:
+1. **Application configuration gate**: `costonomy.mp.porter.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `PorterDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`provider_code = 'PORTER'`),
+   seeded disabled (`enabled = 0`) via migration `V47__delivery_provider_porter.sql`.
+   Both gates must be active for Porter to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Header `x-api-key: {apiKey}` and `Authorization: Bearer {apiKey}`.
+- **Serviceability & Fare Estimation**: `POST /v1/orders/cost` with `pickup_details`,
+  `drop_details`, and mapped `vehicle_type` (`2_wheeler`, `three_wheeler`, `tata_ace`).
+  Parses fare amount, distance, and ETA.
+- **Booking**: `POST /v1/orders/create` with pickup/drop addresses, contact information,
+  coordinates, and `request_id` (idempotency key). Returns Porter `order_id` as `providerDeliveryId`.
+- **Status tracking & Polling**: `GET /v1/orders/{order_id}` inspecting `status` and `partner_details`.
+  The status mapper transforms Porter states (`created`, `allocating`, `assigned`, `driver_arrived`,
+  `started`, `picked_up`, `in_transit`, `arrived_at_destination`, `delivered`, `cancelled`) into platform
+  `DeliveryStatus`.
+  Historic events or synthetic transitions guarantee that `PICKED_UP` precedes `DELIVERED`
+  newest-first, allowing `DeliveryOrderBridge` to advance the supplier order through `OUT_FOR_DELIVERY`
+  to `DELIVERED` while `uk_delivery_event_provider` suppresses duplicate event rows.
+- **Cancellation**: `POST /v1/orders/{order_id}/cancel` sending `cancellation_reason`.
+
+### Webhook ingestion deferred
+Porter webhook ingestion is deferred pending live payload and HMAC verification confirmation,
+relying on polling via `DeliveryJobs.pollActiveDeliveries()` for status advancement.
+
+*Corrected by D-121: Porter's quote and booking no longer fall back to a configured rate card; both fail closed until a carrier fare is verified.*
+
+---
+
+## D-120 — Intra-city 30 km radius boundary and tiered assignment deadlines
+**2026-10-02 · Settled**
+
+Initial marketplace delivery operations focus strictly on intra-city fulfillment within municipal limits (maximum 30 km radius).
+
+### 30 km Intra-city Hard Radius Ceiling
+1. **Pre-order Quoting (`DeliveryFeeQuoteService`)**:
+   - Rejects checkout fee requests exceeding 30.0 km with `BusinessException(ErrorCode.VALIDATION_ERROR, "Delivery location exceeds the 30 km intra-city limit (distance: %.1f km). Choose pickup, or ask the supplier to deliver.")`.
+2. **Auction Gatherer (`DeliveryQuotingService`)**:
+   - Evaluates Haversine distance before querying carriers (`costonomy.mp.delivery.max-radius-km=30.0`).
+   - Deliveries exceeding 30 km save a single `UNSERVICEABLE` quote with failure reason `"Exceeds 30.0 km intra-city radius limit"` and immediately return empty without polling 3rd-party carrier APIs.
+3. **Carrier Adapters (Borzo, Porter, Shadowfax)**:
+   - Each client independently validates distance $\le 30.0$ km and returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")` if exceeded, preventing accidental out-of-city dispatch.
+
+### Tiered Driver-Assignment Deadlines
+Commercial vehicles take longer to match in Indian metropolitan traffic than two-wheeler bike couriers:
+- **Two-Wheelers (`TWO_WHEELER`)**: `PT3M` (3 minutes) waterfall timeout (`costonomy.mp.delivery.bike-assignment-timeout`). Bike couriers match within 1–3 minutes; lingering longer delays re-bidding.
+- **Three-Wheelers & Trucks (`THREE_WHEELER`, `FOUR_WHEELER_TRUCK`)**: `PT12M` (12 minutes) waterfall timeout (`costonomy.mp.delivery.truck-assignment-timeout`). Auto-rickshaw cargo and mini-trucks (Tata Ace, Mahindra Bolero Maxi Truck) have sparser fleet density and take 8–12 minutes to assign. A 3-minute timeout prematurely cascaded through all providers before drivers could accept.
+- `DeliveryBookingService` computes `assignmentDeadline = bookedAt.plus(isTruck ? truckAssignmentTimeout : bikeAssignmentTimeout)` and emits `DeliveryBookedEvent`, which `DeliveryWaterfallService` schedules via `TaskScheduler` for one-shot timeout evaluation.
+
+---
+
+## D-121 — Shadowfax and Porter quote and book only on a carrier fare; until then they decline
+**2026-10-02 · Settled** — corrects D-118 and D-119
+
+### What was wrong
+D-118 describes Shadowfax fees and ETAs as "computed from configured baseline rates". Porter's quote (D-119) fell back to the same kind of rate card when a response field was missing, and both clients filled `Booking.amount` from `base-fee` / `per-km-fee` properties. That put a price we invented into `delivery.fee` and the delivery ledger, and contradicts doc 06 §8 ("never fabricate") and the rule in CLAUDE.md. Both carriers are seeded disabled, so nothing was charged this way, but enabling a row would have started doing so.
+
+### No carrier fare has been verified
+- Shadowfax: the serviceability response lists pincodes and services only. The create-order response carries `awb_number`, `promised_delivery_date` and `product_value` (our own declared value echoed back), and no fare.
+- Porter: the quote fixture was written by the same author as the client, with no live check (unlike Borzo, D-117). The client guessed three field names for the fare (`cost.amount`, `fare`, `estimated_fare`). The create-order fixture has no fare.
+
+### Decision
+1. **Quotes decline.** Shadowfax returns `Quote.unserviceable` with a reason saying it publishes no fare. Porter returns `Quote.unserviceable` without any HTTP call. A decline is recorded in `delivery_quote` as UNSERVICEABLE; a failed serviceability check is recorded as FAILED. Neither can win the auction.
+2. **Booking refuses before any network call.** `createOrder` validates our own data, then throws a non-retryable `ShadowfaxContractException` / `PorterContractException`. It must fail before the POST: a booking that throws after the carrier accepted it would leave a live consignment nobody owns or cancels. `DeliveryBookingService` records a FAILED attempt and fails over to the next carrier.
+3. **Shadowfax serviceability is fail-closed.** True only when Shadowfax lists both pincodes with the `Regular` service. A pincode not listed, or without `Regular`, is a decline. An unreachable carrier (timeout, 5xx) is a retryable failure, a 4xx is a non-retryable failure, and a body that is not an array, or an entry without a `services` array, is a contract failure. The check is never skipped by catching an exception. A missing pincode in an address is a decline with no HTTP call. The pincode is the last 6-digit group in the address, because our addresses are built city, state, pincode.
+4. **Booking data comes from our own records or the booking is refused.** `BookingRequest` gains `pickupLocality`, `dropLocality` and `goodsValue`, read by `DeliveryDirectory` at booking time:
+
+| Value | Source |
+|---|---|
+| City, state | `outlet` / `supplier_store` (NOT NULL) |
+| Pincode | same tables (nullable, so a missing one is rejected) |
+| Weight | `delivery.weight_kg` |
+| Goods value | `supplier_order.accepted_amount - delivery_fee`, as in commission |
+| SKU id | `SO-<supplier order id>` |
+| Contacts | the delivery row; missing or invalid is rejected |
+
+   Removed: the fallback pincodes 560038/560034, the city "Bengaluru" and state "Karnataka", 1000 g, the Rs 500 value, the placeholder phone numbers 9876543210, the placeholder names ("Customer", "Seller", "Supplier", "Outlet"), the SKU default 101, the copied `volumetric_weight`, and Porter's `customer.name` "Costonomy Mandi" (now "Costonomy", per the naming rule).
+5. **`base-fee` / `per-km-fee` are removed** from `ShadowfaxProperties`, `PorterProperties` and `application.properties`. The platform rate card (`delivery.baseFee` etc. in `DeliveryFeeQuoteService`) is separate and unchanged: it is our own price and is labelled `ESTIMATED`.
+6. When no carrier can answer, checkout falls back to the rate card and dispatch ends as QUOTE_FAILED / `NO_SERVICEABLE_PROVIDER`, as before.
+
+### What would re-enable each carrier
+A fare and ETA field verified against a live sandbox response, read through a required-field helper as Borzo does (D-117), plus a booking path that carries that fare into `Booking.amount`. For Shadowfax also confirm the `actual_weight` unit (assumed grams), whether `volumetric_weight` is required, what `total_amount` means for Prepaid, and the `category` values. For Porter also confirm auth (the client sends both `x-api-key` and a Bearer token, which is a guess), the endpoints and the address fields.
+
+### Still open (not changed here)
+- Porter `getStatus` invents a PICKED_UP event timestamped five minutes in the past when DELIVERED is the first status seen. Both Porter and Shadowfax give an event the current time when the carrier's timestamp cannot be read. Both break doc 06 §8.
+- Tracking URLs for Shadowfax and Porter are built from unverified patterns.
+- Two weight calculations disagree (`DeliveryDirectory.calculateWeightKg` counts 1 kg per unit of unknown type; `consignmentWeightGrams` uses 500 g per piece). Decide which is authoritative before any carrier is re-enabled; declaring an estimated weight can cause re-weigh charges.
+- Pidge still defaults missing fields (D-117). Borzo sums distance with a default of 0.
+- `ShadowfaxDeliveryFlowIT` leaves the SHADOWFAX row enabled for later tests that share the database.
+
+---
+
+## D-122 — Shiprocket delivery provider integration alongside Pidge, Borzo, Shadowfax and Porter
+**2026-10-02 · Settled**
+
+Shiprocket is integrated as a fifth carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, Shadowfax, and Porter. The implementation adheres to the provider SPI pattern
+established in doc 06 §3 and decisions D-117, D-119, D-120, and D-121.
+
+### Dual-gate activation
+Shiprocket is gated by:
+1. **Application configuration gate**: `costonomy.mp.shiprocket.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `ShiprocketDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`code = 'SHIPROCKET'`),
+   seeded disabled (`enabled = 0`) via migration `V48__delivery_provider_shiprocket.sql`.
+   Both gates must be active for Shiprocket to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Token authentication via `Authorization: Bearer {token}` using direct API token
+  or retrieved dynamically via `POST /v1/external/auth/login` and cached for 230 hours.
+- **Serviceability & Fare Estimation**: `GET /v1/external/courier/serviceability/` passing
+  `pickup_postcode`, `delivery_postcode`, `weight`, and `cod=0`.
+  Parses `data.available_courier_companies`, selecting the lowest available carrier rate,
+  distance, and ETA.
+- **30 km Intra-City Boundary (D-120)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  without making an HTTP call.
+- **Booking**: `POST /v1/external/orders/create/adhoc` with structured pickup/drop addresses,
+  pincodes, contact details, and item details. Returns Shiprocket `shipment_id` as `providerDeliveryId`.
+- **Status tracking & Polling**: `GET /v1/external/courier/track/shipment/{shipment_id}` inspecting
+  `current_status` and activities. The status mapper transforms Shiprocket statuses
+  into domain `DeliveryStatus`. Historic events or synthetic transitions guarantee that `PICKED_UP`
+  precedes `DELIVERED` newest-first, allowing `DeliveryOrderBridge` to advance the supplier order
+  to `DELIVERED` while `uk_delivery_event_provider` suppresses duplicate event rows.
+- **Cancellation**: `POST /v1/external/orders/cancel` sending `ids: [shipment_id]`.
+
+---
+
+## D-123 — LoadShare Networks delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter and Shiprocket
+**2026-10-02 · Settled**
+
+LoadShare Networks is integrated as a sixth carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, Shadowfax, Porter, and Shiprocket. The implementation adheres to the provider SPI pattern
+established in doc 06 §3 and decisions D-117, D-119, D-120, and D-121.
+
+### Dual-gate activation
+LoadShare is gated by:
+1. **Application configuration gate**: `costonomy.mp.loadshare.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `LoadshareDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`code = 'LOADSHARE'`),
+   seeded disabled (`enabled = 0`, `priority = 22`) via migration `V45__delivery_provider_loadshare.sql`.
+   Both gates must be active for LoadShare to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Secured via `Customer-Code: {customer-code}` and `Checksum: {sha256}` headers calculated via
+  `SHA-256(${authToken}|${customerCode}|${orderId})`.
+- **Serviceability & Fare Estimation**: `POST /hyperlocal/v2/order/checkServiceability` passing structured pickup and drop
+  tasks with coordinates, address, and goods value. Extracts real carrier fare (`fare.value`, `unit`), distance (`predictedDistanceInMetre`),
+  and SLA (`promisedSlaInEpoch`). Fails closed (D-121) if no fare is returned.
+- **30 km Intra-City Boundary (D-120)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  without making an HTTP call.
+- **Booking**: `POST /hyperlocal/v2/order` with task payloads, normalized phone numbers (`+91XXXXXXXXXX`), and coordinates. Returns LoadShare `orderId` as `providerDeliveryId`.
+- **Status Tracking & Polling**: `GET /hyperlocal/v2/order/{orderId}/track` retrieving status and `statusHistory`.
+  `LoadshareStatusMapper` transforms status codes (`assigned`, `arrived_at_pickup`, `picked_up`, `in_transit`, `reached_drop`, `delivered`, `cancelled`, etc.)
+  into `ProviderDeliveryStatus`. Deduplicated on `uk_delivery_event_provider`. Synthetic event sequencing ensures `PICKED_UP` precedes `DELIVERED`.
+- **Driver Location**: `GET /hyperlocal/v2/order/{orderId}/track` extracting `currentLocation` (`latitude`, `longitude`, `bearing`, `speed`).
+- **Cancellation**: `POST /hyperlocal/v2/order/{orderId}/cancel` sending `cancellationReason`.
+- **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
+
+---
+
+## D-124 — Blowhorn delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket and LoadShare
+**2026-10-02 · Settled**
+
+Blowhorn is integrated as a seventh carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, Shadowfax, Porter, Shiprocket, and LoadShare Networks. The implementation adheres to the provider SPI pattern
+established in doc 06 §3 and decisions D-117, D-119, D-120, and D-121.
+
+### Dual-gate activation
+Blowhorn is gated by:
+1. **Application configuration gate**: `costonomy.mp.blowhorn.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `BlowhornDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`code = 'BLOWHORN'`),
+   seeded disabled (`enabled = 0`, `priority = 23`) via migration `V46__delivery_provider_blowhorn.sql`.
+   Both gates must be active for Blowhorn to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Secured via `API_KEY: {apiKey}` and `Authorization: Bearer {apiKey}` headers.
+- **Serviceability & Fare Estimation**: `POST /v1/serviceability` passing structured coordinates, vehicle type, weight, and addresses.
+  Extracts real carrier fare (`fare.amount`, `currency`), distance (`distance_km`), and ETA (`estimated_delivery_time_minutes`).
+  Fails closed (D-121) if no carrier fare is returned.
+- **30 km Intra-City Boundary (D-120)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  without making an HTTP call.
+- **Booking**: `POST /v1/orders` with pickup/delivery points, vehicle type (`2_WHEELER`, `3_WHEELER`, `TATA_ACE`), normalized phone numbers (`+91XXXXXXXXXX`),
+  and coordinates. Returns Blowhorn `awb_number` / `order_id` as `providerDeliveryId`.
+- **Status Tracking & Polling**: `GET /v1/orders/{orderId}/track` retrieving status, driver details (`name`, `phone`, `vehicle_number`), and `events`.
+  `BlowhornStatusMapper` transforms status codes (`assigned`, `arrived_at_pickup`, `picked_up`, `in_transit`, `reached_drop`, `delivered`, `cancelled`, etc.)
+  into `ProviderDeliveryStatus`. Deduplicated on `uk_delivery_event_provider`. Synthetic event sequencing ensures `PICKED_UP` precedes `DELIVERED`.
+- **Driver Location**: `GET /v1/orders/{orderId}/track` extracting `current_location` (`latitude`, `longitude`, `bearing`, `speed`).
+- **Cancellation**: `POST /v1/orders/{orderId}/cancel` sending `cancellation_reason`.
+- **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
+
+---
+
+## D-125 — Delhivery delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare and Blowhorn
+**2026-10-02 · Settled**
+
+Delhivery is integrated as an eighth carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, and Blowhorn. The implementation adheres to the provider SPI pattern
+established in doc 06 §3 and decisions D-117, D-119, D-120, and D-121.
+
+### Dual-gate activation
+Delhivery is gated by:
+1. **Application configuration gate**: `costonomy.mp.delhivery.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `DelhiveryDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`code = 'DELHIVERY'`),
+   seeded disabled (`enabled = 0`, `priority = 24`) via migration `V47__delivery_provider_delhivery.sql`.
+   Both gates must be active for Delhivery to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Secured via `Authorization: Token {apiToken}` header.
+- **Serviceability & Fare Estimation**: `GET /api/kinko/v1/invoice/charges.json` querying charges with origin and destination pincodes and weight in grams.
+  Extracts real carrier fare (`total_amount` or `gross_amount`). Fails closed (D-121) if no carrier fare is returned.
+- **30 km Intra-City Boundary (D-120)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  without making an HTTP call.
+- **Booking**: `POST /api/cmu/create.json` pushing shipment and pickup location data with normalized phone numbers (`+91XXXXXXXXXX`) and pincodes. Returns Delhivery `waybill` as `providerDeliveryId`.
+- **Status Tracking & Polling**: `GET /api/v1/packages/json/?waybill={waybill}` retrieving `ShipmentData.Shipment.Status` and `Scans`.
+  `DelhiveryStatusMapper` transforms status codes (`manifested`, `pickup_scheduled`, `reached_pickup`, `picked_up`, `in_transit`, `out_for_delivery`, `delivered`, `cancelled`, etc.)
+  into `ProviderDeliveryStatus`. Deduplicated on `uk_delivery_event_provider`. Synthetic event sequencing ensures `PICKED_UP` precedes `DELIVERED`.
+- **Cancellation**: `POST /api/p/edit` sending `cancellation: true`.
+- **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
+
+---
+
+## D-126 — Xpressbees delivery provider integration alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare, Blowhorn and Delhivery
+**2026-10-02 · Settled**
+
+Xpressbees is integrated as a ninth carrier in the multi-carrier delivery auction,
+joining Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, Blowhorn, and Delhivery. The implementation adheres to the provider SPI pattern
+established in doc 06 §3 and decisions D-117, D-119, D-120, and D-121.
+
+### Dual-gate activation
+Xpressbees is gated by:
+1. **Application configuration gate**: `costonomy.mp.xpressbees.enabled=true`
+   (defaults to `false` in base `application.properties`). When `false`,
+   `XpressbeesDeliveryProvider` bean is not registered (`@ConditionalOnProperty`).
+2. **Database registry gate**: A row in `delivery_provider` (`code = 'XPRESSBEES'`),
+   seeded disabled (`enabled = 0`, `priority = 25`) via migration `V48__delivery_provider_xpressbees.sql`.
+   Both gates must be active for Xpressbees to participate in delivery quote auctions.
+
+### API Contract mapping
+- **Authentication**: Secured via `Authorization: Bearer {token}` header.
+- **Serviceability & Fare Estimation**: `POST /v1/courier/serviceability` querying serviceability with origin and destination pincodes, order amount, and weight in kg.
+  Extracts real carrier fare (`data.rate` or `charges.total_amount`). Fails closed (D-121) if no carrier fare is returned.
+- **30 km Intra-City Boundary (D-120)**: Distance $> 30.0$ km returns `Quote.unserviceable("Exceeds 30 km intra-city radius limit (...)")`
+  without making an HTTP call.
+- **Booking**: `POST /v1/shipments/create` pushing order and pickup/delivery details with normalized phone numbers (`+91XXXXXXXXXX`) and pincodes. Returns Xpressbees `awb_number` as `providerDeliveryId`.
+- **Status Tracking & Polling**: `GET /v1/shipments/track/{awb_number}` retrieving `status` and `history`.
+  `XpressbeesStatusMapper` transforms status codes (`manifested`, `pickup_scheduled`, `reached_pickup`, `picked_up`, `in_transit`, `out_for_delivery`, `delivered`, `cancelled`, etc.)
+  into `ProviderDeliveryStatus`. Deduplicated on `uk_delivery_event_provider`. Synthetic event sequencing ensures `PICKED_UP` precedes `DELIVERED`.
+- **Cancellation**: `POST /v1/shipments/cancel` sending `awb_number` and cancellation reason.
+- **Resilience & Rate Limiting**: 20 RPS local token-bucket throttle; retryable `DeliveryProviderException` on network timeout and 5xx errors.
+
+---
+
+## D-127 — Delivery Slots, Recurring Subscriptions, and Delivery Mode Gating
+**2026-10-02 · Settled**
+
+**Decision:**
+1. **Delivery Mode Flexibility & Gating**:
+   - Buyers and suppliers can trade via three delivery modes: Store Pickup (`PICKUP`), Supplier Own Delivery (`SUPPLIER_DELIVERY` / `SUPPLIER_OWN`), and Costonomy Marketplace Delivery (`COSTONOMY_DELIVERY` / `COSTONOMY`).
+   - **Logistics Dispatch Gating Rule**: Automated courier booking and quote auctions (`quoteAndBook`) kick off *only* if `COSTONOMY` delivery mode is selected. For `PICKUP`, courier booking is bypassed completely. For `SUPPLIER_OWN`, the delivery record assigns the store contact as driver without dispatching to external third-party couriers.
+2. **Delivery Slots**:
+   - Suppliers configure daily time windows (e.g., Morning 06:00 - 10:00) with daily order capacity (`max_orders_per_day`) and same-day order cutoff times (`order_cutoff_time`).
+   - Slot availability endpoint evaluates cutoff for today's date and remaining capacity against active orders before allowing checkout.
+3. **Recurring Subscriptions (BigBasket Daily Model)**:
+   - Buyers can subscribe to SKUs with frequencies (`DAILY`, `WEEKDAYS`, `ALTERNATE_DAYS`, `WEEKLY`), preferred delivery slots, skip dates, pause, resume, and cancellation.
+   - Suppliers receive an operational Daily Manifest aggregating bulk SKU packing volumes and scheduled dispatches grouped by time slot.
+   - Daily replenishment orders are generated deterministically and idempotently via `generateDailyOrders`.
+---
 
 ## D-112 — One wallet entry in full: `GET /outlets/{outletId}/wallet/transactions/{entryId}`
 
@@ -5333,3 +5750,279 @@ History's item for the same entry; a second outlet's own), `recentTrackingStart`
 before it, a returned QuickScan payment, a cancelled order, a dispute; tracking off), `recentOneQuery` (equal statement counts
 for 2 and 10 entries). Mutations: one query per entry fails `recentOneQuery` (9 statements became 17); the full rule instead of
 the list's fails `recentCarriesBill` (a waived payment showed `NOT_REQUIRED`).
+
+---
+
+---
+
+## D-128 — Catch-weight settles at dispatch; weighing moves no money
+**2026-10-04 · Settled** — also records the catch-weight and doorstep parts of V63, V66 and V67. Billing (V64) and cold chain (V65) still have no record.
+
+### What was wrong
+Weighing could happen before or after a card was captured, and it moved wallet money immediately. That produced money that nobody had paid or been owed:
+- **Duplicate lines** in one request each added their own delta, so 50 copies of a near-zero reading credited the wallet about fifty lines' worth.
+- **A partial re-weigh** summed only the lines in the request but applied the result as the whole order's, so re-weighing one line took back another line's refund.
+- **Weigh then cancel** released the card hold in full and left the wallet credit in place, so the platform paid the difference.
+- **An over-weight debit that could not be covered** was logged and skipped after the order's figures were saved, so the supplier was paid for money never collected.
+- **Receiving checked against the ordered quantity**, so at 9.6 kg the buyer had to enter 0.4 kg as missing and was refunded for it a second time.
+- **Doorstep refunds always went to the wallet**, whatever paid for the order, turning card money into a closed balance and leaving a credit invoice at its full amount.
+
+### Decision
+**Weigh before ready; settle once, at ready; money only ever moves down afterwards.**
+
+1. **Weighing** (`SupplierOrderService.recordDispatchWeights`) is allowed only in CONFIRMED and PREPARING, locks the order first, and refuses a repeated line in one request. It moves no money: it fixes each line's billed quantity, and recomputes the order's subtotal, GST, weight adjustment and final payable from **all** lines, so a partial re-weigh cannot corrupt the total. The line must be flagged catch-weight and sold in a mass unit (GM, KG, OZ, LB); the reading is taken in the line's own unit.
+2. **Billed quantity** is `min(reading, accepted)` (`CatchWeight`, the only place the rule lives). Overweight within the band is the supplier's giveaway: billing it would need money beyond a card's authorisation, and the price the restaurant saw was one number. A reading below **-20%** or above **+10%** of accepted is refused as a probable scale error (`costonomy.mp.catch-weight.max-under-percent` / `max-over-percent`). A scale reads to the gram: at most three decimals. All money goes through `Pricing`.
+3. **Ready requires every catch-weight line to be weighed.** Otherwise an unweighed line is billed at the ordered quantity on nobody's measurement.
+4. **Settlement at ready** goes through the one funding port: `OrderFundingPort.onOrderDispatched(orderId, finalPayable)`, with the order locked.
+   - Card: captures `min(finalPayable, authorised)`; the rest of the hold is released, never refunded.
+   - Wallet: the wallet paid the accepted total up front; the difference comes back as one `ORDER_ADJUSTMENT` credit, reference `order-settle-{orderId}`, so a repeat credits nothing.
+   - Credit: the invoice and the amount drawn come down to the final payable (`CreditInvoiceService.reduceTo`, state-based and so idempotent), recorded as a credit `ADJUSTMENT`. It never takes an invoice below what has already been repaid.
+5. **After ready, money only goes down**, through `OrderFundingPort.reduceAfterDispatch` (a doorstep rejection). Card: a refund of the captured payment to the wallet, kind `REFUND` and withdrawable (D-104), reason `DOORSTEP_REJECTION`. Wallet: an `ORDER_ADJUSTMENT` credit. Credit: the invoice comes down. The supplier bears it through `final_payable`; Costonomy never funds a refund.
+6. **Receiving** checks received + damaged + missing against the **billed** quantity on a weighed catch-weight line (`TrustDirectory.OrderLine.receivableQuantity`), and against the accepted quantity otherwise. The accepted quantity on the order is untouched. A whole-line rejection refunds the line's stored total exactly; a partial one is priced through `Pricing` and capped at it. The refund goes through the funding port, never straight into the wallet. No credit-note number is invented: the response carries the number actually issued, or none.
+7. **Guards where the figures are written.** `supplier_order.final_payable_amount` has a CHECK `>= 0` (V67) and the doorstep update refuses to take it below zero; `CommissionService` throws on a negative base instead of clamping it to zero, which would have paid the supplier nothing and quietly made the platform whole.
+8. **Settlement figures:** `SettlementDirectory.orderFigures` now uses `coalesce(final_payable_amount, accepted_amount)`, so dispute-refund coverage is computed on what the supplier is actually owed.
+
+### Who pays what
+Rs 100/kg, 5% GST, 10 kg accepted (Rs 1,050).
+
+| Scale reading | Billed | Final payable | Card (held 1,050) | Wallet (paid 1,050) | Credit (invoice 1,050) | Supplier paid on |
+|---|---|---|---|---|---|---|
+| 9.6 kg | 9.6 | 1,008 | capture 1,008; 42 released, never charged | +42 credited | invoice and draw 1,008 | 1,008 |
+| 10.0 kg | 10.0 | 1,050 | capture 1,050 | nothing | 1,050 | 1,050 |
+| 10.4 kg | 10.0 | 1,050 | capture 1,050 | nothing | 1,050 | 1,050 (supplier gives 0.4 kg away) |
+| 12 kg or 7.9 kg | refused | unchanged | | | | |
+
+After ready, 0.1 kg of the 9.6 kg found missing at the door: Rs 10.50 less (10.00 + 0.50 GST), final 997.50, by each method as in point 5.
+
+### Removed
+`WalletService.recordAdjustment` and its debit path, the only code that took wallet money because of a weighing. Over-weight is never billed to anyone.
+
+### Not changed here (open)
+- **Order adjustment record and per-method reconciliation.** A card order's capture still reads as a mismatch against settlement where wallet or credit movements are involved, and `SettlementService.approve` does not require a clean reconciliation. Next slice.
+- **A doorstep rejection on a pickup order whose capture is still pending** is refused with a retryable conflict (the refund service needs a captured payment); nothing is written.
+- **Subscriptions, tax invoices, and the mobile app** are separate follow-ups. Subscription order lines do not yet carry the catch-weight flag at creation (V67 backfills existing ones).
+- **Orders weighed under the old code and not yet ready** already carry a wallet adjustment and would also get a reduced capture. Before deploying, check `select supplier_order_id, direction, sum(amount) from wallet_transaction where kind = 'ORDER_ADJUSTMENT' group by 1, 2` against orders not yet COMPLETED or CANCELLED.
+- A legacy `ORDER_ADJUSTMENT` debit (the old over-weight surcharge) now raises what the wallet can give back for that order, and a credit lowers it; both are counted by direction.
+
+## D-129 — Post-dispatch reductions are order adjustments, applied through the funding port
+
+After READY money only goes down. Each reduction is one `order_adjustment` row (V68), unique per order and reason (`WEIGHT_SETTLEMENT`, `DOORSTEP_REJECTION`), carrying an idempotency key, the funding method and the funding reference.
+
+1. **Weight shortfall** is settled at READY by `OrderAdjustmentService.settleAtReady` (final payable written and flushed first, then the funding call), recorded as an `APPLIED` row when there is a shortfall.
+2. **Doorstep rejection** (`recordDoorstepRejection`) runs under the order lock, is idempotent by existing row, and computes the new final payable as accepted minus all adjustment rows minus the new amount. Receiving takes the order lock first.
+3. **Card orders whose capture is still pending** cannot be refunded yet. The row is written `PENDING_CAPTURE`, the order's final payable is already reduced, and `OrderAdjustmentJobs.applyPendingCaptures` (15 s, ShedLock) applies it once the capture lands. A refused capture keeps the row pending and alerts hourly. A pending refund does not block settlement approval.
+4. Costonomy never funds a refund: the supplier bears it through the lower final payable. Card refunds go to the wallet's withdrawable balance (D-104); wallet orders are credited back; credit invoices are reduced (`CREDIT_INVOICE_REPAID_BEYOND_CORRECTION` audit when the invoice was already paid past the new figure).
+5. V68 backfills final payable for READY+ orders and one row per existing weight shortfall and doorstep refund.
+
+## D-130 — Reconciliation counts collected money per funding method; approval re-checks
+
+`SettlementDirectory.collectedFor` sums card orders from `payment` (captured minus refunded), wallet orders from `wallet_transaction` (debits minus credits) and credit orders from `credit_invoice.amount`, and expects collected to equal gross minus the settlement's own `REFUND` debit lines (`refundsDeductedFrom`): a dispute refund lowers both. Approval reconciles after pending refunds are applied. Counting only `payment` made every wallet or credit order a mismatch.
+
+`SettlementService.approve` re-runs reconciliation inline, in its own transaction, under a settlement row lock (`SettlementRepository.lockById`). If it does not match, approval is refused with 409 `INVALID_STATE_TRANSITION` unless the request carries `acknowledgeMismatchNote`; with it the approval proceeds and `SETTLEMENT_APPROVED_WITH_MISMATCH` is audited. The refusal rolls back, so a refused attempt records nothing; the hourly sweep still records the mismatch. The sweep no longer wraps itself in one transaction.
+
+## D-131 — Unverified carriers fail closed; Pidge keeps working with nothing invented; no committed signing key
+
+1. **Shiprocket, LoadShare, Blowhorn, Delhivery and Xpressbees** behave as Shadowfax and Porter do (D-121): the quote is declined without a carrier call and booking is refused before any HTTP, because none of them has a fare field verified against a live response. A decline is honest; a guessed price is not. Their tracking, location and cancel paths for consignments that already exist are unchanged.
+2. **Pidge** stays live. Its quote and booking no longer default the fare (50.00), ETA, distance, weight, vehicle type, contacts or quote id: a missing response field or an incomplete request is a non-retryable error naming the field. A 30 km radius check is added. Its webhook rejects everything when no secret is configured, and the production guard refuses to start with Pidge enabled and no secret.
+3. **JWT signing key.** The key that was the default in `application.properties` is in repository history and is treated as leaked: the default is removed, the production guard refuses it (and a missing or short key), and `JwtService` generates a fresh key per start only under the `local` profile. Rotate `JWT_SECRET` wherever the old default was ever used.
+
+## D-132 — Subscriptions generate orders on the normal funding path, one attempt per date, from a scheduler
+
+Verified against the code before changing it: every gap in the review was real. Two differed from the review: `nextDeliveryDate` did not advance on a funding failure (the real bug was the unfunded DRAFT order left behind, which the duplicate check then counted forever), and the supplier endpoint accepted any date, past ones included.
+
+1. **Normal path.** `SubscriptionOrderGenerator` creates the order DRAFT, calls `OrderFunding.arrangeFunding`, then `OrderReleaseService.releaseIfFunded`. Procurement no longer imports wallet or credit services. Releasing calls `onOrderAccepted`, so a credit subscription order now draws its reservation and is invoiced (it never was). `OrderFundingPort.canFund(outlet, store)` lets creation refuse credit without an active agreement.
+2. **One transaction per subscription and date.** Anything that stops an order throws `SubscriptionRunException`, rolling back everything including the DRAFT order, so nothing is left to block the date. `SubscriptionRunStore` (own bean, `REQUIRES_NEW`) then records the outcome in `subscription_run` (unique per subscription and date; `GENERATED`, `SKIPPED_NO_OFFER`, `FUNDING_FAILED`, `SKIPPED_PAUSED`, `SKIPPED_INVALID`). A `GENERATED` row is written inside the order's transaction and is never downgraded. The subscription stays ACTIVE.
+3. **Trigger.** The supplier endpoint is removed. `SubscriptionJobs` (ShedLock) generates tomorrow's orders hourly from 18:00 to 23:00 India time (`costonomy.mp.subscriptions.generation-cron`), so a wallet topped up the same evening is picked up; each run is idempotent. A date still unfunded after the last run is lost; no back-dated orders.
+4. **Notified once per date and outcome.** `SubscriptionFundingFailed` and `SubscriptionOrderSkipped` reach the outlet's users (in-app and push, critical). `SKIPPED_INVALID` covers a slot that stopped being available, a store that stopped delivering or an order below its delivery minimum.
+5. **Frequency.** WEEKLY is the same weekday as the start date; ALTERNATE_DAYS is even day offsets from it (`SubscriptionSchedule`). Both used to fire every day.
+6. **One live order per subscription per date**, enforced by `supplier_order.subscription_delivery_key` (generated, NULL for cancelled orders) with a unique key (V69, same pattern as V42). The row lock on the subscription serialises two runs; the key is the backstop and stops a duplicate before any money moves.
+7. **Pricing.** No available offer means `SKIPPED_NO_OFFER`, never Rs 0. The line unit is the SKU's `pack_unit`; the client's unit is ignored. Lines carry `is_catch_weight` and `requires_cold_chain` as the intent path sets them.
+8. **Delivery fee** comes from `DeliveryCharges`, extracted from `IntentOrderCreator` so the two cannot drift. A store that does not deliver is refused, and an order below its delivery minimum is skipped. COSTONOMY delivery is refused for subscriptions in v1; payment is WALLET or CREDIT only.
+9. **Authorization.** Pausing, resuming, cancelling and skipping need `PROCUREMENT_CREATE` at OUTLET scope. Someone who can only view the outlet, or a supplier's staff, gets 404 and nothing changes. Reads keep the either-side check; the supplier side is read-only.
+10. **Also fixed (intent path).** The free-delivery threshold used to return before the "store delivers" and delivery-minimum checks, so a large order could get supplier delivery from a store that does not offer it. Refusals now come first.
+11. **V69 data changes.** Existing unfunded DRAFT subscription orders are cancelled with a reason (no money ever moved for them). Existing ACTIVE subscriptions on a payment method outside WALLET/CREDIT or a delivery mode outside SUPPLIER_DELIVERY/PICKUP are PAUSED, with the reason appended to their notes, so the restaurant chooses again. If a database already holds two non-cancelled orders for one subscription and date (possible after the old race), the unique key fails the migration loudly rather than letting it choose which to cancel: resolve those by hand first.
+
+## D-133 — Tax invoices and credit notes: supplier-issued, behind a flag, nothing invented
+
+**Status: an assumption to be confirmed by a tax adviser, not a compliance claim.** Everything below is gated by `costonomy.mp.billing.tax-invoices.enabled` (default `false`; `true` only in tests). With it off, all five billing routes return 404, nothing listens for the events that would issue a credit note, and no row or number is ever created.
+
+**Who issues.** The supplier is the issuer, with Mandi as technology provider. Generation therefore needs `ORDER_VIEW` on the supplier's own store; a buyer, another supplier, or a call with no actor gets 404 and writes nothing. Both sides can read. (A dedicated invoice permission is a follow-up: today anyone who can view the supplier's orders can generate.)
+
+**Verified against the code before changing it.** All ten gaps in the review were real. Differences: a draft/cancelled gate existed but ran after the existing-invoice early return and returned 400; no code path ever wrote `supplier_order_item.hsn_code`, so every invoice got 9968; any unrecognised state name also returned 36; the delivery fee was added to the total with no line of its own; there are five routes, not six.
+
+1. **No fabricated data.** Supplier legal name, GSTIN, address and state, buyer name, address and a recognisable place of supply, and a product name, HSN code and unit on every supplied line are required. Anything missing is returned together as a 422 `TAX_INVOICE_DATA_MISSING` with `details.missing` (stable field paths such as `supplier.gstin` or `line[41 Fresh Milk].hsnCode`), and nothing is written, no number used. The supplier's state comes from GSTIN digits 1-2 (`GstState`, all current GST state codes); the place of supply is the buyer's GSTIN state, else the outlet's state name matched against the same list. No default, no fallback, no placeholder party. The HSN default (9968, a courier-services code) is gone from code and schema; HSN is copied onto the order line when it is created (SKU first, then the product).
+2. **Issuable from READY.** An order may be invoiced once it is ready for collection or dispatched or later (`TAX_INVOICE_NOT_ALLOWED`, 422, before that), after catch-weight has settled (D-128). Automatic issue at READY is a follow-up.
+3. **The invoice states what was charged.** Lines use the order's stored taxable value, GST and total at the billable quantity (never raw `dispatched_weight`); the delivery fee is a separate untaxed amount; the sum must equal the order's final payable plus any doorstep refund already taken off, or nothing is written (an `IllegalStateException`, logged). A 9.6 kg reading on 10 kg accepted invoices 1,008.00; a 10.4 kg reading invoices the accepted 10 kg, 1,050.00.
+4. **Numbering.** A series per supplier GSTIN, per financial year (April to March, India time), per document type: `INV/2627/000123` and `CN/2627/000123`, at most 16 characters. `document_sequence` is allocated under `SELECT ... FOR UPDATE` inside the transaction that inserts the document (MANDATORY propagation, on purpose: a number taken in its own transaction would stay used when the insert loses a race, leaving a gap). Uniqueness is per supplier (`UNIQUE(supplier_gstin, number)`), not global.
+5. **Insert race.** `TaxInvoiceService.generateOrGetInvoice` is deliberately not transactional; `TaxInvoiceStore` inserts in `REQUIRES_NEW` and throws on `uk_tax_invoice_order`; the caller re-reads and returns the winner's invoice (200 for both callers). Deadlocks on the sequence row are retried.
+6. **Credit notes** are issued after the check-in commits, by `BillingEventListener` on `ReceivingCompleted` (and by catch-up when the order's invoice is generated), through `CreditNoteStore` in its own transaction. A billing failure can never fail a doorstep check-in. The note reverses what receiving refunded (one shared `Pricing.rejection` helper) and is linked to the invoice; a note issued first is linked when the invoice is generated. One note per order and reason. The invoice records the supply as dispatched; the credit note reverses the rejected part, so invoice minus credit notes equals the final payable.
+7. **Module boundary.** Billing reads through a JDBC `BillingDirectory`, not other modules' repositories. `ON DELETE CASCADE` is removed from invoice and credit-note items (nothing is hard-deleted), item rows reference their order lines, and V70 removes the old rows (all of them carried invented values; nothing was in production).
+8. **Exports are unverified drafts.** The Tally voucher XML and GSTR-1 CSV stay behind the flag and say so (`X-Export-Status: UNVERIFIED-DRAFT`, a comment in the XML). The CSV is now one row per invoice and rate, a buyer without a GSTIN is B2CS (by place of supply and rate) rather than B2B, and the place of supply reads `36-Telangana`. The Tally ledger names ("Sales Account", "CGST Output", ...) are assumptions and neither format has been imported into Tally or the GST offline tool.
+
+**Not solved. For a tax adviser; none of this is claimed.**
+- HSN master data and validation of HSN against the rate charged.
+- GSTIN checksum, and registration status and type (composition suppliers cannot charge tax). Only the shape (15 characters, a known state prefix) is checked.
+- Per-state registration: a supplier selling from a store in another state than its GSTIN.
+- E-invoicing (IRN and QR code) above the turnover threshold.
+- TCS under section 52 and TDS under 194-O for marketplace operators.
+- Debit notes (for example a weight surcharge; Costonomy never bills more than accepted today).
+- GST on the delivery fee: a composite supply taxed at the goods' rate, a separate service, or exempt. It is shown as its own untaxed amount until advised; no SAC code is invented.
+- Place of supply where ship-to differs from the buyer's registration; the time of supply (Section 31) and whether to issue automatically at dispatch.
+- Invoice cancellation and amendment; the Section 34 time limit for credit notes.
+- The GST state code list was transcribed by hand and should be checked.
+
+## D-134 — Cold chain: one place stamps it, declarations are superseded, only a verified carrier carries chilled goods
+
+Also the record V65 (the cold-chain columns, `has_cold_chain_items`, the original vehicle gate) never had. V65 said "restrict carriers to insulated 3-wheelers and 4-wheelers"; this replaces that assumption with recorded capability.
+
+**Verified against the code before changing it.** The review's "cart checkout never sets the flags" does not apply: there is no cart path (D-091), only the intent creator and the subscription generator create orders, and Phase 2 had already made subscriptions set them. The real defects were the logic copied into both creators, `canonical_product.requires_cold_chain` never being read (nothing writes it either), a quote gate that failed open, a checkout fee quote with no gate at all (it fell back to the rate card, so a chilled order could be sold carriage nobody could provide), and the supplier's declaration being edited in place. The Mock, Pidge and Borzo adapters echo back the vehicle we asked for, so "the quote states a vehicle" is not evidence either.
+
+1. **One stamper.** `OrderLineStamper` copies a SKU's cold chain, catch-weight and HSN onto every line and sets the order's cold-chain flag from its lines (recomputed, never accumulated). The intent creator and the subscription generator call it; the three `DeliveryDirectory` SKU-flag methods are deleted so no second path exists. Flags are snapshots: a later declaration never changes an order already placed.
+2. **The product flag is a floor.** `supplier_sku.requires_cold_chain` stays the single effective value every reader uses. A SKU of a chilled product is raised to chilled when created, V71 backfills existing ones, and neither creating nor declaring such a SKU as not chilled is possible (422). Nothing writes `canonical_product.requires_cold_chain` yet; an audited admin edit is a later phase, and no categories are seeded.
+3. **Declarations supersede.** `SkuHandlingService.declare` (PUT `/supplier-skus/{id}/handling`, reason required) closes the current `supplier_sku_handling_declaration` row, opens the next, and writes a `SKU_HANDLING_DECLARED` audit row with before and after and the reason, under the SKU lock (lock order: SKU, then declaration). The same applies to catch-weight, which moves money (D-128). A save that passes the current values straight back (a rate sheet, a batch variant) does nothing; a different value through the ordinary SKU update is refused with a pointer to the declaration. One current row per SKU is enforced by a generated unique key. Un-declaring with open orders is allowed, with a reason and an audit row, and changes no order already placed; the next subscription order picks up the new value.
+4. **Carrier capability is data.** `delivery_provider_cold_chain_capability` (provider, vehicle class, evidence, who verified it, when). No row means not capable. Seeded: only `MOCK_EXPRESS` and `MOCK_SAVER`, for local and test use, and their evidence text says so. No real carrier is seeded: the repo holds no temperature-control evidence for any of them, and Shadowfax, Porter, Blowhorn, Shiprocket, LoadShare, Delhivery and Xpressbees decline every quote under D-121 anyway. Revoking a mock's capability is how the failure paths are tested.
+5. **The quote gate** (`ColdChainCarrierGate`). A chilled consignment is asked only of a carrier with a capability row, in the smallest verified vehicle class that takes the weight; carriers without one are recorded as unserviceable and never called. A quote qualifies only if it states a vehicle and that class is verified for that carrier; an unstated vehicle is no longer inherited from the request. `usableQuotes` checks again, so a capability revoked after quoting cannot be booked on a reassignment. Ordinary consignments are unchanged. `VehicleType.canCarryColdChain` is removed; `fromWeight(w, true)` remains only as a size hint.
+6. **No carrier qualifies.** At checkout the fee quote throws 422 `DELIVERY_UNAVAILABLE` ("choose pickup, or ask the supplier to deliver"), with no rate-card fallback for chilled goods, no quote saved, no order. Pickup and supplier delivery for chilled goods stay allowed (the supplier carries it and bears the risk). A fee quote records `cold_chain`, and one priced for ordinary goods cannot be spent on an order that has since become chilled (`PRICE_CHANGED`). At dispatch the delivery fails with `NO_COLD_CHAIN_CARRIER`, nothing booked or charged. A delivery already booked keeps its booking; only reassignment re-applies the gate.
+7. **Also fixed.** `DeliveryWaterfallService.cascadeUnassigned` and `forceEscalate` were `@Transactional` and caught an exception from `reassign` inside the same transaction, which marks it rollback-only: the commit threw and the audit row was lost. They are no longer transactional, so the audit row commits on its own. (No test plants that failure directly, so this change is reasoned, not mutation-checked.)
+
+**Not done.** Which real carriers, if any, offer temperature control is a fact to be supplied with evidence, one `INSERT` per carrier and vehicle class; nothing else changes. A store-level declaration of its own cold-chain fleet for supplier delivery. An admin edit of the product flag.
+
+## D-135 — A simultaneous duplicate order returns the first order, not a 500
+
+Verified before changing: `IntentOrderCreator.create` checked for an existing link with no lock, so two calls for one intent both passed it and both built an order. The link insert takes a shared lock on the intent row (foreign key) and the later status update needs an exclusive one, so they deadlocked, and the handler had no mapping for a deadlock, so the loser surfaced as a 500. `IntentFlowIT$Concurrency` only asserted that one order existed, "whatever each call reported", so it could not see this.
+
+1. **The intent is locked first** (`IntentRepository.lockById`, `PESSIMISTIC_WRITE`) as the first statement of `create`. The second creation waits for the first to commit, then reads its link and returns its order through the existing "already ordered" path (D-102), which also hands back the checkout the first caller may not have seen. The lock is taken before any consistent read, so what the check reads is the state after the first commit. Lock order is intent, then order, then payment, matching `OrderReleaseService`.
+2. **A lock failure that still happens is a 409** (`CONCURRENT_MODIFICATION`, WARN), not a 500: the database rolled the request back and nothing was written, so a retry is safe.
+3. **The idempotency fingerprint now includes the delivery mode, quote reference, slot and scheduled date.** The same key with a different delivery used to return the first order silently; it is now `IDEMPOTENCY_KEY_REUSE`.
+4. **Tests:** `duplicateOrderCreation` races five times with different keys and asserts both callers succeed with the same order id, and one order, one link, one payment and an ORDERED intent. Mutation-checked: without the lock round 1 fails. `keyReusedWithADifferentDeliveryIsRefused` is mutation-checked against the fingerprint.
+
+## D-136 — The Razorpay checkout is opened after the order commits
+
+Verified before changing: `IntentOrderCreator.create` called the provider while the order transaction held its connection and locks, so a slow gateway stalled the pool, and a provider failure rolled the whole order back.
+
+1. **Order creation records the payment only.** `PaymentService.recordForOrder` writes a CREATED payment inside the order transaction (no provider call). The order and its payment stay atomic.
+2. **The checkout opens after commit.** `IntentOrderService.create` (no transaction) calls `OrderFunding.prepareCheckout`, which calls `PaymentService.openCheckout`: the provider call runs with no transaction, then a conditional bulk update (`openCheckoutIfUnopened`, only while CREATED and with no provider order id) stores the provider order id. A concurrent opener cannot overwrite it.
+3. **A provider failure leaves an unpaid draft.** The caller gets 422 `PAYMENT_FAILED` "Nothing was charged. Try again."; the order and its CREATED payment remain. Retrying the same order request returns the existing order (D-102) and opens the checkout. No new pay-screen endpoint.
+4. **The sweep ends orphans.** `PaymentJobs.reconcileStale` expires a CREATED payment with no provider ids older than 30 minutes and abandons the unfunded order ("Payment was never set up").
+5. **Tests** (`PaymentFlowIT$Hardening`): the provider is not called inside the order transaction; a failure leaves a draft and a retry opens it; the sweep ends a never-opened payment. Each mutation-checked (call back inside the transaction; sweep disabled; failure marking the payment FAILED).
+
+## D-137 — One draft per outlet and store, and every edit of a basket takes the draft's lock
+
+Verified before changing: `openDraft` looked for a draft and created one if none was found, with nothing to stop two simultaneous first additions both creating one, so an outlet could hold two drafts for one supplier. Edits, sends and the direct-order preparation read the draft and its lines with plain reads and no lock, so an add racing a send, or a removal of the last line racing an add, could lose a line or delete a draft that had just been refilled.
+
+1. **The database allows one draft.** V72 adds a generated `draft_key` (`outlet:store` while the status is DRAFT, otherwise null) with a unique key, after merging any duplicates already present (nothing is in production): lines move to the oldest draft unless it has that SKU, the rest are dropped.
+2. **Creating a draft is its own transaction.** `IntentDraftStore.insertDraft` is `REQUIRES_NEW` (a separate bean, D-021). The loser of a race gets a duplicate-key error that rolls back only that inner transaction, then reads the winner's draft (also in a fresh transaction, which sees the latest commits and takes no range locks), and carries on. The temporary reference is unique per insert; a shared placeholder made concurrent inserts queue on one unique-index entry and deadlock.
+3. **Lock order: intent, then its lines.** `loadForWrite` locks the intent (`lockById`); lines are read under lock (`lockByIntentId`, `lockById`, `lockByIntentIdAndSupplierSkuId`). Applies to add, update, remove, send, send-all, clone and `DirectOrderService.prepare`. Send-all locks each draft before reading it and skips one that is no longer a draft. Under REPEATABLE READ a plain read could miss what the lock holder just committed, which is why the reads that matter are locking reads, and why the id of an item or draft is read without loading the entity before the lock.
+4. **Emptying a draft is decided under the lock** (a concurrent add finishes first), so a refilled draft is not deleted. The basket read skips a draft with no lines.
+5. **Removal is audited.** A removed line leaves no row, so `INTENT_ITEM_REMOVED` (line, SKU, quantity) and `INTENT_DRAFT_DELETED` are written to the audit log.
+6. **Tests** (`IntentFlowIT$Concurrency`, five races each): two first additions give one draft with two lines; the same pack added twice is one line; an add against a send loses no line; removing the last line against an add keeps the new line; removal is audited. Mutation-checked: without the intent lock, and without the audit call. The locked emptiness check (item 4) is reasoned, not mutation-checked: swapping it for a plain count did not fail a test, because the interleaving it guards is too narrow for a two-thread race to hit reliably.
+
+**Not done.** The response to an add may omit a line committed by a concurrent add (it is built from this transaction's snapshot); the next read shows it. The mobile cart's own part of this bug (unflushed edits, rapid taps) is fixed in the app.
+
+---
+
+## D-138 — Discovery serviceability: unified policy across storefront, recommendations, and popular suppliers
+
+**2026-10-04 · Settled**
+
+Verified against the code before changing: `StorefrontService.serves` hard-coded 25 km, `RecommendationService.servesOutlet` checked `serviceability.defaultRadiusKm`, `PopularSupplierService.forOutlet` applied no serviceability filtering at all (allowing far stores to consume the limit), and `DiscoveryController` did not scope `outletId` to the caller on discovery endpoints (`/search/suppliers`, `/search/skus`, `/supplier-skus/{skuId}`, `/supplier-stores/{storeId}/catalog`).
+
+1. **Unified `ServiceabilityPolicy`.** One shared component used across `StorefrontService`, `RecommendationService`, and `PopularSupplierService`. Precedence order:
+   - If the store has a declared pincode list (`delivery_pincodes`), that list wins exclusively (the outlet pincode must match).
+   - Otherwise, if the store defines its own radius (`delivery_radius_km`), that radius applies.
+   - Otherwise, fall back to the configured default radius (`costonomy.mp.discovery.serviceability.default-radius-km`, defaulting to 25 km).
+   - Missing coordinates on either side (`distanceKm == null`) means serviceable (suppliers are not hidden due to missing coordinate data). No opening-hours filter is applied.
+2. **Popular suppliers.** Serviceability filtering is evaluated *before* applying the result limit, so distant suppliers do not consume slots for serviceable candidates. The limit is clamped to at most 100 (`Math.min(Math.max(1, limit), 100)`).
+3. **Credit reach parameter.** `GET /api/v1/search/suppliers` supports `reach=all` to bypass serviceability filtering specifically for credit request flows.
+4. **Scoped `outletId` authorization.** Discovery endpoints (`/search/suppliers`, `/search/skus`, `/supplier-skus/{skuId}`, `/supplier-stores/{storeId}/catalog`) enforce `accessControl.requireScoped(actorId, Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "Outlet")`. When the caller cannot access the outlet, `NotFoundException` (404) is thrown instead of 403.
+5. **Tests.** `ServiceabilityPolicyTest` unit tests (pincode precedence, store radius, default radius fallback, null coordinates). `StorefrontIT` integration tests: unscoped outlet returns 404, `reach=all` bypasses serviceability, popular suppliers exclude distant stores without consuming limits, and limit clamps to at most 100.
+
+---
+
+## D-139 — Supplier directory: nearest first with offset pagination
+
+**2026-10-04 · Settled**
+
+Verified against the code before changing: `StorefrontService.searchSuppliers` executed a query with `order by o.display_name limit 100`, capping the candidate stores alphabetically before computing distances and sorting by proximity. As a consequence, a nearby supplier whose name began late in the alphabet (e.g. "ZZZ") would be completely missing if there were more than 100 active stores.
+
+1. **Remove SQL name cap.** Removed `order by o.display_name limit 100` from the store selection query in `StorefrontService.searchSuppliers`.
+2. **Nearest first sorting.** Stores are ordered nearest first (`Double.compare` on distance, with `null` distances sorted last using `Double.MAX_VALUE`), with store ID (`supplierStoreId`) as deterministic tie-breaker.
+3. **Offset pagination.** `searchSuppliers` supports `offset` (default 0) and `limit` (default 50, clamped between 1 and 100).
+4. **Pagination metadata.** `DiscoveryDtos.SupplierSearchPage` includes `total` (the count of serviceable suppliers matching filters) and `nextOffset` (`Integer`, null when on the last page). `reach=all` parameter continues to bypass serviceability filtering.
+5. **Tests.** Integration test `paginationAndNearestSorting` in `StorefrontIT$Suppliers`: verifies that with 100 "AAA" stores at 2–5 km and one "ZZZ" store at 0.5 km, "ZZZ" is returned first on page 1; disjoint pages cover all stores without repeats; limit is clamped to 100; and `nextOffset` is null on the final page. Mutation-checked by re-introducing the `order by o.display_name limit 100` cap, which caused the test to fail.
+
+## D-140 — A buyer can ask for immediate or a day when sending a request
+
+Before this, the delivery slot was chosen only at order review, after the supplier had answered. The buyer could not say, when sending, whether they wanted the goods now or on a particular day, and the supplier had no way to plan for it.
+
+1. **A preference, not a booking.** `intent.preferred_delivery_date` (V73, nullable `DATE`). Null means immediate. The slot is still chosen and booked when the order is created; the preference only tells the supplier what is wanted and starts the buyer's slot picker on that day.
+2. **Day, not slot.** One choice applies to a whole basket send, and slots belong to each supplier, so the choice is a day (today, tomorrow, in two days in the app; the API accepts today to 30 days ahead). `SendRequest` and `SendBasketRequest` take `preferredDeliveryDate`; `IntentResponse` returns it, so the supplier sees it.
+3. **Validated on send.** A day before today or more than 30 days ahead is refused (422 `VALIDATION_ERROR`), and nothing in the basket is sent. Days are India's calendar days (`Asia/Kolkata`).
+4. **Immediate is the default.** Leaving it out is what every client did before, and means "as soon as the supplier can".
+5. **Not done.** Direct orders (`/direct-order`) skip the request, so they carry no preference and the slot is chosen at review as before. The existing `requestedDeliveryTime` (an exact moment, shown to the supplier as "Wanted by") is unchanged and still not sent by the app.
+6. **Tests** (`IntentFlowIT$Basket`): immediate by default and the supplier sees both; one day applies to every request in a basket send; past and too-far days are refused and the draft stays a draft. Mutation-checked: not storing the day, and not validating it.
+
+## D-141 — The supplier chooses how a request is delivered when they answer it, and free delivery is stated as free
+
+Verified before changing: the buyer chose the delivery mode at order creation and the fee was charged then; the supplier had no say after answering. The buyer's picker showed the supplier's own fee as `acceptance.deliveryFee ?? 0`, and that field was always null, so a supplier who charged ₹30 was shown to the buyer as "Free" and then charged ₹30. The buyer's order screen hid the delivery line when the fee was zero.
+
+1. **The supplier's answer carries a delivery offer** (`intent_acceptance.delivery_offer`, V74): `SELF_FREE` (they deliver, no charge), `SELF` (they deliver at their own fee) or `COSTONOMY` (Costonomy riders). Pickup is always offered. Offering to deliver (`SELF_FREE`, `SELF`) is the supplier's decision for that request and needs no standing store setting (an order whose answer offered it is not refused or blocked at dispatch by the store's own-delivery switch); what they may charge is capped by the store's own fee (nothing if none is set). `COSTONOMY` needs Costonomy delivery enabled (422 otherwise). Omitted, an answer offers whatever the policy enables, as before.
+2. **The buyer can choose only what was offered.** `IntentOrderCreator.requireOffered` runs on preview and create: with `SELF*` offered, Costonomy delivery is refused, and the other way round. Pickup is always allowed.
+3. **Free is free.** With `SELF_FREE` the supplier-delivery fee is zero (after the same refusals as any supplier delivery: not enabled, below the minimum order value). `acceptance.deliveryFee` is now set when the offer is made (0 for free, the store's fee for `SELF`) and for direct orders (the store's own fee when it delivers), so the buyer is shown the amount they will be charged. The delivery row's fee is the order's fee, no longer the policy's (it ignored a waiver).
+4. **Riders are requested after Ready, automatically.** Unchanged: `COSTONOMY_DELIVERY` orders are dispatched when the supplier marks Ready for Pickup (`DeliveryDispatchListener`). The "Request Delivery Partner" button remains the manual fallback.
+5. **Who pays for riders.** Free applies only to the supplier's own delivery; Costonomy delivery shows its quoted fee and the buyer pays it. **Not changed, for a decision:** the existing free-delivery threshold (`free_delivery_threshold`) still waives the fee on `COSTONOMY_DELIVERY` as well, so above the threshold the courier's cost is absorbed by someone and no charge to the supplier or buyer exists for it.
+6. **The supplier sets the charge for each request.** With `SELF` the answer carries `deliveryFee`: the amount for this order. Absent means the store's standing fee; zero is free. It is not limited by the store's fee and needs no store fee to be set (it first was, capped at the store fee; that was dropped because the restaurant sees the amount before ordering, so visibility is the control). A sanity bound of ₹5,000 stops a typo (422 above it). That amount is what the buyer is shown and charged (`acceptance.delivery_fee`). A supplier who finds delivery not viable chooses Costonomy riders or "I can't deliver".
+7. **Tests** (`IntentFlowIT$DeliveryOffer`): free delivery is shown as free and charged nothing; a lower charge for one order is shown and charged, and one above the sanity bound is refused; own delivery at the store's fee is shown and charged; the buyer can choose only what was offered; an offer the store has turned off is refused. Each mutation-checked.
+
+## D-142 — As soon as possible is a delivery time, and a slot is checked when it is booked
+
+Verified before changing: order creation stored `deliverySlotId` and `scheduledDeliveryDate` exactly as sent, with no check that the slot belonged to the store, was active, was free, or had not already started; the app's picker was the only guard. The app always sent a day (tomorrow by default), so "Immediate" chosen in the cart (D-140) became tomorrow's first slot at review, and the picker's day buttons used UTC dates, which are yesterday in India early in the morning.
+
+1. **As soon as possible is no slot and no day.** The order stores both as null. The picker offers it as its own choice, selected when the request was sent as immediate; a request sent for a day starts on that day's first available slot.
+2. **A started slot is not offered.** Today's slots are unavailable once their start time has passed ("This slot has already started today"), as well as past cutoff, past date or full.
+3. **The slot is checked at booking.** `DeliverySlotService.requireBookable`, called by order creation, refuses a slot that is not this store's, is switched off, needs a day that is missing, or is unavailable on that date (422). The picker is no longer the only guard. Subscriptions generate orders from a preferred slot and are not changed.
+4. **Days are India's** in the picker (`istDay`), as on the server.
+5. **Not done.** A supplier who does not take same-day orders cannot hide as-soon-as-possible: there is no such setting. Slots are not checked against the store's opening hours (a product decision). Capacity counts orders, not quantity.
+6. **Tests:** `IntentFlowIT$DeliverySlots` (as soon as possible is accepted with no slot or day; a started slot is unavailable and refused, tomorrow's is booked; another store's slot is refused), and `tests/deliverySlotPicker.test.tsx` in the app. Mutation-checked.
+
+## D-143 — The restaurant says whether it wants delivery or will collect, per supplier's request
+
+The restaurant's intent used to be unstated until order review, after the supplier had answered, so a supplier quoted delivery for requests that were really pickups, and had no way to say "I can't deliver this one".
+
+1. **A preference on each supplier's request.** `intent.delivery_preference` (V75): `DELIVERY` (the default, what every request implicitly was) or `PICKUP`. Per supplier's request, not per basket, because a kitchen may collect from one supplier and have the rest delivered. Set on the draft (`PUT /intents/{id}/delivery-preference`), refused once the request is sent (409).
+2. **The supplier answers knowing it.** For a `PICKUP` request the answer's delivery offer is forced to `NONE` (whatever the client sends): only pickup is on offer, no fee, and the supplier is not asked about delivery. For a `DELIVERY` request the supplier chooses free, own delivery at a fee (up to the store fee), Costonomy riders, or the new `NONE`, "I can't deliver this order".
+3. **At order creation, `NONE` allows pickup only.** Pickup is always allowed, so a buyer is never stranded; they can still go to another supplier. Direct orders follow the same rule.
+4. **Not changed:** Costonomy rider fees are still quoted at order review (they depend on the drop point and weight); riders are still requested when the order is Ready for Pickup.
+5. **Tests** (`IntentFlowIT$DeliveryPreference`): delivery by default and the supplier sees which; locked once sent; unknown choice refused; a pickup request is answered with pickup only and delivery is refused at order creation; a supplier who cannot deliver leaves pickup only. Each rule mutation-checked. Mobile: `tests/cartSend.test.tsx`, `tests/deliveryOffer.test.tsx`.
+
+## D-144 — The buyer is warned when a supplier's own delivery charge is high
+
+D-141 lets the supplier type the delivery charge for each request, limited only by a ₹5,000 sanity bound, because the restaurant sees the amount before ordering. Nothing marked an unusual amount.
+
+1. **A charge is high when it is at least 10% of the goods value and at least ₹100.** Both tests, because the share alone would flag every small order (₹40 on ₹200 is 20%) and the floor alone would ignore a charge that doubles a small one. Goods value is before GST. The boundaries count as high.
+2. **The rule is on the server** (`DeliveryChargeWarning`), and the answer carries `highDeliveryCharge`, so every screen agrees. The percentage and the floor are configuration (`delivery.highCharge.percent`, `delivery.highCharge.minAmount`) with those defaults.
+3. **A prompt, not a limit.** The buyer's delivery picker shows the warning under the supplier's delivery, with the amount, and pickup stays one tap away. Free and missing charges are never high.
+4. **Not done:** the supplier is not warned when typing (they may mean it); a supplier-delivery charge from the store's standing fee (subscriptions, direct orders) is not warned about.
+5. **Tests:** `DeliveryChargeWarningTest` (both tests, boundaries, no warning for free or missing, configuration) and `IntentFlowIT$DeliveryOffer` (high, normal and free). Mutation-checked.
+
+## D-145 — A delivery request cannot override how the order was sold
+
+Verified before changing: `DeliveryService.resolveMode` took the mode named in the request ahead of the order's own, and only read the order's mode when none was named. The supplier's app always names `COSTONOMY`, so for an order the supplier had said they would deliver themselves (D-141), pressing "Request Delivery Partner" booked a courier the restaurant had not been told about or charged for. For a pickup order the refusal in `fromOrder` was skipped the same way.
+
+1. **The order's mode is read first.** A pickup order is refused (as before, now also when a mode is named). A named mode that differs from the order's own is refused (422 `DELIVERY_UNAVAILABLE`): "The supplier is delivering this order themselves, so no delivery partner is needed", or, for a Costonomy-delivery order, that it can't be switched to the supplier's own. A mode that matches, or none named, behaves as before.
+2. **The app shows "Request Delivery Partner" only for an order sold with Costonomy delivery** (the card and the bottom button). It showed for pickups and own deliveries.
+3. **Not changed:** riders are still requested automatically when the supplier marks Ready for an order sold with Costonomy delivery; reassignment after a failed booking is a separate path.
+4. **Tests:** `DeliveryFlowIT$Journey` (no courier for a pickup or for an own-delivery order, even when one is asked for by name); `tests/deliveryPartner.test.ts` in the app. The own-delivery test fails without the check.
+
+## D-146 — Three rules the server did not enforce
+
+Found by reading the code while fixing D-141 to D-145: each was a rule the app showed or assumed and the server did not hold.
+
+1. **Sending one request re-checks its prices.** `POST /intents/{id}/send` skipped the price check that the basket send and the direct order do, so it could send lines at a stale snapshot. It now refuses (422 `PRICE_CHANGED`) when a line's price or GST moved since it was added, unless the request carries `acceptPriceChanges: true`, and it locks every line at the live price when it sends. The basket send passes agreement down after its own check, so it is unchanged.
+2. **The free-delivery threshold is for the supplier's own delivery.** It used to waive the fee for Costonomy riders too, leaving nobody charged for the courier. That waiver is removed: a Costonomy delivery is charged its quoted fee. The threshold also no longer overrides a charge the supplier offered on the answer: the buyer was shown that amount (D-141), so that amount is what is charged. It still applies where no amount was offered (direct orders, older answers). The cart's nudge now says "free delivery by the supplier" and compares goods before GST, as the server does.
+3. **Bulk edits change only what they say, and Costonomy's disabling stands.** A rate-sheet row with no availability used to mean "in stock", putting a sold-out SKU back on sale. An item-variants update forced status ACTIVE (relisting a delisted SKU), reset GST to 5 percent and reset availability when the entry omitted them. All three now leave what is not mentioned as it is; a new variant keeps its defaults. A supplier can no longer list again a SKU an admin disabled (422 "Costonomy disabled this product, so it can't be listed again from here"); delisting and relisting their own SKU is unchanged.
+
+**Not changed:** subscriptions still use the store's standing own-delivery setting and fee; the single-request send is not used by the app (it sends the basket).
+
+**Tests:** `IntentFlowIT$Basket` (stale price refused, agreement sends and locks, no change needs no agreement), `IntentFlowIT$DeliveryOffer` (riders charged their quote above the threshold, an offered charge not waived), `CatalogMaintenanceIT` (rate sheet and variants leave stock, status and GST; disabled stays disabled; own delist and relist still work). Each mutation-checked.
+

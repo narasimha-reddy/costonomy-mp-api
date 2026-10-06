@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -93,6 +94,17 @@ public class IntentController {
                 ActorContext.requireUserId(), itemId, request.quantity()));
     }
 
+    @PutMapping("/intents/{id}/delivery-preference")
+    @Operation(
+            summary = "Say whether this supplier's request should be delivered or collected",
+            description = "Per supplier's request, on the draft. A pickup needs no delivery offer from the supplier.")
+    public ApiResponse<IntentDtos.IntentResponse> setDeliveryPreference(
+            @PathVariable Long id,
+            @Valid @RequestBody IntentDtos.DeliveryPreferenceRequest request) {
+        return ApiResponse.ok(intents.setDeliveryPreference(
+                ActorContext.requireUserId(), id, request.preference()));
+    }
+
     @DeleteMapping("/intent-items/{itemId}")
     @Operation(summary = "Remove a line")
     public ApiResponse<IntentDtos.IntentResponse> removeItem(@PathVariable Long itemId) {
@@ -123,7 +135,7 @@ public class IntentController {
             @Valid @RequestBody(required = false) IntentDtos.SendBasketRequest request) {
         return ApiResponse.ok(intents.sendAll(ActorContext.requireUserId(), outletId,
                 request == null
-                        ? new IntentDtos.SendBasketRequest(false, null, null, null)
+                        ? new IntentDtos.SendBasketRequest(false, null, null, null, null)
                         : request));
     }
 

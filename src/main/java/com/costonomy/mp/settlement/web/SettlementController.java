@@ -77,7 +77,8 @@ public class SettlementController {
             @PathVariable Long id,
             @RequestBody(required = false) SettlementDtos.ApproveSettlementRequest request) {
         return ApiResponse.ok(settlements.approve(ActorContext.requireUserId(), id,
-                request == null ? null : request.note()));
+                request == null ? null : request.note(),
+                request == null ? null : request.acknowledgeMismatchNote()));
     }
 
     @PostMapping("/admin/settlements/{id}/processing")

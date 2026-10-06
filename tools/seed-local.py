@@ -27,6 +27,10 @@ import urllib.request
 
 API = os.environ.get("API", "http://localhost:7070") + "/costonomy-mp-api/api/v1"
 MYSQL_CONTAINER = os.environ.get("MYSQL_CONTAINER", "jobs-mysql")
+MYSQL_HOST = os.environ.get("MYSQL_HOST", "localhost")
+MYSQL_PORT = os.environ.get("MYSQL_PORT", "3306")
+MYSQL_USER = os.environ.get("MYSQL_USER", "appuser")
+MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "appuser")
 MYSQL_DB = os.environ.get("MYSQL_DATABASE", "costonomy_mp")
 OTP = os.environ.get("OTP", "123456")
 
@@ -58,6 +62,20 @@ def call(path, body=None, token=None, method=None):
 
 def sql(statement):
     """The activation step only. Everything else goes through the API."""
+    import shutil
+    mysql_cmd = shutil.which("mysql") or "/usr/local/mysql/bin/mysql"
+    if os.path.exists(mysql_cmd) or shutil.which("mysql"):
+        try:
+            subprocess.run(
+                [mysql_cmd, f"-h{MYSQL_HOST}", f"-P{MYSQL_PORT}",
+                 f"-u{MYSQL_USER}", f"-p{MYSQL_PASSWORD}", MYSQL_DB, "-e", statement],
+                check=True, capture_output=True,
+            )
+            return
+        except subprocess.CalledProcessError as e:
+            # If direct connection failed, fall through to docker attempt
+            pass
+
     subprocess.run(
         ["docker", "exec", "-i", MYSQL_CONTAINER, "mysql", "-uroot", "-proot",
          MYSQL_DB, "-e", statement],
@@ -137,32 +155,64 @@ RESTAURANTS = [
     },
 ]
 
-# canonical product id -> (sku code, base price, gst rate, pack size, pack unit)
+# canonical product id -> list of (brand_name, sku_code_suffix, base_price, gst_rate, pack_size, pack_unit)
+# Multiple brands per product allow testing brandOptions / variant selection in the UI.
 STOCK = {
-    4:  ("PNR-1KG", "410.00", "5", 1, "KG"),
-    5:  ("CRM-1L", "260.00", "5", 1, "L"),
-    7:  ("CRD-1KG", "90.00", "5", 1, "KG"),
-    8:  ("BTR-1KG", "520.00", "12", 1, "KG"),
-    9:  ("MLK-1L", "56.00", "5", 1, "L"),
-    10: ("BAS-25KG", "2450.00", "5", 25, "KG"),
-    11: ("SON-25KG", "1380.00", "5", 25, "KG"),
-    12: ("MAI-25KG", "960.00", "5", 25, "KG"),
-    14: ("TOO-25KG", "3200.00", "5", 25, "KG"),
-    16: ("CHK-1KG", "240.00", "0", 1, "KG"),
-    17: ("CHB-1KG", "330.00", "0", 1, "KG"),
-    19: ("SUN-15L", "1890.00", "5", 15, "L"),
-    21: ("GHE-1KG", "640.00", "12", 1, "KG"),
-    24: ("RCP-1KG", "310.00", "5", 1, "KG"),
-    25: ("TUR-1KG", "280.00", "5", 1, "KG"),
-    28: ("SUG-50KG", "2300.00", "5", 50, "KG"),
-    30: ("ONI-1KG", "34.00", "0", 1, "KG"),
-    31: ("TOM-1KG", "28.00", "0", 1, "KG"),
-    32: ("POT-1KG", "26.00", "0", 1, "KG"),
-    33: ("GIN-1KG", "120.00", "0", 1, "KG"),
-    34: ("GAR-1KG", "180.00", "0", 1, "KG"),
-    22: ("FOI-500", "1450.00", "18", 500, "PIECE"),
-    23: ("BAG-500", "820.00", "18", 500, "PIECE"),
-    1:  ("DWL-5L", "420.00", "18", 5, "L"),
+    # Dairy
+    4:  [("Amul", "AMUL-1KG", "410.00", "5", 1, "KG"),
+         ("Mother Dairy", "MD-1KG", "395.00", "5", 1, "KG"),
+         ("Britannia", "BRIT-1KG", "425.00", "5", 1, "KG")],
+    5:  [("Amul", "AMUL-1L", "260.00", "5", 1, "L"),
+         ("Mother Dairy", "MD-1L", "250.00", "5", 1, "L")],
+    7:  [("Mother Dairy", "MD-1KG", "90.00", "5", 1, "KG"),
+         ("Amul", "AMUL-1KG", "95.00", "5", 1, "KG"),
+         ("Nestle", "NEST-1KG", "105.00", "5", 1, "KG")],
+    8:  [("Amul", "AMUL-1KG", "520.00", "12", 1, "KG"),
+         ("Britannia", "BRIT-1KG", "510.00", "12", 1, "KG")],
+    9:  [("Amul", "AMUL-1L", "56.00", "5", 1, "L"),
+         ("Mother Dairy", "MD-1L", "54.00", "5", 1, "L")],
+
+    # Grains & Pulses
+    10: [("India Gate", "IG-25KG", "2450.00", "5", 25, "KG"),
+         ("Daawat", "DAA-25KG", "2380.00", "5", 25, "KG"),
+         ("Fortune", "FORT-25KG", "2250.00", "5", 25, "KG")],
+    11: [("Fortune", "FORT-25KG", "1380.00", "5", 25, "KG"),
+         ("India Gate", "IG-25KG", "1420.00", "5", 25, "KG")],
+    12: [("Aashirvaad", "AASH-25KG", "960.00", "5", 25, "KG"),
+         ("Fortune", "FORT-25KG", "920.00", "5", 25, "KG")],
+    14: [("Fortune", "FORT-25KG", "3200.00", "5", 25, "KG"),
+         ("Aashirvaad", "AASH-25KG", "3350.00", "5", 25, "KG")],
+
+    # Oils & Fats
+    19: [("Fortune", "FORT-15L", "1890.00", "5", 15, "L"),
+         ("Saffola", "SAFF-15L", "2050.00", "5", 15, "L")],
+    21: [("Amul", "AMUL-1KG", "640.00", "12", 1, "KG"),
+         ("Mother Dairy", "MD-1KG", "630.00", "12", 1, "KG"),
+         ("Aashirvaad", "AASH-1KG", "660.00", "12", 1, "KG")],
+
+    # Spices & Masala
+    24: [("MDH", "MDH-1KG", "310.00", "5", 1, "KG"),
+         ("Everest", "EVE-1KG", "305.00", "5", 1, "KG")],
+    25: [("Everest", "EVE-1KG", "280.00", "5", 1, "KG"),
+         ("MDH", "MDH-1KG", "285.00", "5", 1, "KG")],
+
+    # Cleaning & Hygiene
+    1:  [("Vim", "VIM-5L", "420.00", "18", 5, "L"),
+         ("Lizol", "LIZ-5L", "460.00", "18", 5, "L")],
+
+    # Fresh Produce & Meat (Commodity / Unbranded)
+    16: [(None, "CHK-1KG", "240.00", "0", 1, "KG")],
+    17: [(None, "CHB-1KG", "330.00", "0", 1, "KG")],
+    28: [(None, "SUG-50KG", "2300.00", "5", 50, "KG")],
+    30: [(None, "ONI-1KG", "34.00", "0", 1, "KG")],
+    31: [(None, "TOM-1KG", "28.00", "0", 1, "KG")],
+    32: [(None, "POT-1KG", "26.00", "0", 1, "KG")],
+    33: [(None, "GIN-1KG", "120.00", "0", 1, "KG")],
+    34: [(None, "GAR-1KG", "180.00", "0", 1, "KG")],
+
+    # Packaging (Commodity / Unbranded)
+    22: [(None, "FOI-500", "1450.00", "18", 500, "PIECE")],
+    23: [(None, "BAG-500", "820.00", "18", 500, "PIECE")],
 }
 
 
@@ -188,6 +238,9 @@ def seed_supplier(spec):
     if already is not None:
         supplier_id = already["id"]
         store_id = already["stores"][0]["id"]
+        # Ensure active on reuse as well
+        sql("update supplier_organization set lifecycle_status = 'ACTIVE', "
+            f"verification_status = 'VERIFIED' where id = {supplier_id}")
         enable_credit(token, store_id)
         print(f"  {spec['name']}: reusing supplier {supplier_id}, store {store_id}")
         return stock_store(token, supplier_id, store_id, spec)
@@ -230,29 +283,34 @@ def seed_supplier(spec):
 
 
 def stock_store(token, supplier_id, store_id, spec):
-    # Name each SKU after the product it maps to, not after its own code. A
-    # catalog listing "BTR-1KG" tells a supplier nothing, and a restaurant never
-    # sees the code at all.
+    # Name each SKU after the product and brand it maps to.
     names = {p["id"]: p["name"] for p in call("/products?size=200", token=token)}
     stocked = 0
-    for product_id, (code, price, gst, pack_size, pack_unit) in STOCK.items():
-        adjusted = f"{float(price) * spec['multiplier']:.2f}"
-        try:
-            call(f"/supplier-stores/{store_id}/skus", {
+    for product_id, options in STOCK.items():
+        base_name = names.get(product_id, f"Product {product_id}")
+        for brand_name, code, price, gst, pack_size, pack_unit in options:
+            adjusted = f"{float(price) * spec['multiplier']:.2f}"
+            sku_name = f"{brand_name} {base_name}" if brand_name else base_name
+            sku_code = f"{code}-{supplier_id}"
+            payload = {
                 "canonicalProductId": product_id,
-                "skuCode": f"{code}-{supplier_id}",
-                "name": names.get(product_id, code),
+                "skuCode": sku_code,
+                "name": sku_name,
                 "packSize": pack_size,
                 "packUnit": pack_unit,
                 "sellingPrice": adjusted,
                 "gstRate": gst,
-            }, token=token)
-            stocked += 1
-        except ApiError as error:
-            # Re-running the seed is normal; an existing SKU is not a failure.
-            if error.code not in ("CONFLICT", "DUPLICATE_SKU", "DUPLICATE_SKU_CODE",
-                                  "VALIDATION_ERROR"):
-                raise
+            }
+            if brand_name:
+                payload["brandName"] = brand_name
+            try:
+                call(f"/supplier-stores/{store_id}/skus", payload, token=token)
+                stocked += 1
+            except ApiError as error:
+                # Re-running the seed is normal; an existing SKU is not a failure.
+                if error.code not in ("CONFLICT", "DUPLICATE_SKU", "DUPLICATE_SKU_CODE",
+                                      "VALIDATION_ERROR"):
+                    raise
 
     enable_credit(token, store_id)
     print(f"  {spec['name']}: supplier {supplier_id}, store {store_id}, {stocked} SKUs")
@@ -325,8 +383,9 @@ def seed_credit_request(token, outlet_id, supplier_term):
     """
     # Searched by name rather than listed: supplier search is search, and there
     # is no endpoint that lists the suppliers serving an outlet.
+    # reach=all is used for credit flow (D-138) so all suppliers can be found.
     # A page now, not a list: {"suppliers": [...], "beyondRadius": n}.
-    stores = call("/search/suppliers?q=%s&outletId=%d"
+    stores = call("/search/suppliers?q=%s&outletId=%d&reach=all"
                   % (urllib.parse.quote(supplier_term), outlet_id), token=token)["suppliers"]
     target = stores[0] if stores else None
     if target is None:

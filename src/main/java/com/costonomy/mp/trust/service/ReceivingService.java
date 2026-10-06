@@ -16,6 +16,8 @@ import com.costonomy.mp.trust.domain.ReceivingStatus;
 import com.costonomy.mp.trust.repository.ReceivingItemRepository;
 import com.costonomy.mp.trust.repository.ReceivingRepository;
 import com.costonomy.mp.trust.web.dto.TrustDtos;
+import com.costonomy.mp.procurement.domain.Pricing;
+import com.costonomy.mp.procurement.service.OrderAdjustmentService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -54,19 +56,22 @@ public class ReceivingService {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
+    private final OrderAdjustmentService adjustments;
 
     @Transactional
     public TrustDtos.ReceivingResponse receive(Long actorId, Long supplierOrderId,
                                                TrustDtos.ReceiveRequest request) {
 
-        var order = directory.order(supplierOrderId);
+        // The order is locked before anything else is read (D-129): a duplicate check-in, however it got a different
+        // idempotency key, queues here and then finds the first one's receiving below.
+        var order = directory.orderForUpdate(supplierOrderId);
         if (order == null) {
             throw new NotFoundException("SupplierOrder", supplierOrderId);
         }
         accessControl.requireScoped(actorId, Permissions.ORDER_RECEIVE,
                 ScopeType.OUTLET, order.outletId(), "SupplierOrder");
 
-        var existing = receivings.findBySupplierOrderId(supplierOrderId).orElse(null);
+        var existing = receivings.lockBySupplierOrderId(supplierOrderId).orElse(null);
         if (existing != null) {
             // A retry of a receiving that already landed. Returning it is the true
             // answer; a second would double every delivered quantity the fill rate
@@ -120,6 +125,7 @@ public class ReceivingService {
         BigDecimal totalReceived = BigDecimal.ZERO;
         BigDecimal totalDamaged = BigDecimal.ZERO;
         BigDecimal totalMissing = BigDecimal.ZERO;
+        BigDecimal totalRefundAmount = BigDecimal.ZERO;
         boolean discrepancy = false;
 
         List<ReceivingItem> items = new ArrayList<>();
@@ -130,21 +136,25 @@ public class ReceivingService {
                         "That line isn't part of this order.");
             }
 
-            BigDecimal accepted = line.acceptedQuantity() == null
-                    ? BigDecimal.ZERO : line.acceptedQuantity();
+            // What was billed and so what the buyer has to account for: the weighed quantity on a weighed
+            // catch-weight line, the accepted quantity otherwise (D-128). The accepted quantity stays on the
+            // order as committed; this is only what the three counts must add up to.
+            BigDecimal accepted = line.receivableQuantity();
             BigDecimal counted = answer.receivedQuantity()
                     .add(answer.damagedQuantity())
                     .add(answer.missingQuantity());
 
             if (counted.compareTo(accepted) != 0) {
                 // Refused rather than reconciled for them. Over-delivery included:
-                // the restaurant paid for the accepted quantity, and quietly
+                // the restaurant paid for the billed quantity, and quietly
                 // recording more would put stock on the books that nobody priced.
                 throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                        ("Received, damaged and missing must add up to the %s %s accepted "
+                        ("Received, damaged and missing must add up to the %s %s %s "
                                 + "for %s — you entered %s.")
                                 .formatted(accepted.stripTrailingZeros().toPlainString(),
-                                        line.unit(), line.productName(),
+                                        line.unit(), line.catchWeight() && line.billableQuantity() != null
+                                                ? "weighed" : "accepted",
+                                        line.productName(),
                                         counted.stripTrailingZeros().toPlainString()));
             }
 
@@ -168,6 +178,21 @@ public class ReceivingService {
             // Added to the order line, not over it. This is what makes a real fill
             // rate possible (D-019's last gap).
             directory.recordFulfilled(answer.supplierOrderItemId(), answer.receivedQuantity());
+
+            // Doorstep verification & partial line rejection arithmetic
+            BigDecimal rejectedQty = answer.damagedQuantity().add(answer.missingQuantity());
+            BigDecimal lineRefund = BigDecimal.ZERO;
+            if (rejectedQty.compareTo(BigDecimal.ZERO) > 0) {
+                // The same arithmetic the credit note uses (Pricing.rejection): the whole line is exactly what it was
+                // billed at, so rounding can never refund a paisa more than was charged.
+                lineRefund = Pricing.rejection(line.lineItemValue(), line.lineGst(), line.lineTotal(), accepted,
+                        rejectedQty, line.unitPrice(), line.gstRate()).total();
+                totalRefundAmount = totalRefundAmount.add(lineRefund);
+            }
+            String rejectionReason = answer.rejectionReason() != null ? answer.rejectionReason()
+                    : (answer.damagedQuantity().signum() > 0 ? "DAMAGED" : (answer.missingQuantity().signum() > 0 ? "SHORT_DELIVERY" : null));
+            directory.recordDoorstepReconciliation(answer.supplierOrderItemId(), answer.receivedQuantity(),
+                    rejectedQty, rejectionReason, lineRefund);
         }
         receivingItems.saveAll(items);
 
@@ -177,6 +202,19 @@ public class ReceivingService {
         receiving.setTotalMissingQuantity(totalMissing);
         receiving.setHasDiscrepancy(discrepancy);
         receivings.save(receiving);
+
+        // A doorstep rejection takes money off what the buyer pays, and the supplier bears it through the final
+        // payable (D-128). It goes back by the funding method the order was paid with, through the one port,
+        // never straight into the wallet: card money returns as a withdrawable refund, wallet money to the
+        // wallet, and a credit order's invoice comes down.
+        // The credit note is not made here: billing can never fail a check-in. It is issued after this commits, from
+        // the ReceivingCompleted event (or when the order's invoice is generated), and linked to the invoice then.
+        if (totalRefundAmount.compareTo(BigDecimal.ZERO) > 0) {
+            // Recorded as an adjustment row, with the money returned by the order's funding method (D-129). On a
+            // card whose capture has not finished the refund waits for it and the check-in still completes.
+            adjustments.recordDoorstepRejection(supplierOrderId, totalRefundAmount, actorId,
+                    "Doorstep rejection for " + order.orderNumber());
+        }
 
         // → COMPLETED. The order is finished because the restaurant says the goods
         // are in, which is the only party that can know — whether they were
@@ -192,7 +230,8 @@ public class ReceivingService {
                 Map.of("outletId", order.outletId(),
                         "supplierStoreId", order.supplierStoreId(),
                         "orderNumber", order.orderNumber(),
-                        "hasDiscrepancy", discrepancy),
+                        "hasDiscrepancy", discrepancy,
+                        "instantRefundAmount", totalRefundAmount.toPlainString()),
                 actorId);
 
         return toResponse(receiving, order);
@@ -238,15 +277,26 @@ public class ReceivingService {
                             line == null ? null : line.requestedQuantity(),
                             item.getAcceptedQuantity(), item.getReceivedQuantity(),
                             item.getDamagedQuantity(), item.getMissingQuantity(),
+                            line == null ? null : line.doorstepRejectionReason(),
+                            line == null ? null : line.doorstepRefundAmount(),
                             item.getUnit(), item.getNote());
                 })
                 .toList();
+
+        BigDecimal totalRefund = items.stream()
+                .map(item -> item.refundAmount() != null ? item.refundAmount() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // The number the credit note was actually issued under, or none: a made-up one on a response is a document
+        // reference that does not exist.
+        String cnNumber = totalRefund.signum() > 0 ? directory.creditNoteNumberFor(receiving.getSupplierOrderId()) : null;
 
         return new TrustDtos.ReceivingResponse(
                 receiving.getId(), receiving.getSupplierOrderId(), order.orderNumber(),
                 receiving.getStatus(), receiving.getHasDiscrepancy(),
                 receiving.getTotalAcceptedQuantity(), receiving.getTotalReceivedQuantity(),
                 receiving.getTotalDamagedQuantity(), receiving.getTotalMissingQuantity(),
-                receiving.getNotes(), receiving.getReceivedAt(), items);
+                Pricing.money(totalRefund), cnNumber,
+                receiving.getNotes(), receiving.getReceivedAt(), items,
+                totalRefund.signum() > 0 ? adjustments.doorstepStatus(receiving.getSupplierOrderId()).orElse(null) : null);
     }
 }

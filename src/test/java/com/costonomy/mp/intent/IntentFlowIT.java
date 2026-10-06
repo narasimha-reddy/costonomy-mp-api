@@ -470,6 +470,104 @@ class IntentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("a request is immediate unless the buyer names a day, and the supplier sees which (D-140)")
+        void immediateOrScheduled() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long paneer = listSku(seller, "paneer", "410");
+            long intentId = addItem(buyer, paneer, 2).at("/data/id").asLong();
+
+            var sent = api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send", Map.of());
+            assertThat(sent.at("/data/status").asText()).isEqualTo("OPEN");
+            assertThat(sent.at("/data/preferredDeliveryDate").isNull()).isTrue();
+
+            var other = newBuyer();
+            long second = addItem(other, paneer, 1).at("/data/id").asLong();
+            String day = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).plusDays(1).toString();
+            var scheduled = api.post(other.token(), "/api/v1/intents/" + second + "/send",
+                    Map.of("preferredDeliveryDate", day));
+            assertThat(scheduled.at("/data/preferredDeliveryDate").asText()).isEqualTo(day);
+
+            var seen = api.get(seller.token(), "/api/v1/supplier-stores/" + seller.storeId() + "/intents");
+            var days = new java.util.ArrayList<String>();
+            seen.at("/data").forEach(i -> days.add(i.at("/preferredDeliveryDate").asText("immediate")));
+            assertThat(days).contains(day, "immediate");
+        }
+
+        @Test
+        @DisplayName("sending the whole basket applies one day to every request")
+        void basketDayAppliesToEveryRequest() throws Exception {
+            var buyer = newBuyer();
+            var first = newSeller("Metro");
+            var second = newSeller("Nandini");
+            addItem(buyer, listSku(first, "paneer", "410"), 1);
+            addItem(buyer, listSku(second, "rice", "120"), 1);
+            String day = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).plusDays(2).toString();
+
+            var response = api.post(buyer.token(),
+                    "/api/v1/outlets/" + buyer.outletId() + "/intent-drafts/send",
+                    Map.of("acceptPriceChanges", true, "preferredDeliveryDate", day));
+
+            assertThat(response.at("/data/sent").size()).isEqualTo(2);
+            response.at("/data/sent").forEach(i ->
+                    assertThat(i.at("/preferredDeliveryDate").asText()).isEqualTo(day));
+        }
+
+        @Test
+        @DisplayName("refuses a day in the past or more than a month away, and sends nothing")
+        void refusesASillyDay() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long intentId = addItem(buyer, listSku(seller, "paneer", "410"), 1).at("/data/id").asLong();
+            var today = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata"));
+
+            for (var day : List.of(today.minusDays(1), today.plusDays(31))) {
+                var refused = api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send",
+                        Map.of("preferredDeliveryDate", day.toString()));
+                assertThat(refused.at("/error/code").asText()).as(day.toString()).isEqualTo("VALIDATION_ERROR");
+            }
+            assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, intentId))
+                    .isEqualTo("DRAFT");
+        }
+
+        @Test
+        @DisplayName("sending one request refuses a price that moved, unless the buyer agrees, and then locks it (D-146)")
+        void singleSendChecksThePrice() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long sku = listSku(seller, "paneer", "410");
+            long intentId = addItem(buyer, sku, 2).at("/data/id").asLong();
+
+            // The supplier reprices after the line was added.
+            assertThat(api.patchStatus(seller.token(), "/api/v1/supplier-skus/" + sku,
+                    Map.of("sellingPrice", "450"))).isEqualTo(200);
+
+            var refused = api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send", Map.of());
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("PRICE_CHANGED");
+            assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, intentId))
+                    .isEqualTo("DRAFT");
+
+            var sent = api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send",
+                    Map.of("acceptPriceChanges", true));
+            assertThat(sent.at("/data/status").asText()).as(sent.toString()).isEqualTo("OPEN");
+            assertThat(jdbc.queryForObject(
+                    "select unit_price_snapshot from intent_item where intent_id = ?",
+                    java.math.BigDecimal.class, intentId)).isEqualByComparingTo("450");
+        }
+
+        @Test
+        @DisplayName("sending one request whose prices did not move needs no agreement")
+        void singleSendWithoutAChange() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long intentId = addItem(buyer, listSku(seller, "paneer", "410"), 2).at("/data/id").asLong();
+
+            var sent = api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send", Map.of());
+
+            assertThat(sent.at("/data/status").asText()).as(sent.toString()).isEqualTo("OPEN");
+        }
+
+        @Test
         @DisplayName("carries the price it was sent at, before any reply")
         void sentCarriesItsPrice() throws Exception {
             var open = sendRequest(3);
@@ -558,6 +656,399 @@ class IntentFlowIT extends AbstractIntegrationTest {
     }
 
     @Nested
+    @DisplayName("what the supplier offers for delivery (D-141)")
+    class DeliveryOffer {
+
+        private void policy(Seller seller, int own, int costonomy) {
+            jdbc.update("""
+                    insert into supplier_delivery_policy
+                        (supplier_store_id, own_delivery_enabled, costonomy_delivery_enabled,
+                         own_delivery_fee, created_at, updated_at, version)
+                    values (?, ?, ?, 30, now(6), now(6), 0)
+                    on duplicate key update own_delivery_enabled = ?, costonomy_delivery_enabled = ?,
+                         own_delivery_fee = 30
+                    """, seller.storeId(), own, costonomy, own, costonomy);
+        }
+
+        /** A sent request for 6 paneer, answered in full with the given delivery offer (null leaves it out). */
+        private OpenRequest answered(String offer, int own, int costonomy) throws Exception {
+            return answered(offer, null, own, costonomy);
+        }
+
+        private OpenRequest answered(String offer, String fee, int own, int costonomy) throws Exception {
+            var open = sendRequest(6);
+            policy(open.seller(), own, costonomy);
+            var body = new java.util.HashMap<String, Object>();
+            body.put("lines", List.of(Map.of("intentItemId", open.itemId(), "offeredQuantity", 6)));
+            if (offer != null) {
+                body.put("deliveryOffer", offer);
+            }
+            if (fee != null) {
+                body.put("deliveryFee", fee);
+            }
+            var response = respond(open.seller().token(), open.intentId(), body);
+            assertThat(response.at("/error").isMissingNode() || response.at("/error").isNull())
+                    .as(response.toString()).isTrue();
+            return open;
+        }
+
+        private JsonNode orderWith(OpenRequest open, String mode) throws Exception {
+            return createOrder(open.buyer().token(), open.intentId(), Map.of("deliveryMode", mode));
+        }
+
+        private JsonNode orderWith(OpenRequest open, String mode, String quoteReference) throws Exception {
+            return createOrder(open.buyer().token(), open.intentId(),
+                    Map.of("deliveryMode", mode, "deliveryQuoteReference", quoteReference));
+        }
+
+        @Test
+        @DisplayName("free delivery is stated as free and charged as nothing")
+        void freeDelivery() throws Exception {
+            var open = answered("SELF_FREE", 1, 1);
+
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryOffer").asText()).isEqualTo("SELF_FREE");
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).isZero();
+            assertThat(shown.at("/data/acceptance/deliveryModes").asText()).isEqualTo("PICKUP,SUPPLIER_DELIVERY");
+
+            var created = orderWith(open, "SUPPLIER_DELIVERY");
+            long orderId = created.at("/data/supplierOrderId").asLong();
+            assertThat(orderId).as(created.toString()).isPositive();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("0");
+            assertThat(jdbc.queryForObject("select delivery_mode from supplier_order where id = ?",
+                    String.class, orderId)).isEqualTo("SUPPLIER_DELIVERY");
+        }
+
+        @Test
+        @DisplayName("the supplier's own delivery at their fee is shown and charged at that fee")
+        void paidSelfDelivery() throws Exception {
+            var open = answered("SELF", 1, 1);
+
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).isEqualTo(30.0);
+
+            long orderId = orderWith(open, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("30");
+        }
+
+        @Test
+        @DisplayName("a supplier can charge less than their store fee for one order, and that is what the buyer pays")
+        void lowerChargeForOneOrder() throws Exception {
+            var open = answered("SELF", "20", 1, 1);
+
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).isEqualTo(20.0);
+
+            long orderId = orderWith(open, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("20");
+        }
+
+        @Test
+        @DisplayName("a supplier can charge more than their store's standing fee for one order, and that is what the buyer pays")
+        void chargeIsTheSuppliersCall() throws Exception {
+            var open = answered("SELF", "45", 1, 1);
+
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).isEqualTo(45.0);
+
+            long orderId = orderWith(open, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("45");
+        }
+
+        @Test
+        @DisplayName("the free-delivery threshold does not waive Costonomy riders, and does not override a charge the supplier offered (D-146)")
+        void thresholdIsForTheSuppliersOwnDelivery() throws Exception {
+            // 6 KG of paneer is 2,460 of goods, well over a 100 threshold.
+            var riders = answered("COSTONOMY", 1, 1);
+            jdbc.update("update supplier_delivery_policy set free_delivery_threshold = 100 where supplier_store_id = ?",
+                    riders.seller().storeId());
+            var quote = api.post(riders.buyer().token(), "/api/v1/intents/" + riders.intentId() + "/delivery-quote",
+                    Map.of());
+            double quoted = quote.at("/data/fee").asDouble();
+            assertThat(quoted).as(quote.toString()).isPositive();
+
+            long ridersOrder = orderWith(riders, "COSTONOMY_DELIVERY", quote.at("/data/quoteReference").asText())
+                    .at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, ridersOrder).doubleValue()).isEqualTo(quoted);
+
+            var own = answered("SELF", "45", 1, 1);
+            jdbc.update("update supplier_delivery_policy set free_delivery_threshold = 100 where supplier_store_id = ?",
+                    own.seller().storeId());
+            long ownOrder = orderWith(own, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, ownOrder)).isEqualByComparingTo("45");
+        }
+
+        @Test
+        @DisplayName("a high delivery charge is flagged to the buyer, a normal one and a free one are not (D-144)")
+        void highChargeIsFlagged() throws Exception {
+            // 6 KG of paneer at 410 is 2,460 of goods: 10% is 246, so 300 is high and 45 is not.
+            var high = answered("SELF", "300", 1, 1);
+            var normal = answered("SELF", "45", 1, 1);
+            var free = answered("SELF_FREE", 1, 1);
+
+            assertThat(api.get(high.buyer().token(), "/api/v1/intents/" + high.intentId())
+                    .at("/data/acceptance/highDeliveryCharge").asBoolean()).isTrue();
+            assertThat(api.get(normal.buyer().token(), "/api/v1/intents/" + normal.intentId())
+                    .at("/data/acceptance/highDeliveryCharge").asBoolean()).isFalse();
+            assertThat(api.get(free.buyer().token(), "/api/v1/intents/" + free.intentId())
+                    .at("/data/acceptance/highDeliveryCharge").asBoolean()).isFalse();
+        }
+
+        @Test
+        @DisplayName("a charge needs no store fee to be set, and a typo is stopped by a sanity bound")
+        void chargeWithoutAStoreFeeAndSanityBound() throws Exception {
+            var open = answered("SELF", "60", 0, 1);   // own delivery off, store fee 30 but irrelevant
+            assertThat(api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId())
+                    .at("/data/acceptance/deliveryFee").asDouble()).isEqualTo(60.0);
+
+            var tooMuch = sendRequest(6);
+            policy(tooMuch.seller(), 1, 1);
+            var refused = respond(tooMuch.seller().token(), tooMuch.intentId(), Map.of(
+                    "lines", List.of(Map.of("intentItemId", tooMuch.itemId(), "offeredQuantity", 6)),
+                    "deliveryOffer", "SELF", "deliveryFee", "5001"));
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+            assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, tooMuch.intentId()))
+                    .isEqualTo("OPEN");
+        }
+
+        @Test
+        @DisplayName("the buyer can choose only what was offered")
+        void onlyWhatWasOffered() throws Exception {
+            var selfOffered = answered("SELF_FREE", 1, 1);
+            var refused = orderWith(selfOffered, "COSTONOMY_DELIVERY");
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+
+            var ridersOffered = answered("COSTONOMY", 1, 1);
+            var alsoRefused = orderWith(ridersOffered, "SUPPLIER_DELIVERY");
+            assertThat(alsoRefused.at("/error/code").asText()).as(alsoRefused.toString())
+                    .isEqualTo("VALIDATION_ERROR");
+            // Pickup is always there.
+            assertThat(orderWith(ridersOffered, "PICKUP").at("/data/supplierOrderId").asLong()).isPositive();
+        }
+
+        @Test
+        @DisplayName("a supplier can offer to deliver without any standing delivery setting, free")
+        void deliversWithoutAStandingSetting() throws Exception {
+            // Own delivery is off and no fee is configured: the supplier still says "I will deliver this one".
+            var open = answered("SELF_FREE", 0, 1);
+
+            long orderId = orderWith(open, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
+            assertThat(orderId).isPositive();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("a supplier cannot offer Costonomy delivery if their store has turned it off")
+        void costonomyBounded() throws Exception {
+            var open = sendRequest(6);
+            policy(open.seller(), 1, 0);
+
+            var refused = respond(open.seller().token(), open.intentId(), Map.of(
+                    "lines", List.of(Map.of("intentItemId", open.itemId(), "offeredQuantity", 6)),
+                    "deliveryOffer", "COSTONOMY"));
+
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+            assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, open.intentId()))
+                    .isEqualTo("OPEN");
+        }
+    }
+
+    @Nested
+    @DisplayName("deliver or collect, asked per supplier's request (D-143)")
+    class DeliveryPreference {
+
+        private JsonNode prefer(String token, long intentId, String preference) throws Exception {
+            return json.readTree(mvc.perform(MockMvcRequestBuilders
+                            .put("/api/v1/intents/" + intentId + "/delivery-preference")
+                            .header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("preference", preference))))
+                    .andReturn().getResponse().getContentAsString());
+        }
+
+        /** A draft for 6 paneer with the given preference, sent, and the supplier's delivery set up. */
+        private OpenRequest sentWith(String preference) throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long skuId = listSku(seller, "paneer", "410");
+            jdbc.update("""
+                    insert into supplier_delivery_policy
+                        (supplier_store_id, own_delivery_enabled, costonomy_delivery_enabled,
+                         own_delivery_fee, created_at, updated_at, version)
+                    values (?, 1, 1, 30, now(6), now(6), 0)
+                    on duplicate key update own_delivery_enabled = 1, costonomy_delivery_enabled = 1
+                    """, seller.storeId());
+            var draft = addItem(buyer, skuId, 6);
+            long intentId = draft.at("/data/id").asLong();
+            long itemId = draft.at("/data/items/0/id").asLong();
+            if (preference != null) {
+                var set = prefer(buyer.token(), intentId, preference);
+                assertThat(set.at("/data/deliveryPreference").asText()).as(set.toString()).isEqualTo(preference);
+            }
+            api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send", Map.of());
+            return new OpenRequest(buyer, seller, intentId, itemId, skuId);
+        }
+
+        private JsonNode answerWith(OpenRequest open, String offer) throws Exception {
+            var body = new java.util.HashMap<String, Object>();
+            body.put("lines", List.of(Map.of("intentItemId", open.itemId(), "offeredQuantity", 6)));
+            if (offer != null) {
+                body.put("deliveryOffer", offer);
+            }
+            return respond(open.seller().token(), open.intentId(), body);
+        }
+
+        @Test
+        @DisplayName("a request is for delivery unless the restaurant says they will collect, and the supplier sees which")
+        void defaultsToDelivery() throws Exception {
+            var delivery = sentWith(null);
+            var collect = sentWith("PICKUP");
+
+            assertThat(api.get(delivery.seller().token(), "/api/v1/intents/" + delivery.intentId())
+                    .at("/data/deliveryPreference").asText()).isEqualTo("DELIVERY");
+            assertThat(api.get(collect.seller().token(), "/api/v1/intents/" + collect.intentId())
+                    .at("/data/deliveryPreference").asText()).isEqualTo("PICKUP");
+        }
+
+        @Test
+        @DisplayName("it cannot be changed once the request has been sent")
+        void lockedOnceSent() throws Exception {
+            var open = sentWith("PICKUP");
+
+            var refused = prefer(open.buyer().token(), open.intentId(), "DELIVERY");
+
+            assertThat(refused.at("/error/code").asText()).as(refused.toString())
+                    .isEqualTo("INVALID_STATE_TRANSITION");
+        }
+
+        @Test
+        @DisplayName("an unknown choice is refused")
+        void unknownChoice() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            long intentId = addItem(buyer, listSku(seller, "paneer", "410"), 1).at("/data/id").asLong();
+
+            var refused = prefer(buyer.token(), intentId, "DRONE");
+
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+        }
+
+        @Test
+        @DisplayName("a pickup request is answered with pickup only, whatever delivery the supplier tries to offer")
+        void pickupOffersNoDelivery() throws Exception {
+            var open = sentWith("PICKUP");
+
+            var answered = answerWith(open, "SELF_FREE");
+            assertThat(answered.at("/data/acceptance/deliveryOffer").asText()).as(answered.toString())
+                    .isEqualTo("NONE");
+            assertThat(answered.at("/data/acceptance/deliveryModes").asText()).isEqualTo("PICKUP");
+
+            var refused = createOrder(open.buyer().token(), open.intentId(), Map.of("deliveryMode", "SUPPLIER_DELIVERY"));
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+            assertThat(refused.at("/error/message").asText()).contains("not delivering this order");
+            assertThat(createOrder(open.buyer().token(), open.intentId(), Map.of("deliveryMode", "PICKUP"))
+                    .at("/data/supplierOrderId").asLong()).isPositive();
+        }
+
+        @Test
+        @DisplayName("a supplier who cannot deliver this one can say so, and the buyer can only collect")
+        void cannotDeliver() throws Exception {
+            var open = sentWith("DELIVERY");
+
+            var answered = answerWith(open, "NONE");
+            assertThat(answered.at("/data/acceptance/deliveryOffer").asText()).as(answered.toString())
+                    .isEqualTo("NONE");
+
+            var refused = createOrder(open.buyer().token(), open.intentId(),
+                    Map.of("deliveryMode", "COSTONOMY_DELIVERY"));
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+            // Refused because the supplier is not delivering, not for some other reason (such as a missing quote).
+            assertThat(refused.at("/error/message").asText()).contains("not delivering this order");
+            assertThat(createOrder(open.buyer().token(), open.intentId(), Map.of("deliveryMode", "PICKUP"))
+                    .at("/data/supplierOrderId").asLong()).isPositive();
+        }
+    }
+
+    @Nested
+    @DisplayName("delivery slots and as soon as possible (D-142)")
+    class DeliverySlots {
+
+        private long slot(Seller seller, String name, String start, String end) throws Exception {
+            var created = api.post(seller.token(), "/api/v1/supplier-stores/" + seller.storeId() + "/delivery-slots",
+                    Map.of("slotName", name, "startTime", start, "endTime", end,
+                            "orderCutoffTime", "23:59:59", "maxOrdersPerDay", 5));
+            assertThat(created.at("/error").isMissingNode() || created.at("/error").isNull())
+                    .as(created.toString()).isTrue();
+            return created.at("/data/id").asLong();
+        }
+
+        private OpenRequest answeredRequest() throws Exception {
+            var open = sendRequest(6);
+            answer(open, 6);
+            return open;
+        }
+
+        private String day(int plus) {
+            return java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).plusDays(plus).toString();
+        }
+
+        @Test
+        @DisplayName("no slot and no day is as soon as possible, and is accepted")
+        void asap() throws Exception {
+            var open = answeredRequest();
+
+            var created = createOrder(open.buyer().token(), open.intentId(), Map.of());
+
+            long orderId = created.at("/data/supplierOrderId").asLong();
+            assertThat(orderId).as(created.toString()).isPositive();
+            assertThat(jdbc.queryForObject("select delivery_slot_id from supplier_order where id = ?",
+                    Long.class, orderId)).isNull();
+            assertThat(jdbc.queryForObject("select scheduled_delivery_date from supplier_order where id = ?",
+                    java.sql.Date.class, orderId)).isNull();
+        }
+
+        @Test
+        @DisplayName("a slot that has already started today is not offered, and cannot be booked; tomorrow's can")
+        void startedSlot() throws Exception {
+            var open = answeredRequest();
+            long early = slot(open.seller(), "Early", "00:00:01", "23:59:58");
+
+            var today = api.get(open.buyer().token(), "/api/v1/supplier-stores/" + open.seller().storeId()
+                    + "/available-slots?date=" + day(0));
+            assertThat(today.at("/data/0/available").asBoolean()).isFalse();
+            assertThat(today.at("/data/0/unavailableReason").asText()).contains("already started");
+
+            var refused = createOrder(open.buyer().token(), open.intentId(),
+                    Map.of("deliverySlotId", early, "scheduledDeliveryDate", day(0)));
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+
+            var booked = createOrder(open.buyer().token(), open.intentId(),
+                    Map.of("deliverySlotId", early, "scheduledDeliveryDate", day(1)));
+            assertThat(booked.at("/data/supplierOrderId").asLong()).as(booked.toString()).isPositive();
+        }
+
+        @Test
+        @DisplayName("another store's slot cannot be booked")
+        void otherStoresSlot() throws Exception {
+            var open = answeredRequest();
+            var elsewhere = newSeller("Nandini");
+            long foreign = slot(elsewhere, "Morning", "06:00:00", "07:00:00");
+
+            var refused = createOrder(open.buyer().token(), open.intentId(),
+                    Map.of("deliverySlotId", foreign, "scheduledDeliveryDate", day(1)));
+
+            assertThat(refused.at("/error/code").asText()).as(refused.toString()).isEqualTo("VALIDATION_ERROR");
+        }
+    }
+
+    @Nested
     @DisplayName("the order window")
     class Window {
 
@@ -628,29 +1119,231 @@ class IntentFlowIT extends AbstractIntegrationTest {
          * call it a concurrency test.
          */
         @Test
-        @DisplayName("two order creations produce one order")
+        @DisplayName("two order creations produce one order, and both callers are told which (five races)")
         void duplicateOrderCreation() throws Exception {
-            var open = sendRequest(6);
-            answer(open, 6);
+            for (int round = 1; round <= 5; round++) {
+                var open = sendRequest(6);
+                answer(open, 6);
 
-            var first = new AtomicReference<String>();
-            var second = new AtomicReference<String>();
+                var first = new AtomicReference<JsonNode>();
+                var second = new AtomicReference<JsonNode>();
 
-            race(
-                () -> first.set(quietly(() ->
-                    createOrder(open.buyer().token(), open.intentId(), Map.of()).toString())),
-                () -> second.set(quietly(() ->
-                    createOrder(open.buyer().token(), open.intentId(), Map.of()).toString())));
+                race(
+                    () -> first.set(orderAttempt(open)),
+                    () -> second.set(orderAttempt(open)));
 
-            // Exactly one order, whatever each call reported. Doc 10 §2 asks only
-            // that one outcome lands, not which caller sees it.
-            assertThat(ordersFor(open.buyer().outletId()))
-                .as("first=%s second=%s", first.get(), second.get())
-                .isEqualTo(1);
+                // Both calls succeed and name the SAME order: the loser used to deadlock on the intent row and surface
+                // as a 500 (D-135). A sequential retry has always returned the first order; so does a simultaneous one.
+                String context = "round %d first=%s second=%s".formatted(round, first.get(), second.get());
+                assertThat(first.get().at("/error").isMissingNode() || first.get().at("/error").isNull())
+                    .as(context).isTrue();
+                assertThat(second.get().at("/error").isMissingNode() || second.get().at("/error").isNull())
+                    .as(context).isTrue();
+                long orderId = first.get().at("/data/supplierOrderId").asLong();
+                assertThat(orderId).as(context).isPositive();
+                assertThat(second.get().at("/data/supplierOrderId").asLong()).as(context).isEqualTo(orderId);
+
+                // And the side effects: one order, one link, one payment, never two real charges.
+                assertThat(ordersFor(open.buyer().outletId())).as(context).isEqualTo(1);
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent_order_link where intent_id = ?",
+                        Integer.class, open.intentId())).as(context).isEqualTo(1);
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from payment where supplier_order_id = ?",
+                        Integer.class, orderId)).as(context).isEqualTo(1);
+                assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class,
+                        open.intentId())).as(context).isEqualTo("ORDERED");
+            }
+        }
+
+        @Test
+        @DisplayName("two first additions for one supplier make one draft with both lines (five races)")
+        void twoFirstAdditionsMakeOneDraft() throws Exception {
+            for (int round = 1; round <= 5; round++) {
+                var buyer = newBuyer();
+                var seller = newSeller("Metro");
+                long paneer = listSku(seller, "paneer", "410");
+                long rice = listSku(seller, "rice", "120");
+                var a = new AtomicReference<JsonNode>();
+                var b = new AtomicReference<JsonNode>();
+
+                race(() -> a.set(attempt(() -> addItem(buyer, paneer, 3))),
+                     () -> b.set(attempt(() -> addItem(buyer, rice, 4))));
+
+                String context = "round %d a=%s b=%s".formatted(round, a.get(), b.get());
+                assertThat(failed(a.get())).as(context).isFalse();
+                assertThat(failed(b.get())).as(context).isFalse();
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent where outlet_id = ? and status = 'DRAFT'",
+                        Integer.class, buyer.outletId())).as(context).isEqualTo(1);
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent_item i join intent d on d.id = i.intent_id where d.outlet_id = ?",
+                        Integer.class, buyer.outletId())).as(context).isEqualTo(2);
+            }
+        }
+
+        @Test
+        @DisplayName("the same pack added twice at once is one line with both quantities (five races)")
+        void samePackAddedTwiceAtOnce() throws Exception {
+            for (int round = 1; round <= 5; round++) {
+                var buyer = newBuyer();
+                var seller = newSeller("Metro");
+                long paneer = listSku(seller, "paneer", "410");
+                var a = new AtomicReference<JsonNode>();
+                var b = new AtomicReference<JsonNode>();
+
+                race(() -> a.set(attempt(() -> addItem(buyer, paneer, 1))),
+                     () -> b.set(attempt(() -> addItem(buyer, paneer, 1))));
+
+                String context = "round %d a=%s b=%s".formatted(round, a.get(), b.get());
+                assertThat(failed(a.get())).as(context).isFalse();
+                assertThat(failed(b.get())).as(context).isFalse();
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent where outlet_id = ? and status = 'DRAFT'",
+                        Integer.class, buyer.outletId())).as(context).isEqualTo(1);
+                assertThat(jdbc.queryForList(
+                        "select i.requested_quantity from intent_item i join intent d on d.id = i.intent_id "
+                                + "where d.outlet_id = ?", java.math.BigDecimal.class, buyer.outletId()))
+                        .as(context).hasSize(1).allSatisfy(q -> assertThat(q).isEqualByComparingTo("2"));
+            }
+        }
+
+        @Test
+        @DisplayName("an add and a send at once lose no line: it is on the sent request or on a new draft (five races)")
+        void addAgainstSend() throws Exception {
+            for (int round = 1; round <= 5; round++) {
+                var buyer = newBuyer();
+                var seller = newSeller("Metro");
+                long paneer = listSku(seller, "paneer", "410");
+                long rice = listSku(seller, "rice", "120");
+                long intentId = addItem(buyer, paneer, 2).at("/data/id").asLong();
+                var add = new AtomicReference<JsonNode>();
+                var send = new AtomicReference<JsonNode>();
+
+                race(() -> add.set(attempt(() -> addItem(buyer, rice, 1))),
+                     () -> send.set(attempt(() -> api.post(buyer.token(),
+                             "/api/v1/intents/" + intentId + "/send", Map.of()))));
+
+                String context = "round %d add=%s send=%s".formatted(round, add.get(), send.get());
+                assertThat(failed(add.get())).as(context).isFalse();
+                assertThat(failed(send.get())).as(context).isFalse();
+                // Both packs exist exactly once across everything this outlet has, and at most one draft remains.
+                assertThat(jdbc.queryForList(
+                        "select i.supplier_sku_id from intent_item i join intent d on d.id = i.intent_id "
+                                + "where d.outlet_id = ? order by 1", Long.class, buyer.outletId()))
+                        .as(context).containsExactlyInAnyOrder(paneer, rice);
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent where outlet_id = ? and status = 'DRAFT'",
+                        Integer.class, buyer.outletId())).as(context).isLessThanOrEqualTo(1);
+                // The sent request is never left holding a line it was not sent with: its lines are 1 or 2, and any
+                // draft holds the rest.
+                assertThat(jdbc.queryForObject("select status from intent where id = ?", String.class, intentId))
+                        .as(context).isEqualTo("OPEN");
+            }
+        }
+
+        @Test
+        @DisplayName("removing the last line while another is added keeps the new line (five races)")
+        void removeLastAgainstAdd() throws Exception {
+            for (int round = 1; round <= 5; round++) {
+                var buyer = newBuyer();
+                var seller = newSeller("Metro");
+                long paneer = listSku(seller, "paneer", "410");
+                long rice = listSku(seller, "rice", "120");
+                long itemId = addItem(buyer, paneer, 2).at("/data/items/0/id").asLong();
+                var add = new AtomicReference<JsonNode>();
+                var remove = new AtomicReference<Integer>();
+
+                race(() -> add.set(attempt(() -> addItem(buyer, rice, 1))),
+                     () -> remove.set(patchQuietly(buyer, itemId)));
+
+                String context = "round %d add=%s remove=%s".formatted(round, add.get(), remove.get());
+                assertThat(failed(add.get())).as(context).isFalse();
+                assertThat(remove.get()).as(context).isEqualTo(200);
+                assertThat(jdbc.queryForList(
+                        "select i.supplier_sku_id from intent_item i join intent d on d.id = i.intent_id "
+                                + "where d.outlet_id = ? and d.status = 'DRAFT'", Long.class, buyer.outletId()))
+                        .as(context).containsExactly(rice);
+                assertThat(jdbc.queryForObject(
+                        "select count(*) from intent where outlet_id = ? and status = 'DRAFT'",
+                        Integer.class, buyer.outletId())).as(context).isEqualTo(1);
+            }
+        }
+
+        @Test
+        @DisplayName("a removed line and an emptied draft are written to the audit log")
+        void removalIsAudited() throws Exception {
+            var buyer = newBuyer();
+            var seller = newSeller("Metro");
+            addItem(buyer, listSku(seller, "rice", "120"), 1);
+            var draft = addItem(buyer, listSku(seller, "paneer", "410"), 3);
+            long intentId = draft.at("/data/id").asLong();
+            long first = draft.at("/data/items/0/id").asLong();
+            long second = draft.at("/data/items/1/id").asLong();
+
+            api.patchStatus(buyer.token(), "/api/v1/intent-items/" + first, Map.of("quantity", 0));
+            api.patchStatus(buyer.token(), "/api/v1/intent-items/" + second, Map.of("quantity", 0));
 
             assertThat(jdbc.queryForObject(
-                    "select count(*) from intent_order_link where intent_id = ?",
-                    Integer.class, open.intentId())).isEqualTo(1);
+                    "select count(*) from audit_log where action = 'INTENT_ITEM_REMOVED' and entity_id in (?, ?)",
+                    Integer.class, first, second)).isEqualTo(2);
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from audit_log where action = 'INTENT_DRAFT_DELETED' and entity_id = ?",
+                    Integer.class, intentId)).isEqualTo(1);
+        }
+
+        private JsonNode attempt(Callable<JsonNode> call) {
+            try {
+                return call.call();
+            } catch (Exception e) {
+                return json.createObjectNode().put("thrown", e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
+        }
+
+        private Integer patchQuietly(Buyer buyer, long itemId) {
+            try {
+                return api.patchStatus(buyer.token(), "/api/v1/intent-items/" + itemId, Map.of("quantity", 0));
+            } catch (Exception e) {
+                return -1;
+            }
+        }
+
+        private boolean failed(JsonNode response) {
+            return response.has("thrown") || !(response.at("/error").isMissingNode() || response.at("/error").isNull());
+        }
+
+        /** One order attempt, with its own idempotency key (a crashed client retries with a fresh one). */
+        private JsonNode orderAttempt(OpenRequest open) {
+            try {
+                return createOrder(open.buyer().token(), open.intentId(), Map.of());
+            } catch (Exception e) {
+                return json.createObjectNode().put("thrown", e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
+        }
+
+        @Test
+        @DisplayName("replaying an order key with a different delivery mode is refused, not answered with the first order")
+        void keyReusedWithADifferentDeliveryIsRefused() throws Exception {
+            var open = sendRequest(6);
+            answer(open, 6);
+            String key = UUID.randomUUID().toString();
+            String path = "/api/v1/intents/" + open.intentId() + "/orders";
+
+            var first = mvc.perform(MockMvcRequestBuilders.post(path)
+                    .header("Authorization", "Bearer " + open.buyer().token())
+                    .header("Idempotency-Key", key)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"deliveryMode\":\"PICKUP\"}")).andReturn().getResponse();
+            var replay = mvc.perform(MockMvcRequestBuilders.post(path)
+                    .header("Authorization", "Bearer " + open.buyer().token())
+                    .header("Idempotency-Key", key)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"deliveryMode\":\"SUPPLIER_DELIVERY\"}")).andReturn().getResponse();
+
+            assertThat(first.getStatus()).isEqualTo(200);
+            assertThat(json.readTree(replay.getContentAsString()).at("/error/code").asText())
+                .isEqualTo("IDEMPOTENCY_KEY_REUSE");
+            assertThat(ordersFor(open.buyer().outletId())).isEqualTo(1);
         }
 
         /**

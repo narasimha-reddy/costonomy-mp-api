@@ -47,8 +47,10 @@ import java.util.Map;
 public class SupplierOrderTransitions {
 
     private final SupplierOrderRepository orders;
+    private final com.costonomy.mp.procurement.repository.SupplierOrderItemRepository orderItems;
     private final SupplierOrderMapper mapper;
     private final OrderFunding funding;
+    private final OrderAdjustmentService adjustments;
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
@@ -84,7 +86,9 @@ public class SupplierOrderTransitions {
     public ProcurementDtos.SupplierOrderResponse advance(
             Long actorId, Long orderId, SupplierOrderStatus target, String permission) {
 
-        var order = loadForSupplier(actorId, orderId, permission);
+        // Ready settles the money (D-128), and a weighing may be in flight: lock the order before reading it,
+        // so the two queue and the settlement sees the figures the weighing committed.
+        var order = loadForSupplier(actorId, orderId, permission, target == SupplierOrderStatus.READY_FOR_PICKUP);
         var mode = order.getDeliveryMode();
 
         if (order.getStatus() == target) {
@@ -107,6 +111,9 @@ public class SupplierOrderTransitions {
         }
 
         boolean dispatching = target == SupplierOrderStatus.READY_FOR_PICKUP;
+        if (dispatching) {
+            requireCatchWeightLinesWeighed(order);
+        }
         if (dispatching && !funding.canTakeFunds(orderId)) {
             // The goods must not leave against money that cannot be taken — a
             // hold about to lapse back to the customer, or one already gone
@@ -122,7 +129,9 @@ public class SupplierOrderTransitions {
             // The money is taken here, not at confirmation (D-103): from READY an
             // order can no longer be cancelled, so a cancellation before it only
             // ever drops a hold, and the two can never race.
-            funding.onOrderDispatched(orderId, order.getAcceptedAmount());
+            // Settled to what the buyer finally owes, once, and the shortfall recorded as a row (D-128, D-129):
+            // the same figure for card, wallet and credit. Unweighed orders owe what was accepted.
+            adjustments.settleAtReady(order, actorId);
         }
 
         auditService.record(actorId, null, "SUPPLIER_ORDER_" + target.name(), "SUPPLIER_ORDER",
@@ -256,8 +265,29 @@ public class SupplierOrderTransitions {
         }
     }
 
+    /**
+     * Ready is the point the price is fixed, so a catch-weight line nobody weighed would be billed at the
+     * ordered quantity on nobody's measurement (D-128). Refused until each one has a reading.
+     */
+    private void requireCatchWeightLinesWeighed(SupplierOrder order) {
+        boolean unweighed = orderItems.findBySupplierOrderId(order.getId()).stream()
+                .anyMatch(item -> item.isCatchWeight()
+                        && item.getAcceptedQuantity() != null && item.getAcceptedQuantity().signum() > 0
+                        && item.getDispatchedWeight() == null);
+        if (unweighed) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Weigh every catch-weight line before marking the order ready.");
+        }
+    }
+
     private SupplierOrder loadForSupplier(Long actorId, Long orderId, String permission) {
-        var order = orders.findById(orderId)
+        return loadForSupplier(actorId, orderId, permission, false);
+    }
+
+    private SupplierOrder loadForSupplier(Long actorId, Long orderId, String permission, boolean lock) {
+        // The locking read comes first and alone: a plain read before it would fix this transaction's
+        // snapshot at the order as it was before whoever held the lock committed.
+        var order = (lock ? orders.lockById(orderId) : orders.findById(orderId))
                 .orElseThrow(() -> new NotFoundException("SupplierOrder", orderId));
 
         accessControl.requireScoped(actorId, permission,

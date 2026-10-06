@@ -14,6 +14,7 @@ import jakarta.validation.constraints.*;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 
 public final class ProcurementDtos {
@@ -255,6 +256,9 @@ public final class ProcurementDtos {
              */
             BigDecimal acceptedSubtotal,
             BigDecimal acceptedGst,
+            BigDecimal weightAdjustmentAmount,
+            BigDecimal doorstepRefundAmount,
+            BigDecimal finalPayableAmount,
             String paymentMethod,
             /**
              * Where the money stands, live. Beside AUTHORIZED, CAPTURED, RELEASED and the
@@ -280,6 +284,12 @@ public final class ProcurementDtos {
              */
             DeliveryMode deliveryMode,
             BigDecimal deliveryFee,
+            Long deliverySlotId,
+            String deliverySlotName,
+            LocalDate scheduledDeliveryDate,
+            boolean isSubscriptionOrder,
+            Long subscriptionId,
+            boolean hasColdChainItems,
             /**
              * Whose decision ended it, on a cancelled order. Null otherwise.
              *
@@ -409,6 +419,7 @@ public final class ProcurementDtos {
              */
             BigDecimal acceptedAmount,
             String paymentMethod,
+            boolean hasColdChainItems,
             List<SupplierOrderItemResponse> items) {
     }
 
@@ -463,6 +474,19 @@ public final class ProcurementDtos {
             BigDecimal requestedQuantity,
             /** Null until the supplier answers; zero means they declined this line. */
             BigDecimal acceptedQuantity,
+            BigDecimal fulfilledQuantity,
+            BigDecimal dispatchedWeight,
+            /** What the buyer is billed for on a weighed line: the reading, capped at what was accepted (D-128). */
+            BigDecimal billableQuantity,
+            Instant weighedAt,
+            /** Positive: the buyer pays this much less than the agreed line because it weighed less. */
+            BigDecimal weightDeltaAmount,
+            BigDecimal doorstepAcceptedQty,
+            BigDecimal doorstepRejectedQty,
+            String doorstepRejectionReason,
+            BigDecimal doorstepRefundAmount,
+            boolean requiresColdChain,
+            boolean isCatchWeight,
             String unit,
             BigDecimal unitPrice,
             /** The same price with its GST added. See {@code Pricing.inclusiveOfGst}. */
@@ -484,5 +508,17 @@ public final class ProcurementDtos {
              */
             BigDecimal acceptedLineTotal,
             String status) {
+    }
+
+    public record RecordDispatchWeightItem(
+            @NotNull(message = "Item ID is required") Long supplierOrderItemId,
+            @NotNull(message = "Dispatched weight is required")
+            @DecimalMin(value = "0.0001", message = "Weight must be greater than zero")
+            BigDecimal dispatchedWeight) {
+    }
+
+    public record RecordDispatchWeightsRequest(
+            @NotEmpty(message = "Enter weights for dispatched lines")
+            @Valid List<RecordDispatchWeightItem> weights) {
     }
 }

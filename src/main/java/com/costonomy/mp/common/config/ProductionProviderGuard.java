@@ -31,6 +31,9 @@ public class ProductionProviderGuard {
             "costonomy.mp.providers.payment", "costonomy.mp.providers.otp",
             "costonomy.mp.providers.payout");
 
+    /** Signing keys that were once defaults in application.properties. */
+    static final Set<String> LEAKED_JWT_SECRETS = Set.of("SWt/kWYyraXKIm3nlqnJSL9vSqmPLkCT7GdZyKa4jDU=");
+
     private final Environment environment;
 
     @PostConstruct
@@ -119,6 +122,23 @@ public class ProductionProviderGuard {
                     environment.getProperty("costonomy.mp.invoices.cost-outlet-map"));
         } catch (IllegalStateException e) {
             throw new IllegalStateException(e.getMessage() + " (under a production profile)");
+        }
+        // An enabled Pidge with no webhook secret would reject every status update (the webhook fails
+        // closed), leaving deliveries stuck; refuse to start rather than discover it from a stuck order.
+        if ("PIDGE".equalsIgnoreCase(environment.getProperty("costonomy.mp.providers.delivery", "").trim())
+                && blank(environment.getProperty("costonomy.mp.pidge.webhook-secret"))) {
+            throw new IllegalStateException("costonomy.mp.pidge.webhook-secret is not set while Pidge is the delivery "
+                    + "provider under a production profile. Set PIDGE_WEBHOOK_SECRET.");
+        }
+        // The signing key that used to be the property's default is in the repository history, so it
+        // is known to everyone with read access. Under production it is refused, as is a short or
+        // missing one (JwtService also refuses short keys, but this names the cause).
+        String jwtSecret = environment.getProperty("costonomy.mp.jwt.secret", "");
+        if (jwtSecret.isBlank() || jwtSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length < 32
+                || LEAKED_JWT_SECRETS.contains(jwtSecret.trim())) {
+            throw new IllegalStateException("costonomy.mp.jwt.secret is missing, shorter than 32 bytes, or a "
+                    + "value that was committed to the repository, under a production profile. Set JWT_SECRET "
+                    + "to a freshly generated 32+ byte secret.");
         }
     }
 

@@ -104,6 +104,12 @@ public class Delivery extends BaseEntity {
     @Column(name = "vehicle_type", length = 32)
     private VehicleType vehicleType;
 
+    /**
+     * Whether this delivery contains temperature-sensitive items requiring cold-chain handling.
+     */
+    @Column(name = "requires_cold_chain", nullable = false)
+    private boolean requiresColdChain = false;
+
     /** Null until a driver exists. Never filled with a placeholder. */
     @Column(name = "driver_name", length = 150)
     private String driverName;

@@ -77,6 +77,31 @@ public final class Pricing {
     }
 
     /**
+     * Compute discount amount (MRP - Selling Price).
+     * Returns null if MRP is null, sellingPrice is null, or sellingPrice >= MRP.
+     */
+    public static BigDecimal discountAmount(BigDecimal mrp, BigDecimal sellingPrice) {
+        if (mrp == null || sellingPrice == null || mrp.compareTo(sellingPrice) <= 0) {
+            return null;
+        }
+        return mrp.subtract(sellingPrice).setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Compute discount percentage: ((MRP - Selling Price) / MRP) * 100 rounded to integer percent.
+     * Returns null if MRP is null, sellingPrice is null, or sellingPrice >= MRP or MRP <= 0.
+     */
+    public static Integer discountPercent(BigDecimal mrp, BigDecimal sellingPrice) {
+        if (mrp == null || sellingPrice == null || mrp.compareTo(sellingPrice) <= 0 || mrp.compareTo(BigDecimal.ZERO) <= 0) {
+            return null;
+        }
+        return mrp.subtract(sellingPrice)
+                .multiply(HUNDRED)
+                .divide(mrp, 0, RoundingMode.HALF_UP)
+                .intValue();
+    }
+
+    /**
      * Whether two prices differ.
      *
      * <p>{@code compareTo}, never {@code equals}: {@code 410.00} and {@code 410.0000}
@@ -89,5 +114,34 @@ public final class Pricing {
             return a != b;
         }
         return a.compareTo(b) != 0;
+    }
+
+    /** The taxable value, GST and total of a rejected part of a line. */
+    public record Rejection(BigDecimal taxable, BigDecimal gst, BigDecimal total) {
+    }
+
+    /**
+     * What rejecting {@code rejectedQuantity} of a line takes off, from the line's stored figures. The whole line is
+     * exactly what it was billed at, so rounding can never refund a paisa more than was charged; a part is priced at
+     * the line's unit price and rate and never exceeds the line. Receiving (the refund) and billing (the credit note)
+     * both use this, so the two cannot differ by a paisa.
+     */
+    public static Rejection rejection(BigDecimal lineItemValue, BigDecimal lineGst, BigDecimal lineTotal,
+                                      BigDecimal suppliedQuantity, BigDecimal rejectedQuantity,
+                                      BigDecimal unitPrice, BigDecimal gstRatePercent) {
+        if (rejectedQuantity.compareTo(suppliedQuantity) == 0 && lineTotal != null) {
+            return new Rejection(lineItemValue, lineGst, lineTotal);
+        }
+        BigDecimal price = unitPrice == null ? BigDecimal.ZERO : unitPrice;
+        BigDecimal rate = gstRatePercent == null ? BigDecimal.ZERO : gstRatePercent;
+        BigDecimal value = lineItemValue(price, rejectedQuantity);
+        BigDecimal gst = lineGst(value, rate);
+        BigDecimal total = lineTotal(value, gst);
+        if (lineTotal != null && total.compareTo(lineTotal) > 0) {
+            total = lineTotal;
+            gst = gst.min(lineGst == null ? gst : lineGst);
+            value = total.subtract(gst);
+        }
+        return new Rejection(value, gst, total);
     }
 }

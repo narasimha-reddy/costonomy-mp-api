@@ -1,5 +1,6 @@
 package com.costonomy.mp.delivery.provider.pidge;
 
+import com.costonomy.mp.common.domain.Serviceability;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import com.costonomy.mp.delivery.domain.VehicleType;
 import com.costonomy.mp.delivery.provider.DeliveryProvider;
@@ -84,6 +85,70 @@ public class PidgeApiClient {
         return headers;
     }
 
+    // ── required response / request fields (D-121: nothing is defaulted) ───
+
+    private static DeliveryProviderException missing(String field) {
+        return new DeliveryProviderException("PIDGE", "Pidge response missing or invalid field: " + field, false);
+    }
+
+    private static void requireRequest(boolean ok, String what) {
+        if (!ok) {
+            throw new DeliveryProviderException("PIDGE", what + " missing or invalid for Pidge booking", false);
+        }
+    }
+
+    private static boolean notBlank(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static String requiredText(JsonNode body, String field) {
+        var node = body.path(field);
+        if (!node.isTextual() || node.asText().isBlank()) {
+            throw missing(field);
+        }
+        return node.asText();
+    }
+
+    private static BigDecimal requiredAmount(JsonNode body, String field) {
+        var node = body.path(field);
+        if (!node.isNumber() && !node.isTextual()) {
+            throw missing(field);
+        }
+        try {
+            BigDecimal amount = new BigDecimal(node.asText().trim());
+            if (amount.signum() <= 0) {
+                throw missing(field);
+            }
+            return amount;
+        } catch (NumberFormatException ex) {
+            throw missing(field);
+        }
+    }
+
+    private static int requiredInt(JsonNode body, String field) {
+        var node = body.path(field);
+        if (!node.isIntegralNumber() || node.asInt() <= 0) {
+            throw missing(field);
+        }
+        return node.asInt();
+    }
+
+    private static long requiredLong(JsonNode body, String field) {
+        var node = body.path(field);
+        if (!node.isIntegralNumber() || node.asLong() <= 0) {
+            throw missing(field);
+        }
+        return node.asLong();
+    }
+
+    private static double requiredDouble(JsonNode body, String field) {
+        var node = body.path(field);
+        if (!node.isNumber() || node.asDouble() < 0) {
+            throw missing(field);
+        }
+        return node.asDouble();
+    }
+
     /**
      * Request fare and ETA estimates from Pidge.
      */
@@ -95,12 +160,31 @@ public class PidgeApiClient {
             return DeliveryProvider.Quote.unserviceable("Pidge provider credentials not configured");
         }
 
+        Double distanceKm = Serviceability.distanceKm(
+                request.pickupLatitude(), request.pickupLongitude(),
+                request.dropLatitude(), request.dropLongitude());
+        if (distanceKm == null) {
+            return DeliveryProvider.Quote.unserviceable("No valid coordinates provided for Pidge quote");
+        }
+        if (distanceKm > 30.0) {
+            return DeliveryProvider.Quote.unserviceable(
+                    "Exceeds 30 km intra-city radius limit (%.1f km)".formatted(distanceKm));
+        }
+        // Nothing is invented for a request the order cannot fill: the weight and vehicle are
+        // facts about the goods, and a guessed one prices (and dispatches) the wrong rider (D-121).
+        if (request.weightKg() == null || request.weightKg().signum() <= 0) {
+            return DeliveryProvider.Quote.unserviceable("Pidge quote needs the order's weight");
+        }
+        if (request.vehicleType() == null) {
+            return DeliveryProvider.Quote.unserviceable("Pidge quote needs a vehicle type");
+        }
+
         var url = properties.getBaseUrl() + "/v1/channel/quote";
         var payload = Map.of(
                 "pickup", Map.of("lat", request.pickupLatitude(), "lng", request.pickupLongitude()),
                 "drop", Map.of("lat", request.dropLatitude(), "lng", request.dropLongitude()),
-                "weight_kg", request.weightKg() != null ? request.weightKg() : BigDecimal.ONE,
-                "vehicle_type", request.vehicleType() != null ? request.vehicleType().name() : VehicleType.TWO_WHEELER.name(),
+                "weight_kg", request.weightKg(),
+                "vehicle_type", request.vehicleType().name(),
                 "channel_name", properties.getChannelName(),
                 "allocation_mode", properties.getAllocationMode()
         );
@@ -111,21 +195,25 @@ public class PidgeApiClient {
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 var body = response.getBody();
-                boolean serviceable = body.path("serviceable").asBoolean(true);
-                if (!serviceable) {
-                    return DeliveryProvider.Quote.unserviceable(body.path("decline_reason").asText("Service not available in area"));
+                if (!body.hasNonNull("serviceable")) {
+                    throw missing("serviceable");
                 }
-                String quoteId = body.path("quote_id").asText("pidg_q_" + UUID.randomUUID());
-                BigDecimal amount = new BigDecimal(body.path("total_fare").asText("50.00"));
-                int eta = body.path("eta_minutes").asInt(25);
-                double distance = body.path("distance_km").asDouble(5.0);
-                Instant expiresAt = Instant.now().plusSeconds(body.path("expires_in_seconds").asLong(900));
+                if (!body.path("serviceable").asBoolean()) {
+                    return DeliveryProvider.Quote.unserviceable(body.path("decline_reason").asText("Pidge declined the route"));
+                }
+                String quoteId = requiredText(body, "quote_id");
+                BigDecimal amount = requiredAmount(body, "total_fare");
+                int eta = requiredInt(body, "eta_minutes");
+                double distance = requiredDouble(body, "distance_km");
+                Instant expiresAt = Instant.now().plusSeconds(requiredLong(body, "expires_in_seconds"));
 
                 return new DeliveryProvider.Quote(quoteId, true, amount, "INR", eta, distance,
                         expiresAt, null, request.vehicleType());
             }
             return DeliveryProvider.Quote.unserviceable("Could not obtain quote from Pidge");
 
+        } catch (DeliveryProviderException ex) {
+            throw ex;
         } catch (HttpStatusCodeException ex) {
             log.warn("Pidge quoting HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
             throw new DeliveryProviderException("PIDGE", "Pidge HTTP error: " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
@@ -148,28 +236,42 @@ public class PidgeApiClient {
             throw new DeliveryProviderException("PIDGE", "Pidge API token not configured for booking", false);
         }
 
+        // Validated before the call, by name: a booking built from guessed values creates a live
+        // consignment nobody can reconcile (D-121).
+        requireRequest(request.supplierOrderId() != null, "supplier order");
+        requireRequest(notBlank(request.idempotencyKey()), "idempotency key");
+        requireRequest(notBlank(request.providerQuoteId()), "quote id");
+        requireRequest(request.weightKg() != null && request.weightKg().signum() > 0, "weight");
+        requireRequest(request.vehicleType() != null, "vehicle type");
+        requireRequest(notBlank(request.pickupAddress()) && request.pickupLatitude() != null
+                && request.pickupLongitude() != null, "pickup address and coordinates");
+        requireRequest(notBlank(request.dropAddress()) && request.dropLatitude() != null
+                && request.dropLongitude() != null, "drop address and coordinates");
+        requireRequest(notBlank(request.pickupContactName()) && notBlank(request.pickupContactPhone()), "pickup contact");
+        requireRequest(notBlank(request.dropContactName()) && notBlank(request.dropContactPhone()), "drop contact");
+
         var url = properties.getBaseUrl() + "/v1/channel/order/create";
         var payload = Map.of(
                 "order_reference", "SO-" + request.supplierOrderId(),
                 "idempotency_key", request.idempotencyKey(),
-                "quote_id", request.providerQuoteId() != null ? request.providerQuoteId() : "",
+                "quote_id", request.providerQuoteId(),
                 "channel_name", properties.getChannelName(),
                 "allocation_mode", properties.getAllocationMode(),
-                "vehicle_type", request.vehicleType() != null ? request.vehicleType().name() : VehicleType.TWO_WHEELER.name(),
-                "weight_kg", request.weightKg() != null ? request.weightKg() : BigDecimal.ONE,
+                "vehicle_type", request.vehicleType().name(),
+                "weight_kg", request.weightKg(),
                 "pickup", Map.of(
                         "address", request.pickupAddress(),
                         "lat", request.pickupLatitude(),
                         "lng", request.pickupLongitude(),
-                        "contact_name", request.pickupContactName() != null ? request.pickupContactName() : "",
-                        "contact_phone", request.pickupContactPhone() != null ? request.pickupContactPhone() : ""
+                        "contact_name", request.pickupContactName(),
+                        "contact_phone", request.pickupContactPhone()
                 ),
                 "drop", Map.of(
                         "address", request.dropAddress(),
                         "lat", request.dropLatitude(),
                         "lng", request.dropLongitude(),
-                        "contact_name", request.dropContactName() != null ? request.dropContactName() : "",
-                        "contact_phone", request.dropContactPhone() != null ? request.dropContactPhone() : ""
+                        "contact_name", request.dropContactName(),
+                        "contact_phone", request.dropContactPhone()
                 )
         );
 
@@ -179,9 +281,9 @@ public class PidgeApiClient {
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 var body = response.getBody();
-                String deliveryId = body.path("pidge_delivery_id").asText();
-                BigDecimal amount = new BigDecimal(body.path("fare").asText("50.00"));
-                int eta = body.path("eta_minutes").asInt(25);
+                String deliveryId = requiredText(body, "pidge_delivery_id");
+                BigDecimal amount = requiredAmount(body, "fare");
+                int eta = requiredInt(body, "eta_minutes");
                 Instant etaTime = Instant.now().plusSeconds(eta * 60L);
                 String trackingUrl = body.has("tracking_url") ? body.path("tracking_url").asText(null) : null;
 
@@ -189,6 +291,8 @@ public class PidgeApiClient {
             }
             throw new DeliveryProviderException("PIDGE", "Failed to create delivery on Pidge", true);
 
+        } catch (DeliveryProviderException ex) {
+            throw ex;
         } catch (HttpStatusCodeException ex) {
             log.error("Pidge create order HTTP error {}: {}", ex.getStatusCode(), ex.getResponseBodyAsString());
             throw new DeliveryProviderException("PIDGE", "Pidge create order returned " + ex.getStatusCode(), ex.getStatusCode().is5xxServerError());
@@ -261,6 +365,47 @@ public class PidgeApiClient {
         } catch (Exception ex) {
             log.warn("Pidge order cancellation failed for {}: {}", providerDeliveryId, ex.getMessage());
             throw new DeliveryProviderException("PIDGE", "Could not cancel on Pidge: " + ex.getMessage(), false);
+        }
+    }
+
+    /**
+     * Staging Sandbox API: Simulate order status retrieval.
+     * <p>Hits {@code GET /v1.0/store/channel/vendor/order/:id?dummy_status=:status}.
+     * Allowed statuses: cancelled, pending, fulfilled|registered, fulfilled|out for pickup,
+     * fulfilled|reached pickup, fulfilled|picked up, fulfilled|ofd, fulfilled|reached delivery,
+     * fulfilled|undelivered, fulfilled|delivered, fulfilled|rto out for delivery, fulfilled|rto delivered.
+     */
+    public JsonNode simulateOrderStatus(String pidgeDeliveryId, String dummyStatus) {
+        checkRateLimit();
+        var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/order/"
+                + pidgeDeliveryId + "?dummy_status=" + dummyStatus;
+        try {
+            var entity = new HttpEntity<>(createHeaders());
+            var response = restTemplate.exchange(url, HttpMethod.GET, entity, JsonNode.class);
+            return response.getBody();
+        } catch (Exception ex) {
+            log.error("Pidge sandbox simulateOrderStatus failed for {}: {}", pidgeDeliveryId, ex.getMessage());
+            throw new DeliveryProviderException("PIDGE", "Pidge sandbox status simulation failed: " + ex.getMessage(), false);
+        }
+    }
+
+    /**
+     * Staging Sandbox API: Simulate webhook dispatch from Pidge to our webhook URL.
+     * <p>Hits {@code POST /v1.0/store/channel/vendor/order/:id/webhook/events}.
+     * Payload: {@code {"dummy_status": ":status"}}.
+     */
+    public JsonNode triggerSandboxWebhook(String pidgeDeliveryId, String dummyStatus) {
+        checkRateLimit();
+        var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/order/"
+                + pidgeDeliveryId + "/webhook/events";
+        var payload = Map.of("dummy_status", dummyStatus);
+        try {
+            var entity = new HttpEntity<>(payload, createHeaders());
+            var response = restTemplate.postForEntity(url, entity, JsonNode.class);
+            return response.getBody();
+        } catch (Exception ex) {
+            log.error("Pidge sandbox triggerSandboxWebhook failed for {}: {}", pidgeDeliveryId, ex.getMessage());
+            throw new DeliveryProviderException("PIDGE", "Pidge sandbox webhook simulation failed: " + ex.getMessage(), false);
         }
     }
 

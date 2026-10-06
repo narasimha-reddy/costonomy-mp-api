@@ -45,4 +45,7 @@ public class PidgeProperties {
 
     /** Default unassigned waterfall timeout before cascading. */
     private Duration unassignedTimeout = Duration.ofMinutes(3);
+
+    /** If true, enables Pidge Sandbox simulation endpoints (staging only). */
+    private boolean sandbox = false;
 }

@@ -71,8 +71,15 @@ public class DiscoveryController {
     public ApiResponse<DiscoveryDtos.SupplierSearchPage> suppliers(
             @RequestParam(value = "q", required = false) String query,
             @RequestParam(required = false) Long outletId,
-            @RequestParam(required = false) BigDecimal radiusKm) {
-        return ApiResponse.ok(storefront.searchSuppliers(query, outletId, radiusKm));
+            @RequestParam(required = false) BigDecimal radiusKm,
+            @RequestParam(required = false) String reach,
+            @RequestParam(required = false, defaultValue = "0") Integer offset,
+            @RequestParam(required = false, defaultValue = "50") Integer limit) {
+        if (outletId != null) {
+            accessControl.requireScoped(ActorContext.requireUserId(),
+                    Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "Outlet");
+        }
+        return ApiResponse.ok(storefront.searchSuppliers(query, outletId, radiusKm, reach, offset, limit));
     }
 
     @GetMapping("/search/skus")
@@ -94,6 +101,10 @@ public class DiscoveryController {
             @RequestParam("q") String query,
             @RequestParam(required = false) Long outletId,
             @RequestParam(required = false) Integer limit) {
+        if (outletId != null) {
+            accessControl.requireScoped(ActorContext.requireUserId(),
+                    Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "Outlet");
+        }
         return ApiResponse.ok(storefront.searchSkus(query, outletId, limit));
     }
 
@@ -117,6 +128,10 @@ public class DiscoveryController {
     public ApiResponse<DiscoveryDtos.SkuDetail> sku(
             @PathVariable Long skuId,
             @RequestParam(required = false) Long outletId) {
+        if (outletId != null) {
+            accessControl.requireScoped(ActorContext.requireUserId(),
+                    Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "Outlet");
+        }
         return ApiResponse.ok(skuDetails.detail(skuId, outletId));
     }
 
@@ -165,6 +180,10 @@ public class DiscoveryController {
             @PathVariable Long storeId,
             @RequestParam(required = false) Long outletId,
             @RequestParam(value = "q", required = false) String query) {
+        if (outletId != null) {
+            accessControl.requireScoped(ActorContext.requireUserId(),
+                    Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "Outlet");
+        }
         return ApiResponse.ok(storefront.storeCatalog(storeId, outletId, query));
     }
 

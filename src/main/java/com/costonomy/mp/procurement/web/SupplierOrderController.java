@@ -108,6 +108,15 @@ public class SupplierOrderController {
                 ActorContext.requireUserId(), id, idempotencyKey));
     }
 
+    @PostMapping("/supplier-orders/{id}/weights")
+    @Operation(summary = "Record catch-weight items at packing/dispatch")
+    public ApiResponse<ProcurementDtos.SupplierOrderResponse> recordWeights(
+            @PathVariable Long id,
+            @Valid @RequestBody ProcurementDtos.RecordDispatchWeightsRequest request) {
+        return ApiResponse.ok(supplierOrders.recordDispatchWeights(
+                ActorContext.requireUserId(), id, request));
+    }
+
     @PostMapping("/supplier-orders/{id}/cancel")
     @Operation(
             summary = "Cancel an order",

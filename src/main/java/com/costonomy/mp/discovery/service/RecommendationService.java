@@ -55,6 +55,7 @@ public class RecommendationService {
     private final DiscoveryDirectory directory;
     private final AccessControlService accessControl;
     private final AppConfigService config;
+    private final ServiceabilityPolicy serviceabilityPolicy;
 
     /**
      * Ranked offers for a product, for a specific outlet.
@@ -167,6 +168,48 @@ public class RecommendationService {
         Map<Long, SupplierOffer> offerById = new HashMap<>();
         purchasable.forEach(offer -> offerById.put(offer.getId(), offer));
 
+        Map<Long, List<DiscoveryDtos.BrandOption>> brandOptionsByStore = new HashMap<>();
+        for (SupplierOffer offer : purchasable) {
+            SupplierSku sku = skuById.get(offer.getSupplierSkuId());
+            if (sku == null || !"ACTIVE".equals(sku.getStatus())) {
+                continue;
+            }
+            var store = stores.get(offer.getSupplierStoreId());
+            if (store == null || !store.tradeable()) {
+                continue;
+            }
+            BigDecimal mrp = offer.getMrp() != null ? offer.getMrp() : sku.getMrp();
+            BigDecimal discountAmount = Pricing.discountAmount(mrp, offer.getSellingPrice());
+            Integer discountPercent = Pricing.discountPercent(mrp, offer.getSellingPrice());
+            brandOptionsByStore.computeIfAbsent(offer.getSupplierStoreId(), k -> new ArrayList<>())
+                    .add(new DiscoveryDtos.BrandOption(
+                            sku.getId(),
+                            offer.getId(),
+                            sku.getName(),
+                            sku.getBrandId() == null ? null : brandNames.get(sku.getBrandId()),
+                            sku.getGrade(),
+                            sku.getPackSize(),
+                            sku.getPackUnit(),
+                            mrp,
+                            offer.getSellingPrice(),
+                            discountAmount,
+                            discountPercent,
+                            offer.getGstRate(),
+                            packInclusiveOfGst(offer),
+                            blankToNull(sku.getImageUrl()) != null ? sku.getImageUrl() : blankToNull(product.getImageUrl()),
+                            offer.getAvailability(),
+                            offer.getAvailableQuantity(),
+                            sku.getMeasureValue(),
+                            sku.getMeasureUnit()
+                    ));
+        }
+
+        // Lowest priced brand option first
+        for (List<DiscoveryDtos.BrandOption> options : brandOptionsByStore.values()) {
+            options.sort(Comparator.comparing(DiscoveryDtos.BrandOption::sellingPrice,
+                    Comparator.nullsLast(Comparator.naturalOrder())));
+        }
+
         /*
          * One card per supplier — their best pack. D-096.
          *
@@ -192,7 +235,8 @@ public class RecommendationService {
                         product.getImageUrl(), performance.get(scored.supplierStoreId()),
                         product.getBaseUnit(),
                         // What this card is standing in front of.
-                        packsPerStore.getOrDefault(scored.supplierStoreId(), 1) - 1))
+                        packsPerStore.getOrDefault(scored.supplierStoreId(), 1) - 1,
+                        brandOptionsByStore.getOrDefault(scored.supplierStoreId(), List.of())))
                 .toList();
 
         return new DiscoveryDtos.ProductRecommendation(
@@ -201,49 +245,43 @@ public class RecommendationService {
     }
 
     /**
-     * Whether a store delivers to an outlet. Doc 07 §13, doc 41.
+     * Whether a store delivers to an outlet. Doc 07 §13, doc 41. D-138.
      *
-     * <p>An explicit pincode list overrides geography entirely: a supplier who has
-     * said "these areas only" means it, and a distance calculation should not
-     * second-guess them.
-     *
-     * <p>When coordinates are missing the store is treated as serviceable rather
-     * than excluded. A supplier whose address has not been geocoded should not
-     * become invisible — that is a data gap on our side, and the checkout-time
-     * re-check (doc 41) is the place it gets caught.
+     * <p>Delegates to shared {@link ServiceabilityPolicy}.
      */
     private boolean servesOutlet(DiscoveryDirectory.StoreInfo store,
                                  DiscoveryDirectory.OutletInfo outlet,
                                  Double distanceKm, BigDecimal defaultRadius) {
-
-        if (store.serviceablePincodes() != null && !store.serviceablePincodes().isEmpty()) {
-            return outlet.pincode() != null && store.serviceablePincodes().contains(outlet.pincode());
-        }
-        if (distanceKm == null) {
-            return true;
-        }
-        BigDecimal radius = store.maxDeliveryRadiusKm() == null
-                ? defaultRadius : store.maxDeliveryRadiusKm();
-        return BigDecimal.valueOf(distanceKm).compareTo(radius) <= 0;
+        return serviceabilityPolicy.serves(
+                store.serviceablePincodes(), store.maxDeliveryRadiusKm(),
+                outlet.pincode(), distanceKm, defaultRadius);
     }
 
     private DiscoveryDtos.RecommendedOffer toResponse(
             ScoredOffer scored, SupplierOffer offer, SupplierSku sku,
             DiscoveryDirectory.StoreInfo store, Map<Long, String> brandNames, BigDecimal quantity,
             String canonicalImageUrl, SupplierPerformance storePerformance, String baseUnit,
-            int otherPackCount) {
+            int otherPackCount, List<DiscoveryDtos.BrandOption> brandOptions) {
 
         BigDecimal itemTotal = offer.getSellingPrice().multiply(quantity);
         BigDecimal gstAmount = itemTotal.multiply(offer.getGstRate())
                 .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP);
+        BigDecimal mrp = offer.getMrp() != null ? offer.getMrp() : sku.getMrp();
+        BigDecimal discountAmount = Pricing.discountAmount(mrp, offer.getSellingPrice());
+        Integer discountPercent = Pricing.discountPercent(mrp, offer.getSellingPrice());
 
         return new DiscoveryDtos.RecommendedOffer(
                 scored.offerId(), sku.getId(), store.storeId(),
                 store.supplierName(), store.storeName(),
                 sku.getName(),
                 sku.getBrandId() == null ? null : brandNames.get(sku.getBrandId()),
+                sku.getGrade(),
                 sku.getPackSize(), sku.getPackUnit(),
-                offer.getSellingPrice(), offer.getGstRate(),
+                mrp,
+                offer.getSellingPrice(),
+                discountAmount,
+                discountPercent,
+                offer.getGstRate(),
                 itemTotal, gstAmount, scored.effectiveTotal(),
                 offer.getAvailability(), offer.getAvailableQuantity(),
                 scored.coversFullQuantity(),
@@ -259,7 +297,8 @@ public class RecommendationService {
                 packInclusiveOfGst(offer),
                 pricePerBaseUnit(packInclusiveOfGst(offer), sku.getPackSize(),
                         sku.getPackUnit(), baseUnit),
-                otherPackCount);
+                otherPackCount,
+                brandOptions);
     }
 
     /**

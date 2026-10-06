@@ -9,6 +9,8 @@ import com.costonomy.mp.procurement.domain.SupplierOrder;
 import com.costonomy.mp.procurement.domain.SupplierOrderItem;
 import com.costonomy.mp.procurement.repository.SupplierOrderItemRepository;
 import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
+import com.costonomy.mp.delivery.slot.DeliverySlot;
+import com.costonomy.mp.delivery.slot.DeliverySlotRepository;
 import com.costonomy.mp.procurement.web.dto.ProcurementDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -37,6 +39,7 @@ public class SupplierOrderMapper {
     private final SkuDirectory skuDirectory;
     private final CanonicalProductRepository products;
     private final ProcurementDirectory directory;
+    private final DeliverySlotRepository deliverySlots;
     private final OrderFunding funding;
 
     public ProcurementDtos.SupplierOrderResponse toResponse(SupplierOrder order) {
@@ -44,6 +47,13 @@ public class SupplierOrderMapper {
         var store = directory.stores(List.of(order.getSupplierStoreId()))
                 .get(order.getSupplierStoreId());
         var outlet = directory.outletSummary(order.getOutletId());
+
+        String slotName = null;
+        if (order.getDeliverySlotId() != null) {
+            slotName = deliverySlots.findById(order.getDeliverySlotId())
+                    .map(DeliverySlot::getSlotName)
+                    .orElse(null);
+        }
 
         Map<Long, String> productNames = new HashMap<>();
         Map<Long, String> productImages = new HashMap<>();
@@ -76,11 +86,17 @@ public class SupplierOrderMapper {
                 order.getCreatedAt(),
                 order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
                 order.getAcceptedAmount(), acceptedSubtotal(items), acceptedGst(items),
+                order.getWeightAdjustmentAmount(), order.getDoorstepRefundAmount(), order.getFinalPayableAmount(),
                 // Live, from the funding method: the stored copy is written once,
                 // at release, and goes stale the moment the money moves again.
                 order.getPaymentMethod(), funding.paymentState(order),
                 funding.paymentInstrument(order),
                 order.getDeliveryMode(), order.getDeliveryFee(),
+                order.getDeliverySlotId(), slotName,
+                order.getScheduledDeliveryDate(),
+                order.isSubscriptionOrder(),
+                order.getSubscriptionId(),
+                order.isHasColdChainItems(),
                 order.getCancelledBy(), order.getCancellationReason(),
                 cancelRefund == null ? null : cancelRefund.amount(),
                 cancelRefund == null ? null : cancelRefund.completedAt(),
@@ -92,6 +108,12 @@ public class SupplierOrderMapper {
                                 productImages.get(item.getCanonicalProductId()),
                                 descriptors.get(item.getSupplierSkuId()),
                                 item.getRequestedQuantity(), item.getAcceptedQuantity(),
+                                item.getFulfilledQuantity(),
+                                item.getDispatchedWeight(), item.getBillableQuantity(), item.getWeighedAt(), item.getWeightDeltaAmount(),
+                                item.getDoorstepAcceptedQty(), item.getDoorstepRejectedQty(),
+                                item.getDoorstepRejectionReason(), item.getDoorstepRefundAmount(),
+                                item.isRequiresColdChain(),
+                                item.isCatchWeight(),
                                 item.getUnit(), item.getUnitPriceSnapshot(),
                                 Pricing.inclusiveOfGst(item.getUnitPriceSnapshot(),
                                         item.getGstRateSnapshot()),

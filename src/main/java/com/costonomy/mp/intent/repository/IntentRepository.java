@@ -12,6 +12,15 @@ import java.util.Optional;
 
 public interface IntentRepository extends JpaRepository<Intent, Long> {
 
+    /**
+     * The intent, locked. Taken first by anything that decides what an intent turns into (an order today), so two such
+     * decisions for one intent take turns instead of racing: the second then sees the first's committed result, which
+     * a plain read under REPEATABLE READ might not (D-135).
+     */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select i from Intent i where i.id = :id")
+    Optional<Intent> lockById(@Param("id") Long id);
+
     List<Intent> findByOutletIdOrderByCreatedAtDesc(Long outletId);
 
     /**
@@ -25,6 +34,24 @@ public interface IntentRepository extends JpaRepository<Intent, Long> {
             Long outletId, Long supplierStoreId, IntentStatus status);
 
     List<Intent> findByOutletIdAndStatus(Long outletId, IntentStatus status);
+
+    /**
+     * The id only, so nothing is loaded into the persistence context before the row is locked (a loaded copy would
+     * hide what the lock then reads, D-137).
+     */
+    @Query("select i.id from Intent i where i.outletId = :outletId and i.supplierStoreId = :storeId and i.status = 'DRAFT'")
+    Optional<Long> findDraftId(@Param("outletId") Long outletId, @Param("storeId") Long storeId);
+
+    @Query("select i.id from Intent i where i.outletId = :outletId and i.status = 'DRAFT' order by i.id")
+    List<Long> findDraftIds(@Param("outletId") Long outletId);
+
+    /** Drafts with at least one line; an emptied draft is not a basket card (D-137). */
+    @Query("""
+            select i from Intent i
+            where i.outletId = :outletId and i.status = 'DRAFT'
+              and exists (select 1 from IntentItem l where l.intentId = i.id)
+            """)
+    List<Intent> findFilledDrafts(@Param("outletId") Long outletId);
 
     /**
      * Requests a supplier can still answer, newest first.

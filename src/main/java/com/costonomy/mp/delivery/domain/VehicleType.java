@@ -39,6 +39,26 @@ public enum VehicleType {
      * @return recommended vehicle type
      */
     public static VehicleType fromWeight(BigDecimal weightKg) {
+        return fromWeight(weightKg, false);
+    }
+
+    /**
+     * Determines the optimal vehicle type considering both weight and cold-chain temperature requirements.
+     * Open 2-wheelers cannot maintain cold-chain; temperature-sensitive consignments require at least an
+     * enclosed/insulated {@link #THREE_WHEELER} or {@link #FOUR_WHEELER_TRUCK}.
+     *
+     * @param weightKg total weight in kilograms
+     * @param requiresColdChain whether consignment contains temperature-sensitive items
+     * @return recommended vehicle type
+     */
+    public static VehicleType fromWeight(BigDecimal weightKg, boolean requiresColdChain) {
+        if (requiresColdChain) {
+            if (weightKg != null && weightKg.compareTo(BigDecimal.valueOf(100)) > 0) {
+                return FOUR_WHEELER_TRUCK;
+            }
+            return THREE_WHEELER; // Enclosed / insulated 3W cargo box minimum for cold chain
+        }
+
         if (weightKg == null || weightKg.compareTo(BigDecimal.ZERO) <= 0) {
             return TWO_WHEELER;
         }
@@ -51,3 +71,4 @@ public enum VehicleType {
         return FOUR_WHEELER_TRUCK;
     }
 }
+

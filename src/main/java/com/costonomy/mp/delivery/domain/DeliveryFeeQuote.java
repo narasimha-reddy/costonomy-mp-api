@@ -95,6 +95,10 @@ public class DeliveryFeeQuote extends BaseEntity {
     @Column(name = "vehicle_type", length = 32)
     private String vehicleType;
 
+    /** Whether this quote priced a chilled consignment (D-134). One for ordinary goods cannot be spent on a chilled order. */
+    @Column(name = "cold_chain", nullable = false)
+    private boolean coldChain;
+
     @Column(name = "provider_reference", length = 200)
     private String providerReference;
 

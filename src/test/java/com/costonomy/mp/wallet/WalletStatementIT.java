@@ -231,7 +231,7 @@ class WalletStatementIT extends AbstractIntegrationTest {
                     .contains("Order cancelled · money back,,Credit,10.00,30.00,ORDER_REFUND")
                     .contains("Refund,,Credit,10.00,40.00,REFUND")
                     .contains("Sent back to your card or bank,,Credit,10.00,50.00,WITHDRAWAL")
-                    .contains("Refund,,Credit,10.00,60.00,DISPUTE_REFUND")
+                    .contains("Refund from a dispute,,Credit,10.00,60.00,DISPUTE_REFUND")
                     .contains("Withdrawal returned to your wallet,,Credit,10.00,70.00,WITHDRAWAL_REVERSAL")
                     .contains("Paid a shop (QuickScan),,Credit,10.00,80.00,QUICKSCAN_PAYMENT")
                     .contains("QuickScan payment returned,,Credit,10.00,90.00,QUICKSCAN_RETURN");
