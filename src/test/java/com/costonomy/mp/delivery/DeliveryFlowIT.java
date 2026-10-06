@@ -221,6 +221,35 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
                 "select status from supplier_order where id = ?", String.class, orderId);
     }
 
+    @Test
+    @DisplayName("reading an expired assignment through its order can run the timeout cascade")
+    void forOrderCanCascadeAnExpiredAssignment() throws Exception {
+        var order = readyOrder();
+        var delivery = requestDelivery(order);
+        long deliveryId = delivery.get("id").asLong();
+        Integer attemptsBefore = jdbc.queryForObject(
+                "select attempt_count from delivery where id = ?", Integer.class, deliveryId);
+
+        jdbc.update("""
+                update delivery
+                   set status = 'PROVIDER_SELECTED',
+                       assignment_deadline = date_sub(now(6), interval 1 second)
+                 where id = ?
+                """, deliveryId);
+
+        var response = mvc.perform(MockMvcRequestBuilders
+                        .get("/api/v1/supplier-orders/" + order.orderId() + "/delivery")
+                        .header("Authorization", "Bearer " + order.buyer().token()))
+                .andReturn().getResponse();
+
+        assertThat(response.getStatus()).isEqualTo(200);
+        assertThat(json.readTree(response.getContentAsString()).at("/data/id").asLong())
+                .isEqualTo(deliveryId);
+        assertThat(jdbc.queryForObject(
+                "select attempt_count from delivery where id = ?", Integer.class, deliveryId))
+                .isGreaterThan(attemptsBefore);
+    }
+
     // ── The journey ──────────────────────────────────────────────────────
 
     @Nested

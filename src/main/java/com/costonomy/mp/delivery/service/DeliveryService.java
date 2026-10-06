@@ -648,7 +648,7 @@ public class DeliveryService {
         return toResponse(delivery, order == null ? null : order.orderNumber());
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public DeliveryDtos.DeliveryResponse forOrder(Long actorId, Long supplierOrderId) {
         var delivery = deliveries.findBySupplierOrderId(supplierOrderId)
                 .orElseThrow(() -> new NotFoundException("Delivery", supplierOrderId));
@@ -695,8 +695,11 @@ public class DeliveryService {
     private Delivery loadLockedForEitherSide(Long actorId, Long deliveryId) {
         var delivery = deliveries.lockById(deliveryId)
                 .orElseThrow(() -> new NotFoundException("Delivery", deliveryId));
-        requireEitherSide(actorId, delivery.getOutletId(),
+        // A missing actor is reserved for trusted system-triggered waterfall reassignments.
+        if (actorId != null) {
+            requireEitherSide(actorId, delivery.getOutletId(),
                 delivery.getSupplierStoreId(), deliveryId);
+        }
         return delivery;
     }
 
