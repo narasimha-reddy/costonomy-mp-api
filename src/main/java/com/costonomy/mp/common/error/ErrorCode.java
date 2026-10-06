@@ -166,6 +166,9 @@ public enum ErrorCode {
     /** Nothing to remind about: nothing overdue or due within 3 days, or every such invoice is covered by a claim. Details: {@code reason}, {@code skipped}. */
     CREDIT_REMINDER_NOT_NEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
             "There is nothing to remind this restaurant about right now."),
+    /** An export of more than 20,000 rows. Details: {@code max}, {@code rows}. Narrow the dates. */
+    CREDIT_EXPORT_TOO_LARGE(HttpStatus.PAYLOAD_TOO_LARGE,
+            "That is too many rows for one export. Please choose a shorter period."),
 
     // ── Payments (422, 409) ──────────────────────────────────────────────
     PAYMENT_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
