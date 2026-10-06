@@ -344,6 +344,92 @@ public final class CreditDtos {
             RepaymentAgreementState agreement) {
     }
 
+    // ── Supplier receipts (B5) ───────────────────────────────────────────
+
+    /** What the supplier says it received for a whole credit line: one receipt, split over its open invoices. */
+    public record SupplierPaymentRequest(
+            @NotNull(message = "Enter an amount")
+            @DecimalMin(value = "0.01", message = "The payment must be more than zero")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
+            BigDecimal amount,
+            @NotBlank(message = "Choose how it was paid")
+            @Pattern(regexp = CreditPaymentMethod.CLAIMABLE_PATTERN,
+                    message = "Choose BANK_TRANSFER, UPI, CASH, CHEQUE or CARD")
+            String method,
+            String reference,
+            @NotNull(message = "Enter the date the money was received") LocalDate paidOn,
+            @Size(max = 500) String note,
+            @Size(min = 1, message = "Choose at least one invoice, or leave the list out")
+            List<@NotNull(message = "Choose an invoice") Long> invoiceIds,
+            Boolean allowDuplicateReference) {
+
+        public static final int REFERENCE_MIN = 4;
+        public static final int REFERENCE_MAX = 64;
+
+        /** The reference without surrounding spaces, or null when there is none. */
+        public String trimmedReference() {
+            return reference == null || reference.isBlank() ? null : reference.trim();
+        }
+
+        /** UPI, bank transfer and cheque must say which payment it was; cash and card may not have a number. */
+        @AssertTrue(message = "Enter the payment reference (4 to 64 characters)")
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isReferenceValid() {
+            String ref = trimmedReference();
+            if (ref == null) {
+                return "CASH".equals(method) || "CARD".equals(method) || method == null;
+            }
+            return ref.length() >= REFERENCE_MIN && ref.length() <= REFERENCE_MAX;
+        }
+
+        @AssertTrue(message = "Each invoice can be chosen only once")
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isInvoiceIdsDistinct() {
+            return invoiceIds == null || invoiceIds.stream().distinct().count() == invoiceIds.size();
+        }
+
+        public boolean duplicateAllowed() {
+            return Boolean.TRUE.equals(allowDuplicateReference);
+        }
+    }
+
+    /** What a receipt of this amount would do. A pure read: nothing is written. */
+    public record SupplierPaymentPreviewRequest(
+            @NotNull(message = "Enter an amount")
+            @DecimalMin(value = "0.01", message = "The payment must be more than zero")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
+            BigDecimal amount,
+            @Size(min = 1, message = "Choose at least one invoice, or leave the list out")
+            List<@NotNull(message = "Choose an invoice") Long> invoiceIds) {
+
+        @AssertTrue(message = "Each invoice can be chosen only once")
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isInvoiceIdsDistinct() {
+            return invoiceIds == null || invoiceIds.stream().distinct().count() == invoiceIds.size();
+        }
+    }
+
+    /** An open claim on an invoice the preview would pay (D-125): the supplier may want to confirm that instead. */
+    public record PendingClaimWarning(Long invoiceId, String invoiceNumber, BigDecimal amount) {
+    }
+
+    public record SupplierPaymentPreviewResponse(
+            BigDecimal amount,
+            List<WalletRepaymentAllocation> allocations,
+            RepaymentAgreementState agreement,
+            List<PendingClaimWarning> pendingClaims) {
+    }
+
+    public record SupplierPaymentResponse(
+            Long receiptId,
+            BigDecimal amount,
+            String method,
+            String reference,
+            LocalDate paidOn,
+            List<WalletRepaymentAllocation> allocations,
+            RepaymentAgreementState agreement) {
+    }
+
     public record PaymentResponse(
             Long id,
             Long creditInvoiceId,

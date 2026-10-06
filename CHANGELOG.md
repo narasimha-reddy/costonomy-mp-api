@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Credit]
 
+### [Supplier receipts] - B5 (D-134)
+#### Added
+- [Credit] `POST /api/v1/credit/agreements/{id}/payments/preview {amount, invoiceIds?}` (a pure read: allocations with `statusAfter`, the line's position after, and `pendingClaims` warnings) and `POST /api/v1/credit/agreements/{id}/payments` with `Idempotency-Key` and `{amount, method, reference, paidOn, note, invoiceIds?, allowDuplicateReference?}` (201 `{receiptId, amount, method, reference, paidOn, allocations[], agreement{due, overdue, available, status}}`). One `credit_repayment` receipt (source `SUPPLIER_RECORDED`) split oldest due date first (ties by invoice id), one `credit_payment` per invoice through the shared `applyPayment`, in one transaction. `method` is CASH, UPI, BANK_TRANSFER, CHEQUE or CARD (ADJUSTMENT is refused here); `reference` (4 to 64 characters) is required for UPI, BANK_TRANSFER and CHEQUE; `paidOn` is an India day, not in the future and not before the oldest targeted invoice was issued. Errors: `CREDIT_OVERPAYMENT` (422, details `outstanding`), `CREDIT_DUPLICATE_REFERENCE` (409, details `receiptId`, `paidOn`, `amount`; the same reference in this store within 90 days unless `allowDuplicateReference`), `IDEMPOTENCY_KEY_REUSE` (409). Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; others get 404. The single-invoice endpoint is unchanged.
+- [Credit] V58: `credit_repayment.source` widened to VARCHAR(32), new `method`, `reference`, `paid_on`, `note`; `ix_credit_payment_reference` for the duplicate check.
+
 ### [Supplier payouts list] - B4
 #### Added
 - [Credit] `GET /api/v1/supplier-stores/{storeId}/credit/payouts?status=PENDING|APPLIED|ALL&from&to&page&size` and `GET .../payouts/{payoutId}`: the wallet repayments Mandi collected for the store, with gross, the commission as snapshotted at repayment time, net, the invoices each settled, and the settlement once applied; plus `summary {pendingNet, appliedNetThisMonth}`. Read-only, no schema change. Needs `CREDIT_VIEW` or `SETTLEMENT_VIEW` on the store; others get 404.

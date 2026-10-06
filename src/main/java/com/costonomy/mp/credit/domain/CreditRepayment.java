@@ -42,7 +42,7 @@ public class CreditRepayment extends BaseEntity {
 
     @Enumerated(EnumType.STRING)
     @JdbcTypeCode(SqlTypes.VARCHAR)
-    @Column(name = "source", nullable = false, length = 16)
+    @Column(name = "source", nullable = false, length = 32)
     private CreditRepaymentSource source = CreditRepaymentSource.WALLET;
 
     /** The wallet debit that funded this repayment; null for UPI or card. */
@@ -62,4 +62,18 @@ public class CreditRepayment extends BaseEntity {
 
     @Column(name = "created_by")
     private Long createdBy;
+
+    /** What the supplier typed for a SUPPLIER_RECORDED receipt (D-134); null for a wallet repayment. */
+    @Column(name = "method", length = 32)
+    private String method;
+
+    @Column(name = "reference", length = 200)
+    private String reference;
+
+    /** The India day the money arrived. */
+    @Column(name = "paid_on")
+    private java.time.LocalDate paidOn;
+
+    @Column(name = "note", length = 500)
+    private String note;
 }
