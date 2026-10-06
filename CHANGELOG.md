@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [phase6/known-bugs] - Known bugs (D-135 onward)
 
 ### Fixed
+- A courier can no longer be booked for a pickup order, or for an order the supplier is delivering themselves: a delivery request used to override the order's own mode (D-145).
 - A truly simultaneous duplicate order no longer returns a 500: the intent is locked first, the loser gets the first order back, and a lock conflict that still occurs answers 409. Replaying an order key with a different delivery mode is now refused as a reused key (D-135).
 - The Razorpay checkout is opened after the order commits, not inside its transaction. If the gateway fails the caller is told nothing was charged, the unpaid order stays, and a retry opens the checkout; a payment never set up is ended after 30 minutes (D-136).
 - A basket can no longer end up with two drafts for one supplier, and adding, removing and sending now take turns on the draft, so a simultaneous add and send, or removal and add, loses no line. Removed lines and emptied drafts are audited (D-137).

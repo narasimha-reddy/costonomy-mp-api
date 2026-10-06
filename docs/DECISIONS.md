@@ -6005,3 +6005,12 @@ D-141 lets the supplier type the delivery charge for each request, limited only 
 4. **Not done:** the supplier is not warned when typing (they may mean it); a supplier-delivery charge from the store's standing fee (subscriptions, direct orders) is not warned about.
 5. **Tests:** `DeliveryChargeWarningTest` (both tests, boundaries, no warning for free or missing, configuration) and `IntentFlowIT$DeliveryOffer` (high, normal and free). Mutation-checked.
 
+## D-145 — A delivery request cannot override how the order was sold
+
+Verified before changing: `DeliveryService.resolveMode` took the mode named in the request ahead of the order's own, and only read the order's mode when none was named. The supplier's app always names `COSTONOMY`, so for an order the supplier had said they would deliver themselves (D-141), pressing "Request Delivery Partner" booked a courier the restaurant had not been told about or charged for. For a pickup order the refusal in `fromOrder` was skipped the same way.
+
+1. **The order's mode is read first.** A pickup order is refused (as before, now also when a mode is named). A named mode that differs from the order's own is refused (422 `DELIVERY_UNAVAILABLE`): "The supplier is delivering this order themselves, so no delivery partner is needed", or, for a Costonomy-delivery order, that it can't be switched to the supplier's own. A mode that matches, or none named, behaves as before.
+2. **The app shows "Request Delivery Partner" only for an order sold with Costonomy delivery** (the card and the bottom button). It showed for pickups and own deliveries.
+3. **Not changed:** riders are still requested automatically when the supplier marks Ready for an order sold with Costonomy delivery; reassignment after a failed booking is a separate path.
+4. **Tests:** `DeliveryFlowIT$Journey` (no courier for a pickup or for an own-delivery order, even when one is asked for by name); `tests/deliveryPartner.test.ts` in the app. The own-delivery test fails without the check.
+

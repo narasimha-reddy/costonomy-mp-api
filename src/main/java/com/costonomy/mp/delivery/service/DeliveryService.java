@@ -277,11 +277,19 @@ public class DeliveryService {
     private DeliveryMode resolveMode(String requested, String onOrder,
                                      DeliveryDirectory.DeliveryPolicy policy) {
 
+        // What the buyer was told and charged for, read first: it refuses a collected order, and a request cannot
+        // override it. Before this, naming a mode skipped the order's own, so a courier could be booked for a pickup or
+        // for an order the supplier said they would deliver themselves (D-145).
+        DeliveryMode agreed = fromOrder(onOrder);
         DeliveryMode asked = parseMode(requested);
         boolean agreedOnOrder = false;
         if (asked == null) {
-            asked = fromOrder(onOrder);
+            asked = agreed;
             agreedOnOrder = asked != null;
+        } else if (agreed != null && asked != agreed) {
+            throw new BusinessException(ErrorCode.DELIVERY_UNAVAILABLE, agreed == DeliveryMode.SUPPLIER_OWN
+                    ? "The supplier is delivering this order themselves, so no delivery partner is needed."
+                    : "This order was sold with Costonomy delivery and can't be switched to the supplier's own.");
         }
 
         // A supplier who offered to deliver this order themselves (D-141) agreed to it when they answered, whatever the
