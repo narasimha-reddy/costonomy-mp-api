@@ -7,9 +7,9 @@ import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 
 /**
  * Overdue invoices, and the suspensions that follow. Doc 01 §18, doc 08 §4.
@@ -28,6 +28,7 @@ public class CreditJobs {
     private final CreditInvoiceService invoices;
     private final CreditAgreementService agreementService;
     private final CreditAgreementRepository agreements;
+    private final CreditLifecycleService lifecycle;
 
     /**
      * Runs hourly rather than every minute: an invoice becomes overdue on a date
@@ -36,13 +37,40 @@ public class CreditJobs {
      */
     @Scheduled(fixedDelayString = "${costonomy.mp.credit.overdue-interval:PT1H}")
     @SchedulerLock(name = "credit-overdue", lockAtMostFor = "PT30M", lockAtLeastFor = "PT0S")
-    @Transactional
     public void sweepOverdue() {
         int marked = invoices.markOverdue();
         if (marked > 0) {
             log.info("Marked {} credit invoices overdue", marked);
         }
         suspendOverLimit();
+    }
+
+    /**
+     * Lapse the offers nobody accepted for 14 India days (D-166). Hourly like the overdue sweep: it is a date
+     * boundary. Each offer is expired in its own transaction, so one failure does not stop the rest, and an offer that
+     * fails is simply picked up by the next run.
+     */
+    @Scheduled(fixedDelayString = "${costonomy.mp.credit.offer-expiry-interval:PT1H}")
+    @SchedulerLock(name = "credit-offer-expiry", lockAtMostFor = "PT30M", lockAtLeastFor = "PT0S")
+    public void expireOffers() {
+        LocalDate today = invoices.today();
+        int expired = 0;
+        for (var agreement : agreements.findByStatus(CreditAgreementStatus.APPROVED)) {
+            // A cheap look first, without the lock; expireOffer looks again on the locked row.
+            if (!lifecycle.offerHasExpired(agreement, today)) {
+                continue;
+            }
+            try {
+                if (lifecycle.expireOffer(agreement.getId(), today)) {
+                    expired++;
+                }
+            } catch (RuntimeException ex) {
+                log.error("Could not expire credit offer {}", agreement.getId(), ex);
+            }
+        }
+        if (expired > 0) {
+            log.info("Expired {} unaccepted credit offers", expired);
+        }
     }
 
     /**
@@ -60,14 +88,19 @@ public class CreditJobs {
             }
 
             BigDecimal overdue = invoices.duesFor(agreement.getId()).overdue();
-            if (overdue.compareTo(agreement.getMaxOverdueAmount()) <= 0) {
+            if (overdue.signum() == 0 && agreement.getOverdueFloor() != null) {
+                invoices.clearOverdueFloorIfCleared(agreement.getId());
+            }
+            // A supplier who lifted an earlier auto-suspension has accepted what was overdue then (D-163).
+            BigDecimal tolerance = agreement.overdueTolerance();
+            if (overdue.compareTo(tolerance) <= 0) {
                 continue;
             }
 
             try {
                 agreementService.suspendInternal(agreement,
                         "Overdue balance of %s is above the agreed maximum of %s"
-                                .formatted(overdue, agreement.getMaxOverdueAmount()),
+                                .formatted(overdue, tolerance),
                         null);
             } catch (RuntimeException ex) {
                 // One agreement must not stop the sweep — the next one may be the

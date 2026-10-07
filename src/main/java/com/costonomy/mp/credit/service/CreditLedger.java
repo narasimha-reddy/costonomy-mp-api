@@ -41,6 +41,14 @@ public class CreditLedger {
     public void record(Long agreementId, CreditTransactionType type, BigDecimal amount,
                        Long reservationId, Long supplierOrderId, Long invoiceId,
                        String description, Long actorId) {
+        record(agreementId, type, amount, reservationId, supplierOrderId, invoiceId, null, description, actorId);
+    }
+
+    /** As above, for a CREDIT_NOTE or WRITE_OFF row, which names the note it records so a statement can show its number. */
+    @Transactional
+    public void record(Long agreementId, CreditTransactionType type, BigDecimal amount,
+                       Long reservationId, Long supplierOrderId, Long invoiceId, Long creditNoteId,
+                       String description, Long actorId) {
 
         // Straight from the row. A JPA read here would return the stale instance
         // the persistence context already holds — the balances were changed by SQL
@@ -53,6 +61,7 @@ public class CreditLedger {
         transaction.setCreditReservationId(reservationId);
         transaction.setSupplierOrderId(supplierOrderId);
         transaction.setCreditInvoiceId(invoiceId);
+        transaction.setCreditNoteId(creditNoteId);
         transaction.setTransactionType(type);
         transaction.setAmount(amount);
         transaction.setBalanceReservedAfter(balances.reserved());
@@ -62,8 +71,46 @@ public class CreditLedger {
         transaction.setCreatedBy(actorId);
         transactions.save(transaction);
 
-        auditService.record(actorId, null, "CREDIT_" + type.name(), "CREDIT_AGREEMENT",
+        // CREDIT_NOTE and WRITE_OFF get their own names: "CREDIT_CREDIT_NOTE" reads wrongly, and the services that
+        // issue them write CREDIT_NOTE_ISSUED / CREDIT_WRITTEN_OFF themselves.
+        String action = switch (type) {
+            case CREDIT_NOTE -> "CREDIT_NOTE_POSTED";
+            case WRITE_OFF -> "CREDIT_WRITE_OFF_POSTED";
+            default -> "CREDIT_" + type.name();
+        };
+        auditService.record(actorId, null, action, "CREDIT_AGREEMENT",
                 agreementId, null, amount.toPlainString(), description, "SYSTEM");
+    }
+
+    /**
+     * The supplier undid a payment of {@code amount}: the debt is owed again (D-169). The reverse of {@link #repay}, in
+     * the same transaction as the invoice and receipt it belongs to.
+     *
+     * @return false, with nothing written, when the debt would not fit under the limit
+     */
+    @Transactional
+    public boolean reverse(Long agreementId, Long invoiceId, BigDecimal amount, String description, Long actorId) {
+        if (!exposure.unrepay(agreementId, amount)) {
+            return false;
+        }
+        record(agreementId, CreditTransactionType.PAYMENT_REVERSED, amount, null, null, invoiceId, description, actorId);
+        return true;
+    }
+
+    /**
+     * An amount was taken off an invoice without a payment (B7, B8): reduce what is drawn, exactly as a repayment
+     * does, and write the CREDIT_NOTE or WRITE_OFF row that names the note. Same transaction as the invoice and the
+     * note, so the debt and the exposure move together.
+     */
+    @Transactional
+    public void credit(Long agreementId, Long invoiceId, BigDecimal amount, CreditTransactionType type, Long creditNoteId,
+                       String description, Long actorId) {
+        if (!exposure.repay(agreementId, amount)) {
+            // Taking off more than is drawn would drive utilization negative and inflate the limit.
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "That is larger than the outstanding credit.");
+        }
+        record(agreementId, type, amount, null, null, invoiceId, creditNoteId, description, actorId);
     }
 
     /**

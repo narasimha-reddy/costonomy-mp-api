@@ -43,6 +43,10 @@ public class CreditTransaction {
     @Column(name = "credit_invoice_id")
     private Long creditInvoiceId;
 
+    /** The credit note or write-off this row records, for CREDIT_NOTE and WRITE_OFF rows (B7, B8). */
+    @Column(name = "credit_note_id")
+    private Long creditNoteId;
+
     @Enumerated(EnumType.STRING)
     @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "transaction_type", nullable = false, length = 32)

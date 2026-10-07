@@ -120,6 +120,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Credit]
+
+### [Credit notes, cancel after the draw, write-off] - B7, B8 (D-175 to D-180)
+#### Added
+- [Credit] `POST /api/v1/credit/invoices/{id}/credit-notes` (201) with `Idempotency-Key` and `{amount, reasonCode, note?, disputeId?}` (reasonCode: SHORT_SUPPLY, QUALITY, PRICE, CANCELLED, GOODWILL, OTHER): the supplier takes an amount off an invoice without a payment. `CREDIT_COLLECT` or `CREDIT_MODIFY`. Capped at what is owed (422 `CREDIT_NOTE_EXCEEDS_OUTSTANDING`, details `outstanding`); refused on a PAID or WRITTEN_OFF invoice (409 `CREDIT_NOTE_INVOICE_SETTLED`). Frees the credit, never a payout or commission. `GET /api/v1/credit/agreements/{id}/credit-notes?page&size` (either side). The restaurant gets `CreditNoteIssued` (in-app and push).
+- [Credit] An order cancelled after the draw (supplier or restaurant) now takes its debt off automatically: a system credit note for what is still owed, in the cancel transaction. Paid money becomes a refund due: `GET /api/v1/supplier-stores/{storeId}/credit/refunds-due?status=OPEN|REFUNDED`, `POST /api/v1/credit/refunds-due/{id}/mark-refunded` (`CREDIT_COLLECT`, idempotent). A wallet-funded part is a WALLET refund due for ops (`CREDIT_REFUND_OPS_ONLY`, 409, for the supplier); no wallet money moves.
+- [Credit] `POST /api/v1/credit/invoices/{id}/write-off` and `POST /api/v1/credit/agreements/{id}/write-off` with `Idempotency-Key` and `{amount?, reason, quickReason?, keepLineOpen?}`: `CREDIT_WRITE_OFF` only (owner, admin). Invoice becomes WRITTEN_OFF (partial keeps its status), the line is suspended "Written off" unless `keepLineOpen`, waiting claims on a fully written-off invoice are superseded. 409 `CREDIT_WRITE_OFF_NOTHING_OWED`. The restaurant gets `CreditWrittenOff` (in-app only).
+- [Credit] V83: `credit_invoice_note`, `credit_invoice_note_sequence`, `credit_refund_due`, `credit_invoice.credited_amount` (CHECK paid + credited <= amount), `credit_transaction.credit_note_id`.
+- [Credit] Statement lines gain `creditNoteNumber` and can be of type `CREDIT_NOTE` ("Credit note") or `WRITE_OFF` ("Written off"); invoices gain `creditedAmount`, the invoice detail gains `creditNotes`.
+#### Changed
+- [Credit] What is owed is now amount - paid - credited everywhere (receivables, ageing, dues, claim caps, allocations, the overdue sweep and event, reversal, admin exposure and dashboard). A fully credited invoice is PAID with `paidAmount` 0.
+- [Credit] A supplier cancelling or a restaurant cancelling a confirmed credit order no longer leaves the restaurant owing for it.
+
+### [Payment reversal] - B6 (D-169, D-170)
+#### Added
+- [Credit] `POST /api/v1/credit/receipts/{receiptId}/reverse` and `POST /api/v1/credit/payments/{paymentId}/reverse` with `Idempotency-Key` and `{reason}` (3 to 500 characters): the supplier undoes a payment it recorded (a typo, a bounced cheque). Never a delete: a `credit_payment_reversal` row (V82) per payment, the receipt becomes `REVERSED`, each invoice's paid amount and status are recomputed, the line's utilised goes back up and a `PAYMENT_REVERSED` ledger row is written, so the statement still adds up. 200 `{receiptId, paymentId, amount, reason, reversedAt, allocations[], agreement{due, overdue, available, status}}`. 7 India days from the day it was recorded, 30 for a cheque; never a WALLET payment. Errors: `CREDIT_REVERSAL_NOT_ALLOWED` (409), `CREDIT_REVERSAL_WINDOW_CLOSED` (409, details `closedOn`, `reversibleUntil`), `CREDIT_ALREADY_REVERSED` (409), `CREDIT_REVERSAL_NO_HEADROOM` (422, details `needed`, `available`, `shortBy`). Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; others get 404. A confirmed claim goes back to REJECTED. The restaurant gets a `CreditPaymentReversed` notification.
+- [Credit] The payment feed items (`GET /credit/agreements/{id}/payments`, `GET /supplier-stores/{id}/credit/payments`) gain `receiptId`, `reversible`, `reversibleUntil` and `reversedAt`; the invoice detail's payments gain `reversedAt`. Statement lines can now be of type `PAYMENT_REVERSED` ("Payment reversed").
+- [Credit] V82: `credit_payment_reversal`.
+#### Changed
+- [Credit] `collectedThisMonth` and the duplicate-reference check leave reversed payments out; the rows stay in the feeds.
+
+### [Supplier receipts] - B5 (D-164)
+#### Added
+- [Credit] `POST /api/v1/credit/agreements/{id}/payments/preview {amount, invoiceIds?}` (a pure read: allocations with `statusAfter`, the line's position after, and `pendingClaims` warnings) and `POST /api/v1/credit/agreements/{id}/payments` with `Idempotency-Key` and `{amount, method, reference, paidOn, note, invoiceIds?, allowDuplicateReference?}` (201 `{receiptId, amount, method, reference, paidOn, allocations[], agreement{due, overdue, available, status}}`). One `credit_repayment` receipt (source `SUPPLIER_RECORDED`) split oldest due date first (ties by invoice id), one `credit_payment` per invoice through the shared `applyPayment`, in one transaction. `method` is CASH, UPI, BANK_TRANSFER, CHEQUE or CARD (ADJUSTMENT is refused here); `reference` (4 to 64 characters) is required for UPI, BANK_TRANSFER and CHEQUE; `paidOn` is an India day, not in the future and not before the oldest targeted invoice was issued. Errors: `CREDIT_OVERPAYMENT` (422, details `outstanding`), `CREDIT_DUPLICATE_REFERENCE` (409, details `receiptId`, `paidOn`, `amount`; the same reference in this store within 90 days unless `allowDuplicateReference`), `IDEMPOTENCY_KEY_REUSE` (409). Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; others get 404. The single-invoice endpoint is unchanged.
+- [Credit] V81: `credit_repayment.source` widened to VARCHAR(32), new `method`, `reference`, `paid_on`, `note`; `ix_credit_payment_reference` for the duplicate check.
+
+### [feat/sup-b9-b12-lifecycle-context] - Close a credit line (B9, D-165) and offer expiry (D-166)
+#### Added
+- [Credit] `ClaimResponse` (supplier inbox `GET /supplier-stores/{id}/credit/claims`, agreement claims, invoice detail, claim replies) gains `ageDays`, `stale` (7+ days waiting), `invoiceOutstanding`, `invoiceOpenClaimsAmount`, `invoiceOtherOpenClaimsAmount`, `possibleDuplicateOf` and `possibleDuplicateKind` (D-168). Additive.
+- [Credit] `GET /api/v1/supplier-stores/{storeId}/credit/requests/{agreementId}/context` (D-168): this store's own history with the requesting outlet (90-day orders, average, last order, past line status and history, earlier overdue count); never another supplier's data. Needs `CREDIT_REQUEST_VIEW`; others 404.
+- [Credit] `POST /api/v1/credit/invoices/{id}/extend-due {newDueDate, reason}` (D-167): later only, at most 60 days past the original due date, not on settled invoices; an OVERDUE invoice that is no longer late goes back to ISSUED/PARTIALLY_PAID, a sweep suspension it caused lifts, the restaurant is told (`CreditDueDateExtended`). Idempotent via `Idempotency-Key`. V84 `credit_due_extension`; the invoice detail gains `extensions[]`.
+- [Credit] Reminders (V85, D-171): `POST /api/v1/credit/agreements/{id}/reminders` (`Idempotency-Key`, `{invoiceIds?, note?}`), `GET .../reminders/preview` (exact text, `canRemind`, `reason`, `nextAllowedAt`) and `GET .../reminders` (history). Limits 1 per line per 24 h (429 `CREDIT_REMINDER_TOO_SOON`), 3 per line per rolling 7 days and 50 per store per India day (429 `CREDIT_REMINDER_LIMIT`), claim-covered invoices skipped, 09:00-20:00 IST quiet hours (QUEUED, sent by the job), SMS only while something is overdue. Automatic T-3 (in-app), due-day and weekly (max 4) reminders by a job, off with `autoRemindersEnabled` on the credit policy (default on).
+- [Credit] CSV exports (D-172): `GET /api/v1/credit/agreements/{id}/statement.csv?from&to` (either side, same rows as the JSON statement) and `GET /api/v1/supplier-stores/{storeId}/credit/collections.csv?from&to&source`; formula-injection safe, India time, plain decimals, `CREDIT_EXPORT` audit row, 413 `CREDIT_EXPORT_TOO_LARGE` beyond 20,000 rows.
+- [Credit] Daily supplier digest (D-173): one in-app and push notification per store per India day from 08:30 IST (`CreditSupplierDigest`) to people holding `CREDIT_VIEW`: claims waiting, overdue, due this week, requests, payouts. Skipped when everything is zero.
+- [Credit] V84 `credit_agreement.offer_made_at`. An APPROVED offer the restaurant has not accepted for 14 India days becomes EXPIRED (hourly job, `costonomy.mp.credit.offer-expiry-interval`); both sides are told (`CreditOfferExpired`), an accept racing the job has exactly one winner, and the restaurant may ask again. `AgreementResponse` gains `offerMadeAt` and `offerExpiresOn` (null unless APPROVED).
+- [Credit] `POST /api/v1/credit/agreements/{id}/close {reason}`: a supplier closes an ACTIVE or SUSPENDED line. Refused with 409 `INVALID_STATE_TRANSITION` (details `owed`, `reserved`) while anything is owed or held for an order in flight. The restaurant is told (`CreditClosed`), a closed line takes no orders, and the restaurant may ask again. Needs `CREDIT_MODIFY` on the store; others get 404.
+
+### [Supplier payouts list] - B4
+#### Added
+- [Credit] `GET /api/v1/supplier-stores/{storeId}/credit/payouts?status=PENDING|APPLIED|ALL&from&to&page&size` and `GET .../payouts/{payoutId}`: the wallet repayments Mandi collected for the store, with gross, the commission as snapshotted at repayment time, net, the invoices each settled, and the settlement once applied; plus `summary {pendingNet, appliedNetThisMonth}`. Read-only, no schema change. Needs `CREDIT_VIEW` or `SETTLEMENT_VIEW` on the store; others get 404.
+
+### [feat/sup-b1-b2-permissions-reinstate] - Supplier collect permission (D-162) and manual-reinstate floor (D-163)
+- V80: `CREDIT_COLLECT` (SUP_OWNER, SUP_ADMIN, SUP_FINANCE_STAFF, SUP_STORE_MANAGER) and `CREDIT_WRITE_OFF` (SUP_OWNER, SUP_ADMIN), granted explicitly. Recording a payment and confirming or rejecting a claim now accept `CREDIT_COLLECT` or `CREDIT_MODIFY`; terms, suspend and reinstate stay `CREDIT_MODIFY`.
+
+- V80: `credit_agreement.overdue_floor`. A supplier's manual reinstate of a SYSTEM (overdue-sweep) suspension stores the overdue amount at that moment; the sweep suspends again only above `max(maxOverdueAmount, overdue_floor)`, and the floor clears when overdue returns to zero. No API change.
+
+---
+
+### [feat/sup-b3-receivables-reads] - supplier receivables read model (B3)
+#### Added
+- `GET /supplier-stores/{storeId}/credit/receivables`, `/receivables/restaurants`, `/ageing` and `/payments`, and `GET /credit/agreements/{id}/payments`: server-computed totals, restaurant rows, ageing buckets and payment feeds for the supplier's Receivables screens. India dates from `creditClock`; overdue by `CreditDueState`, never the status column. No migration.
+
 ## [Architecture & Security Audit]
 
 ### [Security Audit Report] - 2026-10-02

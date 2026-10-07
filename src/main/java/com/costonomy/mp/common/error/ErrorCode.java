@@ -36,6 +36,9 @@ public enum ErrorCode {
             "Your session has expired. Please sign in again."),
     FORBIDDEN(HttpStatus.FORBIDDEN,
             "You don't have permission to do that."),
+    /** The outlet's wallet is on hold, so money cannot leave it (D-159). Not the same as a feature that is off. */
+    WALLET_ON_HOLD(HttpStatus.FORBIDDEN,
+            "Your wallet is on hold. Please contact support."),
     /**
      * The actor holds the permission but the resource belongs to a different
      * restaurant, outlet, supplier or store. Kept separate from FORBIDDEN so
@@ -66,6 +69,12 @@ public enum ErrorCode {
             "This request was already made with different details."),
     IDEMPOTENT_REQUEST_IN_PROGRESS(HttpStatus.CONFLICT,
             "That request is still being processed."),
+    /**
+     * The first attempt with this key ran and failed (D-159). Definitive: the key will never run again, so the client
+     * must use a NEW key to try again. Unlike {@link #IDEMPOTENT_REQUEST_IN_PROGRESS}, waiting changes nothing.
+     */
+    IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED(HttpStatus.CONFLICT,
+            "The previous attempt did not go through. Please try again."),
 
     // ── Requests (409) ───────────────────────────────────────────────────
     //
@@ -117,6 +126,79 @@ public enum ErrorCode {
             "You don't have an active credit agreement with this supplier."),
     CREDIT_SINGLE_ORDER_CAP_EXCEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
             "This order is larger than the per-order credit limit."),
+    /**
+     * A repayment of more than the chosen invoices (or the whole line) still owe (D-153). Refused rather than kept as a
+     * balance. The details carry {@code outstanding}, what can be repaid right now.
+     */
+    CREDIT_OVERPAYMENT(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That's more than you owe."),
+
+    /**
+     * The supplier recorded a payment whose reference (a UTR or cheque number) is already on a payment in this store
+     * within 90 days (D-164). The details carry {@code receiptId} (null for a payment recorded one invoice at a time),
+     * {@code paidOn} and {@code amount} of the earlier one; sending {@code allowDuplicateReference: true} records it anyway.
+     */
+    CREDIT_DUPLICATE_REFERENCE(HttpStatus.CONFLICT,
+            "That payment reference was already recorded."),
+
+    /**
+     * A claim that "I paid" is not in a state that allows this (D-155): it was already confirmed, rejected or
+     * withdrawn, or the invoice it points at is already settled. Nothing was changed.
+     */
+    CREDIT_CLAIM_STATE(HttpStatus.CONFLICT,
+            "This payment claim has already been dealt with."),
+
+    // ── Undoing a recorded payment (B6, D-169) ───────────────────────────
+    /** The payment is not one a supplier may undo: paid through Mandi (WALLET), part of a receipt, or on a written-off invoice. */
+    CREDIT_REVERSAL_NOT_ALLOWED(HttpStatus.CONFLICT,
+            "This payment can't be undone here."),
+    /** Too late to undo: 7 India days after it was recorded, 30 for a cheque. The details carry {@code closedOn}, the first day it was closed. */
+    CREDIT_REVERSAL_WINDOW_CLOSED(HttpStatus.CONFLICT,
+            "It's too late to undo this payment."),
+    CREDIT_ALREADY_REVERSED(HttpStatus.CONFLICT,
+            "This payment was already undone."),
+    /**
+     * Putting the debt back would take the line past its limit, because the credit the payment freed has been used
+     * (or the limit was cut). The details carry {@code needed}, {@code available} and {@code shortBy}; nothing moved.
+     */
+    CREDIT_REVERSAL_NO_HEADROOM(HttpStatus.UNPROCESSABLE_ENTITY,
+            "The restaurant has used the credit this payment freed."),
+
+    // ── Credit notes and write-offs (B7, B8, D-175..D-180) ───────────────
+    /** A credit note or write-off of more than the invoice still owes. The details carry {@code outstanding}; nothing moved. */
+    CREDIT_NOTE_EXCEEDS_OUTSTANDING(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That's more than is still owed on this invoice."),
+    /** The invoice is PAID or WRITTEN_OFF: a credit note cannot reach money already paid (the supplier refunds it directly, D-177). */
+    CREDIT_NOTE_INVOICE_SETTLED(HttpStatus.CONFLICT,
+            "This invoice is already settled, so a credit note can't be issued on it."),
+    /** Nothing is owed on the invoice (or the whole line), so there is nothing to write off. */
+    CREDIT_WRITE_OFF_NOTHING_OWED(HttpStatus.CONFLICT,
+            "Nothing is owed here, so there is nothing to write off."),
+    /** A refund due that was paid from the Mandi wallet is put right by Mandi, not marked refunded by the supplier. */
+    CREDIT_REFUND_OPS_ONLY(HttpStatus.CONFLICT,
+            "This refund was paid from the restaurant's wallet, so Mandi will settle it."),
+
+    // ── Credit rules hardening (D-160) ───────────────────────────────────
+    /** The restaurant accepted a terms version that is no longer the agreement's current one. Nothing changed. */
+    CREDIT_TERMS_CHANGED(HttpStatus.CONFLICT,
+            "The supplier changed the terms. Please review them again."),
+
+    // ── Credit reminders and exports (D-171, D-172) ──────────────────────
+    /** A manual reminder was already sent on this line within 24 hours. Details: {@code nextAllowedAt}. */
+    CREDIT_REMINDER_TOO_SOON(HttpStatus.TOO_MANY_REQUESTS,
+            "You already reminded this restaurant in the last 24 hours."),
+    /**
+     * Too many reminders: 3 per line in a rolling 7 days ({@code limit} WEEK) or 50 per store in an India day
+     * ({@code limit} STORE_DAY). Details: {@code limit}, {@code max}, {@code nextAllowedAt}.
+     */
+    CREDIT_REMINDER_LIMIT(HttpStatus.TOO_MANY_REQUESTS,
+            "You have reached the reminder limit."),
+    /** Nothing to remind about: nothing overdue or due within 3 days, or every such invoice is covered by a claim. Details: {@code reason}, {@code skipped}. */
+    CREDIT_REMINDER_NOT_NEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "There is nothing to remind this restaurant about right now."),
+    /** An export of more than 20,000 rows. Details: {@code max}, {@code rows}. Narrow the dates. */
+    CREDIT_EXPORT_TOO_LARGE(HttpStatus.PAYLOAD_TOO_LARGE,
+            "That is too many rows for one export. Please choose a shorter period."),
 
     // ── Payments (422, 409) ──────────────────────────────────────────────
     PAYMENT_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
@@ -140,6 +222,12 @@ public enum ErrorCode {
      */
     WALLET_LIMIT_EXCEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
             "That would take your wallet over its limit."),
+    /**
+     * The wallet holds less than a repayment from it (D-153). The details carry {@code shortBy}, the amount missing,
+     * so the app can say "You're ₹X short" and offer to add money.
+     */
+    WALLET_INSUFFICIENT_BALANCE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "Your wallet doesn't have enough for that."),
     /**
      * A wallet statement for the period would run to more rows than a file can
      * reasonably hold (D-108). The customer's fix is a shorter period.

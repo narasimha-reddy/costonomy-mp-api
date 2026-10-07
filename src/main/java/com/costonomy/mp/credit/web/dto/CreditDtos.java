@@ -1,7 +1,11 @@
 package com.costonomy.mp.credit.web.dto;
 
 import com.costonomy.mp.credit.domain.CreditAgreementStatus;
+import com.costonomy.mp.credit.domain.CreditDueState;
 import com.costonomy.mp.credit.domain.CreditInvoiceStatus;
+import com.costonomy.mp.credit.domain.CreditClaimStatus;
+import com.costonomy.mp.credit.domain.CreditPaymentMethod;
+import com.costonomy.mp.credit.domain.CreditPaymentSource;
 import com.costonomy.mp.credit.domain.CreditRequestStatus;
 import com.costonomy.mp.credit.domain.CreditReservationStatus;
 import com.costonomy.mp.credit.domain.CreditTransactionType;
@@ -69,6 +73,13 @@ public final class CreditDtos {
             @NotBlank(message = "Give a reason for the change") @Size(max = 500) String reason) {
     }
 
+    /**
+     * What the restaurant accepts. {@code termsVersion} is optional: the version of the terms it was shown. When
+     * present and no longer current the accept is refused with {@code CREDIT_TERMS_CHANGED}.
+     */
+    public record AcceptRequest(Integer termsVersion) {
+    }
+
     public record SuspendRequest(
             @NotBlank(message = "Give a reason") @Size(max = 500) String reason) {
     }
@@ -116,7 +127,21 @@ public final class CreditDtos {
             String suspensionReason,
             boolean canFund,
             Instant activatedAt,
-            RequestResponse latestRequest) {
+            RequestResponse latestRequest,
+            /** The earliest due date among open invoices, or null when nothing is owed. */
+            LocalDate nextDueDate,
+            /** The outstanding total of the open invoices due on {@code nextDueDate}, or null. */
+            BigDecimal nextDueAmount,
+            /** How many invoices are still open. */
+            int openInvoices,
+            /** What the restaurant says it has paid and the supplier has not answered yet (D-155); 0 when none. */
+            BigDecimal openClaimsAmount,
+            /** What can still be reported as paid across the open invoices (D-157); never below 0. */
+            BigDecimal reportableAmount,
+            /** When the offer awaiting the restaurant was made; null unless APPROVED (D-166). */
+            Instant offerMadeAt,
+            /** The India day the offer lapses if still unaccepted; null unless APPROVED (D-166). */
+            LocalDate offerExpiresOn) {
     }
 
     public record RequestResponse(
@@ -143,7 +168,13 @@ public final class CreditDtos {
             BigDecimal available,
             BigDecimal due,
             BigDecimal overdue,
-            List<AgreementResponse> agreements) {
+            List<AgreementResponse> agreements,
+            /** Whether repaying from the wallet is switched on; the app hides 'Pay from wallet' when false. */
+            boolean walletRepayEnabled,
+            /** The sum of the agreements' open "I paid" claims (D-155); 0 when none. */
+            BigDecimal openClaimsAmount,
+            /** The sum of the agreements' reportable amounts (D-157). */
+            BigDecimal reportableAmount) {
     }
 
     public record LedgerEntryResponse(
@@ -183,7 +214,105 @@ public final class CreditDtos {
             LocalDate dueDate,
             LocalDate overdueAfter,
             Instant issuedAt,
-            Instant settledAt) {
+            Instant settledAt,
+            /** What to show about the due date; computed here in India time, never by the app. */
+            CreditDueState dueState,
+            /** Days until the due date (negative once past it); null for a settled invoice. */
+            Integer daysToDue,
+            /** Outstanding less the "I paid" claims awaiting the supplier, never below 0; 0 once settled (D-157). */
+            BigDecimal reportableAmount,
+            /** What credit notes and write-offs took off the invoice (B7, B8): not paid, no longer owed. */
+            BigDecimal creditedAmount) {
+    }
+
+    /** One payment against an invoice. */
+    public record InvoicePaymentResponse(
+            Long id,
+            BigDecimal amount,
+            CreditPaymentSource source,
+            String method,
+            String reference,
+            Instant paidAt,
+            /** The wallet ledger entry that funded it, for a WALLET payment; null otherwise. */
+            Long walletEntryId,
+            /** When the supplier reversed it, else null: it is no longer counted in what was paid. */
+            Instant reversedAt) {
+    }
+
+    /** An invoice with who it is from, which order it is for, and what has been paid against it. */
+    public record InvoiceDetailResponse(
+            Long id,
+            String invoiceNumber,
+            Long agreementId,
+            Long supplierOrderId,
+            CreditInvoiceStatus status,
+            BigDecimal amount,
+            BigDecimal paidAmount,
+            BigDecimal outstanding,
+            LocalDate dueDate,
+            LocalDate overdueAfter,
+            Instant issuedAt,
+            Instant settledAt,
+            CreditDueState dueState,
+            Integer daysToDue,
+            String orderNumber,
+            String supplierName,
+            String storeName,
+            List<InvoicePaymentResponse> payments,
+            /** Every "I paid" claim on this invoice, newest first (D-155). */
+            List<ClaimResponse> claims,
+            /** Outstanding less the "I paid" claims awaiting the supplier, never below 0; 0 once settled (D-157). */
+            BigDecimal reportableAmount,
+            /** Every time the supplier moved the due date, newest first; empty when never (D-167). */
+            List<CreditLifecycleDtos.DueExtensionResponse> extensions,
+            /** What credit notes and write-offs took off the invoice (B7, B8). */
+            BigDecimal creditedAmount,
+            /** Every credit note and write-off on this invoice, oldest first (B7, B8). */
+            List<CreditNoteDtos.CreditNoteSummary> creditNotes) {
+    }
+
+    /** What the Home Credit tile needs: whether to show the attention dot. No amounts. */
+    public record AttentionResponse(boolean overdue, boolean dueSoon) {
+    }
+
+    /**
+     * One line of a statement. {@code amount} is the signed change to what is owed (+ an order, - a repayment),
+     * and {@code owedAfter} what was owed once it was applied.
+     */
+    public record StatementLine(
+            Instant at,
+            CreditTransactionType type,
+            String label,
+            BigDecimal amount,
+            BigDecimal owedAfter,
+            Long supplierOrderId,
+            String orderNumber,
+            Long creditInvoiceId,
+            String invoiceNumber,
+            CreditPaymentSource source,
+            String method,
+            String reference,
+            Long walletEntryId,
+            /** The number of the credit note or write-off, for a CREDIT_NOTE or WRITE_OFF line (B7, B8); null otherwise. */
+            String creditNoteNumber) {
+
+        /** The line without a credit note number: every row that is not a CREDIT_NOTE or WRITE_OFF. */
+        public StatementLine(Instant at, CreditTransactionType type, String label, BigDecimal amount,
+                             BigDecimal owedAfter, Long supplierOrderId, String orderNumber, Long creditInvoiceId,
+                             String invoiceNumber, CreditPaymentSource source, String method, String reference,
+                             Long walletEntryId) {
+            this(at, type, label, amount, owedAfter, supplierOrderId, orderNumber, creditInvoiceId, invoiceNumber,
+                    source, method, reference, walletEntryId, null);
+        }
+    }
+
+    public record StatementResponse(
+            Long agreementId,
+            LocalDate from,
+            LocalDate to,
+            BigDecimal openingOwed,
+            BigDecimal closingOwed,
+            List<StatementLine> lines) {
     }
 
     // ── Repayment ────────────────────────────────────────────────────────
@@ -191,12 +320,139 @@ public final class CreditDtos {
     public record RecordPaymentRequest(
             @NotNull(message = "Enter an amount")
             @DecimalMin(value = "0.01", message = "The payment must be more than zero")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
             BigDecimal amount,
-            @NotBlank(message = "Choose how it was paid") String method,
+            @NotBlank(message = "Choose how it was paid")
+            @Pattern(regexp = CreditPaymentMethod.ALL_PATTERN,
+                    message = "Choose BANK_TRANSFER, UPI, CASH, CHEQUE, CARD or ADJUSTMENT")
+            String method,
             @Size(max = 200) String reference,
             @Size(max = 500) String note,
             /** When the money actually moved, which may not be now. */
             Instant paidAt) {
+    }
+
+    /**
+     * Repay from the wallet (D-153). {@code invoiceIds} is optional: left out, the amount settles the agreement's open
+     * invoices oldest due date first.
+     */
+    public record WalletRepaymentRequest(
+            @NotNull(message = "Enter an amount")
+            @DecimalMin(value = "0.01", message = "Enter at least ₹1, or the exact remaining amount")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
+            BigDecimal amount,
+            @Size(min = 1, message = "Choose at least one invoice, or leave the list out")
+            List<@NotNull(message = "Choose an invoice") Long> invoiceIds) {
+
+        @AssertTrue(message = "Each invoice can be chosen only once")
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isInvoiceIdsDistinct() {
+            return invoiceIds == null || invoiceIds.stream().distinct().count() == invoiceIds.size();
+        }
+    }
+
+    public record WalletRepaymentAllocation(
+            Long invoiceId, String invoiceNumber, BigDecimal amount, CreditInvoiceStatus statusAfter) {
+    }
+
+    /** The agreement as it stands after a repayment: what is still owed, what is late, what can be drawn. */
+    public record RepaymentAgreementState(
+            BigDecimal due, BigDecimal overdue, BigDecimal available, CreditAgreementStatus status) {
+    }
+
+    public record WalletRepaymentResponse(
+            Long repaymentId,
+            BigDecimal amount,
+            Long walletEntryId,
+            BigDecimal walletBalanceAfter,
+            List<WalletRepaymentAllocation> allocations,
+            RepaymentAgreementState agreement) {
+    }
+
+    // ── Supplier receipts (B5) ───────────────────────────────────────────
+
+    /** What the supplier says it received for a whole credit line: one receipt, split over its open invoices. */
+    public record SupplierPaymentRequest(
+            @NotNull(message = "Enter an amount")
+            @DecimalMin(value = "0.01", message = "The payment must be more than zero")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
+            BigDecimal amount,
+            @NotBlank(message = "Choose how it was paid")
+            @Pattern(regexp = CreditPaymentMethod.CLAIMABLE_PATTERN,
+                    message = "Choose BANK_TRANSFER, UPI, CASH, CHEQUE or CARD")
+            String method,
+            String reference,
+            @NotNull(message = "Enter the date the money was received") LocalDate paidOn,
+            @Size(max = 500) String note,
+            @Size(min = 1, message = "Choose at least one invoice, or leave the list out")
+            List<@NotNull(message = "Choose an invoice") Long> invoiceIds,
+            Boolean allowDuplicateReference) {
+
+        public static final int REFERENCE_MIN = 4;
+        public static final int REFERENCE_MAX = 64;
+
+        /** The reference without surrounding spaces, or null when there is none. */
+        public String trimmedReference() {
+            return reference == null || reference.isBlank() ? null : reference.trim();
+        }
+
+        /** UPI, bank transfer and cheque must say which payment it was; cash and card may not have a number. */
+        @AssertTrue(message = "Enter the payment reference (4 to 64 characters)")
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isReferenceValid() {
+            String ref = trimmedReference();
+            if (ref == null) {
+                return "CASH".equals(method) || "CARD".equals(method) || method == null;
+            }
+            return ref.length() >= REFERENCE_MIN && ref.length() <= REFERENCE_MAX;
+        }
+
+        @AssertTrue(message = "Each invoice can be chosen only once")
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isInvoiceIdsDistinct() {
+            return invoiceIds == null || invoiceIds.stream().distinct().count() == invoiceIds.size();
+        }
+
+        public boolean duplicateAllowed() {
+            return Boolean.TRUE.equals(allowDuplicateReference);
+        }
+    }
+
+    /** What a receipt of this amount would do. A pure read: nothing is written. */
+    public record SupplierPaymentPreviewRequest(
+            @NotNull(message = "Enter an amount")
+            @DecimalMin(value = "0.01", message = "The payment must be more than zero")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
+            BigDecimal amount,
+            @Size(min = 1, message = "Choose at least one invoice, or leave the list out")
+            List<@NotNull(message = "Choose an invoice") Long> invoiceIds) {
+
+        @AssertTrue(message = "Each invoice can be chosen only once")
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isInvoiceIdsDistinct() {
+            return invoiceIds == null || invoiceIds.stream().distinct().count() == invoiceIds.size();
+        }
+    }
+
+    /** An open claim on an invoice the preview would pay (D-155): the supplier may want to confirm that instead. */
+    public record PendingClaimWarning(Long invoiceId, String invoiceNumber, BigDecimal amount) {
+    }
+
+    public record SupplierPaymentPreviewResponse(
+            BigDecimal amount,
+            List<WalletRepaymentAllocation> allocations,
+            RepaymentAgreementState agreement,
+            List<PendingClaimWarning> pendingClaims) {
+    }
+
+    public record SupplierPaymentResponse(
+            Long receiptId,
+            BigDecimal amount,
+            String method,
+            String reference,
+            LocalDate paidOn,
+            List<WalletRepaymentAllocation> allocations,
+            RepaymentAgreementState agreement) {
     }
 
     public record PaymentResponse(
@@ -206,5 +462,223 @@ public final class CreditDtos {
             String method,
             String reference,
             Instant paidAt) {
+    }
+
+    // ── "I paid" claims (D-155) ──────────────────────────────────────────
+
+    /**
+     * A restaurant says it paid a supplier directly. {@code reference} is required unless the method is CASH.
+     * Nothing changes until the supplier confirms.
+     */
+    public record ClaimRequest(
+            @NotNull(message = "Enter an amount")
+            @DecimalMin(value = "0.01", message = "Enter at least ₹1, or the exact remaining amount")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
+            BigDecimal amount,
+            @NotBlank(message = "Choose how you paid")
+            @Pattern(regexp = CreditPaymentMethod.CLAIMABLE_PATTERN,
+                    message = "Choose BANK_TRANSFER, UPI, CASH, CHEQUE or CARD")
+            String method,
+            @Size(max = 200) String reference,
+            @NotNull(message = "Enter the date you paid") LocalDate paidOn,
+            @Size(max = 500) String note) {
+
+        @AssertTrue(message = "Enter the payment reference")
+        @com.fasterxml.jackson.annotation.JsonIgnore
+        public boolean isReferenceGiven() {
+            return "CASH".equals(method) || (reference != null && !reference.isBlank());
+        }
+    }
+
+    /** The supplier confirms a claim. Leave {@code amount} out to confirm what was claimed, capped at what is owed. */
+    public record ConfirmClaimRequest(
+            @DecimalMin(value = "0.01", message = "The amount must be more than zero")
+            @Digits(integer = 15, fraction = 2, message = "Use at most two decimal places")
+            BigDecimal amount) {
+    }
+
+    public record RejectClaimRequest(
+            @NotBlank(message = "Give a reason") @Size(min = 3, max = 500, message = "Give a reason of 3 to 500 characters")
+            String reason) {
+    }
+
+    /** One claim, as either side reads it. {@code creditPaymentId} is set once it is confirmed. */
+    public record ClaimResponse(
+            Long id,
+            Long invoiceId,
+            String invoiceNumber,
+            Long agreementId,
+            Long outletId,
+            String outletName,
+            String restaurantName,
+            BigDecimal amount,
+            CreditPaymentMethod method,
+            String reference,
+            LocalDate paidOn,
+            String note,
+            CreditClaimStatus status,
+            String decisionNote,
+            BigDecimal confirmedAmount,
+            Long creditPaymentId,
+            Instant createdAt,
+            Instant decidedAt,
+            /** India days since it was submitted, worked out here (D-168). */
+            int ageDays,
+            /** Still waiting for the supplier at 7 days or more. Never auto-rejected. */
+            boolean stale,
+            /** What is owed on the invoice now; 0 once settled. */
+            BigDecimal invoiceOutstanding,
+            /** All claims waiting for the supplier on the invoice, this one included while it waits. */
+            BigDecimal invoiceOpenClaimsAmount,
+            /** The same without this claim. */
+            BigDecimal invoiceOtherOpenClaimsAmount,
+            /** Another claim or a payment on this invoice with the same amount and the same reference or within 24h; else null. */
+            Long possibleDuplicateOf,
+            /** CLAIM or PAYMENT: which kind {@code possibleDuplicateOf} is; null when it is. */
+            String possibleDuplicateKind) {
+    }
+
+    // ── The supplier's receivables (plan B3) ─────────────────────────────
+
+    /** One page of a list: {@code total} rows in all, {@code hasNext} when another page follows. */
+    public record PageOf<T>(List<T> items, int page, int size, long total, boolean hasNext) {
+    }
+
+    /** What the supplier store is owed, as of {@code asOf} (the India date). Every figure is worked out on the server. */
+    public record ReceivablesResponse(
+            LocalDate asOf,
+            /** Outstanding on every open invoice of the store: overdue + inGrace + what is not yet due. */
+            BigDecimal totalReceivable,
+            /** Open invoices past their grace period (marked OVERDUE or not yet swept): {@code CreditDueState.OVERDUE}. */
+            BigDecimal overdue,
+            /** Past the due date but inside the grace period. */
+            BigDecimal inGrace,
+            /** Due on {@code asOf}. */
+            BigDecimal dueToday,
+            /** Not yet due and due from {@code asOf} through {@code asOf + 6} days, today included. */
+            BigDecimal dueThisWeek,
+            /** Payments received in the current India calendar month, whatever the source. */
+            BigDecimal collectedThisMonth,
+            Exposure exposure,
+            Counts counts,
+            /** Only what needs doing (count above zero), in display order; the app renders exactly this. */
+            List<PendingAction> pendingActions) {
+    }
+
+    public record Exposure(
+            /** Sum of the approved limits of ACTIVE lines. */
+            BigDecimal extended,
+            /** What those lines have drawn (utilized). */
+            BigDecimal drawn,
+            /** What those lines can still be ordered against: limit less drawn and reserved, never below zero per line. */
+            BigDecimal availableToLend) {
+    }
+
+    public record Counts(
+            /** Lines that are live (ACTIVE or SUSPENDED) or still owe something. */
+            int restaurants,
+            int linesActive,
+            int linesSuspended,
+            int requestsPending,
+            int claimsWaiting,
+            int overdueRestaurants) {
+    }
+
+    public enum PendingActionKind {
+        CLAIMS_WAITING, REQUESTS_PENDING, OVERDUE_RESTAURANTS, LINE_AT_LIMIT
+    }
+
+    public record PendingAction(PendingActionKind kind, int count) {
+    }
+
+    /** One line (restaurant outlet) in the receivables list. */
+    public record ReceivableRestaurantResponse(
+            Long agreementId,
+            Long outletId,
+            String outletName,
+            String restaurantName,
+            CreditAgreementStatus status,
+            BigDecimal owed,
+            BigDecimal overdue,
+            /** Outstanding on the invoices due on {@code nextDueDate}; null when nothing is owed. */
+            BigDecimal nextDueAmount,
+            /** The earliest due date among open invoices, or null. */
+            LocalDate nextDueDate,
+            /** The state of the worst open invoice (OVERDUE, IN_GRACE, DUE_TODAY, DUE_SOON, DUE_LATER); null when nothing is open. */
+            CreditDueState dueState,
+            int claimsWaiting,
+            BigDecimal limit,
+            /** What the line has drawn. */
+            BigDecimal utilized,
+            /** Drawn as a percentage of the limit, one decimal; null when the limit is zero. */
+            BigDecimal utilization) {
+    }
+
+    public record AgeingBucketRestaurant(
+            Long agreementId,
+            String outletName,
+            String restaurantName,
+            BigDecimal amount,
+            int invoiceCount) {
+    }
+
+    /** CURRENT, D1_7, D8_30 or D30_PLUS. */
+    public record AgeingBucket(
+            String bucket,
+            BigDecimal amount,
+            int invoiceCount,
+            int restaurantCount,
+            /** Up to five restaurants with the most in this bucket, biggest first. */
+            List<AgeingBucketRestaurant> topRestaurants) {
+    }
+
+    public record AgeingResponse(LocalDate asOf, BigDecimal total, List<AgeingBucket> buckets) {
+    }
+
+    /** One payment in the supplier's feed. */
+    public record PaymentFeedItem(
+            Long id,
+            Instant paidAt,
+            /** The India calendar day of {@code paidAt}. */
+            LocalDate paidOn,
+            Long agreementId,
+            Long outletId,
+            String outletName,
+            String restaurantName,
+            Long invoiceId,
+            String invoiceNumber,
+            BigDecimal amount,
+            CreditPaymentSource source,
+            String method,
+            String reference,
+            /** The receipt it was recorded in (SUPPLIER_RECORDED only); undo the whole receipt through it. Null otherwise. */
+            Long receiptId,
+            /** Server-computed: the supplier may undo it today (right source, inside the window, not reversed). */
+            boolean reversible,
+            /** The last India day it can be undone; null once reversed or when it never can be (WALLET). */
+            LocalDate reversibleUntil,
+            /** When the supplier reversed it, else null. A reversed payment stays in the feed and is not collected. */
+            Instant reversedAt) {
+    }
+
+    // ── Undoing a recorded payment (B6) ──────────────────────────────────
+
+    public record ReversalRequest(
+            @NotBlank(message = "Say why you are undoing this payment")
+            @Size(min = 3, max = 500, message = "Give a reason of 3 to 500 characters")
+            String reason) {
+    }
+
+    /** What an undo did: the invoices it reopened and the line as it stands now. */
+    public record ReversalResponse(
+            /** The receipt that was reversed; null when a payment recorded alone was. */
+            Long receiptId,
+            /** The payment that was reversed; null when a whole receipt was. */
+            Long paymentId,
+            BigDecimal amount,
+            String reason,
+            Instant reversedAt,
+            List<WalletRepaymentAllocation> allocations,
+            RepaymentAgreementState agreement) {
     }
 }

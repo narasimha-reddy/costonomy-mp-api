@@ -56,6 +56,9 @@ public class CreditPolicyService {
         policy.setMaxSingleOrderCredit(body.maxSingleOrderCredit());
         policy.setMaxOverdueAmount(body.maxOverdueAmount());
         policy.setAutoSuspendEnabled(body.autoSuspendEnabled() == null || body.autoSuspendEnabled());
+        if (body.autoRemindersEnabled() != null) {
+            policy.setAutoRemindersEnabled(body.autoRemindersEnabled());
+        }
         policies.save(policy);
 
         // Turning credit off is a commercial decision worth being able to point at
@@ -71,12 +74,12 @@ public class CreditPolicyService {
     private CreditPolicyDtos.PolicyResponse toResponse(Long storeId, SupplierCreditPolicy policy) {
         if (policy == null) {
             return new CreditPolicyDtos.PolicyResponse(
-                    storeId, false, null, null, 0, null, null, true);
+                    storeId, false, null, null, 0, null, null, true, true);
         }
         return new CreditPolicyDtos.PolicyResponse(
                 storeId, policy.getCreditEnabled(), policy.getDefaultCreditLimit(),
                 policy.getDefaultCreditPeriodDays(), policy.getDefaultGracePeriodDays(),
                 policy.getMaxSingleOrderCredit(), policy.getMaxOverdueAmount(),
-                policy.getAutoSuspendEnabled());
+                policy.getAutoSuspendEnabled(), policy.getAutoRemindersEnabled());
     }
 }

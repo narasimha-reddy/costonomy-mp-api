@@ -19,7 +19,9 @@ public final class CreditPolicyDtos {
             @Min(0) @Max(60) Integer defaultGracePeriodDays,
             @DecimalMin(value = "1.00") BigDecimal maxSingleOrderCredit,
             @DecimalMin(value = "0.00") BigDecimal maxOverdueAmount,
-            Boolean autoSuspendEnabled) {
+            Boolean autoSuspendEnabled,
+            /** Left out keeps what it is now (on for a new store). */
+            Boolean autoRemindersEnabled) {
     }
 
     public record PolicyResponse(
@@ -30,6 +32,7 @@ public final class CreditPolicyDtos {
             Integer defaultGracePeriodDays,
             BigDecimal maxSingleOrderCredit,
             BigDecimal maxOverdueAmount,
-            Boolean autoSuspendEnabled) {
+            Boolean autoSuspendEnabled,
+            Boolean autoRemindersEnabled) {
     }
 }

@@ -101,6 +101,20 @@ public class WalletEntryDetailService {
                         ? "Your card or bank" : WalletEntryCopy.label(kind, entry.getDirection());
                 refundReferences(refs, entry.getRefundId(), true);
             }
+            case CREDIT_REPAYMENT -> {
+                // The repayment is found by the entry's reference (credit-repayment-<id>), scoped to this outlet.
+                var repayment = creditRepaymentOf(entry, outletId);
+                if (repayment != null) {
+                    counterpartyName = repayment.supplierName();
+                    var invoiceNumbers = creditInvoiceNumbers(repayment.id());
+                    if (!invoiceNumbers.isEmpty()) {
+                        counterpartyDetail = String.join(", ", invoiceNumbers);
+                    }
+                    invoiceNumbers.forEach(number -> add(refs, "Credit invoice", number));
+                    add(refs, "Credit line", String.valueOf(repayment.agreementId()));
+                    add(refs, "Credit repayment", String.valueOf(repayment.id()));
+                }
+            }
             case QUICKSCAN_PAYMENT, QUICKSCAN_RETURN -> {
                 var payment = quickScanOf(entry, outletId);
                 if (payment != null) {
@@ -208,6 +222,44 @@ public class WalletEntryDetailService {
     }
 
     /** {order number, supplier shop name} of one of this outlet's orders, or null. */
+    private record CreditRepaymentRow(Long id, Long agreementId, String supplierName) {
+    }
+
+    /**
+     * The credit repayment behind a CREDIT_REPAYMENT entry, read in SQL like the other cross-module rows
+     * (the wallet module holds no credit entities). Null when the reference is not a repayment of this outlet.
+     */
+    private CreditRepaymentRow creditRepaymentOf(WalletTransaction entry, Long outletId) {
+        String reference = entry.getReference();
+        String prefix = "credit-repayment-";
+        if (reference == null || !reference.startsWith(prefix) || !reference.substring(prefix.length()).matches("\\d{1,18}")) {
+            return null;
+        }
+        long id = Long.parseLong(reference.substring(prefix.length()));
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery("""
+                        select r.id, r.credit_agreement_id, s.name
+                          from credit_repayment r join supplier_store s on s.id = r.supplier_store_id
+                         where r.id = :id and r.outlet_id = :outlet
+                        """)
+                .setParameter("id", id).setParameter("outlet", outletId).getResultList();
+        if (rows.isEmpty()) {
+            return null;
+        }
+        var row = rows.get(0);
+        return new CreditRepaymentRow(((Number) row[0]).longValue(), ((Number) row[1]).longValue(), (String) row[2]);
+    }
+
+    /** The invoice numbers a repayment settled, oldest invoice first. */
+    @SuppressWarnings("unchecked")
+    private List<String> creditInvoiceNumbers(Long repaymentId) {
+        return em.createNativeQuery("""
+                        select i.invoice_number from credit_payment p join credit_invoice i on i.id = p.credit_invoice_id
+                         where p.credit_repayment_id = :id order by i.id
+                        """)
+                .setParameter("id", repaymentId).getResultList();
+    }
+
     private String[] orderOf(Long supplierOrderId, Long outletId) {
         if (supplierOrderId == null) {
             return null;

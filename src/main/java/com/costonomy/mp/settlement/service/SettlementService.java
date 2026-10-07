@@ -62,6 +62,7 @@ public class SettlementService {
     private final SettlementTotals totals;
     private final SupplierRefundLedger refundLedger;
     private final SettlementReconciliationService reconciliation;
+    private final CreditRepaymentPayoutLedger repaymentPayouts;
 
     // ── Generation ───────────────────────────────────────────────────────
 
@@ -74,18 +75,25 @@ public class SettlementService {
     public int generate(Instant periodStart, Instant periodEnd) {
         int touched = 0;
 
-        for (Long storeId : directory.storesWithSettleableOrders(periodStart, periodEnd)) {
+        // Stores with orders to settle, and stores with a wallet repayment waiting to be paid out (D-156).
+        var withPayouts = new java.util.HashSet<>(repaymentPayouts.storesWithPending(periodEnd));
+        var storeIds = new java.util.LinkedHashSet<>(directory.storesWithSettleableOrders(periodStart, periodEnd));
+        storeIds.addAll(withPayouts);
+
+        for (Long storeId : storeIds) {
             var orders = directory.settleableOrders(periodStart, periodEnd).stream()
                     .filter(order -> order.supplierStoreId().equals(storeId))
                     .toList();
-            if (orders.isEmpty()) {
+            if (orders.isEmpty() && !withPayouts.contains(storeId)) {
                 continue;
             }
 
             var settlement = settlements
                     .findBySupplierStoreIdAndPeriodStartAndPeriodEnd(
                             storeId, periodStart, periodEnd)
-                    .orElseGet(() -> create(storeId, orders.get(0).supplierOrganizationId(),
+                    .orElseGet(() -> create(storeId,
+                            orders.isEmpty() ? repaymentPayouts.organisationOf(storeId)
+                                    : orders.get(0).supplierOrganizationId(),
                             periodStart, periodEnd));
 
             if (!settlement.getStatus().isMutable()) {
@@ -106,6 +114,8 @@ public class SettlementService {
             // Refunds approved before the orders were settled come out of this
             // payout, with them (D-104).
             refundLedger.applyPending(settlement, ordersIn(settlement));
+            // Wallet repayments Mandi holds for this supplier are paid out with it, less commission (D-156).
+            repaymentPayouts.applyPending(settlement, periodEnd);
 
             recompute(settlement);
             settlement.setStatus(SettlementStatus.CALCULATED);

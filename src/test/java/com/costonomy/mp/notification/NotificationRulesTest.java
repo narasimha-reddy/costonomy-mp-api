@@ -1,5 +1,6 @@
 package com.costonomy.mp.notification;
 
+import com.costonomy.mp.credit.domain.CreditEvents;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import com.costonomy.mp.notification.domain.NotificationCategory;
 import com.costonomy.mp.notification.domain.NotificationChannel;
@@ -76,7 +77,8 @@ class NotificationRulesTest {
         @DisplayName("every rule in the catalogue renders to something readable")
         void everyRuleRenders() {
             for (NotificationRule rule : NotificationRules.all()) {
-                String rendered = rule.render(Map.of());
+                // The reminder and the digest are composed whole on the server and carried in {message}.
+                String rendered = rule.render(Map.of("message", "A message composed by the server."));
                 assertThat(rendered)
                         .describedAs("%s renders", rule.eventType())
                         .isNotBlank()
@@ -90,6 +92,90 @@ class NotificationRulesTest {
     @Nested
     @DisplayName("the catalogue")
     class Catalogue {
+
+        /**
+         * Credit events that are exposure-ledger bookkeeping. Nobody needs telling that a hold was
+         * placed, drawn down or released; the order and invoice events say it in terms people read.
+         */
+        private static final List<String> CREDIT_INTENTIONALLY_SILENT = List.of(
+                CreditEvents.RESERVED, CreditEvents.UTILIZED, CreditEvents.RELEASED);
+
+        @Test
+        @DisplayName("every credit event has a rule or is deliberately silent (D-150)")
+        void everyCreditEventIsAccountedFor() {
+            for (String event : CreditEvents.ALL) {
+                if (CREDIT_INTENTIONALLY_SILENT.contains(event)) {
+                    assertThat(NotificationRules.forEvent(event))
+                            .describedAs("%s is on the silent list but has a rule", event).isEmpty();
+                } else {
+                    assertThat(NotificationRules.forEvent(event))
+                            .describedAs("%s is published but notifies nobody", event).isNotEmpty();
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("the new credit rules reach the restaurant, never by SMS (D-041)")
+        void newCreditRulesShape() {
+            for (String event : List.of(CreditEvents.REJECTED, CreditEvents.INVOICE_ISSUED,
+                    CreditEvents.REPAYMENT_RECORDED, CreditEvents.REINSTATED)) {
+                for (var rule : NotificationRules.forEvent(event)) {
+                    assertThat(rule.audience()).isEqualTo(NotificationRule.Audience.OUTLET);
+                    assertThat(rule.channels()).doesNotContain(NotificationChannel.SMS);
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("a wallet repayment tells the supplier store, in-app and push, never by SMS, and is not critical (D-153)")
+        void repaymentReceivedTellsTheSupplier() {
+            var rules = NotificationRules.forEvent(CreditEvents.REPAYMENT_RECEIVED);
+            assertThat(rules).hasSize(1);
+            var rule = rules.get(0);
+            assertThat(rule.audience()).isEqualTo(NotificationRule.Audience.SUPPLIER_STORE);
+            assertThat(rule.category()).isEqualTo(NotificationCategory.CREDIT);
+            assertThat(rule.critical()).isFalse();
+            assertThat(rule.channels()).containsExactlyInAnyOrder(NotificationChannel.IN_APP, NotificationChannel.PUSH);
+            assertThat(rule.title()).isEqualTo("Payment received");
+            assertThat(rule.render(Map.of("restaurantName", "Paradise", "amount", "₹6,500.00")))
+                    .isEqualTo("Paradise paid ₹6,500.00 through Mandi.");
+            // The restaurant is not sent the "supplier recorded your payment" text for its own repayment.
+            assertThat(NotificationRules.forEvent(CreditEvents.REPAYMENT_RECORDED))
+                    .allMatch(r -> r.audience() == NotificationRule.Audience.OUTLET);
+        }
+
+        @Test
+        @DisplayName("an \"I paid\" claim tells the supplier, its answer tells the restaurant: in-app and push, never SMS, never critical (D-155)")
+        void claimRules() {
+            var submitted = NotificationRules.forEvent("CreditClaimSubmitted");
+            assertThat(submitted).hasSize(1);
+            var rule = submitted.get(0);
+            assertThat(rule.audience()).isEqualTo(NotificationRule.Audience.SUPPLIER_STORE);
+            assertThat(rule.category()).isEqualTo(NotificationCategory.CREDIT);
+            assertThat(rule.critical()).isFalse();
+            assertThat(rule.channels()).containsExactlyInAnyOrder(NotificationChannel.IN_APP, NotificationChannel.PUSH);
+            assertThat(rule.render(Map.of("restaurantName", "Paradise", "amount", "₹2,500.00",
+                    "invoiceNumber", "INV-1"))).isEqualTo("Paradise says it paid ₹2,500.00. Check and confirm the payment against invoice INV-1.");
+            assertThat(rule.targetType()).isEqualTo("CREDIT_INVOICE");
+
+            for (String event : List.of("CreditClaimConfirmed", "CreditClaimRejected")) {
+                var rules = NotificationRules.forEvent(event);
+                assertThat(rules).as(event).hasSize(1);
+                assertThat(rules.get(0).audience()).as(event).isEqualTo(NotificationRule.Audience.OUTLET);
+                assertThat(rules.get(0).category()).as(event).isEqualTo(NotificationCategory.CREDIT);
+                assertThat(rules.get(0).critical()).as(event).isFalse();
+                assertThat(rules.get(0).channels()).as(event)
+                        .containsExactlyInAnyOrder(NotificationChannel.IN_APP, NotificationChannel.PUSH);
+            }
+            assertThat(NotificationRules.forEvent("CreditClaimConfirmed").get(0)
+                    .render(Map.of("supplierName", "ABC Foods", "amount", "₹2,000.00")))
+                    .isEqualTo("ABC Foods confirmed your payment of ₹2,000.00.");
+            assertThat(NotificationRules.forEvent("CreditClaimRejected").get(0)
+                    .render(Map.of("supplierName", "ABC Foods", "amount", "₹2,000.00", "reason", "Not received.")))
+                    .isEqualTo("ABC Foods could not confirm your payment of ₹2,000.00. Not received.");
+            // A confirmed claim must not also produce the "supplier recorded your payment" text.
+            assertThat(CreditEvents.ALL).contains("CreditClaimSubmitted", "CreditClaimConfirmed", "CreditClaimRejected");
+        }
 
         @Test
         @DisplayName("everything doc 08 §4 calls critical is critical")
@@ -128,7 +214,9 @@ class NotificationRulesTest {
             assertThat(smsEvents).containsExactlyInAnyOrder(
                     "SupplierOrderRejected", "SupplierOrderExpired",
                     "IntentDeclined", "IntentExpired",
-                    "PaymentFailed", "CreditOverdue");
+                    "PaymentFailed", "CreditOverdue",
+                    // A manual reminder while something is overdue (D-171); the other reminder variants have no SMS.
+                    "CreditReminder#SMS");
         }
 
         @Test
