@@ -521,4 +521,8 @@ public final class ProcurementDtos {
             @NotEmpty(message = "Enter weights for dispatched lines")
             @Valid List<RecordDispatchWeightItem> weights) {
     }
+
+    /** Pay an unpaid card order another way (D-186): {@code WALLET} or {@code CREDIT}. */
+    public record ChangePaymentMethodRequest(String method) {
+    }
 }

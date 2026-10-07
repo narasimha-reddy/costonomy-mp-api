@@ -84,6 +84,13 @@ public interface OrderFundingPort {
     boolean isFundingSecured(Long supplierOrderId);
 
     /**
+     * Stop an unpaid order's funding from ever funding it, because it is being paid another way (D-186). Throws if
+     * it has already been paid. Nothing to do for methods that hold nothing before the order is released.
+     */
+    default void relinquishUnfunded(Long supplierOrderId) {
+    }
+
+    /**
      * The supplier committed to {@code acceptedAmount}. Take that much.
      *
      * <p>Doc 01 §14: only the accepted commercial value is captured, and the

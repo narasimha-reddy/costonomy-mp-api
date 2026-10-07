@@ -138,20 +138,24 @@ class PidgeDeliveryFlowIT extends AbstractIntegrationTest {
         String providerDeliveryId = "pidg_it_" + System.currentTimeMillis();
         Long deliveryId = createSeedDelivery(providerDeliveryId);
 
+        // The shape Pidge documents: the GET order object posted as the root, the current stage in fulfillment.status
+        // and each stage, with its rider, in fulfillment.logs.
         String payload = """
                 {
-                    "event_id": "evt-pidge-101",
-                    "pidge_delivery_id": "%s",
-                    "status": "RIDER_ASSIGNED",
-                    "tracking_url": "https://track.pidge.in/live/%s",
-                    "timestamp": %d,
-                    "driver": {
-                        "name": "Rider Vikram",
-                        "phone": "+919876543210",
-                        "vehicle_number": "KA-01-EQ-1234"
+                    "id": "%s",
+                    "status": "fulfilled",
+                    "fulfillment": {
+                        "status": "OUT_FOR_PICKUP",
+                        "logs": [
+                            {"timestamp": "2026-10-06T10:00:00.000Z", "status": "CREATED"},
+                            {"timestamp": "2026-10-06T10:02:00.000Z", "status": "OUT_FOR_PICKUP",
+                             "remark": "Start for Pickup",
+                             "location": {"latitude": 17.44, "longitude": 78.49},
+                             "rider": {"id": "306", "name": "Rider Vikram", "mobile": "9876543210"}}
+                        ]
                     }
                 }
-                """.formatted(providerDeliveryId, providerDeliveryId, System.currentTimeMillis());
+                """.formatted(providerDeliveryId);
 
         String signature = sign(payload);
 
@@ -163,14 +167,37 @@ class PidgeDeliveryFlowIT extends AbstractIntegrationTest {
 
         // Verify database state updated accurately
         Map<String, Object> deliveryRow = jdbc.queryForMap(
-                "select status, driver_name, driver_phone, driver_vehicle, tracking_url from delivery where id = ?",
+                "select status, driver_name, driver_phone from delivery where id = ?",
                 deliveryId);
 
         assertThat(deliveryRow.get("status")).isEqualTo("DRIVER_ASSIGNED");
         assertThat(deliveryRow.get("driver_name")).isEqualTo("Rider Vikram");
-        assertThat(deliveryRow.get("driver_phone")).isEqualTo("+919876543210");
-        assertThat(deliveryRow.get("driver_vehicle")).isEqualTo("KA-01-EQ-1234");
-        assertThat(deliveryRow.get("tracking_url")).isEqualTo("https://track.pidge.in/live/" + providerDeliveryId);
+        assertThat(deliveryRow.get("driver_phone")).isEqualTo("9876543210");
+    }
+
+    @Test
+    void pidgeWebhookWalksEveryStageItWasTold() throws Exception {
+        String providerDeliveryId = "pidg_walk_" + System.currentTimeMillis();
+        Long deliveryId = createSeedDelivery(providerDeliveryId);
+
+        // One hit that reports assignment, arrival and pickup together: the delivery lands on the latest stage.
+        String payload = """
+                {"id": "%s", "status": "fulfilled", "fulfillment": {"status": "PICKED_UP", "logs": [
+                  {"timestamp": "2026-10-06T10:00:00.000Z", "status": "CREATED"},
+                  {"timestamp": "2026-10-06T10:02:00.000Z", "status": "OUT_FOR_PICKUP",
+                   "rider": {"name": "Rider Vikram", "mobile": "9876543210"}},
+                  {"timestamp": "2026-10-06T10:08:00.000Z", "status": "REACHED_PICKUP"},
+                  {"timestamp": "2026-10-06T10:12:00.000Z", "status": "PICKED_UP"}]}}
+                """.formatted(providerDeliveryId);
+
+        mvc.perform(MockMvcRequestBuilders.post("/api/v1/webhooks/delivery/pidge")
+                        .header("X-Pidge-Signature", sign(payload))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk());
+
+        assertThat(jdbc.queryForObject("select status from delivery where id = ?", String.class, deliveryId))
+                .isEqualTo("PICKED_UP");
     }
 
     @Test

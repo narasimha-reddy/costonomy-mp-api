@@ -74,12 +74,15 @@ public class DiscoveryController {
             @RequestParam(required = false) BigDecimal radiusKm,
             @RequestParam(required = false) String reach,
             @RequestParam(required = false, defaultValue = "0") Integer offset,
-            @RequestParam(required = false, defaultValue = "50") Integer limit) {
+            @RequestParam(required = false, defaultValue = "50") Integer limit,
+            @RequestParam(required = false) Boolean openNow,
+            @RequestParam(required = false) Integer minRating,
+            @RequestParam(required = false) String sort) {
         if (outletId != null) {
             accessControl.requireScoped(ActorContext.requireUserId(),
                     Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "Outlet");
         }
-        return ApiResponse.ok(storefront.searchSuppliers(query, outletId, radiusKm, reach, offset, limit));
+        return ApiResponse.ok(storefront.searchSuppliers(query, outletId, radiusKm, reach, offset, limit, openNow, minRating, sort));
     }
 
     @GetMapping("/search/skus")
@@ -209,13 +212,21 @@ public class DiscoveryController {
 
                     `effectiveTotal` is item value plus GST. Delivery is not included —
                     it is not quoted until a provider is selected after Ready for Pickup.
+
+                    Optional choices (D-183): `sort` = `best_value` (default) | `price` | `nearest` | `rating`;
+                    filters `coversQuantity`, `openNow`, `radiusKm`. Filters apply after scoring, so they remove
+                    cards without re-ranking the rest, and `hiddenByFilters` says how many they removed.
                     """)
     public ApiResponse<DiscoveryDtos.ProductRecommendation> recommendations(
             @PathVariable Long id,
             @RequestParam Long outletId,
-            @RequestParam(required = false) BigDecimal quantity) {
+            @RequestParam(required = false) BigDecimal quantity,
+            @RequestParam(required = false) String sort,
+            @RequestParam(required = false) Boolean coversQuantity,
+            @RequestParam(required = false) Boolean openNow,
+            @RequestParam(required = false) BigDecimal radiusKm) {
         return ApiResponse.ok(recommendations.recommendForProduct(
-                ActorContext.requireUserId(), id, outletId, quantity));
+                ActorContext.requireUserId(), id, outletId, quantity, sort, coversQuantity, openNow, radiusKm));
     }
 
     @GetMapping("/outlets/{outletId}/suppliers/popular")
@@ -243,13 +254,18 @@ public class DiscoveryController {
             @Parameter(description = "How many to return. Defaults to 10.")
             @RequestParam(required = false) Integer limit,
             @Parameter(description = "Only suppliers stocking this aisle.")
-            @RequestParam(required = false) Long categoryId) {
+            @RequestParam(required = false) Long categoryId,
+            @RequestParam(required = false) BigDecimal radiusKm,
+            @RequestParam(required = false) Boolean openNow,
+            @RequestParam(required = false) Integer minRating,
+            @RequestParam(required = false) String sort) {
 
         Long actorId = ActorContext.requireUserId();
         accessControl.requireScoped(actorId, Permissions.ORDER_VIEW,
                 ScopeType.OUTLET, outletId, "Outlet");
 
         return ApiResponse.ok(
-                popular.forOutlet(outletId, limit == null ? 10 : limit, categoryId));
+                popular.forOutlet(outletId, limit == null ? 10 : limit, categoryId,
+                        radiusKm, openNow, minRating, sort));
     }
 }

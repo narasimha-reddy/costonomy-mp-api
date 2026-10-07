@@ -78,6 +78,9 @@ class DeliveryQuotingServiceTest {
 
         var quote = outcome.all().get(0);
         assertThat(quote.getStatus()).isEqualTo("UNSERVICEABLE");
+        // delivery_quote.provider_code is NOT NULL: a null here made the insert fail inside the outbox relay's
+        // transaction and held every event behind it (found by the delivery e2e run).
+        assertThat(quote.getProviderCode()).isNotBlank();
         assertThat(quote.getFailureReason()).contains("Exceeds 30.0 km intra-city radius limit");
         assertThat(quote.getDistanceKm()).isNotNull();
         assertThat(quote.getDistanceKm().doubleValue()).isGreaterThan(30.0);

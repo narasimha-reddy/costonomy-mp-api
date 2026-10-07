@@ -35,5 +35,11 @@ public interface RealtimeEventRepository extends JpaRepository<RealtimeEvent, Lo
             """)
     Long latestCursor(@Param("channels") List<String> channels);
 
-    long deleteByCreatedAtBefore(Instant before);
+    /**
+     * One DELETE statement. The derived {@code deleteByCreatedAtBefore} loaded every matching row into memory and
+     * deleted them one at a time (D-182).
+     */
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("delete from RealtimeEvent e where e.createdAt < :before")
+    int deleteOlderThan(@Param("before") Instant before);
 }

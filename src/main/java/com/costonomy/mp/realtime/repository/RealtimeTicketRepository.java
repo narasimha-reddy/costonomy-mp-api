@@ -10,5 +10,8 @@ public interface RealtimeTicketRepository extends JpaRepository<RealtimeTicket, 
 
     Optional<RealtimeTicket> findByTicketHash(String ticketHash);
 
-    long deleteByExpiresAtBefore(Instant before);
+    /** One DELETE statement, not load-then-delete-each (D-182). */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("delete from RealtimeTicket t where t.expiresAt < :before")
+    int deleteExpired(@org.springframework.data.repository.query.Param("before") Instant before);
 }

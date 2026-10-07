@@ -472,6 +472,25 @@ public final class NotificationRules {
                 "New driver",
                 "Your delivery partner is being reassigned.", "DELIVERY", "supplierOrderId"));
 
+        // D-185: no partner after the automatic retries, and what the supplier then chose.
+        add(rules, new NotificationRule("DeliveryOwnDeliveryOffered", SUPPLIER_STORE, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "No delivery partner found",
+                "We couldn't find a delivery partner for this order. You can deliver it yourself.",
+                "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DeliveryOwnDeliveryOffered", OUTLET, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Still finding a delivery partner",
+                "We can't find a delivery partner yet. Your supplier may deliver it themselves.",
+                "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DeliverySwitchedToSupplier", OUTLET, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Your supplier is delivering",
+                "Your supplier will deliver this order themselves. The delivery charge is unchanged.",
+                "DELIVERY", "supplierOrderId"));
+
         // ── Trust ────────────────────────────────────────────────────────
         add(rules, new NotificationRule("DisputeCreated", SUPPLIER_STORE, MARKETPLACE, true,
                 List.of(IN_APP, PUSH),

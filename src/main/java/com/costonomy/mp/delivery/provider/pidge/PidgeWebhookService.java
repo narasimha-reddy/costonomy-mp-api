@@ -54,76 +54,58 @@ public class PidgeWebhookService {
         }
 
         try {
+            // Pidge posts the same order object the GET call returns, not wrapped in "data" (their webhook docs).
             JsonNode root = objectMapper.readTree(rawBody);
-            String eventId = root.path("event_id").asText(root.path("id").asText(null));
-            String deliveryId = root.path("pidge_delivery_id").asText(root.path("delivery_id").asText(null));
-            String statusStr = root.path("status").asText(root.path("event_type").asText(null));
-
-            if (deliveryId == null || statusStr == null) {
-                log.warn("Pidge webhook payload missing required fields: {}", rawBody);
-                return false;
-            }
-
-            var delivery = deliveries.findByProviderCodeAndProviderDeliveryId(
-                    PidgeDeliveryProvider.CODE, deliveryId).orElse(null);
-
-            if (delivery == null) {
-                log.info("Received Pidge webhook for unknown or unlinked delivery {}", deliveryId);
-                return true; // Acknowledge to prevent provider retries
-            }
-
-            var providerStatus = PidgeApiClient.mapPidgeStatus(statusStr);
-            String description = root.path("description").asText("Status update: " + statusStr);
-            Instant occurredAt = root.has("timestamp")
-                    ? Instant.ofEpochMilli(root.path("timestamp").asLong())
-                    : Instant.now();
-
-            // Record tracking URL if present in webhook
-            if (root.has("tracking_url")) {
-                String trackingUrl = root.path("tracking_url").asText(null);
-                if (trackingUrl != null && !trackingUrl.isBlank()) {
-                    delivery.setTrackingUrl(trackingUrl);
-                    deliveries.save(delivery);
-                }
-            }
-
-            // Record driver details if present in webhook
-            if (root.has("driver")) {
-                JsonNode driver = root.path("driver");
-                String name = driver.path("name").asText(null);
-                String phone = driver.path("phone").asText(null);
-                String vehicle = driver.path("vehicle_number").asText(null);
-                if (name != null) {
-                    eventService.recordDriver(delivery, name, phone, vehicle);
-                }
-            }
-
-            // Record location update if coordinates are present
-            if (root.has("location")) {
-                JsonNode loc = root.path("location");
-                if (loc.has("lat") && loc.has("lng")) {
-                    BigDecimal lat = new BigDecimal(loc.path("lat").asText());
-                    BigDecimal lng = new BigDecimal(loc.path("lng").asText());
-                    Double bearing = loc.has("bearing") ? loc.path("bearing").asDouble() : null;
-                    Double speed = loc.has("speed") ? loc.path("speed").asDouble() : null;
-                    eventService.recordLocation(delivery, lat, lng, bearing, speed, occurredAt);
-                }
-            }
-
-            // Apply lifecycle event via DeliveryEventService (idempotent & out-of-order safe)
-            var event = new DeliveryProvider.ProviderEvent(
-                    eventId != null ? eventId : "pidge_evt_" + deliveryId + "_" + statusStr + "_" + occurredAt.toEpochMilli(),
-                    providerStatus, description, occurredAt);
-
-            String disposition = eventService.apply(delivery, event);
-            log.info("Processed Pidge webhook event {} for delivery {}: disposition={}",
-                    eventId, delivery.getId(), disposition);
-            return true;
+            return process(root);
 
         } catch (Exception ex) {
             log.error("Failed to parse or process Pidge webhook", ex);
             return false;
         }
+    }
+
+    /**
+     * Apply one Pidge order object to the delivery it belongs to. Everything after the signature check: the webhook
+     * calls it with the posted body, and the sandbox advance (D-188) with the order Pidge's dummy GET returned.
+     * Throws on a failure so a caller decides what that means; {@link #handle} turns it into a retry request.
+     *
+     * @return true when handled or deliberately ignored (unknown delivery), false when the object is unusable
+     */
+    @Transactional
+    public boolean process(JsonNode root) {
+        String deliveryId = root.path("id").asText(null);
+        if (deliveryId == null || deliveryId.isBlank() || !root.hasNonNull("status")) {
+            log.warn("Pidge order object missing id or status");
+            return false;
+        }
+        var delivery = deliveries.findByProviderCodeAndProviderDeliveryId(
+                PidgeDeliveryProvider.CODE, deliveryId).orElse(null);
+
+        if (delivery == null) {
+            log.info("Received Pidge webhook for unknown or unlinked delivery {}", deliveryId);
+            return true; // Acknowledge to prevent provider retries
+        }
+
+        var state = PidgeOrderState.parse(deliveryId, root);
+
+        if (state.riderName() != null) {
+            eventService.recordDriver(delivery, state.riderName(), state.riderPhone(), null);
+        }
+        if (state.latitude() != null && state.longitude() != null) {
+            eventService.recordLocation(delivery, state.latitude(), state.longitude(), null, null,
+                    state.locationAt() == null ? Instant.now() : state.locationAt());
+        }
+
+        // Every stage Pidge reports, oldest first, so a delivery that moved several stages between two hits
+        // walks them in order (idempotent and out-of-order safe in DeliveryEventService).
+        var events = new java.util.ArrayList<>(state.events());
+        java.util.Collections.reverse(events);
+        for (var event : events) {
+            String disposition = eventService.apply(delivery, event);
+            log.info("Processed Pidge webhook event {} for delivery {}: disposition={}",
+                    event.providerEventId(), delivery.getId(), disposition);
+        }
+        return true;
     }
 
     /**

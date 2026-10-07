@@ -29,6 +29,7 @@ import java.util.List;
 public class SupplierOrderController {
 
     private final SupplierOrderService supplierOrders;
+    private final com.costonomy.mp.procurement.service.OrderPaymentMethodService paymentMethods;
     private final AlternativeSourcingService alternatives;
 
     @GetMapping("/supplier-stores/{storeId}/orders/pending")
@@ -128,6 +129,19 @@ public class SupplierOrderController {
         return ApiResponse.ok(supplierOrders.cancel(ActorContext.requireUserId(), id,
                 request == null ? null : request.reason(),
                 CancelledBy.RESTAURANT, idempotencyKey));
+    }
+
+    @PostMapping("/supplier-orders/{id}/payment-method")
+    @Operation(
+            summary = "Pay an unpaid card order another way",
+            description = "Restaurant side, only while the order is unpaid. Funds it from the wallet or on credit and "
+                    + "retires the card payment; a card payment already made is refused with 409 (D-186).")
+    public ApiResponse<ProcurementDtos.SupplierOrderResponse> changePaymentMethod(
+            @PathVariable Long id,
+            @RequestBody ProcurementDtos.ChangePaymentMethodRequest request,
+            @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey) {
+        return ApiResponse.ok(paymentMethods.change(ActorContext.requireUserId(), id, request.method(),
+                idempotencyKey));
     }
 
     @PostMapping("/supplier-orders/{id}/supplier-cancel")

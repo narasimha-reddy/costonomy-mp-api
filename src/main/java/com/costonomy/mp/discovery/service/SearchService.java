@@ -59,9 +59,7 @@ public class SearchService {
                     product.getName(), "PRODUCT", product.getId(), null));
         }
 
-        aliases.findAll().stream()
-                .filter(alias -> alias.getNormalizedAlias().startsWith(normalized))
-                .limit(MAX_SUGGESTIONS)
+        aliases.findByPrefix(normalized, PageRequest.of(0, MAX_SUGGESTIONS)).stream()
                 .forEach(alias -> suggestions.putIfAbsent(alias.getAlias(),
                         new DiscoveryDtos.SuggestionResponse(
                                 alias.getAlias(), "ALIAS", alias.getCanonicalProductId(), null)));

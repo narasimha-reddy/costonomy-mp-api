@@ -9,6 +9,8 @@ import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.delivery.domain.*;
 import com.costonomy.mp.delivery.provider.DeliveryProviderException;
+import com.costonomy.mp.delivery.provider.pidge.PidgeProperties;
+import com.costonomy.mp.delivery.provider.pidge.PidgeSandboxStages;
 import com.costonomy.mp.delivery.repository.*;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
 import lombok.RequiredArgsConstructor;
@@ -50,8 +52,12 @@ public class DeliveryService {
     private final DeliveryProviderRegistry registry;
     private final AccessControlService accessControl;
     private final AuditService auditService;
+    private final PidgeProperties pidgeProperties;
 
     /** Doc 06 §8: past this, a position is shown as stale rather than as current. */
+    @Value("${costonomy.mp.delivery.auto-retry.window:PT30M}")
+    private Duration retryWindow = Duration.ofMinutes(30);
+
     @Value("${costonomy.mp.delivery.location-stale-after:60s}")
     private Duration locationStaleAfter;
 
@@ -244,6 +250,7 @@ public class DeliveryService {
 
         if (!outcome.anyServiceable()) {
             delivery.setStatus(DeliveryStatus.QUOTE_FAILED);
+            delivery.markNoPartner(Instant.now());
             if (delivery.isRequiresColdChain()) {
                 delivery.setFailureCode("NO_COLD_CHAIN_CARRIER");
                 delivery.setFailureReason("No delivery partner with verified temperature-controlled transport "
@@ -366,7 +373,9 @@ public class DeliveryService {
      */
     @Transactional
     public DeliveryDtos.DeliveryResponse reassign(Long actorId, Long deliveryId, String reason) {
-        var delivery = loadForEitherSide(actorId, deliveryId);
+        // Locked, so a manual retry and the automatic one (D-185) cannot both book a partner.
+        var delivery = loadLockedForEitherSide(actorId, deliveryId);
+        delivery.setLastRetryAt(Instant.now());
 
         if (delivery.getMode() == DeliveryMode.SUPPLIER_OWN) {
             throw new BusinessException(ErrorCode.DELIVERY_REASSIGNMENT_FAILED,
@@ -384,7 +393,10 @@ public class DeliveryService {
         }
 
         var order = directory.order(delivery.getSupplierOrderId());
-        var tried = booking.triedProviders(deliveryId);
+        // Providers already tried are skipped when a booked partner failed and another is wanted. When nobody holds the
+        // delivery (no partner was found), that skip would rule out the only partner there is, forever: a retry then
+        // asks everyone again, as the automatic retry does (D-185).
+        var tried = isNoPartner(delivery) ? List.<String>of() : booking.triedProviders(deliveryId);
 
         // Stand the current courier down first, so we are not paying two.
         releaseCurrentProvider(delivery, reason == null ? "Reassigned" : reason);
@@ -409,6 +421,103 @@ public class DeliveryService {
                 "Finding another driver");
 
         return toResponse(delivery, order == null ? null : order.orderNumber());
+    }
+
+    // ── No partner found (D-185) ─────────────────────────────────────────
+
+    private static boolean isNoPartner(Delivery delivery) {
+        return delivery.getMode() == DeliveryMode.COSTONOMY
+                && (delivery.getStatus() == DeliveryStatus.QUOTE_FAILED
+                || delivery.getStatus() == DeliveryStatus.PROVIDER_UNAVAILABLE);
+    }
+
+    /**
+     * One automatic retry. Called by the retry job, which has already claimed it. Locks the delivery and checks again,
+     * so a manual retry or a switch that got there first wins; never throws on "still nobody", unlike
+     * {@link #reassign}, which would roll back the attempt it just recorded.
+     */
+    @Transactional
+    public void retryNoPartner(Long deliveryId) {
+        var delivery = deliveries.lockById(deliveryId).orElse(null);
+        if (delivery == null || !isNoPartner(delivery)) {
+            return;
+        }
+        var order = directory.order(delivery.getSupplierOrderId());
+        if (order == null || !"READY_FOR_PICKUP".equals(order.status())) {
+            return;
+        }
+        releaseCurrentProvider(delivery, "Automatic retry");
+        quoteAndBook(delivery, order, null, List.of(), "AUTO_RETRY");
+    }
+
+    /** Offer the supplier delivering it themselves, once. The event tells both sides. */
+    @Transactional
+    public void offerOwnDelivery(Long deliveryId) {
+        var delivery = deliveries.findById(deliveryId).orElse(null);
+        if (delivery == null || deliveries.claimOffer(deliveryId) == 0) {
+            return;
+        }
+        delivery.setOwnDeliveryOfferedAt(Instant.now());
+        timeline.record(delivery, "DeliveryOwnDeliveryOffered", delivery.getStatus(),
+                "No delivery partner found. The supplier can deliver it themselves.");
+    }
+
+    /**
+     * The supplier delivers an order that was sold with Costonomy delivery, because no partner was found in time.
+     *
+     * <p>The same delivery row becomes the supplier's own (D-026, no second row). The delivery charge the buyer
+     * agreed to and paid is unchanged: it is not refunded, re-quoted or asked for again, so no money moves and the
+     * buyer's total is exactly what they were shown. D-145 still refuses a named mode on a request; this is the only
+     * way across, and only once the offer has been made.
+     */
+    @Transactional
+    public DeliveryDtos.DeliveryResponse switchToOwn(Long actorId, Long deliveryId) {
+        var found = deliveries.findById(deliveryId)
+                .orElseThrow(() -> new NotFoundException("Delivery", deliveryId));
+        accessControl.requireScoped(actorId, Permissions.ORDER_READY,
+                ScopeType.SUPPLIER_STORE, found.getSupplierStoreId(), "Delivery");
+
+        // Order first, then delivery; the retry job only ever takes the delivery.
+        directory.lockOrder(found.getSupplierOrderId());
+        var delivery = deliveries.lockById(deliveryId).orElseThrow();
+        if (delivery.getMode() == DeliveryMode.SUPPLIER_OWN) {
+            return toResponse(delivery, null);
+        }
+        if (delivery.getMode() != DeliveryMode.COSTONOMY || !isNoPartner(delivery)) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    delivery.getStatus().isTerminal() ? "This delivery is already " + delivery.getStatus() + "."
+                            : "A delivery partner has been found for this order.");
+        }
+        if (delivery.getOwnDeliveryOfferedAt() == null) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "We're still looking for a delivery partner.");
+        }
+        var order = directory.order(delivery.getSupplierOrderId());
+        if (order == null || !"READY_FOR_PICKUP".equals(order.status())) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "This order isn't ready for pickup.");
+        }
+
+        var pickup = directory.pickupFor(delivery.getSupplierStoreId());
+        releaseCurrentProvider(delivery, "Supplier is delivering");
+        delivery.setMode(DeliveryMode.SUPPLIER_OWN);
+        delivery.setFee(order.deliveryFee() == null ? BigDecimal.ZERO : order.deliveryFee());
+        delivery.setStatus(DeliveryStatus.DRIVER_ASSIGNED);
+        delivery.setAssignedAt(Instant.now());
+        delivery.setDriverName(pickup == null ? null : pickup.contactName());
+        delivery.setDriverPhone(pickup == null ? null : pickup.contactPhone());
+        delivery.setFailureCode(null);
+        delivery.setFailureReason(null);
+        delivery.setNoPartnerSince(null);
+        deliveries.save(delivery);
+        directory.setDeliveryMode(delivery.getSupplierOrderId(), "SUPPLIER_DELIVERY");
+
+        timeline.record(delivery, "DeliverySwitchedToSupplier", DeliveryStatus.DRIVER_ASSIGNED,
+                "The supplier is delivering this order");
+        auditService.record(actorId, null, "DELIVERY_SWITCHED_TO_OWN", "DELIVERY", deliveryId,
+                DeliveryStatus.QUOTE_FAILED.name(), DeliveryStatus.DRIVER_ASSIGNED.name(),
+                "No delivery partner found", "API");
+        return toResponse(delivery, order.orderNumber());
     }
 
     @Transactional
@@ -545,7 +654,7 @@ public class DeliveryService {
         return toResponse(delivery, order == null ? null : order.orderNumber());
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public DeliveryDtos.DeliveryResponse forOrder(Long actorId, Long supplierOrderId) {
         var delivery = deliveries.findBySupplierOrderId(supplierOrderId)
                 .orElseThrow(() -> new NotFoundException("Delivery", supplierOrderId));
@@ -589,6 +698,17 @@ public class DeliveryService {
         throw new NotFoundException("SupplierOrder", orderId);
     }
 
+    private Delivery loadLockedForEitherSide(Long actorId, Long deliveryId) {
+        var delivery = deliveries.lockById(deliveryId)
+                .orElseThrow(() -> new NotFoundException("Delivery", deliveryId));
+        // A missing actor is reserved for trusted system-triggered waterfall reassignments.
+        if (actorId != null) {
+            requireEitherSide(actorId, delivery.getOutletId(),
+                delivery.getSupplierStoreId(), deliveryId);
+        }
+        return delivery;
+    }
+
     private Delivery loadForEitherSide(Long actorId, Long deliveryId) {
         var delivery = deliveries.findById(deliveryId)
                 .orElseThrow(() -> new NotFoundException("Delivery", deliveryId));
@@ -630,6 +750,11 @@ public class DeliveryService {
                 delivery.getRequestedAt(), delivery.getPickedUpAt(), delivery.getDeliveredAt(),
                 delivery.getWeightKg(), delivery.getVolumeCbm(),
                 delivery.getVehicleType() != null ? delivery.getVehicleType().name() : null,
-                appliedEvents(delivery.getId()));
+                appliedEvents(delivery.getId()),
+                isNoPartner(delivery) && delivery.getNoPartnerSince() != null
+                        ? delivery.getNoPartnerSince().plus(retryWindow) : null,
+                isNoPartner(delivery) ? delivery.getNoPartnerSince() : null,
+                isNoPartner(delivery) && delivery.getOwnDeliveryOfferedAt() != null,
+                PidgeSandboxStages.applies(pidgeProperties, delivery));
     }
 }

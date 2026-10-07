@@ -25,6 +25,7 @@ public class AdminDeliveryController {
     private final AdminDeliveryService adminDeliveryService;
     private final DeliveryStatsAggregationService statsAggregationService;
     private final com.costonomy.mp.delivery.service.AdminDeliveryExportService exportService;
+    private final com.costonomy.mp.delivery.provider.pidge.PidgeApiClient pidgeApiClient;
 
     @GetMapping
     @Operation(summary = "List deliveries with pagination and filters",
@@ -177,12 +178,7 @@ public class AdminDeliveryController {
                              "fulfilled|delivered, fulfilled|rto out for delivery, fulfilled|rto delivered.")
     public ApiResponse<Object> simulatePidgeStatus(
             @RequestParam String pidgeDeliveryId,
-            @RequestParam String dummyStatus,
-            @Autowired(required = false) com.costonomy.mp.delivery.provider.pidge.PidgeApiClient pidgeApiClient) {
-        if (pidgeApiClient == null) {
-            throw new com.costonomy.mp.common.error.BusinessException(
-                    com.costonomy.mp.common.error.ErrorCode.INTERNAL_ERROR, "Pidge API client is not configured");
-        }
+            @RequestParam String dummyStatus) {
         return ApiResponse.ok(pidgeApiClient.simulateOrderStatus(pidgeDeliveryId, dummyStatus));
     }
 
@@ -191,13 +187,9 @@ public class AdminDeliveryController {
                description = "Calls Pidge staging dummy webhook trigger endpoint to dispatch a simulated callback event.")
     public ApiResponse<Object> triggerPidgeWebhook(
             @RequestParam String pidgeDeliveryId,
-            @RequestParam String dummyStatus,
-            @Autowired(required = false) com.costonomy.mp.delivery.provider.pidge.PidgeApiClient pidgeApiClient) {
-        if (pidgeApiClient == null) {
-            throw new com.costonomy.mp.common.error.BusinessException(
-                    com.costonomy.mp.common.error.ErrorCode.INTERNAL_ERROR, "Pidge API client is not configured");
-        }
+            @RequestParam String dummyStatus) {
         return ApiResponse.ok(pidgeApiClient.triggerSandboxWebhook(pidgeDeliveryId, dummyStatus));
     }
 }
+
 

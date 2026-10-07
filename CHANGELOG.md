@@ -8,7 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [phase6/known-bugs] - Known bugs (D-135 onward)
 
+### Added
+- Test-only sandbox rider control (D-188): `POST /deliveries/{id}/sandbox/advance` (supplier, sandbox on, Pidge only; 404 elsewhere) moves a Pidge sandbox delivery to its next stage through the webhook's own code; `DeliveryResponse.sandboxControls`.
+- Pay another way (D-186): `POST /supplier-orders/{id}/payment-method` funds an unpaid card order from the wallet or on credit and retires the card payment; the payment-intent read says `switchable`.
+- Deliveries with no partner (D-185): an automatic retry job (every 2 min for 30 min), an offer to the supplier after 45 min, `POST /deliveries/{id}/switch-to-own`, and notifications to both sides. V87.
+
 ### Fixed
+- Permissions (D-182): a role added after the role-code cache loaded is recognised at once; it used to be ignored for up to ten minutes.
+- Delivery (D-187): the no-partner retry and own-delivery offer compare UTC times (they never fired on a non-UTC database); a quote refused for distance no longer stalls the outbox.
+- Delivery with no partner available (D-184): the existing reassign endpoint re-quotes a `QUOTE_FAILED` delivery; test added. The supplier app now offers "Try again".
+- Supplier list filters (D-181): the popular list no longer computes every store's ratings unless a rating filter or sort needs them, and `minRating` outside 1 to 5 is refused on both lists.
 - Sending one request now re-checks its prices like the basket send, and the free-delivery threshold no longer waives Costonomy rider fees or overrides a charge the supplier offered (D-146).
 - A rate-sheet row with no availability no longer puts a sold-out SKU back in stock; an item-variants update no longer relists a delisted SKU or resets GST and stock; a supplier can't list again a SKU Costonomy disabled (D-146).
 - A courier can no longer be booked for a pickup order, or for an order the supplier is delivering themselves: a delivery request used to override the order's own mode (D-145).
@@ -17,6 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - A basket can no longer end up with two drafts for one supplier, and adding, removing and sending now take turns on the draft, so a simultaneous add and send, or removal and add, loses no line. Removed lines and emptied drafts are audited (D-137).
 
 ### Added
+- Sort (best value, lowest price, nearest, top rated) and filters (covers my quantity, open now, distance) on a product's supplier comparison. Filters apply after scoring so they never re-rank the rest, and `hiddenByFilters` says how many were removed (D-183).
+- Database quick wins from the audit (D-182): indexes for the queries that scanned growing tables (V86), a nightly batched purge of rows that only grew (idempotency records, published outbox events, old live locations, expired refresh tokens and OTP challenges), single-statement realtime cleanup, an indexed typeahead alias query, an in-memory role-code cache for permission checks, and a larger connection pool (30) with max-lifetime and leak detection.
+- Supplier directory and popular suppliers now support filters (`radiusKm`, `openNow`, `minRating`) and sort (`sort=nearest`, `sort=rating`). Unknown sort returns 422 `VALIDATION_ERROR`. Filters and sorting are evaluated server-side before pagination/clamping (D-181).
 - A restaurant is warned when a supplier's own delivery charge is high (at least 10% of the goods and at least ₹100, both configurable). A prompt, not a limit (D-144).
 - A restaurant says, for each supplier's request, whether it wants delivery or will collect (default delivery). The supplier answers knowing it; a pickup needs no delivery offer, and a supplier can say "I can't deliver this order", leaving pickup only (D-143).
 - As soon as possible is a delivery time (no slot, no day). A delivery slot is now checked when the order is created (the store's, active, not started, free), and a slot that has already started today is not offered (D-142).
