@@ -6,6 +6,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * Port adapter implementing {@link DeliveryProvider} for Pidge Smart Dispatch.
  */
@@ -17,7 +21,16 @@ public class PidgeDeliveryProvider implements DeliveryProvider {
 
     public static final String CODE = "PIDGE";
 
+    /** How long a polled order state may answer {@link #location}. The poller asks right after {@link #status}. */
+    static final Duration STATE_TTL = Duration.ofMinutes(2);
+
     private final PidgeApiClient client;
+
+    /** The last order state {@link #status} fetched per Pidge order, so {@link #location} needs no second call. */
+    private final ConcurrentHashMap<String, Seen> lastState = new ConcurrentHashMap<>();
+
+    private record Seen(PidgeOrderState state, Instant at) {
+    }
 
     @Override
     public String code() {
@@ -36,13 +49,27 @@ public class PidgeDeliveryProvider implements DeliveryProvider {
 
     @Override
     public ProviderDelivery status(String providerDeliveryId) {
-        return client.getStatus(providerDeliveryId);
+        var state = client.getOrderState(providerDeliveryId);
+        var now = Instant.now();
+        // Bounded: anything past the TTL could not answer location() anyway.
+        lastState.values().removeIf(seen -> seen.at().plus(STATE_TTL).isBefore(now));
+        lastState.put(providerDeliveryId, new Seen(state, now));
+        return PidgeApiClient.toProviderDelivery(providerDeliveryId, state);
     }
 
     @Override
     public Location location(String providerDeliveryId) {
-        // Pidge coordinates are delivered in webhook milestone events / live tracking URLs.
-        return null;
+        // The position of the latest log that carried one, from the state status() just fetched. Pidge logs a
+        // position at milestones, so a polled fix moves per stage; live positions between them need the webhook.
+        var seen = lastState.get(providerDeliveryId);
+        if (seen == null || seen.at().plus(STATE_TTL).isBefore(Instant.now())) {
+            return null;
+        }
+        var state = seen.state();
+        if (state.latitude() == null || state.longitude() == null) {
+            return null;
+        }
+        return new Location(state.latitude(), state.longitude(), null, null, state.locationAt());
     }
 
     @Override
