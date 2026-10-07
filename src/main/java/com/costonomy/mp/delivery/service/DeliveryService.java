@@ -755,6 +755,13 @@ public class DeliveryService {
                         ? delivery.getNoPartnerSince().plus(retryWindow) : null,
                 isNoPartner(delivery) ? delivery.getNoPartnerSince() : null,
                 isNoPartner(delivery) && delivery.getOwnDeliveryOfferedAt() != null,
-                PidgeSandboxStages.applies(pidgeProperties, delivery));
+                PidgeSandboxStages.applies(pidgeProperties, delivery),
+                latLng(delivery.getPickupLatitude(), delivery.getPickupLongitude()),
+                latLng(delivery.getDropLatitude(), delivery.getDropLongitude()));
+    }
+
+    private static DeliveryDtos.LatLngResponse latLng(BigDecimal latitude, BigDecimal longitude) {
+        return latitude == null || longitude == null
+                ? null : new DeliveryDtos.LatLngResponse(latitude, longitude);
     }
 }

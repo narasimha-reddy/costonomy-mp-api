@@ -23,6 +23,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -682,6 +683,43 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
             // The position is still returned — the app draws it greyed out rather
             // than showing an empty map.
             assertThat(stale.get("location").isNull()).isFalse();
+        }
+
+        @Test
+        @DisplayName("delivery response carries pickup and drop coordinates")
+        void deliveryResponseCarriesPickupAndDropCoordinates() throws Exception {
+            var order = readyOrder();
+            var delivery = requestDelivery(order);
+            long deliveryId = delivery.get("id").asLong();
+
+            // Pickup is the supplier store, drop is the buyer outlet (see newSeller, newBuyer).
+            for (var token : List.of(order.buyer().token(), order.seller().token())) {
+                var view = api.get(token, "/api/v1/deliveries/" + deliveryId).at("/data");
+                assertThat(view.at("/pickupLocation/latitude").decimalValue())
+                        .isEqualByComparingTo("17.4399");
+                assertThat(view.at("/pickupLocation/longitude").decimalValue())
+                        .isEqualByComparingTo("78.4983");
+                assertThat(view.at("/dropLocation/latitude").decimalValue())
+                        .isEqualByComparingTo("17.4156");
+                assertThat(view.at("/dropLocation/longitude").decimalValue())
+                        .isEqualByComparingTo("78.4347");
+            }
+        }
+
+        @Test
+        @DisplayName("pickup and drop coordinates are null when not stored")
+        void coordinatesAreNullWhenNotStored() throws Exception {
+            var order = readyOrder();
+            var delivery = requestDelivery(order);
+            long deliveryId = delivery.get("id").asLong();
+
+            // Drop has no coordinates at all; pickup has only half a pair.
+            jdbc.update("update delivery set drop_latitude = null, drop_longitude = null, "
+                    + "pickup_longitude = null where id = ?", deliveryId);
+
+            var view = tenantView(order, deliveryId);
+            assertThat(view.get("pickupLocation").isNull()).isTrue();
+            assertThat(view.get("dropLocation").isNull()).isTrue();
         }
 
         @Test

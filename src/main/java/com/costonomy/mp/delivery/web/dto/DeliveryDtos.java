@@ -83,7 +83,15 @@ public final class DeliveryDtos {
             /** The supplier may now choose to deliver this order themselves (D-185). */
             boolean canSwitchToOwn,
             /** Test-only (D-188): the supplier may move a sandbox rider to the next step. Never names the provider. */
-            boolean sandboxControls) {
+            boolean sandboxControls,
+            /** Supplier store coordinates. Null unless both latitude and longitude are stored. */
+            LatLngResponse pickupLocation,
+            /** Buyer outlet coordinates. Null unless both latitude and longitude are stored. */
+            LatLngResponse dropLocation) {
+    }
+
+    /** A fixed point (pickup or drop), unlike {@link LocationResponse} which is a rider fix. */
+    public record LatLngResponse(BigDecimal latitude, BigDecimal longitude) {
     }
 
     public record LocationResponse(
