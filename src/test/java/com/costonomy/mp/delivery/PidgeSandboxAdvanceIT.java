@@ -2,6 +2,9 @@ package com.costonomy.mp.delivery;
 
 import com.costonomy.mp.delivery.provider.pidge.PidgeApiClient;
 import com.costonomy.mp.delivery.provider.pidge.PidgeProperties;
+import com.costonomy.mp.delivery.provider.pidge.PidgeSandboxAutoAdvanceJob;
+import com.costonomy.mp.delivery.provider.pidge.PidgeSandboxService;
+import com.costonomy.mp.delivery.repository.DeliveryRepository;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
@@ -17,6 +20,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.UUID;
 
@@ -35,6 +42,8 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private PidgeProperties properties;
+    @Autowired private DeliveryRepository deliveries;
+    @Autowired private PidgeSandboxService sandboxService;
     @MockBean private PidgeApiClient pidge;
 
     private ApiClient api;
@@ -50,6 +59,7 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
     @AfterEach
     void tearDown() {
         properties.setSandbox(false);
+        properties.setSandboxAutoAdvance(null);
     }
 
     private Long seed(String providerDeliveryId, String mode, String status) throws Exception {
@@ -184,5 +194,62 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
 
         assertThat(advance(supplierToken, id)).isEqualTo(409);
         assertThat(api.get(supplierToken, "/api/v1/deliveries/" + id).at("/data/sandboxControls").asBoolean()).isFalse();
+    }
+
+    /** A clock the test moves by hand, so the job's interval can pass without waiting. */
+    private static final class TestClock extends Clock {
+        private Instant now = Instant.now();
+
+        void advance(long seconds) {
+            now = now.plusSeconds(seconds);
+        }
+
+        @Override public java.time.ZoneId getZone() { return ZoneOffset.UTC; }
+        @Override public Clock withZone(java.time.ZoneId zone) { return this; }
+        @Override public Instant instant() { return now; }
+    }
+
+    @Test
+    void autoAdvanceMovesTheDeliveryOnceTheIntervalHasPassed() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "PROVIDER_SELECTED");
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|out for pickup"))).thenReturn(dummyOrder(pid));
+        properties.setSandboxAutoAdvance(Duration.ofSeconds(30));
+        var clock = new TestClock();
+        var job = new PidgeSandboxAutoAdvanceJob(deliveries, sandboxService, properties, clock);
+
+        assertThat(api.get(supplierToken, "/api/v1/deliveries/" + id).at("/data/sandboxAutoAdvanceSeconds").asInt())
+                .isEqualTo(30);
+
+        job.runOnce();
+        clock.advance(29);
+        job.runOnce();
+        assertThat(jdbc.queryForObject("select status from delivery where id = ?", String.class, id))
+                .isEqualTo("PROVIDER_SELECTED");
+
+        clock.advance(1);
+        job.runOnce();
+        assertThat(jdbc.queryForObject("select status from delivery where id = ?", String.class, id))
+                .isEqualTo("DRIVER_ASSIGNED");
+        assertThat(jdbc.queryForObject("select driver_name from delivery where id = ?", String.class, id))
+                .isEqualTo("Sandbox Sunil");
+    }
+
+    @Test
+    void autoAdvanceDoesNothingWhenThePropertyIsOff() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "PROVIDER_SELECTED");
+        var clock = new TestClock();
+        var job = new PidgeSandboxAutoAdvanceJob(deliveries, sandboxService, properties, clock);
+
+        job.runOnce();
+        clock.advance(3600);
+        job.runOnce();
+
+        verify(pidge, never()).simulateOrderStatus(anyString(), anyString());
+        assertThat(jdbc.queryForObject("select status from delivery where id = ?", String.class, id))
+                .isEqualTo("PROVIDER_SELECTED");
+        assertThat(api.get(supplierToken, "/api/v1/deliveries/" + id).at("/data/sandboxAutoAdvanceSeconds").isNull())
+                .isTrue();
     }
 }

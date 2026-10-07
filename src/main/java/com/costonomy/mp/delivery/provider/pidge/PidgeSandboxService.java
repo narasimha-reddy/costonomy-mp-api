@@ -42,7 +42,27 @@ public class PidgeSandboxService {
                 .orElseThrow(() -> new NotFoundException("Delivery", deliveryId));
         accessControl.requireScoped(actorId, Permissions.ORDER_READY,
                 ScopeType.SUPPLIER_STORE, delivery.getSupplierStoreId(), "Delivery");
+        applyNextStage(delivery);
+        return deliveryService.get(actorId, deliveryId);
+    }
 
+    /**
+     * Moves the delivery one stage with nobody acting: the auto-advance job's entry point (D-189).
+     *
+     * @return true when the delivery moved; false when it is not one the sandbox can move (sandbox off, not Pidge's,
+     *         supplier's own, or no next stage). A failed call to Pidge throws.
+     */
+    public boolean advanceAsSystem(long deliveryId) {
+        var delivery = deliveries.findById(deliveryId).orElse(null);
+        if (delivery == null || !PidgeSandboxStages.applies(properties, delivery)) {
+            return false;
+        }
+        applyNextStage(delivery);
+        return true;
+    }
+
+    private void applyNextStage(com.costonomy.mp.delivery.domain.Delivery delivery) {
+        long deliveryId = delivery.getId();
         // With the sandbox off this route does not exist, so production never reveals it.
         if (!properties.isSandbox()) {
             throw new NotFoundException("Delivery", deliveryId);
@@ -67,6 +87,5 @@ public class PidgeSandboxService {
         }
         log.info("Pidge sandbox advance: delivery {} {} -> '{}'", deliveryId, delivery.getStatus(), dummy);
         webhook.process(order);
-        return deliveryService.get(actorId, deliveryId);
     }
 }

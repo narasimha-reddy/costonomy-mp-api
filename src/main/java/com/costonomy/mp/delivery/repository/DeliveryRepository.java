@@ -24,6 +24,11 @@ public interface DeliveryRepository extends JpaRepository<Delivery, Long> {
     List<Delivery> findByStatusAndAssignmentDeadlineBefore(
             DeliveryStatus status, java.time.Instant now);
 
+    /** Pidge deliveries of ours in these statuses created since the cutoff; the sandbox auto-advance job's sweep (D-189). */
+    List<Delivery> findByProviderCodeAndModeAndProviderDeliveryIdIsNotNullAndStatusInAndCreatedAtAfter(
+            String providerCode, com.costonomy.mp.delivery.domain.DeliveryMode mode,
+            List<DeliveryStatus> statuses, java.time.Instant createdAfter);
+
     List<Delivery> findByOutletIdOrderByCreatedAtDesc(Long outletId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

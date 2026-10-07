@@ -6644,3 +6644,14 @@ The Pidge sandbox has no riders, so a booking never moves on its own and the pro
 3. **Pidge's own dummy endpoint, then the webhook's own code.** The current status picks the next stage (`PROVIDER_SELECTED` to `fulfilled|out for pickup`, `DRIVER_ASSIGNED` to `reached pickup`, `DRIVER_AT_PICKUP` to `picked up`, `PICKED_UP` to `ofd`, `IN_TRANSIT` to `reached delivery`, `ARRIVED_AT_DESTINATION` to `delivered`). `PidgeApiClient.simulateOrderStatus` returns the order object (`data`), which goes through `PidgeWebhookService.process(JsonNode)`, the part of the webhook after its signature check. No signature is faked and nothing loops through HTTP, so the rider, position, delivery events and the order's own transitions are exactly what a real webhook would do. No ETA is invented.
 4. **`DeliveryResponse.sandboxControls`** is true only for a Pidge delivery in COSTONOMY mode, with the sandbox on and a next stage. It never names the provider; the app shows it to the supplier only, as a "Test mode" card.
 5. **Tests.** `PidgeSandboxAdvanceIT` (advance to DRIVER_ASSIGNED with the dummy rider's name; buyer 404; sandbox off 404; own delivery 409; terminal 409; the flag in each case).
+
+## D-189 — Pidge sandbox deliveries can move on their own, test only
+
+**Why.** Pidge's sandbox has no riders, so a booking only moves when something calls its dummy endpoint (D-188). Testers wanted to watch the whole flow without tapping "next step" at every stage.
+
+**How.**
+1. `PidgeSandboxAutoAdvanceJob` runs every 5 seconds under ShedLock (`pidge-sandbox-auto-advance`). It looks at our own Pidge deliveries (COSTONOMY mode, booked with Pidge, created in the last 24 hours, in a status that has a next stage).
+2. How long a delivery has sat in a status is kept in memory, from the first sweep that saw it there, on an injectable clock. `updated_at` is not used (the poller refreshes it) and neither are event times (the sandbox invents them). A restart only restarts the timers.
+3. Once a delivery has sat in one status for `costonomy.mp.pidge.sandbox-auto-advance` or longer, the job calls `PidgeSandboxService.advanceAsSystem`, the same code as the D-188 route after its permission check. One delivery failing is logged and does not stop the others.
+4. Off by default. It acts only when `sandbox` is on and the interval is set and positive. Production runs with the sandbox off, so it never does anything there.
+5. `DeliveryResponse.sandboxAutoAdvanceSeconds` tells the app the interval (null when off), so the test card can say so.

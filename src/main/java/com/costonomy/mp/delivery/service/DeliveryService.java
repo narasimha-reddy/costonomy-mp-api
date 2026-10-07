@@ -737,6 +737,7 @@ public class DeliveryService {
             stale = age > locationStaleAfter.getSeconds();
         }
 
+        boolean sandboxControls = PidgeSandboxStages.applies(pidgeProperties, delivery);
         return new DeliveryDtos.DeliveryResponse(
                 delivery.getId(), delivery.getSupplierOrderId(), orderNumber,
                 delivery.getMode(), delivery.getStatus(), delivery.getFee(),
@@ -755,6 +756,8 @@ public class DeliveryService {
                         ? delivery.getNoPartnerSince().plus(retryWindow) : null,
                 isNoPartner(delivery) ? delivery.getNoPartnerSince() : null,
                 isNoPartner(delivery) && delivery.getOwnDeliveryOfferedAt() != null,
-                PidgeSandboxStages.applies(pidgeProperties, delivery));
+                sandboxControls,
+                sandboxControls && pidgeProperties.isSandboxAutoAdvanceActive()
+                        ? (int) pidgeProperties.getSandboxAutoAdvance().toSeconds() : null);
     }
 }

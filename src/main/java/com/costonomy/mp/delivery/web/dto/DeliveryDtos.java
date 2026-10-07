@@ -83,7 +83,9 @@ public final class DeliveryDtos {
             /** The supplier may now choose to deliver this order themselves (D-185). */
             boolean canSwitchToOwn,
             /** Test-only (D-188): the supplier may move a sandbox rider to the next step. Never names the provider. */
-            boolean sandboxControls) {
+            boolean sandboxControls,
+            /** Test-only (D-189): seconds between automatic moves when {@code sandboxControls} and auto-advance is on. */
+            Integer sandboxAutoAdvanceSeconds) {
     }
 
     public record LocationResponse(
