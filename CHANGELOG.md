@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - Test-only sandbox rider control (D-188): `POST /deliveries/{id}/sandbox/advance` (supplier, sandbox on, Pidge only; 404 elsewhere) moves a Pidge sandbox delivery to its next stage through the webhook's own code; `DeliveryResponse.sandboxControls`.
+- [Credit] The supplier-order response gains `creditDueDate`, `creditSettledAt` and `creditDueState` (all nullable, additive): the earliest unsettled due date and its state while a credit order is owed, the settled instant once it is settled, null for non-credit orders. The outlet's order list reads them in one query (D-189).
 - Pay another way (D-186): `POST /supplier-orders/{id}/payment-method` funds an unpaid card order from the wallet or on credit and retires the card payment; the payment-intent read says `switchable`.
 - Deliveries with no partner (D-185): an automatic retry job (every 2 min for 30 min), an offer to the supplier after 45 min, `POST /deliveries/{id}/switch-to-own`, and notifications to both sides. V87.
 

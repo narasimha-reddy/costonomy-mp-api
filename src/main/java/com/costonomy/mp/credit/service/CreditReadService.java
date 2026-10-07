@@ -64,6 +64,57 @@ public class CreditReadService {
     private final CreditDirectory directory;
     private final AccessControlService accessControl;
 
+    // ── Order bill ───────────────────────────────────────────────────────
+
+    /**
+     * What an order's bill says about its credit: when it is due, or when it was settled. Per order, absent for an
+     * order with no invoice (not on credit, or not drawn down yet).
+     *
+     * @param dueDate   the earliest due date among the order's unsettled invoices; null once all are settled
+     * @param settledAt when the last invoice settled; null while any is still owed
+     * @param dueState  {@link com.costonomy.mp.credit.domain.CreditDueState} of the earliest unsettled invoice, or of
+     *                  the last settled one (PAID, WRITTEN_OFF) once nothing is owed
+     */
+    public record OrderCredit(LocalDate dueDate, Instant settledAt, String dueState) {
+    }
+
+    /**
+     * {@link OrderCredit} for several orders in one query, so a list of orders costs one read however long it is.
+     * Settled means what {@link CreditInvoiceStatus#isSettled()} says, so credited or written-off amounts count only
+     * when the invoice itself is settled. Read-only and unscoped: the caller has already checked who may see the orders.
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, OrderCredit> orderCredit(java.util.Collection<Long> orderIds) {
+        Map<Long, OrderCredit> out = new HashMap<>();
+        if (orderIds == null || orderIds.isEmpty()) {
+            return out;
+        }
+        LocalDate today = invoiceService.today();
+        Map<Long, List<CreditInvoice>> byOrder = invoices.findBySupplierOrderIdIn(orderIds).stream()
+                .collect(Collectors.groupingBy(CreditInvoice::getSupplierOrderId));
+        byOrder.forEach((orderId, list) -> {
+            var open = list.stream().filter(i -> !i.getStatus().isSettled())
+                    .min(java.util.Comparator.comparing(CreditInvoice::getDueDate)
+                            .thenComparing(CreditInvoice::getId));
+            if (open.isPresent()) {
+                var i = open.get();
+                out.put(orderId, new OrderCredit(i.getDueDate(), null,
+                        com.costonomy.mp.credit.domain.CreditDueState
+                                .of(i.getStatus(), i.getDueDate(), i.getOverdueAfter(), today).name()));
+                return;
+            }
+            var last = list.stream()
+                    .max(java.util.Comparator.comparing(
+                            (CreditInvoice i) -> i.getSettledAt() != null ? i.getSettledAt() : i.getUpdatedAt())
+                            .thenComparing(CreditInvoice::getId));
+            last.ifPresent(i -> out.put(orderId, new OrderCredit(null,
+                    i.getSettledAt() != null ? i.getSettledAt() : i.getUpdatedAt(),
+                    com.costonomy.mp.credit.domain.CreditDueState
+                            .of(i.getStatus(), i.getDueDate(), i.getOverdueAfter(), today).name())));
+        });
+        return out;
+    }
+
     // ── Home attention ───────────────────────────────────────────────────
 
     /** Two existence checks, no amounts: Home shows a dot, not a balance. */
