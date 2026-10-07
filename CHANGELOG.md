@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [phase6/known-bugs] - Known bugs (D-135 onward)
 
 ### Added
+- Test-only sandbox rider control (D-154): `POST /deliveries/{id}/sandbox/advance` (supplier, sandbox on, Pidge only; 404 elsewhere) moves a Pidge sandbox delivery to its next stage through the webhook's own code; `DeliveryResponse.sandboxControls`.
 - Pay another way (D-152): `POST /supplier-orders/{id}/payment-method` funds an unpaid card order from the wallet or on credit and retires the card payment; the payment-intent read says `switchable`.
 - Deliveries with no partner (D-151): an automatic retry job (every 2 min for 30 min), an offer to the supplier after 45 min, `POST /deliveries/{id}/switch-to-own`, and notifications to both sides. V77.
 

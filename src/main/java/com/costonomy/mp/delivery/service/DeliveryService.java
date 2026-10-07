@@ -9,6 +9,8 @@ import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.delivery.domain.*;
 import com.costonomy.mp.delivery.provider.DeliveryProviderException;
+import com.costonomy.mp.delivery.provider.pidge.PidgeProperties;
+import com.costonomy.mp.delivery.provider.pidge.PidgeSandboxStages;
 import com.costonomy.mp.delivery.repository.*;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
 import lombok.RequiredArgsConstructor;
@@ -50,6 +52,7 @@ public class DeliveryService {
     private final DeliveryProviderRegistry registry;
     private final AccessControlService accessControl;
     private final AuditService auditService;
+    private final PidgeProperties pidgeProperties;
 
     /** Doc 06 §8: past this, a position is shown as stale rather than as current. */
     @Value("${costonomy.mp.delivery.auto-retry.window:PT30M}")
@@ -751,6 +754,7 @@ public class DeliveryService {
                 isNoPartner(delivery) && delivery.getNoPartnerSince() != null
                         ? delivery.getNoPartnerSince().plus(retryWindow) : null,
                 isNoPartner(delivery) ? delivery.getNoPartnerSince() : null,
-                isNoPartner(delivery) && delivery.getOwnDeliveryOfferedAt() != null);
+                isNoPartner(delivery) && delivery.getOwnDeliveryOfferedAt() != null,
+                PidgeSandboxStages.applies(pidgeProperties, delivery));
     }
 }

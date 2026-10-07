@@ -3,6 +3,7 @@ package com.costonomy.mp.delivery.web;
 import com.costonomy.mp.common.api.ApiResponse;
 import com.costonomy.mp.common.idempotency.IdempotencyService;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
+import com.costonomy.mp.delivery.provider.pidge.PidgeSandboxService;
 import com.costonomy.mp.delivery.service.DeliveryService;
 import com.costonomy.mp.delivery.service.OutletDeliveryRadarService;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
@@ -32,6 +33,7 @@ public class DeliveryController {
     private final DeliveryService deliveries;
     private final IdempotencyService idempotency;
     private final OutletDeliveryRadarService radarService;
+    private final PidgeSandboxService sandbox;
 
     @PostMapping("/supplier-orders/{orderId}/delivery")
     @Operation(
@@ -131,6 +133,20 @@ public class DeliveryController {
                 Map.of("deliveryId", id),
                 DeliveryDtos.DeliveryResponse.class,
                 () -> deliveries.switchToOwn(actorId, id)));
+    }
+
+    @PostMapping("/deliveries/{id}/sandbox/advance")
+    @Operation(summary = "Test only: move a sandbox rider to the next step",
+            description = "Supplier only, and only for a Pidge delivery while the Pidge sandbox is on (D-154); "
+                    + "anywhere else it does not exist (404). Applies Pidge's own dummy stage through the webhook's code path.")
+    public ApiResponse<DeliveryDtos.DeliveryResponse> sandboxAdvance(
+            @PathVariable Long id,
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(idempotency.execute(actorId, "delivery.sandboxAdvance", idempotencyKey,
+                Map.of("deliveryId", id),
+                DeliveryDtos.DeliveryResponse.class,
+                () -> sandbox.advance(actorId, id)));
     }
 
     // ── Supplier own delivery ────────────────────────────────────────────

@@ -81,7 +81,9 @@ public final class DeliveryDtos {
             /** When the search for a partner began; with {@code retryUntil} it is the span a progress bar shows. */
             Instant searchStartedAt,
             /** The supplier may now choose to deliver this order themselves (D-151). */
-            boolean canSwitchToOwn) {
+            boolean canSwitchToOwn,
+            /** Test-only (D-154): the supplier may move a sandbox rider to the next step. Never names the provider. */
+            boolean sandboxControls) {
     }
 
     public record LocationResponse(
