@@ -522,7 +522,7 @@ public final class ProcurementDtos {
             @Valid List<RecordDispatchWeightItem> weights) {
     }
 
-    /** Pay an unpaid card order another way (D-152): {@code WALLET} or {@code CREDIT}. */
+    /** Pay an unpaid card order another way (D-186): {@code WALLET} or {@code CREDIT}. */
     public record ChangePaymentMethodRequest(String method) {
     }
 }

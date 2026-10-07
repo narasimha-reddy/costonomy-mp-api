@@ -12,7 +12,7 @@ import java.time.Duration;
 
 /**
  * Looks again for a delivery partner on deliveries nobody could take, and then offers the supplier delivering the
- * order themselves (D-151).
+ * order themselves (D-185).
  *
  * <p>Not transactional, on purpose: a retry calls providers, so each one runs in its own transaction, after its claim
  * has committed (see {@link DeliveryRetryClaims}). One failing delivery never stops the others.

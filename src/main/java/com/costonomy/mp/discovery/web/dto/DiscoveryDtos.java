@@ -170,7 +170,7 @@ public final class DiscoveryDtos {
             List<RecommendedOffer> offers,
             String unservedReason,
             /**
-             * Suppliers that could serve this outlet but were left out by the filters the caller passed (D-149).
+             * Suppliers that could serve this outlet but were left out by the filters the caller passed (D-183).
              * Lets the screen say "3 more hidden by your filters" instead of showing a list that shrank for no
              * visible reason. Zero when no filter was passed.
              */

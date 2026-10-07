@@ -373,7 +373,7 @@ public class DeliveryService {
      */
     @Transactional
     public DeliveryDtos.DeliveryResponse reassign(Long actorId, Long deliveryId, String reason) {
-        // Locked, so a manual retry and the automatic one (D-151) cannot both book a partner.
+        // Locked, so a manual retry and the automatic one (D-185) cannot both book a partner.
         var delivery = loadLockedForEitherSide(actorId, deliveryId);
         delivery.setLastRetryAt(Instant.now());
 
@@ -395,7 +395,7 @@ public class DeliveryService {
         var order = directory.order(delivery.getSupplierOrderId());
         // Providers already tried are skipped when a booked partner failed and another is wanted. When nobody holds the
         // delivery (no partner was found), that skip would rule out the only partner there is, forever: a retry then
-        // asks everyone again, as the automatic retry does (D-151).
+        // asks everyone again, as the automatic retry does (D-185).
         var tried = isNoPartner(delivery) ? List.<String>of() : booking.triedProviders(deliveryId);
 
         // Stand the current courier down first, so we are not paying two.
@@ -423,7 +423,7 @@ public class DeliveryService {
         return toResponse(delivery, order == null ? null : order.orderNumber());
     }
 
-    // ── No partner found (D-151) ─────────────────────────────────────────
+    // ── No partner found (D-185) ─────────────────────────────────────────
 
     private static boolean isNoPartner(Delivery delivery) {
         return delivery.getMode() == DeliveryMode.COSTONOMY

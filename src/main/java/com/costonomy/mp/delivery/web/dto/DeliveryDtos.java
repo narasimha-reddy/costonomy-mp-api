@@ -76,13 +76,13 @@ public final class DeliveryDtos {
             BigDecimal volumeCbm,
             String vehicleType,
             List<EventResponse> timeline,
-            /** While no partner is found: when the automatic retries stop. Null otherwise (D-151). */
+            /** While no partner is found: when the automatic retries stop. Null otherwise (D-185). */
             Instant retryUntil,
             /** When the search for a partner began; with {@code retryUntil} it is the span a progress bar shows. */
             Instant searchStartedAt,
-            /** The supplier may now choose to deliver this order themselves (D-151). */
+            /** The supplier may now choose to deliver this order themselves (D-185). */
             boolean canSwitchToOwn,
-            /** Test-only (D-154): the supplier may move a sandbox rider to the next step. Never names the provider. */
+            /** Test-only (D-188): the supplier may move a sandbox rider to the next step. Never names the provider. */
             boolean sandboxControls) {
     }
 

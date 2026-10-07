@@ -213,7 +213,7 @@ public class DiscoveryController {
                     `effectiveTotal` is item value plus GST. Delivery is not included —
                     it is not quoted until a provider is selected after Ready for Pickup.
 
-                    Optional choices (D-149): `sort` = `best_value` (default) | `price` | `nearest` | `rating`;
+                    Optional choices (D-183): `sort` = `best_value` (default) | `price` | `nearest` | `rating`;
                     filters `coversQuantity`, `openNow`, `radiusKm`. Filters apply after scoring, so they remove
                     cards without re-ranking the rest, and `hiddenByFilters` says how many they removed.
                     """)

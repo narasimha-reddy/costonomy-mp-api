@@ -114,7 +114,7 @@ public class PopularSupplierService {
         var storeIdsAll = stores.stream().map(StoreRow::id).toList();
         var storeInfo = directory.stores(storeIdsAll);
         // Ratings are an all-time aggregate over order history. They are needed for every store only to filter or sort
-        // by rating; otherwise they are fetched for the page that is returned (D-147).
+        // by rating; otherwise they are fetched for the page that is returned (D-181).
         boolean needsRatings = minRating != null || "rating".equals(effectiveSort);
         var ratingsAll = needsRatings ? performance.forStores(storeIdsAll) : null;
 

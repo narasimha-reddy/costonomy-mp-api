@@ -14,7 +14,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** The nightly purge removes what only grows, in batches, and keeps what must stay (D-148). */
+/** The nightly purge removes what only grows, in batches, and keeps what must stay (D-182). */
 class RetentionPurgerIT extends AbstractIntegrationTest {
 
     @Autowired private RetentionPurger purger;

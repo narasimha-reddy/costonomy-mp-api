@@ -549,7 +549,7 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
     class Reassignment {
 
         @Test
-        @DisplayName("a delivery with no partner available is retried on the same delivery once one is back (D-150)")
+        @DisplayName("a delivery with no partner available is retried on the same delivery once one is back (D-184)")
         void failedQuoteIsRetried() throws Exception {
             var order = readyOrder();
             express.arm(MockDeliveryProvider.Failure.QUOTE_FAILS);
@@ -858,7 +858,7 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
         }
     }
 
-    // ── No partner found: automatic retry, then delivering it yourself (D-151) ──
+    // ── No partner found: automatic retry, then delivering it yourself (D-185) ──
 
     @Nested
     @DisplayName("no partner found")

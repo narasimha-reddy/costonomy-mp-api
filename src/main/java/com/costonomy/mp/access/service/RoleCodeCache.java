@@ -10,7 +10,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Role id to role code (D-148). The roles are seeded reference data nothing edits at runtime, but every permission
+ * Role id to role code (D-182). The roles are seeded reference data nothing edits at runtime, but every permission
  * check used to load all of them ({@code roleRepository.findAll()}), and most endpoints check twice.
  *
  * <p><b>This is reference data, not an authorization decision.</b> Who holds which role in which scope is still read
@@ -40,21 +40,39 @@ public class RoleCodeCache {
         this.clock = clock;
     }
 
+    /**
+     * The code of one role. A grant naming a role the snapshot doesn't know means a role was added since it was
+     * loaded (a grant can't name a role that doesn't exist), so the snapshot is reloaded once rather than the grant
+     * being ignored until the TTL runs out.
+     */
+    public String codeOf(Long roleId) {
+        String code = codesById().get(roleId);
+        if (code == null && roleId != null) {
+            code = load(clock.instant()).get(roleId);
+        }
+        return code;
+    }
+
     /** An immutable map of role id to code. */
     public Map<Long, String> codesById() {
         Snapshot current = snapshot;
         Instant now = clock.instant();
         if (current == null || current.loadedAt().plus(TTL).isBefore(now)) {
-            var loaded = new HashMap<Long, String>();
-            roles.findAll().forEach(role -> loaded.put(role.getId(), role.getCode()));
-            // An empty result is not kept: roles are seeded by Flyway, and an empty map cached while a migration was
-            // still running would deny everything for ten minutes (the reason RolePermissionCatalog loads lazily).
-            if (loaded.isEmpty()) {
-                return Map.of();
-            }
-            current = new Snapshot(Map.copyOf(loaded), now);
-            snapshot = current;
+            return load(now);
         }
+        return current.codes();
+    }
+
+    private Map<Long, String> load(Instant now) {
+        var loaded = new HashMap<Long, String>();
+        roles.findAll().forEach(role -> loaded.put(role.getId(), role.getCode()));
+        // An empty result is not kept: roles are seeded by Flyway, and an empty map cached while a migration was
+        // still running would deny everything for ten minutes (the reason RolePermissionCatalog loads lazily).
+        if (loaded.isEmpty()) {
+            return Map.of();
+        }
+        var current = new Snapshot(Map.copyOf(loaded), now);
+        snapshot = current;
         return current.codes();
     }
 

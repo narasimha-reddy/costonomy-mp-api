@@ -135,7 +135,7 @@ public class SupplierOrderController {
     @Operation(
             summary = "Pay an unpaid card order another way",
             description = "Restaurant side, only while the order is unpaid. Funds it from the wallet or on credit and "
-                    + "retires the card payment; a card payment already made is refused with 409 (D-152).")
+                    + "retires the card payment; a card payment already made is refused with 409 (D-186).")
     public ApiResponse<ProcurementDtos.SupplierOrderResponse> changePaymentMethod(
             @PathVariable Long id,
             @RequestBody ProcurementDtos.ChangePaymentMethodRequest request,

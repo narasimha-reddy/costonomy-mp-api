@@ -8,7 +8,7 @@ import java.util.Optional;
 
 /**
  * The Pidge sandbox has no riders, so a test moves a delivery along by asking Pidge's own dummy endpoint for the
- * next stage (D-154). This is the table of which stage follows which delivery status. Pure and test-only: nothing
+ * next stage (D-188). This is the table of which stage follows which delivery status. Pure and test-only: nothing
  * here is reachable unless {@link PidgeProperties#isSandbox()} is on.
  */
 public final class PidgeSandboxStages {

@@ -165,7 +165,7 @@ public class Delivery extends BaseEntity {
     @Column(name = "last_provider_update_at")
     private Instant lastProviderUpdateAt;
 
-    /** When the search for a partner first failed; null while one is booked. D-151. */
+    /** When the search for a partner first failed; null while one is booked. D-185. */
     @Column(name = "no_partner_since")
     private Instant noPartnerSince;
 

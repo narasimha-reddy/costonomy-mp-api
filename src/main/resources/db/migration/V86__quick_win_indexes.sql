@@ -1,4 +1,4 @@
--- Indexes for queries the database-bottleneck audit found scanning growing tables (D-148,
+-- Indexes for queries the database-bottleneck audit found scanning growing tables (D-182,
 -- docs/performance/DB_BOTTLENECKS.md). Each serves a named query; none changes behaviour.
 -- ALGORITHM=INPLACE LOCK=NONE so a large table is not blocked while the index builds.
 

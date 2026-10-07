@@ -37,7 +37,7 @@ public interface RealtimeEventRepository extends JpaRepository<RealtimeEvent, Lo
 
     /**
      * One DELETE statement. The derived {@code deleteByCreatedAtBefore} loaded every matching row into memory and
-     * deleted them one at a time (D-148).
+     * deleted them one at a time (D-182).
      */
     @org.springframework.data.jpa.repository.Modifying
     @Query("delete from RealtimeEvent e where e.createdAt < :before")

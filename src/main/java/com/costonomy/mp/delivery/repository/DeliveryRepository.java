@@ -34,7 +34,7 @@ public interface DeliveryRepository extends JpaRepository<Delivery, Long> {
     // Java. The clock is utc_timestamp(6), not now(6): hibernate.jdbc.time_zone is UTC, so no_partner_since and
     // last_retry_at are stored as UTC, while now(6) is in the database's zone. On a database that is not on UTC (a
     // laptop's MySQL, say) now(6) put every delivery outside its retry window and straight into the own-delivery
-    // offer (D-151).
+    // offer (D-185).
 
     /** Partner deliveries with no partner whose automatic retry is due. */
     @Query(value = """

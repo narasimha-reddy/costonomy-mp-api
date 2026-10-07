@@ -324,6 +324,61 @@ class SettlementFlowIT extends AbstractIntegrationTest {
         }
     }
 
+    // ── Credit orders ────────────────────────────────────────────────────
+
+    /**
+     * Credit is supplier-funded and supplier-collected: Costonomy took no money for
+     * it, so it has nothing to pay out and no commission to take. The order is made
+     * through the ordinary fixture and then marked as the credit funding adapter
+     * marks one (supplier_order.payment_method = 'CREDIT'); what is under test is
+     * which orders settlement picks up, not how a credit order is placed (that is
+     * CreditFlowIT's).
+     */
+    @Nested
+    @DisplayName("credit orders")
+    class CreditOrders {
+
+        @Test
+        @DisplayName("a completed credit order is never settled or charged commission")
+        void creditOrderIsNeverSettled() throws Exception {
+            var prepaid = completedOrder(10, "400");
+            var credit = completedOrder(5, "400");
+            // Same store, same period, same status: only the funding differs.
+            jdbc.update("update supplier_order set supplier_store_id = ?, "
+                    + "payment_method = 'CREDIT' where id = ?",
+                    prepaid.seller().storeId(), credit.orderId());
+
+            generate();
+
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from commission_calculation where supplier_order_id = ?",
+                    Integer.class, credit.orderId())).isZero();
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from commission_calculation where supplier_order_id = ?",
+                    Integer.class, prepaid.orderId())).isEqualTo(1);
+            var settlement = settlementFor(prepaid.seller());
+            assertThat(settlement.get("orderCount").asInt()).isEqualTo(1);
+            assertThat(settlement.get("grossAmount").asDouble()).isEqualTo(4000.00);
+        }
+
+        @Test
+        @DisplayName("a store with only credit orders gets no settlement at all")
+        void storeWithOnlyCreditOrdersGetsNoSettlement() throws Exception {
+            var credit = completedOrder(5, "400");
+            jdbc.update("update supplier_order set payment_method = 'CREDIT' where id = ?",
+                    credit.orderId());
+
+            generate();
+
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from settlement where supplier_store_id = ?",
+                    Integer.class, credit.seller().storeId())).isZero();
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from commission_calculation where supplier_order_id = ?",
+                    Integer.class, credit.orderId())).isZero();
+        }
+    }
+
     // ── Reproducibility ──────────────────────────────────────────────────
 
     @Nested

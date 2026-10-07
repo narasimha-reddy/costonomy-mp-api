@@ -46,7 +46,7 @@ public class DeliveryDirectory {
         jdbc.queryForList("select id from supplier_order where id = ? for update", Long.class, supplierOrderId);
     }
 
-    /** The supplier is now carrying it (D-151). The version moves so an in-flight stale write cannot overwrite it. */
+    /** The supplier is now carrying it (D-185). The version moves so an in-flight stale write cannot overwrite it. */
     public void setDeliveryMode(Long supplierOrderId, String deliveryMode) {
         jdbc.update("update supplier_order set delivery_mode = ?, version = version + 1, updated_at = now(6) "
                 + "where id = ?", deliveryMode, supplierOrderId);

@@ -63,8 +63,6 @@ public class MembershipService {
             return List.of();
         }
 
-        Map<Long, String> roleCodes = roleCodeCache.codesById();
-
         // LinkedHashMap so a user with several grants at one scope gets one entry,
         // and the order stays stable between calls — the client renders an outlet
         // switcher from this and a shuffling list is a bad switcher.
@@ -73,7 +71,7 @@ public class MembershipService {
 
         for (var grant : grants) {
             String key = grant.getScopeType() + ":" + grant.getScopeId();
-            String roleCode = roleCodes.get(grant.getRoleId());
+            String roleCode = roleCodeCache.codeOf(grant.getRoleId());
             if (roleCode == null) {
                 continue;
             }

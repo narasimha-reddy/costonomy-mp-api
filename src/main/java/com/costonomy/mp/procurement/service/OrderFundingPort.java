@@ -84,7 +84,7 @@ public interface OrderFundingPort {
     boolean isFundingSecured(Long supplierOrderId);
 
     /**
-     * Stop an unpaid order's funding from ever funding it, because it is being paid another way (D-152). Throws if
+     * Stop an unpaid order's funding from ever funding it, because it is being paid another way (D-186). Throws if
      * it has already been paid. Nothing to do for methods that hold nothing before the order is released.
      */
     default void relinquishUnfunded(Long supplierOrderId) {

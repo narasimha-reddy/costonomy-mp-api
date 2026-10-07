@@ -1,4 +1,4 @@
--- D-151: a delivery nobody could take is retried automatically for a while, and then the supplier is offered
+-- D-185: a delivery nobody could take is retried automatically for a while, and then the supplier is offered
 -- delivering it themselves. These columns say when the search started, how often it was retried, and whether the
 -- offer has been made, so the job needs no query over the event history.
 ALTER TABLE delivery

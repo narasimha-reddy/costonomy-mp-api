@@ -8,6 +8,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import com.costonomy.mp.credit.domain.CreditPaymentMethod;
+import com.costonomy.mp.credit.service.CreditClaimService;
+import com.costonomy.mp.credit.service.CreditWalletRepaymentService;
+
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -78,6 +83,80 @@ class IdempotencyServiceTest {
             assertThat(service.hash(null)).hasSize(64);
         }
 
+        /** Same entries, other order: what another JVM's salted Map.of iteration order produces. */
+        private <K, V> Map<K, V> reversed(Map<K, V> source) {
+            var entries = new java.util.ArrayList<>(source.entrySet());
+            java.util.Collections.reverse(entries);
+            var out = new java.util.LinkedHashMap<K, V>();
+            entries.forEach(e -> out.put(e.getKey(), e.getValue()));
+            return out;
+        }
+
+        @Test
+        @DisplayName("the wallet-repay payload hashes the same in any map order (another JVM, another instance)")
+        void walletRepayPayloadIsOrderIndependent() {
+            var payload = CreditWalletRepaymentService.payload(7L, new BigDecimal("1000").setScale(2), List.of(3L, 9L));
+
+            assertThat(service.hash(reversed(payload))).isEqualTo(service.hash(payload));
+            // and the entries really were reordered
+            assertThat(new java.util.ArrayList<>(reversed(payload).keySet()))
+                    .isNotEqualTo(new java.util.ArrayList<>(payload.keySet()));
+        }
+
+        @Test
+        @DisplayName("a nested map, and a list payload, hash the same in any order")
+        void nestedAndListPayloads() {
+            var inner = new java.util.LinkedHashMap<String, Object>();
+            inner.put("b", 1);
+            inner.put("a", 2);
+            var outer = new java.util.LinkedHashMap<String, Object>();
+            outer.put("z", inner);
+            outer.put("y", List.of(inner, "x"));
+            var innerRev = reversed(inner);
+            var outerRev = new java.util.LinkedHashMap<String, Object>();
+            outerRev.put("y", List.of(innerRev, "x"));
+            outerRev.put("z", innerRev);
+
+            assertThat(service.hash(outerRev)).isEqualTo(service.hash(outer));
+            // a list keeps its order: that is data, not representation
+            assertThat(service.hash(List.of(1, 2, 3))).isNotEqualTo(service.hash(List.of(3, 2, 1)));
+        }
+
+        @Test
+        @DisplayName("a different amount, or a different invoice list, gives a different hash")
+        void differentAmountDiffers() {
+            var base = CreditWalletRepaymentService.payload(7L, new BigDecimal("1000.00"), List.of(3L));
+            assertThat(service.hash(CreditWalletRepaymentService.payload(7L, new BigDecimal("1000.01"), List.of(3L))))
+                    .isNotEqualTo(service.hash(base));
+            assertThat(service.hash(CreditWalletRepaymentService.payload(7L, new BigDecimal("1000.00"), List.of(4L))))
+                    .isNotEqualTo(service.hash(base));
+            assertThat(service.hash(CreditWalletRepaymentService.payload(7L, new BigDecimal("1000.00"), null)))
+                    .isNotEqualTo(service.hash(base));
+        }
+
+        @Test
+        @DisplayName("the same null payload hashes the same each time")
+        void nullPayloadIsStable() {
+            assertThat(service.hash(null)).isEqualTo(service.hash(null));
+        }
+
+        @Test
+        @DisplayName("1e3, 1000, 1000.0 and 1000.00 are one wallet-repay request, and one claim")
+        void numericFormsOfAnAmountAreOneRequest() {
+            var forms = List.of(new BigDecimal("1e3"), new BigDecimal("1000"), new BigDecimal("1000.0"),
+                    new BigDecimal("1000.00"), new BigDecimal("1E+3"));
+            var repayHashes = forms.stream()
+                    .map(a -> service.hash(CreditWalletRepaymentService.payload(7L, a.setScale(2), List.of(3L))))
+                    .distinct().toList();
+            var claimHashes = forms.stream()
+                    .map(a -> service.hash(CreditClaimService.payload(5L, a.setScale(2),
+                            CreditPaymentMethod.UPI, "UTR1", java.time.LocalDate.of(2026, 1, 2), null)))
+                    .distinct().toList();
+
+            assertThat(repayHashes).hasSize(1);
+            assertThat(claimHashes).hasSize(1);
+        }
+
         @Test
         @DisplayName("hashes are SHA-256 hex")
         void hashIsHex() {
@@ -90,6 +169,22 @@ class IdempotencyServiceTest {
     @Nested
     @DisplayName("execute")
     class Execute {
+
+        @Test
+        @DisplayName("a FAILED earlier attempt answers IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED, not 'in progress'")
+        void failedReplayHasItsOwnCode() {
+            var request = new OrderRequest(55L, 20);
+            var failed = new IdempotencyRecord();
+            failed.setRequestHash(service.hash(request));
+            failed.setState(IdempotencyRecord.State.FAILED);
+            when(store.claim(any(), anyString(), anyString(), anyString(), any())).thenReturn(Optional.of(failed));
+
+            assertThatThrownBy(() -> service.execute(1L, "payment.create", "key-1",
+                    request, OrderResponse.class, () -> new OrderResponse(1L, "X")))
+                    .isInstanceOf(BusinessException.class)
+                    .extracting(e -> ((BusinessException) e).code())
+                    .isEqualTo(ErrorCode.IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED);
+        }
 
         @Test
         @DisplayName("runs the operation once when the key is unclaimed")

@@ -74,6 +74,18 @@ class BillStatusesTest {
     }
 
     @Test
+    @DisplayName("a credit repayment never needs a bill: no status in any state, not billable, not in the bill queries")
+    void creditRepaymentNeedsNoBill() {
+        var kind = WalletEntryKind.CREDIT_REPAYMENT;
+        assertThat(BillStatuses.KINDS).doesNotContain(kind);
+        for (var start : java.util.List.of(ON, Optional.<Instant>empty())) {
+            assertThat(BillStatuses.resolve(f(kind, START, null, false, false, false), start)).isNull();
+            assertThat(BillStatuses.resolve(f(kind, START.plusSeconds(86400 * 90), null, false, false, false), start)).isNull();
+            assertThat(BillStatuses.forList(f(kind, START, null, false, false, false), start)).isNull();
+        }
+    }
+
+    @Test
     @DisplayName("the tracking start: an ISO date at midnight in India; blank is off; anything else refuses to start")
     void trackingStart() {
         assertThat(new BillTracking("2026-09-01").start()).contains(START);

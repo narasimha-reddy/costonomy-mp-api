@@ -20,7 +20,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Pay an unpaid card order another way (D-152).
+ * Pay an unpaid card order another way (D-186).
  *
  * <p>A card order waits, unreleased, for a payment. If the restaurant would rather use the wallet or credit, the
  * order is funded that way and the card payment is retired the way a cancellation retires it, so it can never fund

@@ -72,7 +72,7 @@ public final class PaymentDtos {
             boolean fundsSecured,
             boolean payable,
             String failureReason,
-            /** The order's status and funding method, so a screen reopened after a switch knows (D-152). */
+            /** The order's status and funding method, so a screen reopened after a switch knows (D-186). */
             String orderStatus,
             String orderPaymentMethod,
             /** The unpaid card order can still be paid another way, or cancelled. */

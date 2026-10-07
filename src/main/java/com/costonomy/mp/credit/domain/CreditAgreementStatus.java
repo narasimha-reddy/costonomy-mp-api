@@ -34,6 +34,15 @@ public enum CreditAgreementStatus {
         return this == ACTIVE;
     }
 
+    /**
+     * Whether a restaurant may start a fresh request on an agreement in this status. SUSPENDED and APPROVED are
+     * not: a suspension is the supplier's (or the overdue sweep's) to lift, and approved terms await acceptance.
+     * EXPIRED and CLOSED additionally need nothing owed or reserved; the service checks that.
+     */
+    public boolean canReRequest() {
+        return this == REJECTED || this == EXPIRED || this == CLOSED;
+    }
+
     public boolean isTerminal() {
         return TERMINAL.contains(this);
     }

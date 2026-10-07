@@ -6026,7 +6026,530 @@ Found by reading the code while fixing D-141 to D-145: each was a rule the app s
 
 **Tests:** `IntentFlowIT$Basket` (stale price refused, agreement sends and locks, no change needs no agreement), `IntentFlowIT$DeliveryOffer` (riders charged their quote above the threshold, an offered charge not waived), `CatalogMaintenanceIT` (rate sheet and variants leave stock, status and GST; disabled stays disabled; own delist and relist still work). Each mutation-checked.
 
-## D-147 — Filters and sorting on the buyer's supplier lists
+## D-147 — Settlement pays only PREPAID orders
+
+**Problem.** Settlement picked up every `COMPLETED` supplier order, whatever funded it. A credit order (stored with
+`supplier_order.payment_method = 'CREDIT'`) is funded and collected by the supplier: Costonomy took no money for it, yet
+settlement would have paid the supplier for it and charged commission on it.
+
+**Rule.** `SettlementDirectory.settleableOrders` and `storesWithSettleableOrders` select only `payment_method = 'PREPAID'`
+(the funding kind of both card/UPI and wallet orders). A credit order gets no commission calculation, is not counted in a
+settlement, and a store with only credit orders gets no settlement.
+
+**Why an allow-list.** "Not CREDIT" would silently include any funding method added later. With `= 'PREPAID'` a new method is
+left out of payouts until someone decides, deliberately, how it is paid. No schema change; no migration.
+
+**Tests.** `SettlementFlowIT.CreditOrders`: a credit and a prepaid order in one store settle as one order with only the
+prepaid gross and no commission row for the credit one; a store with only credit orders gets no settlement.
+
+## D-148 — Credit invoices: overdue stays overdue after a part payment, India-time dates, one invoice never blocks the sweep
+
+**Problem.** Three defects in the credit module. (1) Any non-final repayment set the invoice to `PARTIALLY_PAID`, even an
+`OVERDUE` one; the next sweep then marked it overdue again and published `CreditOverdue` a second time, so every part payment on
+a late invoice sent another SMS and flipped the status back and forth. (2) Issue date and the sweep's "today" used UTC, while
+the rest of the app uses India time: an invoice issued between 00:00 and 05:30 IST was dated the day before, and invoices went
+overdue 5.5 hours late. (3) `CreditJobs.sweepOverdue` was one transaction, so a single optimistic-lock conflict with a
+concurrent repayment rolled back every invoice in the batch.
+
+**Rule.** After a repayment the status is `PAID` if nothing is outstanding, else it stays `OVERDUE` if it was, else
+`PARTIALLY_PAID`. The credit module has its own `creditClock` bean (`Asia/Kolkata`, qualified by name; no unqualified `Clock`
+bean is added) used for the issue date and for the overdue check's "today". Each invoice is marked overdue by
+`CreditOverdueMarker` in its own `REQUIRES_NEW` transaction, re-checking the fresh row; a failure logs a warning with the
+invoice id and skips only that invoice, and the next hourly sweep retries it. `sweepOverdue` is no longer transactional, and
+auto-suspend still runs after marking.
+
+**Existing data.** Invoices keep their stored dates; nothing is rewritten. No schema change; no migration.
+
+**Tests.** `CreditFlowIT.InvoicesAndRepayment`: `partialPaymentOnOverdueStaysOverdue`, `sweepNotifiesOnce`,
+`partlyPaidThenLateGoesOverdueOnce`, `issuedJustAfterMidnightIstDatesToday`, `markOverdueUsesIstToday`,
+`oneBadInvoiceDoesNotBlockTheSweep`. Mutations: the unconditional `PARTIALLY_PAID` fails the first two; UTC for the issue date
+fails the midnight test; `REQUIRED` with a transactional sweep fails the bad-invoice test.
+
+## D-149 — Credit: a suspended or approved line cannot be re-requested; a system suspension lifts itself when the overdue is paid
+
+**Problem.** `CreditAgreementService.request()` refused only `ACTIVE` and `REQUESTED`. A restaurant could re-request a
+`SUSPENDED` line (wiping the suspension reason and the status, bypassing `canTransitionTo`) or an `APPROVED` one (discarding
+terms awaiting its acceptance), and a closed or expired line that still carried debt. Separately, nothing lifted a suspension
+the overdue sweep had imposed once the debt was repaid, and nothing recorded who suspended.
+
+**Rule.** `CreditAgreementStatus.canReRequest()` is true only for `REJECTED`, `EXPIRED`, `CLOSED`. Any other existing status
+is refused with `INVALID_STATE_TRANSITION` (409); `EXPIRED` and `CLOSED` also need `reserved + utilized = 0`. A new column
+`credit_agreement.suspension_source` (`SYSTEM` from the sweep, `SUPPLIER` from the suspend endpoint) is set on suspension and
+cleared on any exit from it. After every repayment, in the same transaction, `CreditInvoiceService.reinstateIfOverdueCleared`
+returns a `SYSTEM`-suspended line to `ACTIVE` when overdue is at or below `max_overdue_amount` (or no maximum is set), writes a
+`CREDIT_REINSTATED` audit row and publishes `CreditReinstated {creditAgreementId, outletId, supplierStoreId}`. A supplier's own
+suspension never lifts itself; only the supplier's manual reinstate does. Notification rules for the event are a later change.
+
+**Existing data.** V76 backfills `suspension_source` for suspended rows (`SYSTEM` where the reason starts "Overdue balance",
+else `SUPPLIER`) and adds `ix_credit_invoice_outlet_status (outlet_id, status)`.
+
+**Tests.** `CreditFlowIT.Safety`, `CreditAgreementStatusTest`.
+
+## D-150 — Credit notifications: rejected, invoice issued, repayment recorded and reinstated now reach the restaurant
+
+**Problem.** The credit module published `CreditRejected`, `CreditInvoiceIssued`, `CreditRepaymentRecorded` and (D-149)
+`CreditReinstated`, but the catalogue had no rule for them, so a restaurant was never told its request was declined, never saw
+an invoice appear, and was never told a supplier had recorded its payment or that a suspension had lifted.
+
+**Rules** (all audience `OUTLET`, none sent by SMS, D-041). `CreditRejected`: critical, in-app + push, "Credit request
+declined", supplier name and the supplier's reason. `CreditInvoiceIssued`: not critical, in-app only, "Invoice {number} for
+{amount} issued". `CreditRepaymentRecorded`: not critical, in-app + push, "{supplier} recorded your payment of {amount} against
+invoice {number}". `CreditReinstated`: not critical, in-app + push, "Credit available again". The publish sites now carry
+`outletId` and `supplierStoreId` (the relay needs one to find recipients) plus `supplierName` and `invoiceNumber` where the
+text uses them; `CreditReinstated` gains `supplierName`. No new PII beyond the supplier names other credit payloads carry.
+`CreditReserved`, `CreditUtilized` and `CreditReleased` are exposure bookkeeping and stay silent.
+
+**Event names (D-044).** `CreditEvents` lists every event name the module publishes; publish sites and rules use the
+constants and no string value changed. `NotificationRulesTest` fails if a published credit event has neither a rule nor a
+place on its explicit silent list.
+
+**Not here.** A `CreditRepaymentReceived` event for wallet repayments ships with the wallet-repayment change; a supplier is
+never notified about a payment they recorded themselves.
+
+**Tests.** `NotificationRulesTest.Catalogue` (coverage and shape), `CreditFlowIT.RestaurantNotifications` (in-app and push
+rows, no SMS row, for each event).
+
+## D-151 — Credit repayments: the tables and the CREDIT_REPAY permission
+
+**Problem.** A restaurant can only see its credit invoices; the supplier alone records that they were paid. Letting the
+restaurant repay, from its wallet now and by UPI, card or a claim later, needs somewhere to record the money movement and a
+permission to gate it, before any endpoint exists.
+
+**Decision (V77, groundwork only).** `credit_repayment` is one parent row per money movement: agreement, outlet, supplier
+store, amount (`CHECK amount > 0`), source (`WALLET`; `UPI` and `CARD` reserved), the funding `wallet_transaction_id` and
+`provider_payment_id` (each unique, so one debit or one provider payment backs one repayment) and a unique idempotency key.
+One repayment may settle several invoices, so the per-invoice rows stay in `credit_payment`, which gains `source`
+(`SUPPLIER_RECORDED` default, `WALLET`, `CLAIM_CONFIRMED`; 32 wide because `SUPPLIER_RECORDED` does not fit 16),
+`credit_repayment_id` (FK) and `claim_id` (no FK: the claims table arrives in V78). `UNIQUE (credit_repayment_id,
+credit_invoice_id)` stops one repayment paying an invoice twice; MySQL allows many NULLs, so the supplier's manual payments
+are unaffected and existing rows become `SUPPLIER_RECORDED` through the default. The supplier `recordPayment` path now sets
+that source explicitly.
+
+**Permission.** `CREDIT_REPAY` (scope RESTAURANT) goes to the roles that hold `QUICKSCAN_PAY` (D-106): `REST_OWNER`,
+`REST_ADMIN`, `REST_PURCHASE_MANAGER`, `REST_FINANCE_STAFF`, the roles that already handle the outlet's money. Never to
+supplier or operations roles: they cannot spend a restaurant's wallet.
+
+**Credit stays the supplier's.** Mandi never funds or guarantees credit; a repayment is the restaurant paying its own debt.
+
+**Not here.** No endpoint, service behaviour or notification rule; nothing is user-visible. `CreditRepaymentStatus` has only
+`COMPLETED` until asynchronous UPI and card repayments need more.
+
+**Tests.** `CreditRepaymentSchemaIT` (grants, CHECK, unique keys, NULL behaviour), `CreditFlowIT.Safety`
+(`supplierRecordedPaymentKeepsItsSource`), `PermissionCatalogIT` (the new constant).
+
+## D-152 — A credit repayment from the wallet is its own ledger kind
+
+**Problem.** Repaying a supplier's credit invoice from the wallet moves the restaurant's own cash out. None of the
+existing kinds says that: `ORDER_PAYMENT` and `QUICKSCAN_PAYMENT` ask for a bill and name an order or a payee, and a
+statement or details page that called a repayment either would mislead.
+
+**Decision.** `CREDIT_REPAYMENT` is a new `WalletEntryKind`, a DEBIT, reference `credit-repayment-<repaymentId>` (unique,
+so one repayment debits once), no supplier order, reason "Credit repayment". `WalletService.debitCreditRepayment` is
+modelled on `debitQuickScan`: the caller locks the wallet first, the debit is the conditional update (a short balance is
+`VALIDATION_ERROR`, nothing written), and it also refuses a wallet on hold and a repeated repayment (`INVALID_STATE_TRANSITION`
+before anything moves). No audit or outbox event here: like the template, those belong to the caller.
+
+**Never a bill.** The bill allow-lists (`BillStatuses.KINDS` and `ELIGIBLE`, `WalletInvoiceService.BILLABLE`) stay at the two
+payment kinds, so a repayment has no bill chip, no "Add bill", no "No bill needed", and is in no pending count. The credit
+invoice it settles is the supplier's document, not a shop bill.
+
+**Details page.** The supplier store is the counterparty; `counterpartyDetail` lists the invoice numbers it settled (from
+`credit_payment.credit_repayment_id`); references are "Credit invoice" (one per invoice), "Credit line" (the agreement id)
+and "Credit repayment" (its id). The repayment is found from the entry's reference and the outlet, in SQL, so the wallet
+module holds no credit entities and another outlet's repayment is never shown. The statement label is "Credit repayment".
+
+**Spent.** Totals are by direction, so a repayment counts in a month's "spent" and the statement's "Total spent" like any
+debit. The History's kind filter accepts it.
+
+**Not here.** No endpoint and no caller: the pay-from-wallet endpoint, which writes the repayment and `credit_payment` rows
+and links `wallet_transaction_id`, is the next change. Credit stays the supplier's; this is only the restaurant's money moving.
+
+**Tests.** `CreditRepaymentLedgerIT` (the method, history, statement, details), `WalletEntryCopyTest`, `BillStatusesTest`.
+
+## D-153 — A restaurant can repay a credit invoice from its wallet
+
+**Problem.** Credit is the supplier's: Mandi never funds or guarantees it, so a restaurant normally cannot say "I paid". The
+wallet is the exception: Mandi itself sees the money leave the restaurant's own wallet (D-151, D-152), so the restaurant may
+start that repayment itself. It must never take wallet money twice, overpay an invoice, or leave a debt and the exposure
+out of step.
+
+**Decision.** `POST /api/v1/credit/agreements/{id}/wallet-repayments`, needing `CREDIT_REPAY` on the agreement's outlet
+(anyone else, supplier included, gets the usual 404) and an `Idempotency-Key`. Body: `amount` (at least 1.00, at most two
+decimals) and optional `invoiceIds`. It is allowed on any agreement status: paying a debt is never blocked, and a suspended,
+expired or closed line is exactly where the debt is.
+
+**Order, in one transaction.** (1) Lock the wallet, as QuickScan does, and refuse a wallet on hold. (2) Lock the target
+invoices `FOR UPDATE` in ascending id order, this agreement's open ones only; an id that is not this agreement's or not open
+is "not found" whoever's it is, so another tenant's invoice is never confirmed. (3) Allocate oldest due date first, then id,
+each invoice taking `min(outstanding, remaining)` in whole paise. (4) Insert `credit_repayment` (source WALLET, key
+`wallet:<outletId>:<key>`) and flush. (5) Debit the wallet (`credit-repayment-<id>`) and link `wallet_transaction_id` to the
+entry. (6) Per invoice, the one shared `CreditInvoiceService.applyPayment`: the status rule (D-148), the `credit_payment`
+row (source WALLET, method WALLET), the exposure ledger and the auto-reinstate hook (D-149), once each. (7) Audit, and one
+event. The wallet is always locked before the invoices and the invoices in ascending id, so two repayments, or a repayment and
+a supplier-recorded payment, cannot wait on each other. `recordPayment` now locks its invoice and uses the same shared method.
+
+**Refused before anything moves.** More than is owed is `CREDIT_OVERPAYMENT` (422, details `outstanding`); more than the
+wallet holds is `WALLET_INSUFFICIENT_BALANCE` (422, details `shortBy`, so the app can say "You're ₹X short" and offer Add
+money). Both are explicit checks made after the locks, so they are decided on the truth; `debitCreditRepayment`'s own guard
+stays as the last line of defence. A second repayment racing the first for the same invoice finds nothing left and gets the
+overpayment refusal.
+
+**Who is told.** The supplier, with the new `CreditRepaymentReceived` ("Payment received": "{restaurant} paid {amount}
+through Mandi.", in-app and push, not critical, no SMS, D-041). `CreditRepaymentRecorded` is not published: its text says the
+supplier recorded your payment, which would be false, and the restaurant sees the result on screen.
+
+**Why the flag stays off.** `costonomy.mp.credit.wallet-repay.enabled` defaults to false and answers 403 without reading or
+claiming anything. Wallet money must not be taken before the payout to the supplier exists; that is the next change. On only in tests.
+
+**Tests.** `CreditWalletRepayIT` (side effects of every path and refusal, concurrency, lock order, status rules, history and
+detail), `CreditWalletRepayDisabledIT`, `NotificationRulesTest`, `ErrorContractTest`.
+
+## D-154 — Restaurant credit reads: attention, due states, invoice detail and a statement
+
+**Decision.** The restaurant's Credit screens get what they need from the server, read-only and additive. The app does no
+date or money arithmetic: it shows states and numbers, in India time (`creditClock`).
+
+- `GET /outlets/{id}/credit/attention` returns `{overdue, dueSoon}` and no amounts (Home shows a dot, not a balance).
+  `overdue` is any invoice of the outlet with status OVERDUE; `dueSoon` is any ISSUED or PARTIALLY_PAID invoice due on or
+  before today + 3, so an overdue one is never also "due soon". Two `exists` queries on `ix_credit_invoice_outlet_status`.
+- Every invoice carries `dueState` (PAID, WRITTEN_OFF, OVERDUE, IN_GRACE, DUE_TODAY, DUE_SOON, DUE_LATER) and `daysToDue`
+  (negative once past due, null when settled), from one pure class, `CreditDueState`. IN_GRACE is past the due date and
+  not past `overdue_after`; an invoice past `overdue_after` that the sweep has not marked yet already reads OVERDUE.
+- The summary adds, per agreement, `nextDueDate`, `nextDueAmount` (outstanding on that date) and `openInvoices`, and
+  `walletRepayEnabled` (D-153's flag) at the top so the app can hide "Pay from wallet". Nothing existing changed.
+- `GET /credit/invoices/{id}`: the invoice, its order number, supplier and store, and its payments newest first, with
+  `walletEntryId` for a wallet payment. Either side (CREDIT_VIEW at the outlet, or CREDIT_VIEW / CREDIT_REQUEST_VIEW at the
+  store); anyone else gets 404.
+- `GET /credit/agreements/{id}/statement?from&to`: India calendar days, both inclusive, default the last 90 days, at most
+  366 days. Each line's `amount` is the change in what is owed, taken from the ledger's `balance_utilized_after`, so
+  `openingOwed + sum(amount) = closingOwed` always holds. RESERVE rows, a RELEASE of a hold and a LIMIT_CHANGE change nothing
+  owed and are left out (a RELEASE would otherwise break the sum); labels are "Order on credit", "Repayment", "Released",
+  "Adjustment".
+
+**Tests.** `CreditDueStateTest`, `CreditRestaurantReadsIT`, `CreditWalletRepayDisabledIT`.
+
+
+## D-155 — "I paid" claims: a restaurant reports, the supplier confirms
+
+**Context.** A restaurant often pays a supplier directly (bank transfer, UPI, cash, cheque, card), outside Mandi. Credit is the supplier's money, so only the supplier can say it arrived. Mandi must never let a restaurant clear its own debt on its say-so.
+
+**Decision.**
+- A claim (`credit_payment_claim`, V78) is only a statement. It changes nothing (not the invoice, the exposure, the status, the overdue sweep or auto-suspend) until the supplier confirms. A claim must be at most the invoice's outstanding less its other open (SUBMITTED) claims, so two claims cannot together exceed what is owed. A refused claim creates nothing.
+- Confirming goes through the shared `CreditInvoiceService.applyPayment` (source `CLAIM_CONFIRMED`, `claim_id` set), so the status rule (D-148) and auto-reinstate (D-149) behave as for any payment. The claim is locked first, then the invoice, always in that order; a second confirm finds the claim no longer SUBMITTED, so one claim writes one payment.
+- Confirm is capped at `min(claimed, outstanding now)`. Another payment may have reduced the invoice since the claim was made, and confirming past zero would hand out credit nobody repaid. More than that is `CREDIT_OVERPAYMENT`; a claim whose invoice is already settled is `CREDIT_CLAIM_STATE` (409, new). A supplier may confirm less than claimed.
+- Confirming publishes `CreditClaimConfirmed` and not also `CreditRepaymentRecorded`, whose text would tell the restaurant the same thing twice. Rejecting needs a reason and has no money effect. Withdrawing is the restaurant's, only while SUBMITTED. None of the claim notifications is SMS or critical (nothing is owed today).
+- No proof photo yet: uploading proof is a later PR, so there is no column for it.
+- The supplier-recorded payment endpoint is tightened: `method` must be one of `CreditPaymentMethod` (BANK_TRANSFER, UPI, CASH, CHEQUE, CARD, ADJUSTMENT) and `amount` has at most two decimals. A restaurant can claim only the first five.
+
+**Tests.** `CreditClaimIT`, `NotificationRulesTest`, `ErrorContractTest`.
+
+## D-156 — Wallet repayments are paid out to the supplier through the settlement, less commission
+
+**Why Mandi owes this money.** Credit stays the supplier's (D-147: settlement pays PREPAID only). A repayment from the
+restaurant's wallet (D-153) is the one case where Mandi holds the money: it leaves the wallet (D-152), so Mandi owes it to
+the supplier. Until now nothing paid it out, which is why the endpoint's flag `costonomy.mp.credit.wallet-repay.enabled`
+is off.
+
+**The flow: pending, then applied.**
+- In the repayment's own transaction, right after the wallet debit (step e2, so the payout exists if and only if the debit
+  does), one `credit_repayment_payout` row is inserted PENDING for the full amount (V79, unique per repayment).
+- `SettlementService.generate` considers stores with settleable orders *or* with PENDING payouts made before the period's
+  end. For each store's mutable settlement it adds, per payout, a CREDIT adjustment `CREDIT_REPAYMENT` (the amount) and,
+  when the commission is above zero, a DEBIT adjustment `CREDIT_COMMISSION`, then marks the payout APPLIED with the
+  settlement and adjustment ids. Net stays the one rule: gross - commission +/- adjustments. A store whose only activity is
+  repayments gets a settlement (net = amount - commission).
+- Modelled on `SupplierRefundLedger.applyPending`: rows are locked `FOR UPDATE`, applied once even if generation runs twice
+  or concurrently, and never added to an approved or later settlement; such a payout stays PENDING for the next one.
+- `credit_commission` and `credit_repayment` need no schema change: `reason_code` is free text (V18).
+
+**Commission snapshot.** At repayment time the store's rate is resolved by `CommissionService.resolve` (the resolver orders
+use: store, then organisation, then platform) and stored on the payout with the configuration id; commission =
+amount x rate / 100, HALF_UP to 2 decimals, never above the amount. Later changes to commission configuration never change
+an existing row. No resolvable rate: commission 0 and one warning per store. `costonomy.mp.credit.repayment-commission.enabled`
+(default TRUE) switches it off: rate null, commission 0.
+
+**Business decision for the user to confirm.** Commission on wallet repayments is ON by default, per the approved plan. It
+is charged only here, where Mandi moves the money; offline repayments the supplier records itself are not charged by this
+change. If the user decides there should be no commission, set the property to false; nothing else changes.
+
+**Reconciliation.** `SettlementReconciliationService` also compares, for the settlement's period, the wallet
+`CREDIT_REPAYMENT` debits with the payouts behind them. A difference is recorded in the settlement's note and as an audit row
+`SETTLEMENT_REPAYMENT_RECONCILIATION_MISMATCH`, and reported as `creditRepaymentsMatched` on the response; never refused
+(D-055). `matched` keeps meaning the gross.
+
+**The endpoint flag stays off.** This change builds the payout but does not turn the endpoint on: that waits on the user's
+decision about commission above (and on UPI end to end).
+
+**Tests.** `CreditRepaymentPayoutIT`, `CreditRepaymentPayoutCommissionOffIT`, plus the existing `CreditWalletRepayIT`,
+`SettlementFlowIT`, `CreditFlowIT`.
+
+## D-157 — Credit: the server says how much can still be reported
+
+An "I paid" claim changes nothing until the supplier confirms (D-155), so an invoice's `outstanding` stays the same while
+claims wait. The app needs to know what can still be reported, to prefill the form, warn about duplicates and hide "I paid"
+when everything owed is already reported, and it must not do money arithmetic. So the server computes it.
+
+- `reportableAmount` = `max(0, outstanding - sum of the invoice's SUBMITTED claims)`; 0 for a settled invoice
+  (PAID/WRITTEN_OFF). Added, never replacing a field, to the invoice list, the invoice detail, every `AgreementResponse`
+  and the summary's `agreements[]`.
+- On an agreement it is the sum of its open invoices' figures, computed per invoice and then summed (so an over-claimed
+  invoice floors at 0 and does not eat into another). The summary also carries the total over its agreements.
+- One rule: `CreditInvoice.reportable(openClaims)`. The claim endpoint uses the same method, so the number a refused claim
+  reports as `details.outstanding` (`CREDIT_OVERPAYMENT`) is exactly the `reportableAmount` the reads showed.
+- Lists use one grouped query per agreement for the claim totals, not one per invoice.
+- No schema change.
+
+## D-158 — The wallet row for a credit repayment names the supplier
+
+The History row title is the ledger entry's `reason`. A credit repayment (D-152) wrote the plain "Credit repayment", so a
+restaurant paying two suppliers saw two identical rows.
+
+- The reason is now `Credit repayment to <supplier>`, using the supplier store's name, the same name the details page
+  shows as the counterparty. The credit side passes the name in (`debitCreditRepayment(..., counterpartyName)`); the wallet
+  module imports nothing from credit.
+- A blank or unknown name falls back to the plain "Credit repayment". The reason column is 200 characters: a long name is
+  cut (never splitting an emoji), the prefix never is.
+- The reference `credit-repayment-<id>` is unchanged. Older rows keep the text they were written with; nothing is rewritten.
+- The statement's label column stays the kind's wording ("Credit repayment"); the reason column carries the name.
+- No schema change.
+
+## D-159 — Credit idempotency: canonical hashing, a code for a failed attempt, tenant-scoped supplier keys, an on-hold code
+
+An edge-case review of credit found retries that could debit twice or answer wrongly, and one tenant able to read or
+break another's keys.
+
+- **The request hash is canonical.** `IdempotencyService.hash` serialises with a copy of the app mapper that sorts bean
+  properties and map entries. Callers pass `Map.of(...)`, whose order is salted per JVM, so the same request hashed
+  differently after a restart or on another instance, a retry was refused as `IDEMPOTENCY_KEY_REUSE`, and the app (which
+  treats that as definitive) dropped its key and debited again. Lists keep their order. The money payloads already write
+  the amount as scaled plain text, so `1e3`, `1000`, `1000.0` and `"1000.00"` are one request; the supplier-recorded
+  payment's payload now does the same (it passed a raw `BigDecimal`). The hash of an in-flight record written before the
+  deploy differs, so a retry across the deploy of a request still running is treated as before: key reuse. Acceptable.
+- **A failed attempt has its own code.** A FAILED record replayed as `IDEMPOTENT_REQUEST_IN_PROGRESS`, which the app
+  answers by keeping the key, so Retry looped for the whole retention. It is now `IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED`
+  (409, "The previous attempt did not go through. Please try again."): definitive, the client must use a NEW key.
+  `IDEMPOTENT_REQUEST_IN_PROGRESS` stays for the genuinely in-progress case.
+- **Supplier-recorded payment keys are the supplier's own.** `credit_payment.idempotency_key` is unique across every
+  tenant, and the lookup ran before the access check, so a supplier could read another's payment by sending its key, or
+  pre-squat `claim:<id>` / `wallet-repayment:<id>:<invoice>` so another tenant's confirm or repayment failed. A user key
+  is now stored as `supplier:<actorId>:<key>` (one helper), looked up the same way, and only after the access check. The
+  system's own keys never start with `supplier:`, so they cannot collide. Payments stored with a raw key keep it: a replay
+  of an old raw key after the deploy is treated as a new request (the per-actor idempotency record still answers it for
+  the retention window, so in practice only an exact retry across the deploy of a call that failed before storing).
+- **A supplier-recorded payment's `paidAt`** is an India calendar day that is not in the future and not before the
+  invoice's issue day (a claim's `paidOn` rule); otherwise `VALIDATION_ERROR`.
+- **Withdrawing or rejecting a claim is idempotent for the same final state.** Withdrawing a WITHDRAWN claim, or rejecting
+  a REJECTED one with the same reason, returns 200 and the claim, with no second audit row or event. Any other state, or a
+  different reason, is still `CREDIT_CLAIM_STATE` 409.
+- **Two first credit requests for one (outlet, store)** no longer surface the unique-constraint violation's generic
+  message: the loser gets 409 `CONCURRENT_MODIFICATION` "A request to this supplier is already waiting for a response."
+  (It was already a 409, not a 500.)
+- **`WALLET_ON_HOLD`** (403, "Your wallet is on hold. Please contact support.") replaces `FORBIDDEN` for an on-hold wallet
+  in a wallet repayment, so the app can tell it from the feature being off (still 403 `FORBIDDEN`). QuickScan and
+  withdrawals are unchanged.
+- No schema change.
+
+## D-160 — Credit rules: exact sub-₹1 residuals, terms version on accept, manual reinstate event, one overdue rule, superseded claims
+
+Five rule gaps found by the credit edge-case review. No schema change (claim status and event names are VARCHAR).
+
+- **Sub-₹1 residuals.** The minimum stays ₹1.00 for wallet repayments and claims, except that an amount below ₹1 is accepted when it
+  exactly clears what it targets: for a wallet repayment, the sum outstanding of the target invoices (the whole agreement, or the
+  `invoiceIds` given); for a claim, the invoice's `reportableAmount`. Anything else below ₹1 is a `VALIDATION_ERROR`, "Enter at least
+  ₹1, or the exact remaining amount". The DTO now only requires 0.01 or more, and the services enforce the rule before anything moves.
+- **Terms version on accept.** `POST /credit/agreements/{id}/accept` takes an optional `{termsVersion}`. When present and not the
+  agreement's current `termsVersion`: 409 `CREDIT_TERMS_CHANGED`, nothing changes. Absent: unchanged behaviour. A supplier `modify` on a
+  REQUESTED or APPROVED agreement stays allowed ("approve on my terms") and, like every change of terms, bumps `termsVersion`.
+- **Manual reinstate** publishes `CreditReinstated` with the same payload as the system reinstate, so the restaurant hears about it.
+- **One overdue rule.** `attention.overdue` is true when any invoice of the outlet is OVERDUE by `CreditDueState.of`'s rule (marked
+  OVERDUE, or open with due date and grace both before today in India), whether or not the hourly sweep has run; `dueSoon` excludes those.
+- **Superseded claims.** When an invoice reaches PAID by any means, its other SUBMITTED claims become `SUPERSEDED` in the same
+  transaction (note "Invoice was settled before this was confirmed", no actor, no notification). They no longer count in
+  `openClaimsAmount`/`reportableAmount`, are not in the supplier's SUBMITTED inbox, and stay in the claim lists as history. Confirm,
+  reject and withdraw on one are 409 `CREDIT_CLAIM_STATE`. A claim larger than the new outstanding but not settled stays SUBMITTED.
+
+## D-161 — Supplier payouts list: stored commission, store-wide summary, IST month
+
+`GET /supplier-stores/{storeId}/credit/payouts` (and `/{payoutId}`) is read-only and adds no schema.
+
+- **Commission is the stored snapshot** (`credit_repayment_payout.commission_amount` and `commission_rate_percent`); net is `amount - commission_amount`. Nothing reads `commission_configuration` or the repayment-commission switch, so a later rate change never alters what a supplier sees.
+- **Summary is the store's position, not the filter's.** `pendingNet` is every PENDING payout of the store; `appliedNetThisMonth` is APPLIED payouts whose `applied_at` falls in the current India calendar month (credit clock). It does not change with `status`, `from`, `to` or `page`.
+- **`from`/`to`** are India calendar days on the payout's creation time, inclusive; `from` after `to` is a `VALIDATION_ERROR`. `size` defaults to 20, capped at 100.
+- **Access** matches the claims inbox: `CREDIT_VIEW` or `SETTLEMENT_VIEW` on the store, otherwise 404 (a restaurant user and another store's user look the same as a missing store).
+
+## D-162 — Credit: who may collect on a line (`CREDIT_COLLECT`) and who may write off
+
+Store managers receive the cash but did not hold `CREDIT_MODIFY`, so a payment went unrecorded and the line auto-suspended wrongly.
+
+- V80 adds `CREDIT_COLLECT` and grants it explicitly to SUP_OWNER, SUP_ADMIN, SUP_FINANCE_STAFF and SUP_STORE_MANAGER. (V5 gave owner and admin every supplier permission that existed *then*, so a later permission reaches nobody unless a migration grants it.)
+- Record a payment (`POST /credit/invoices/{id}/payments`) and confirm or reject a claim accept `CREDIT_COLLECT` **or** `CREDIT_MODIFY`, so no existing grant regresses. Terms, modify, suspend and reinstate stay `CREDIT_MODIFY` only: a store manager can collect but cannot change terms or suspend.
+- `CREDIT_WRITE_OFF` is added now (SUP_OWNER, SUP_ADMIN only) for the write-off work to come; nothing checks it yet.
+- A refusal is a 404, as for every credit endpoint (`AccessControlService.requireAnyScoped`).
+
+## D-163 — Credit: a manual reinstate of an auto-suspension carries the overdue it was lifted at
+
+Without this the supplier's reinstate was undone by the next hourly sweep (the overdue was still above the maximum), and the supplier stopped trusting the product.
+
+- `credit_agreement.overdue_floor` (V80, nullable). When a supplier manually reinstates a line whose `suspension_source` is SYSTEM, the server stores the line's overdue amount at that moment (null when nothing is overdue). A supplier's own suspension stores nothing.
+- The sweep (`CreditJobs.suspendOverLimit`) and the automatic reinstate after a repayment use `max(maxOverdueAmount, overdue_floor)` as the tolerance (`CreditAgreement.overdueTolerance`). New overdue beyond the floor suspends again, by SYSTEM.
+- The floor is cleared when overdue reaches zero: in the repayment path (`reinstateIfOverdueCleared`) and by the sweep for any other way overdue became zero. A part payment does not clear it.
+- Not exposed on the API; it is server-set state.
+
+## D-174 — Supplier receivables reads (B3): definitions the app shows as sent
+
+Read-only endpoints under the supplier-store scope (`CREDIT_VIEW` or `CREDIT_REQUEST_VIEW` on the store, else 404, like the agreements and claims lists); no schema change. Everything is computed in `CreditSupplierReadService` with `creditClock` (India day) and `CreditDueState`, so overdue is the date rule (past grace, whether or not the sweep has run), never `credit_invoice.status`.
+
+- `/receivables`: `totalReceivable` = outstanding of every open invoice (not PAID/WRITTEN_OFF) of the store, any line status; `overdue` (state OVERDUE), `inGrace` (IN_GRACE), `dueToday`, `dueThisWeek` (not yet due, due today through today + 6) partition-or-subset it as documented on the DTO. `collectedThisMonth` sums `credit_payment` of the store's lines paid in the India calendar month, any source (there is no reversal yet; when one exists it must be excluded here). `exposure` counts ACTIVE lines only: `extended` = limits, `drawn` = utilized, `availableToLend` = per-line `max(0, limit - utilized - reserved)`. `counts.restaurants` = lines that are ACTIVE or SUSPENDED or still owe; `requestsPending` = REQUESTED lines; `claimsWaiting` = SUBMITTED claims; `overdueRestaurants` = lines with an overdue invoice. `pendingActions` lists only kinds with a count above zero (CLAIMS_WAITING, REQUESTS_PENDING, OVERDUE_RESTAURANTS, LINE_AT_LIMIT = ACTIVE lines with nothing left to lend).
+- `/receivables/restaurants`: the same set of lines; sort `overdue` (amount, default), `owed`, `nextDue` (earliest date, none last), always ending on the agreement id; page from 0, size default 20, max 100; unknown sort or negative page is a 400.
+- `/ageing`: days past the due date (not the grace-adjusted date) in India time: CURRENT (due today or later), D1_7 (grace invoices land here), D8_30, D30_PLUS. Each open invoice is in exactly one bucket, so the buckets add up to `totalReceivable`. Up to five top restaurants per bucket.
+- `/payments` (store) and `/credit/agreements/{id}/payments` (either side of the line): newest first, id breaks ties, `from`/`to` are inclusive India days.
+- Money is sent with two decimals (HALF_UP of the 4-decimal sums); every figure is a JSON number.
+- Known gap: the supplier's record-payment endpoint stamps `paidAt` with `Instant.now()` rather than `creditClock` when `paidAt` is left out (same instant in production, but tests must pass `paidAt` to place a payment on a given India day).
+
+## D-164 — Credit: the supplier records a payment as one receipt over the line's invoices
+
+Suppliers are paid per statement, not per invoice, so recording one invoice at a time was slow and made typos likely.
+
+- A payment received for the line is one `credit_repayment` row (source `SUPPLIER_RECORDED`, V81 widens `source` and adds `method`, `reference`, `paid_on`, `note`) with no wallet debit and no payout, plus one `credit_payment` per invoice written by the same `applyPayment` the wallet and claim paths use, in one transaction. Lock order is the wallet path's without the wallet: the invoices `FOR UPDATE` in ascending id order, then the agreement's exposure.
+- Allocation is oldest due date first, ties by invoice id; with `invoiceIds`, only those, in due-date order among them. More than the targeted invoices owe is `CREDIT_OVERPAYMENT`; it is never kept as a balance. Amounts are 2 decimals, at least 0.01 (the sub-rupee tail rule of D-160 is the wallet's, because a supplier recording an exact remainder is common and there is no restaurant who could be stranded).
+- `POST .../payments/preview` is a pure read with no locks and no key; it runs the same allocation on the unlocked rows and returns what the record would, including whether a SYSTEM suspension would lift. Open "I paid" claims on invoices that would be paid are returned as `pendingClaims` warnings in the preview only; the payment is never blocked by them. A claim bigger than what is left stays and a later confirm is capped (D-157, D-160); one on an invoice the receipt settles is superseded.
+- Method is CASH, UPI, BANK_TRANSFER, CHEQUE or CARD. ADJUSTMENT is not accepted on this path (corrections will be credit notes and write-off); the single-invoice endpoint still accepts it, unchanged.
+- Reference: 4 to 64 characters after trimming, required for UPI, BANK_TRANSFER and CHEQUE, optional for CASH and CARD (still 4 to 64 when given). `paidOn` is an India day, not in the future, not before the oldest targeted invoice's issue day.
+- Duplicate reference: the same reference (case-insensitive by the column collation), in the same store, on any method and any path (receipt, single-invoice payment, confirmed claim), within 90 days, not on a reversed receipt, is 409 `CREDIT_DUPLICATE_REFERENCE` (details `receiptId`, `paidOn`, `amount`) unless `allowDuplicateReference` is true. The check runs before the idempotency key is claimed so "Record anyway" can reuse the key, and again under the invoice locks. Two receipts with one reference against different invoices at the same instant can both pass; the override exists anyway, so this is a typo guard.
+- Idempotency: key namespaced `supplier:<actor>:<key>` on the receipt; payment rows add `:<invoiceId>`; `IdempotencyService` hash over the canonical request (amount as scaled plain text, invoice ids sorted); a replay returns the original response; the same key with a different body is `IDEMPOTENCY_KEY_REUSE`.
+- The restaurant gets one `CreditRepaymentRecorded` event per receipt (named after the first invoice, "INV-... and N more" when several).
+
+## D-165 — Credit: closing a line
+
+A supplier needed a way to end a relationship without leaving a dead line or a debt nobody tracks.
+
+- `POST /credit/agreements/{id}/close {reason}` (`CREDIT_MODIFY` on the store; anyone else 404). Allowed from ACTIVE and SUSPENDED only. A REQUESTED request is declined and an APPROVED offer withdrawn (reject), not closed: 409.
+- **Refused with 409 `INVALID_STATE_TRANSITION`** (details `owed`, `reserved`) while anything is owed (utilized, or any open invoice) or held for an order in flight (reserved). The supplier suspends the line to stop new orders and closes it once it is paid. Debt is never closed over.
+- The agreement row is taken `FOR UPDATE` before it is read (`CreditAgreementLockRepository`), and an order reserves with `status = 'ACTIVE'` in the same UPDATE, so an order racing a close either reserves first (the close then refuses) or is refused as `CREDIT_AGREEMENT_NOT_ACTIVE`.
+- CLOSED: `closed_at` set, suspension fields and the overdue floor cleared, audit `CREDIT_CLOSED`, event `CreditClosed` (restaurant told, in-app and push, never SMS, with the reason). Closing a CLOSED line answers 200 and changes nothing (a retry).
+- The restaurant may ask again: the unique (outlet, store) row is reused. `request()` already allowed a new round after REJECTED, EXPIRED and CLOSED when nothing is owed or held; it now also clears `closed_at`. A CLOSED line that still shows ₹1 owed (should not exist) is refused (409).
+
+## D-166 — Credit: an unaccepted offer lapses after 14 India days
+
+A stale offer accepted months later is credit on terms nobody still means (decision 13). `EXPIRED` existed in the state machine but nothing ever set it.
+
+- `credit_agreement.offer_made_at` (V84): set when the supplier approves on modified terms or edits an APPROVED offer (a new version is a new offer, so the 14 days restart); cleared when the line is activated, rejected, expired or asked for again. V84 backfills existing APPROVED rows from `updated_at`.
+- **14 India days.** An offer made on India day D can be accepted through D+13 and has expired from D+14 (`CreditOfferExpiry`, pure and unit tested). The day is the India day, never the UTC day. `AgreementResponse` carries `offerMadeAt` and `offerExpiresOn` (null unless APPROVED).
+- `CreditJobs.expireOffers`, hourly (`costonomy.mp.credit.offer-expiry-interval`, ShedLock `credit-offer-expiry`), moves each expired APPROVED offer to EXPIRED in its own transaction (`CreditLifecycleService.expireOffer`): audit `CREDIT_OFFER_EXPIRED` (SYSTEM) and event `CreditOfferExpired`. Both sides are told (restaurant and supplier store, in-app and push, never SMS). A failure on one offer is logged and retried next run.
+- **Accept racing the job.** Both take the agreement row `FOR UPDATE` before reading it (`CreditAgreementLockRepository`), and the job re-checks status and age on the locked row. Exactly one wins: an accept that comes second gets 409 `INVALID_STATE_TRANSITION` ("There are no approved terms to accept"), a job that comes second finds ACTIVE and does nothing. The loser changes and announces nothing.
+- An EXPIRED line is terminal for the supplier (approve and modify are refused) and the restaurant may ask again on the same (outlet, store) row, a new round. A REQUESTED request never expires (a request can wait; the digest nudges the supplier) and `reviewDate` stays a reminder.
+
+## D-167 — Credit: a supplier may give an invoice longer to be paid
+
+Restaurants ask for a few more days; without this the supplier could only wait for the invoice to go overdue (and the line to auto-suspend) or write the debt off.
+
+- `POST /credit/invoices/{id}/extend-due {newDueDate, reason}` with an `Idempotency-Key` (`CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; others 404). A retry replays; the same key with other details is 409 `IDEMPOTENCY_KEY_REUSE`.
+- **Later only**: strictly after the current due date, else 400. **At most 60 days past the ORIGINAL due date** (the first extension row's old date), however many extensions it takes, else 400. Not on PAID or WRITTEN_OFF (409).
+- The invoice's grace travels with the date (`overdue_after = new due + original grace`); nothing about the money, the exposure or the ledger changes.
+- **OVERDUE goes back to open** (ISSUED, or PARTIALLY_PAID when part is paid) when its new overdue-after day is today (India) or later, which is when the sweep would no longer mark it. This is the same moment as the spec's "new due date in the future" whenever grace is 0, and slightly wider when there is grace, so the status and `dueState` never disagree. While still late it stays OVERDUE.
+- A SYSTEM suspension whose overdue is now within tolerance lifts through the existing `reinstateIfOverdueCleared` (a supplier's own suspension never does).
+- V84 `credit_due_extension` (invoice, old and new due, old and new overdue-after, reason, actor, created_at; append-only). `GET /credit/invoices/{id}` gains `extensions[]`, newest first, for both sides. Audit `CREDIT_DUE_EXTENDED`; event `CreditDueDateExtended` tells the restaurant (in-app and push, never SMS).
+
+## D-168 — Credit: request context shows this store's own history only; claim read fields are server-computed
+
+- **Privacy (decision 15).** `GET /supplier-stores/{storeId}/credit/requests/{agreementId}/context` (`CREDIT_REQUEST_VIEW` on the store; another store, the restaurant, or an agreement that is not this store's: 404) returns only what THIS store knows about the outlet: orders in the last 90 India days (not drafts, not cancelled; value is the accepted amount), average, cancelled count, first and last order day, how many of this store's invoices were ever marked overdue, how an earlier line ended (REJECTED, CLOSED, EXPIRED) and the line's history from its audit trail. Every query is keyed on both outlet and store; no figure ever comes from another supplier. `CreditRequestContextIT` fails if one does. The plan's S9 route name `/credit/agreements/{id}/request-context` is superseded by the store-scoped path above, which makes the store explicit in the URL.
+- **Claim fields** (additive on `ClaimResponse`, both sides): `ageDays` (India days since submission), `stale` (a claim still SUBMITTED at 7 days or more; nothing is ever auto-rejected, decision 7), `invoiceOutstanding`, `invoiceOpenClaimsAmount` (all SUBMITTED claims on the invoice, this one included while it waits), `invoiceOtherOpenClaimsAmount` (the same without this claim, so the app subtracts nothing), `possibleDuplicateOf` and `possibleDuplicateKind` (CLAIM or PAYMENT). Duplicate hint: for a SUBMITTED claim, another SUBMITTED or CONFIRMED claim on the same invoice, else a payment on it, with the same amount and either the same reference (trimmed, case-insensitive) or created within 24 hours; the lowest id wins, claims before payments. A decided claim shows null. It is a hint, not a block.
+
+## D-169 — Credit: the supplier undoes a recorded payment by a reversal, never a delete
+
+A typo (₹50,000 for ₹5,000) or a bounced cheque must be correctable, and the debt must never be edited away or invented. Plan B6, decision 3.
+
+- A separate table, `credit_payment_reversal` (V82): one row per `credit_payment` taken back, unique on the payment (so two simultaneous reversals cannot both land), `receipt_id` when a receipt was undone, `amount`, `reason`, `reversed_by`, `reversed_at`, `idempotency_key` unique (the supplier-namespaced key plus `:<paymentId>`). `credit_payment` keeps its `amount > 0` check and is never updated. A receipt's `credit_repayment.status` becomes `REVERSED` (the column is VARCHAR(16), no change needed).
+- Endpoints: `POST /credit/receipts/{id}/reverse` and `POST /credit/payments/{id}/reverse` (for a payment recorded alone or a confirmed claim), `Idempotency-Key`, `{reason}` of 3 to 500 characters, `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store (anyone else 404). A receipt is reversed as one, all invoices or none. A payment that belongs to a receipt cannot be undone alone (`CREDIT_REVERSAL_NOT_ALLOWED`, details `receiptId`).
+- What can be reversed: source `SUPPLIER_RECORDED` or `CLAIM_CONFIRMED`. Never `WALLET` (that money went through Mandi to the supplier's payout; `CREDIT_REVERSAL_NOT_ALLOWED`, 409), and never a payment on a written-off invoice. 7 India days, 30 for CHEQUE; outside it `CREDIT_REVERSAL_WINDOW_CLOSED` (409, details `closedOn`, `reversibleUntil`). Already reversed: `CREDIT_ALREADY_REVERSED` (409).
+- Effect, one transaction, lock order claim, invoices ascending id, agreement: each invoice's `paid_amount` goes down by its allocation, `settled_at` cleared, and the status comes from `CreditReversalRules.statusAfter` (OVERDUE once past `overdue_after`, else ISSUED with nothing paid, PARTIALLY_PAID with some), the same date rule the sweep uses. `CreditExposureStore.unrepay` raises utilised in a single conditional statement that refuses to pass the approved limit (the mirror of `reserve`, because a CHECK violation would be a 500); a refusal is `CREDIT_REVERSAL_NO_HEADROOM` (422, details `needed`, `available`, `shortBy`) and rolls the whole receipt back. One `PAYMENT_REVERSED` ledger row per invoice, so the statement identity (opening + draws - payments + reversals = closing) holds by construction; the statement labels it "Payment reversed" and carries the reversed payment's source, method and reference. A SUSPENDED or CLOSED line still allows it when there is headroom.
+- A confirmed claim whose payment is reversed goes back to REJECTED with the note "Payment reversed by supplier" (no `confirmed_amount`); a REJECTED claim counts toward no cap, so the invoice's debt is the only cap again.
+- The overdue floor of D-163 is not touched by a reversal. The restored overdue simply counts at the next sweep: back within `max(max_overdue_amount, floor)` leaves the line alone, beyond it suspends by SYSTEM.
+- Reversed payments are excluded from `collectedThisMonth` and from the duplicate-reference check (a reference reversed is free to record again) but stay visible in every feed with `reversedAt`. The restaurant's paid totals come from the invoice fields the reversal recomputed.
+- The restaurant gets `CreditPaymentReversed` (in-app and push, never SMS): "Your supplier cancelled the payment of ₹X recorded on <date>. Reason: ...". Audit row `CREDIT_PAYMENT_REVERSED` on the receipt or payment.
+- A refused reversal consumes its idempotency key like every other refusal (D-016): the app sends a fresh key per attempt.
+
+## D-170 — Credit: the undo window counts from the day the payment was recorded, not the date typed
+
+`paidOn` is typed by the supplier and may be a week old when it is entered. Counting the window from it would let a backdated payment arrive already un-undoable (or, with a future-proof clock, let a payment be undone for ever by dating it late). The window is 7 (30 for a cheque) India days from the India day of `credit_payment.created_at`, the moment the supplier recorded it. `reversibleUntil` in the feed is that last day; the app shows it and never computes it.
+
+## D-171 — Credit: reminders to a restaurant (manual and automatic)
+
+A supplier's only lever on a late restaurant was the overdue notice and a phone call. Reminders are a message and move no money; the server decides what is worth one and how often.
+
+- **What is worth a reminder.** An open invoice that is OVERDUE, past its due date inside the grace period (`IN_GRACE`, worded "was due on"), due today or due within 3 days (`CreditDueState`). Nothing else: `canRemind` is false with reason `NOTHING_DUE`. An invoice whose outstanding is fully covered by SUBMITTED claims is skipped and the supplier is told (`skipped[]` reason `CLAIM_SUBMITTED`, or `CLAIM_COVERED` when nothing is left); a partial claim does not cover it.
+- **Limits, all server side, India time:** 1 manual reminder per line per 24 hours (429 `CREDIT_REMINDER_TOO_SOON`, `nextAllowedAt`), 3 per line in a rolling 7 days and 50 per store per India day (429 `CREDIT_REMINDER_LIMIT`, `limit` WEEK or STORE_DAY, `max`, `nextAllowedAt`). A QUEUED reminder counts. The agreement row is locked for the write so two requests cannot both pass. The per-store count is not itself locked, so two reminders on two different lines of one store racing at exactly the 50th could both pass; the harm is one extra message.
+- **Quiet hours 09:00-20:00 IST.** Asked for outside the window, a reminder is stored QUEUED (`sendAt` = next 09:00 IST) and sent by the job; it is looked at again at release: an invoice paid, written off or claimed overnight drops out, and if none is left the reminder is CANCELLED (audit `CREDIT_REMINDER_CANCELLED`), so a restaurant that paid is not chased.
+- **Delivery** is the notification outbox, event `CreditReminder` to the outlet, text composed once on the server (`CreditReminderText`, Indian grouping, "₹6,500 overdue since 24 Sep (INV-1). Pay in Mandi or tell them you paid.") and carried in `{message}`: the supplier's preview is byte for byte what the restaurant gets. The channels travel as a `notificationVariant`: `IN_APP` (T-3), `PUSH` (in-app and push), `SMS` (a manual reminder while something is OVERDUE). SMS is the only critical (un-mutable) variant, like `CreditOverdue`; the closed SMS list in `NotificationRulesTest` gained `CreditReminder#SMS`. There is no per-user SMS cap in the notification code: the bound is the manual limits above (at most one SMS per line per day) and automatic reminders never use SMS.
+- **Automatic reminders** (`CreditReminderJobs`, hourly, `costonomy.mp.credit.reminder-interval`, ShedLock `credit-reminders`), only 10:00-20:00 IST, only ACTIVE or SUSPENDED lines whose store has `supplier_credit_policy.auto_reminders_enabled` (V85, default 1; absent policy row means on; exposed on the credit policy GET and PUT, a PUT that leaves it out keeps it), never PAID, WRITTEN_OFF or claim-covered invoices. `AUTO_T3`: exactly 3 India days before the due date, in-app only. `AUTO_DUE`: on the due date, in-app and push. `AUTO_WEEKLY`: 7 days after the grace ended and every 7 days after, at most 4 per invoice, in-app and push. One reminder per line and kind groups that day's invoices. `credit_reminder_invoice.auto_key` (`KIND:yyyy-MM-dd`) is unique per invoice: the same automatic reminder cannot reach an invoice twice in an India day, even from two nodes.
+- **Tables (V85).** `credit_reminder` (kind MANUAL/AUTO_T3/AUTO_DUE/AUTO_WEEKLY, channel, status QUEUED/SENT/CANCELLED, note, message, created_by null for automatic, `requested_at` from the credit clock, `sent_at`, `idempotency_key` = actor:key unique) and append-only `credit_reminder_invoice`. Manual send audits `CREDIT_REMINDER_SENT` or `CREDIT_REMINDER_QUEUED`.
+- **API.** `POST /credit/agreements/{id}/reminders` (`Idempotency-Key`; `CREDIT_COLLECT` or `CREDIT_MODIFY`; others 404; same key and other body 409 `IDEMPOTENCY_KEY_REUSE`), `GET .../reminders/preview?invoiceIds=` (same access; changes nothing) and `GET .../reminders` (history, `CREDIT_VIEW` on the store, supplier side only). Nothing to remind: 422 `CREDIT_REMINDER_NOT_NEEDED`.
+
+## D-172 — Credit: CSV exports of the statement and the store's collections
+
+- `GET /credit/agreements/{id}/statement.csv?from&to` renders `CreditReadService.statement`, the code behind the JSON statement, so access (either side, else 404), window, default and 366-day limit are the same and the two cannot disagree on a row, the opening or the closing. A few labelled lines (restaurant, outlet, supplier, store, from, to, `Opening owed`, `Closing owed`, and a note that it is a Mandi credit reference and not a GST tax invoice), a blank line, then the rows newest first.
+- `GET /supplier-stores/{storeId}/credit/collections.csv?from&to&source` renders `CreditSupplierReadService.storePayments`, the payments feed (same access, `CREDIT_VIEW` or `CREDIT_REQUEST_VIEW` on the store). There is no payment reversal in this code yet, so no reversed column; it is added with the reversal feature.
+- **Format.** UTF-8, no byte order mark, CRLF rows, text/csv. Money is a plain decimal with two places and a sign, never grouped or prefixed. Times are India time with offset (`2026-10-05T14:32:10+05:30`). A text cell that starts with `= + - @`, a tab or a carriage return gets a leading single quote; money cells are written by the server and are never touched (a quote in front of `-500.00` would break it). Cells with a comma, quote or newline are quoted. Names only, no phone numbers.
+- **File name** `statement-<outlet>-<from>-<to>.csv` (outlet name slugged to lower case letters, digits and dashes, so it cannot carry a formula) and `collections-store-<id>-<from|start>-<to|today>.csv`.
+- **Cap** 20,000 rows (`costonomy.mp.credit.export-max-rows`, only a test lowers it): beyond it 413 `CREDIT_EXPORT_TOO_LARGE`, details `max` and `rows`, never a silent cut. Every successful export writes an audit row `CREDIT_EXPORT` (actor; `CREDIT_AGREEMENT` or `SUPPLIER_STORE`; `STATEMENT_CSV rows=N` or `COLLECTIONS_CSV rows=N`; the range). A refusal writes none.
+
+## D-173 — Credit: the daily supplier digest
+
+One quiet daily notification instead of a push per overdue invoice (a plan rule).
+
+- `CreditDigestService`, job every 10 minutes (`costonomy.mp.credit.digest-interval`, ShedLock `credit-digest`), sends from `costonomy.mp.credit.digest-time` (08:30 IST) until 20:00, once per store per India day: `credit_digest_log` (V85, unique store and day, append-only) is written for every store looked at, with `sent = 0` when nothing was sent, so a restart or a second node cannot repeat it, and something that appears later the same day waits for tomorrow.
+- Content, all counted by the server: claims waiting (and how many for 7+ days), the overdue total and how many restaurants, due this week (today and the next 6 days, as on the receivables screen), credit requests waiting (lines in REQUESTED), payouts PENDING. Parts that are zero are left out; **everything zero sends nothing**. Event `CreditSupplierDigest`, aggregate the store; text in `{message}`.
+- **Recipients** are the store's people (a grant on the store or its organisation) whose role holds `CREDIT_VIEW`: a new notification audience `SUPPLIER_STORE_CREDIT` (`NotificationAudience.forSupplierStoreWith`). The plain store audience tells everyone with any grant, which would put credit totals in front of a person who may not see credit. In-app and push, never SMS.
+
+## D-175 — Credit: a credit note and a write-off are `credit_invoice_note` rows; outstanding is amount - paid - credited
+
+A restaurant must never owe for goods it did not receive, and a supplier must never hide a default behind a mislabelled write. Plan B7 and B8, decisions 2, 5 and 6.
+
+- V83: `credit_invoice_note` (append-only: number `CLN-yymmdd-NNNNNN` from `credit_invoice_note_sequence`, invoice, agreement, outlet, store, `amount > 0`, `reason_code` SHORT_SUPPLY / QUALITY / PRICE / CANCELLED / GOODWILL / OTHER, `kind` MANUAL / SYSTEM_CANCEL / WRITE_OFF, `note`, optional `dispute_id`, unique `idempotency_key`, `created_by` null for the system). A write-off is a `credit_invoice_note` of kind WRITE_OFF (reason code OTHER, or GOODWILL for that quick reason, the supplier's reason as the note) rather than a table of its own: it is the same arithmetic on the same invoice column, and one list shows everything taken off an invoice.
+- `credit_invoice.credited_amount` (default 0) with `CHECK (credited_amount >= 0 AND paid_amount + credited_amount <= amount)`. `CreditInvoice.outstanding()` is `amount - paid_amount - credited_amount` and is the only definition: receivables, ageing, restaurant rows, dues and next-due, the claim caps, the record / receipt / wallet allocation, the overdue event and the reversal all call it. Two admin SQL sums (`AdminQueryService.creditExposure`, `OperationsDashboardService.credit`) and two status rules (`CreditReversalRules.statusAfter`, `CreditDueExtensionService`) were changed to match. `CreditNoteOutstandingSitesIT` proves each site separately.
+- Status rule: when paid + credited = amount the invoice is PAID (WRITTEN_OFF when the last of it was a write-off); a partial credit note makes it PARTIALLY_PAID (OVERDUE stays OVERDUE); a partial write-off keeps its status (plan S12). A fully credited invoice therefore reads PAID with `paidAmount` 0 and `creditedAmount` = amount; the apps show `creditedAmount` ("Settled by credit note") and never infer it. A new status was not added: every `isSettled()` caller would have had to learn it.
+- `CreditInvoiceService.applyCredit` is `applyPayment`'s twin: the invoice must already be locked, then the `credit_invoice_note` row, the invoice, waiting claims, `CreditExposureStore.repay` (utilised goes down by the same single conditional statement a payment uses) and the ledger row (`CREDIT_NOTE` or `WRITE_OFF`, new `credit_transaction.credit_note_id` so the statement shows the number), then the auto-reinstate hook. A credit note is not a payment: no `credit_payment`, no receipt, no payout, no commission, never in `collectedThisMonth`.
+- Waiting claims: an invoice that is settled by the note or write-off supersedes them (notes "Invoice was settled before this was confirmed", "...written off...", "The order was cancelled..."); on a partial reduction they stay and a confirm is capped at what remains (D-157, D-160), because a claim on money still owed may be real.
+- `POST /credit/invoices/{id}/credit-notes` (201): `{amount, reasonCode, note?, disputeId?}`, `Idempotency-Key`, `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store (else 404). `CREDIT_NOTE_EXCEEDS_OUTSTANDING` (422, details `outstanding`), `CREDIT_NOTE_INVOICE_SETTLED` (409: decision 5, the supplier refunds a paid invoice off-platform; Mandi keeps no two-way balance). `GET /credit/agreements/{id}/credit-notes?page&size` for either side. Event `CreditNoteIssued` to the restaurant (in-app and push), audit `CREDIT_NOTE_ISSUED`. A `disputeId` must be a dispute of the invoice's own order.
+- Reversal of a payment is refused (`CREDIT_REVERSAL_NOT_ALLOWED`) on an invoice that has a refund due (D-177): the payment is owed back, so it cannot also be put back as owed.
+
+## D-176 — Credit: an order cancelled after the draw is credited automatically, in the cancel transaction
+
+`CreditFundingAdapter.onOrderUnfulfilled` first releases a hold that was never drawn (as before), then `CreditCancellationService.onCancelledAfterDraw` handles a UTILIZED reservation (D-091 draws at confirmation, so every confirmed credit order cancelled later lands here).
+
+- In the same transaction as the cancel, a SYSTEM credit note (`kind` SYSTEM_CANCEL, reason CANCELLED, `created_by` null, key `cancel:<orderId>`) takes off exactly what is still owed on the invoice. If it fails, the whole cancel rolls back (no half state; CC07). Delivered twice (the cancel endpoint is idempotent, and the hook is) it makes one note.
+- The invoice's id is read alone and then locked `FOR UPDATE` before the row is loaded, so a racing payment's result is what the note is computed from (a locking query does not refresh an entity the persistence context already holds). Lock order is the payment paths': invoice, then agreement.
+- The restaurant is told (`CreditNoteIssued`); the sweep's suspension is lifted when the overdue clears. No payout, commission or settlement is touched.
+- Limit: the order is cancelled whole; there is no partial fulfilment amount in the codebase, so the note is the invoice's remaining outstanding. A short delivery is a manual credit note.
+- A claim still waiting on the invoice is superseded with the note "The order was cancelled before this was confirmed". Money the restaurant says it paid by a claim the supplier never confirmed is not tracked as a refund due: it is the restaurant's to raise with the supplier. (An unresolved edge, see D-177.)
+
+## D-177 — Credit: money paid on a cancelled order's invoice is a refund due, settled off-platform
+
+A note cannot cancel money already paid. `credit_refund_due` (V83: invoice, optional note, amount, `channel`, `status` OPEN / REFUNDED, `refunded_at`, `refunded_by`, unique key `cancel:<invoiceId>:<channel>`) records what is owed back to the restaurant.
+
+- `OFF_PLATFORM`: the part the supplier received directly (supplier-recorded or claim-confirmed payments). The supplier refunds it itself and marks it refunded: `POST /credit/refunds-due/{id}/mark-refunded` (`{note?}`, `CREDIT_COLLECT` or `CREDIT_MODIFY`, 404 otherwise, idempotent: a second mark answers 200 and changes nothing, audit `CREDIT_REFUND_MARKED`). The supplier is told once (`CreditRefundDue`, in-app). `GET /supplier-stores/{id}/credit/refunds-due?status=` lists them.
+- `WALLET`: the part the restaurant paid from its Mandi wallet, which Mandi paid on to the supplier (a payout). Flagged for ops: an OPEN row with the note "wallet-funded: ops refund" and an audit row `CREDIT_REFUND_DUE_OPS`; the supplier cannot clear it (`CREDIT_REFUND_OPS_ONLY`, 409). This change moves no wallet money and cancels no payout: the OR09 / OR10 ops flows (cancel a PENDING payout, or deduct from the next settlement, D-104) are later work.
+- A fully paid invoice gets a refund due and no note (there is nothing left for a note to cancel); a part-paid one gets the note for the rest and a refund due for the paid part.
+
+## D-178 — Credit: the statement carries credit notes and write-offs by number
+
+`CREDIT_NOTE` ("Credit note") and `WRITE_OFF` ("Written off") ledger rows have an amount that lowers utilised, so `opening + sum(lines) = closing` holds by construction like every other row. `StatementLine` gains `creditNoteNumber` (null for other rows); the invoice detail gains `creditedAmount` and `creditNotes`, and `InvoiceResponse` gains `creditedAmount`.
+
+## D-179 — Credit: a write-off is owner and admin only, suspends by default, and is not a payment
+
+Plan B8, decision 6. `POST /credit/invoices/{id}/write-off` and `POST /credit/agreements/{id}/write-off`: `{amount?, reason, quickReason?, keepLineOpen?}`, `Idempotency-Key`, permission `CREDIT_WRITE_OFF` only (SUP_OWNER and SUP_ADMIN from V80; anyone else 404).
+
+- `reason` 3 to 500 characters after trimming is required; `quickReason` is RESTAURANT_CLOSED, UNRECOVERABLE, SETTLED_OUTSIDE or GOODWILL. No amount writes off everything owed; a stated amount is spread oldest due date first, ties by invoice id (the line variant), one `credit_invoice_note` and one `CREDIT_WRITTEN_OFF` audit row per invoice, one event, one suspension.
+- The invoice becomes WRITTEN_OFF when nothing is left; a partial write-off keeps its status and its waiting claims. Not collected, no payout, no commission, never in `collectedThisMonth`. The overdue sweep, the reminders and every dues sum leave written-off amounts out because they are no longer outstanding.
+- Unless `keepLineOpen`, the line is suspended by the supplier with reason "Written off" (an ACTIVE line is suspended; one the sweep suspended becomes the supplier's, so a repayment does not lift it and the owner must reinstate). With `keepLineOpen` the sweep's suspension lifts as usual when the overdue clears.
+- The restaurant gets `CreditWrittenOff` in-app only, in neutral words ("{supplier} has closed invoice INV-... (₹...)"); the supplier's reason is not in the event.
+- A written-off invoice cannot be paid, receipted, repaid from the wallet, claimed, credited, extended, written off again (`CREDIT_WRITE_OFF_NOTHING_OWED`, 409) or have an earlier payment undone (`CREDIT_REVERSAL_NOT_ALLOWED`). Irreversible in the app; an ops reversal endpoint is later work (P2).
+
+## D-180 — Credit: write-off and credit-note races follow the one lock order
+
+Claim, wallet, invoices ascending id, agreement. A note or write-off holds the invoice (or the open invoices ascending) and then the agreement; it takes no claim lock and supersedes waiting claims with a skip-locked update like a payment does (D-160). A write-off or note racing a payment, a wallet repayment, a claim confirm, a receipt or another note ends consistent whichever runs first: the second sees the first's reduced outstanding and is refused (422, 404 or 409) or capped; `utilized` always equals what the open invoices owe.
+
+## D-181 — Filters and sorting on the buyer's supplier lists
 
 The buyer's supplier lists (`GET /api/v1/search/suppliers` and `GET /api/v1/outlets/{outletId}/suppliers/popular`) were sorted by distance only and offered no filters for store hours or rating.
 
@@ -6039,28 +6562,28 @@ The buyer's supplier lists (`GET /api/v1/search/suppliers` and `GET /api/v1/outl
 2. **Popular suppliers remain unpaged.** `GET /api/v1/outlets/{outletId}/suppliers/popular` is a showcase list capped at 100 entries (`limit`, clamped to 1 to 100, default 10), not a directory, so it takes the same filters and sort but no offset.
 3. **Tests:** `StorefrontIT$Suppliers.filtersAndSortByRating` and `StorefrontIT$Popular.popularFiltersAndSort`. Verified with mutation testing.
 
-## D-148 — Quick wins from the database audit
+## D-182 — Quick wins from the database audit
 
 From `docs/performance/DB_BOTTLENECKS.md`: the changes that are small, low-risk and need no new dependency. Nothing was measured under load; each is a removal of work the code did for no reason.
 
-1. **Indexes (V76)** for queries the audit found scanning growing tables: `supplier_offer(supplier_sku_id, status)` (the hottest lookup), `supplier_order(status, updated_at)` and `(created_at)`, `payment(created_at)` and `(captured_at)`, `dispute(created_at)` and `(resolved_at)`, `refund(late_success_at, late_success_resolved_at)` and `(status, reversed_at, id)`, `outbox_event(status, id)`, `wallet_top_up(outlet_id, status, created_at)`, `sku_review(supplier_sku_id, moderation_status, created_at)`, `canonical_product(status, name)`. Built `ALGORITHM=INPLACE, LOCK=NONE`.
+1. **Indexes (V86)** for queries the audit found scanning growing tables: `supplier_offer(supplier_sku_id, status)` (the hottest lookup), `supplier_order(status, updated_at)` and `(created_at)`, `payment(created_at)` and `(captured_at)`, `dispute(created_at)` and `(resolved_at)`, `refund(late_success_at, late_success_resolved_at)` and `(status, reversed_at, id)`, `outbox_event(status, id)`, `wallet_top_up(outlet_id, status, created_at)`, `sku_review(supplier_sku_id, moderation_status, created_at)`, `canonical_product(status, name)`. Built `ALGORITHM=INPLACE, LOCK=NONE`.
 2. **Nightly retention** (`RetentionJobs` at 03:30 India time, `RetentionPurger`): expired `idempotency_record` (its purge existed and nothing called it), `outbox_event` PUBLISHED older than 14 days, `delivery_location` older than 30 days, expired `refresh_token` older than 30 days, `otp_verification` older than 7 days. Deleted in batches of 5,000, each its own statement and commit, at most 200 batches per table per run, no surrounding transaction. All periods are configuration (`costonomy.mp.retention.*`; `RETENTION_ENABLED=false` turns it off). **Not purged on purpose:** `audit_log`, `payment_webhook_event`, payments, refunds, wallet and order tables (financial or legal records: a retention decision for their owners), `notification` (a user's inbox), FAILED outbox rows (terminal and meant to be seen).
 3. **Realtime cleanup** deletes with one `DELETE` statement instead of loading every row and deleting them one by one.
 4. **Typeahead** matches aliases with an indexed prefix query. It used to load the whole alias table on every keystroke.
-5. **Role codes** are cached in memory for 10 minutes (`RoleCodeCache`): every permission check used to load every role. This is reference data only. **Who holds which role is still read live on every check**, so revoking access applies on the next request. An empty result is never cached.
+5. **Role codes** are cached in memory for 10 minutes (`RoleCodeCache`): every permission check used to load every role. This is reference data only. **Who holds which role is still read live on every check**, so revoking access applies on the next request. An empty result is never cached. A grant naming a role the snapshot doesn't know (a role added since the load, as the credit permission tests do) reloads it once, so a new role works at once instead of after ten minutes.
 6. **Connection pool:** 30 connections (was 10), minimum idle 5, `max-lifetime` 25 minutes, leak detection at 60 seconds. Ten was starvation-prone: a transaction that opens a `REQUIRES_NEW` store holds two connections, and up to 8 job threads plus request threads share the pool. Leak detection will log connections held for over a minute, which is where a transaction around a provider call shows up. Keep it below the database's `max_connections` divided by instances.
 
 **Not done:** the structural fixes in the audit (nested transactions, the delivery poll, outbox draining, order-inbox N+1, search design, a real cache layer). Caffeine is not available offline here, so caching used an in-memory snapshot like `RolePermissionCatalog`; a proper cache needs the dependency and an eviction design.
 
 **Tests:** `RetentionPurgerIT` (each rule deletes the old and keeps the recent, a backlog clears across batches, FAILED and PENDING outbox rows stay, and the indexes exist), `RoleCodeCacheTest`, `SearchSuggestionsIT`. Mutation-checked.
 
-**Review fixes (after D-147 first landed):**
+**Review fixes (after D-181 first landed):**
 - **Ratings are fetched only when needed.** The popular list had begun computing all-time ratings (five aggregate queries over order history) for *every* store on each call, even with no filter. It now does that only for `minRating` or `sort=rating`, and otherwise looks ratings up for the returned page only, as before.
 - **`minRating` is validated:** 1 to 5, otherwise 422 on both lists, through one shared check (`SupplierListFilters`) that also validates `sort` (`nearest` or `rating`, case-insensitive).
 - **Tests added:** total and next offset describe the filtered list and two pages cover it without repeats; `reach=all` still skips serviceability and still obeys the filters; bad `minRating` and `sort` are refused on both lists; ratings are not loaded for every store without a filter (a spy on the performance provider). Mutation-checked.
 - **App:** the search Suppliers tab starts within 10 km again (the directory's old default), an empty list with filters says "No suppliers found" whatever aisle is chosen, and a star filter notes that unrated suppliers are not shown.
 
-## D-149 — Sort and filters on a product's supplier comparison
+## D-183 — Sort and filters on a product's supplier comparison
 
 The comparison on a product screen (`GET /products/{id}/recommendations`) was one card per supplier, ranked by Best Value, with no way to reorder it, and it asked the server about a single unit, so nothing on it could say "enough for my 20 kg".
 
@@ -6072,7 +6595,7 @@ The comparison on a product screen (`GET /products/{id}/recommendations`) was on
 6. **Tests:** `RecommendationIT$Choices` (the four sorts, each filter, the hidden count, filters not re-ranking, bad values refused), mutation-checked; `tests/comparisonChoices.test.tsx` and `tests/searchSuppliersService.test.ts` in the app.
 
 
-## D-150 — A delivery with no partner available can be retried
+## D-184 — A delivery with no partner available can be retried
 
 When a supplier asked for Costonomy delivery and no partner could take the route, the delivery stopped at `QUOTE_FAILED` ("No partner available", fee 0) and the order stayed in Ready for pickup with nothing to press: the "Request Delivery Partner" card only shows while there is no delivery, and the failed attempt is a delivery.
 
@@ -6080,19 +6603,19 @@ When a supplier asked for Costonomy delivery and no partner could take the route
 2. **The supplier app shows "Try again"** (card and sticky bar) whenever a partner delivery has stopped without a driver (`QUOTE_FAILED`, `PROVIDER_UNAVAILABLE`, `DRIVER_CANCELLED`, `PICKUP_FAILED`), with the server's reason. If it is still unavailable it says so; the order stays ready.
 3. **Not done, for the product owner:** an automatic retry job, a deadline after which the supplier is offered "I'll deliver it myself" or the order is cancelled and refunded, and a retry on the buyer side. The order cannot be switched to own delivery today (D-145).
 
-## D-151 — A delivery nobody can take is retried automatically, then the supplier may deliver it themselves
+## D-185 — A delivery nobody can take is retried automatically, then the supplier may deliver it themselves
 
-Builds on D-150. Product owner's decision: build the automatic retry and the deadline fallback.
+Builds on D-184. Product owner's decision: build the automatic retry and the deadline fallback.
 
 1. **Automatic retry.** `DeliveryRetryJobs` (ShedLock, every minute) retries partner deliveries stuck in `QUOTE_FAILED`/`PROVIDER_UNAVAILABLE` every 2 minutes for 30 minutes since the first failure (`no_partner_since`), at most 15 times, 20 per sweep (`costonomy.mp.delivery.auto-retry.*`). Each retry is claimed by one conditional UPDATE in its own bean and transaction (`DeliveryRetryClaims`, D-021) before any provider is called, so a provider failure cannot undo the count and a retry is never doubled. It locks the delivery (`lockById`) and checks again, so a manual retry, a booking or a switch that got there first wins; `reassign` takes the same lock. "Still nobody" is not an error here (it is in `reassign`, where it would roll back the attempt). The queries use the database clock and take seconds, because a native query binds an `Instant` in the JVM's zone, which disagrees with the UTC the entities write.
 2. **Offer after 45 minutes** (`own-delivery-offer-after`): once, by a conditional UPDATE on `own_delivery_offered_at`, which writes a `DeliveryOwnDeliveryOffered` event. `NotificationRules` tell the supplier ("You can deliver it yourself") and the restaurant ("Your supplier may deliver it themselves"). Delivery events now carry `supplierStoreId`; without it nothing reached the supplier side.
 3. **`POST /deliveries/{id}/switch-to-own`** (supplier only, `Idempotency-Key`). Allowed only after the offer, while no partner is booked and the order is still ready. The same delivery row becomes `SUPPLIER_OWN`/`DRIVER_ASSIGNED` (D-026, no second row) and the order's mode becomes `SUPPLIER_DELIVERY`; the supplier then dispatches and delivers as in D-141. Order is locked before delivery; the job only locks the delivery. A repeat returns the delivery as it is. D-145 still refuses a named mode on a request.
 4. **The charge the restaurant paid is unchanged.** It stays on the order and with the supplier; nothing is refunded, re-quoted or charged again, so no money moves and no adjustment is written. The plan considered letting the supplier lower the fee; that needs a refund path and was left out. Tax invoice and payout figures therefore need no change. The restaurant is told it is unchanged.
 5. **Not automated: cancelling and refunding.** An automatic cancel at a fixed hour could discard packed, perishable goods. The supplier and the restaurant can already cancel (D-103, D-104). An operations alert after about 2 hours is the suggested next step.
-6. **Known limits.** A retry still holds a connection and the delivery lock for the provider's timeout (batch of 20 bounds it); quoting is not yet split out of the transaction. Existing stuck deliveries are backfilled in V77 and are offered the switch at the next sweep.
+6. **Known limits.** A retry still holds a connection and the delivery lock for the provider's timeout (batch of 20 bounds it); quoting is not yet split out of the transaction. Existing stuck deliveries are backfilled in V87 and are offered the switch at the next sweep.
 7. **Tests.** `DeliveryFlowIT$NoPartner` (retry books on the same delivery; not inside the interval; window then a single offer; refusals before the offer and for the buyer; switch keeps the total and the delivery id and then runs as own delivery; refused once a partner is booked). Mock failures are one-shot, and the job retries every due delivery, so the nested class cancels earlier failed deliveries first.
 
-## D-152 — An unpaid card order can be paid from the wallet or on credit, or cancelled
+## D-186 — An unpaid card order can be paid from the wallet or on credit, or cancelled
 
 A card order waits unreleased for its payment, and the pay screen offered only "Pay" and "Go to orders". Product owner's decision: let the restaurant pay it another way, and cancel it.
 
@@ -6105,14 +6628,14 @@ A card order waits unreleased for its payment, and the pay screen offered only "
 7. **Known limits.** Money that arrives on a still-open card checkout after a switch is captured and returned, and the gateway keeps its fee (the same cost D-109 accepts for a cancelled order). A refund after the switch is worded as for a cancelled order; a separate "paid another way" wording was not added.
 8. **Tests.** `PaymentFlowIT$AnotherWay` (wallet pays and releases; short wallet changes nothing; already paid is refused; late card money does not fund the order; replay debits once; other tenant gets 404; racing switches; cancel leaves nothing payable). Mutation-checked: not setting the mark fails `cardToWallet` and `lateCardMoney`; the payment-state check and the order-status check each refuse an already-paid order on their own.
 
-## D-153 — Delivery retry times use UTC, and a quote refused for distance is recorded under its own code
+## D-187 — Delivery retry times use UTC, and a quote refused for distance is recorded under its own code
 
 Found by the end-to-end run against the local stack (costonomy-mp-mobile/tools/delivery-e2e).
 
-1. **The retry and own-delivery-offer queries compared UTC with local time.** D-151 moved them to the database clock with `now(6)`, assuming a UTC session. The entities store UTC (`hibernate.jdbc.time_zone=UTC`), but `now(6)` is the server's session zone, IST locally: the automatic retry never fired and "I will deliver it myself" was offered at once. All six comparisons in `DeliveryRepository` now use `utc_timestamp(6)`, which is right whatever the server's zone. `DeliveryFlowIT.retryClockIsUtcWhateverTheDatabaseZone` sets the session zone to +05:30 and fails without the fix.
+1. **The retry and own-delivery-offer queries compared UTC with local time.** D-185 moved them to the database clock with `now(6)`, assuming a UTC session. The entities store UTC (`hibernate.jdbc.time_zone=UTC`), but `now(6)` is the server's session zone, IST locally: the automatic retry never fired and "I will deliver it myself" was offered at once. All six comparisons in `DeliveryRepository` now use `utc_timestamp(6)`, which is right whatever the server's zone. `DeliveryFlowIT.retryClockIsUtcWhateverTheDatabaseZone` sets the session zone to +05:30 and fails without the fix.
 2. **A drop beyond the 30 km radius stalled the whole outbox.** The refused quote was saved without `provider_code` (NOT NULL), which rolled back the outbox relay's transaction every two seconds, so no event reached anyone until the drop point became valid again (observed up to 15 minutes). It is now recorded with provider code `RADIUS_LIMIT`. That provider calls run inside the relay's transaction at all is a design question left open (one transaction per event, or dispatch off the relay thread).
 
-## D-154 — A test-only "move the sandbox rider to the next step" control
+## D-188 — A test-only "move the sandbox rider to the next step" control
 
 The Pidge sandbox has no riders, so a booking never moves on its own and the product owner cannot watch the delivery flow end to end in the apps. Decision: let the supplier app step a sandbox delivery forward, through Pidge's own sandbox, and nowhere else.
 

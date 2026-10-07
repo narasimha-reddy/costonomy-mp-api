@@ -67,6 +67,15 @@ class ErrorContractTest {
                     Map.entry(ErrorCode.CREDIT_LIMIT_EXCEEDED, HttpStatus.UNPROCESSABLE_ENTITY),
                     Map.entry(ErrorCode.CREDIT_SUSPENDED, HttpStatus.UNPROCESSABLE_ENTITY),
                     Map.entry(ErrorCode.PAYMENT_FAILED, HttpStatus.UNPROCESSABLE_ENTITY),
+                    // D-153: repaying credit from the wallet. The app branches on these two and reads their details.
+                    Map.entry(ErrorCode.CREDIT_OVERPAYMENT, HttpStatus.UNPROCESSABLE_ENTITY),
+                    Map.entry(ErrorCode.WALLET_INSUFFICIENT_BALANCE, HttpStatus.UNPROCESSABLE_ENTITY),
+                    // D-155: an "I paid" claim that was already confirmed, rejected or withdrawn.
+                    Map.entry(ErrorCode.CREDIT_CLAIM_STATE, HttpStatus.CONFLICT),
+                    // D-159: a failed idempotent attempt is definitive (use a new key); an on-hold wallet is not "off".
+                    Map.entry(ErrorCode.IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED, HttpStatus.CONFLICT),
+                    Map.entry(ErrorCode.IDEMPOTENT_REQUEST_IN_PROGRESS, HttpStatus.CONFLICT),
+                    Map.entry(ErrorCode.WALLET_ON_HOLD, HttpStatus.FORBIDDEN),
                     Map.entry(ErrorCode.DELIVERY_UNAVAILABLE, HttpStatus.UNPROCESSABLE_ENTITY),
                     Map.entry(ErrorCode.DELIVERY_REASSIGNMENT_FAILED,
                             HttpStatus.UNPROCESSABLE_ENTITY),

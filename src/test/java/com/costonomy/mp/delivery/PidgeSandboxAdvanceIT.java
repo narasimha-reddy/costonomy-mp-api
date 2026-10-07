@@ -27,7 +27,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** D-154: the test-only "move the sandbox rider to the next step" route and the flag that offers it. */
+/** D-188: the test-only "move the sandbox rider to the next step" route and the flag that offers it. */
 @AutoConfigureMockMvc
 class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
 

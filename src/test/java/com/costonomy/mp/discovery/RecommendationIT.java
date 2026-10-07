@@ -311,7 +311,7 @@ class RecommendationIT extends AbstractIntegrationTest {
 
     // ── Honesty ──────────────────────────────────────────────────────────
 
-    // ── Sort and filters (D-149) ─────────────────────────────────────────
+    // ── Sort and filters (D-183) ─────────────────────────────────────────
 
     @Nested
     @DisplayName("sort and filters on the comparison")

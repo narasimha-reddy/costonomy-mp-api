@@ -71,7 +71,7 @@ public class RecommendationService {
     }
 
     /**
-     * The same, with the choices a buyer makes on the comparison (D-149).
+     * The same, with the choices a buyer makes on the comparison (D-183).
      *
      * <p>Filters and sort apply <b>after</b> scoring: Best Value is relative to the suppliers compared, so scoring
      * only the ones left would change every supplier's score and rank each time a filter was touched. A filter

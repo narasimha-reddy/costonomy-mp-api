@@ -15,7 +15,7 @@ import java.util.ArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Typeahead matches aliases by prefix with an indexed query, not by loading the whole alias table (D-148). */
+/** Typeahead matches aliases by prefix with an indexed query, not by loading the whole alias table (D-182). */
 @AutoConfigureMockMvc
 class SearchSuggestionsIT extends AbstractIntegrationTest {
 

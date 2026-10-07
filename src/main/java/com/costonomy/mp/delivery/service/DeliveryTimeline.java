@@ -56,7 +56,7 @@ public class DeliveryTimeline {
         payload.put("deliveryId", delivery.getId());
         payload.put("supplierOrderId", delivery.getSupplierOrderId());
         payload.put("outletId", delivery.getOutletId());
-        // Without it nothing reaches the supplier's side (D-151).
+        // Without it nothing reaches the supplier's side (D-185).
         payload.put("supplierStoreId", delivery.getSupplierStoreId());
         payload.put("status", delivery.getStatus().name());
         if (delivery.getEtaMinutes() != null) {

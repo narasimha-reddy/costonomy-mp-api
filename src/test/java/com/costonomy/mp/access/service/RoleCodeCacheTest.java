@@ -127,4 +127,19 @@ class RoleCodeCacheTest {
         org.junit.jupiter.api.Assertions.assertThrows(UnsupportedOperationException.class,
                 () -> codes.put(9L, "HACKER"));
     }
+
+    @Test
+    @DisplayName("a grant naming a role added after the load is seen at once, not after the TTL")
+    void unknownRoleReloads() {
+        var repo = mock(RoleRepository.class);
+        var owner = role(1, "OWNER");
+        var viewer = role(3, "CREDIT_VIEWER");
+        when(repo.findAll()).thenReturn(List.of(owner), List.of(owner, viewer));
+        var cache = new RoleCodeCache(repo, new MovableClock());
+
+        assertThat(cache.codeOf(1L)).isEqualTo("OWNER");
+        assertThat(cache.codeOf(3L)).isEqualTo("CREDIT_VIEWER");
+        assertThat(cache.codeOf(3L)).isEqualTo("CREDIT_VIEWER");
+        verify(repo, times(2)).findAll();
+    }
 }

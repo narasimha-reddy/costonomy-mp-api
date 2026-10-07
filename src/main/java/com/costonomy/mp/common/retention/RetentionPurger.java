@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Deletes rows that only ever grew (D-148, docs/performance/DB_BOTTLENECKS.md).
+ * Deletes rows that only ever grew (D-182, docs/performance/DB_BOTTLENECKS.md).
  *
  * <p>Each rule deletes in small batches, each batch its own statement and commit: a single large DELETE holds locks,
  * bloats the undo log and lags replicas, which is what this exists to avoid. There is deliberately <b>no transaction

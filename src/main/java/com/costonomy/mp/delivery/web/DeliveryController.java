@@ -124,7 +124,7 @@ public class DeliveryController {
     @PostMapping("/deliveries/{id}/switch-to-own")
     @Operation(summary = "Deliver it yourself, because no delivery partner was found",
             description = "Supplier only, once the offer has been made after the automatic retries. The same delivery "
-                    + "becomes the supplier's own; the delivery charge the buyer paid is unchanged (D-151).")
+                    + "becomes the supplier's own; the delivery charge the buyer paid is unchanged (D-185).")
     public ApiResponse<DeliveryDtos.DeliveryResponse> switchToOwn(
             @PathVariable Long id,
             @RequestHeader("Idempotency-Key") String idempotencyKey) {
@@ -137,7 +137,7 @@ public class DeliveryController {
 
     @PostMapping("/deliveries/{id}/sandbox/advance")
     @Operation(summary = "Test only: move a sandbox rider to the next step",
-            description = "Supplier only, and only for a Pidge delivery while the Pidge sandbox is on (D-154); "
+            description = "Supplier only, and only for a Pidge delivery while the Pidge sandbox is on (D-188); "
                     + "anywhere else it does not exist (404). Applies Pidge's own dummy stage through the webhook's code path.")
     public ApiResponse<DeliveryDtos.DeliveryResponse> sandboxAdvance(
             @PathVariable Long id,

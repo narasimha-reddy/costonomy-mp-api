@@ -507,7 +507,7 @@ class StorefrontIT extends AbstractIntegrationTest {
 
 
     @Nested
-    @DisplayName("supplier list filters, paging and reach (D-147)")
+    @DisplayName("supplier list filters, paging and reach (D-181)")
     class FilterPaging {
 
         @Test
@@ -587,7 +587,7 @@ class StorefrontIT extends AbstractIntegrationTest {
     class Popular {
 
         @Test
-        @DisplayName("ratings are looked up for the returned page only, unless a filter or sort needs every store's (D-147)")
+        @DisplayName("ratings are looked up for the returned page only, unless a filter or sort needs every store's (D-181)")
         void ratingsAreNotLoadedForEveryStoreWithoutAFilter() throws Exception {
             var outlet = newOutlet();
             long product = TestCatalog.freshProduct(jdbc, "ratingload");
@@ -680,7 +680,26 @@ class StorefrontIT extends AbstractIntegrationTest {
             stock(near2, p9, code("N2_9", p9), "120");
             stock(near2, p10, code("N2_10", p10), "120");
 
-            // Far store is closer to top in SQL query (11 SKUs vs 10 SKUs).
+            // Popularity is counted over the whole shared database, so stores left behind by other test classes
+            // (some stock several SKUs) would outrank these and eat the limit. Raise the three stores above the
+            // busiest other store, far one highest, so the test checks the filter and not the leftover data.
+            Integer busiest = jdbc.queryForObject("""
+                    select coalesce(max(n), 0) from (
+                        select count(distinct f.id) n from supplier_offer f
+                         where f.status = 'ACTIVE' and f.supplier_store_id not in (?, ?, ?)
+                         group by f.supplier_store_id) t
+                    """, Integer.class, farStore.storeId(), near1.storeId(), near2.storeId());
+            for (int i = 10; i < busiest + 1; i++) {
+                long extra = TestCatalog.freshProduct(jdbc, "popx" + i);
+                stock(near1, extra, code("N1X" + i, extra), "110");
+                stock(near2, extra, code("N2X" + i, extra), "120");
+            }
+            for (int i = 11; i < busiest + 2; i++) {
+                long extra = TestCatalog.freshProduct(jdbc, "popf" + i);
+                stock(farStore, extra, code("FARX" + i, extra), "100");
+            }
+
+            // Far store is closer to top in SQL query (one more SKU than either near store or any leftover store).
             // With limit=2: if farStore was not filtered out before limit, it would be included and eat the limit!
             // But because farStore is filtered by serviceability, both Near Popular 1 and Near Popular 2 are returned.
             var res = api.get(outlet.token(),

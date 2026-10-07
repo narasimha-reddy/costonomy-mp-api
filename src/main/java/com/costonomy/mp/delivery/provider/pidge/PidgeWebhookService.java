@@ -66,7 +66,7 @@ public class PidgeWebhookService {
 
     /**
      * Apply one Pidge order object to the delivery it belongs to. Everything after the signature check: the webhook
-     * calls it with the posted body, and the sandbox advance (D-154) with the order Pidge's dummy GET returned.
+     * calls it with the posted body, and the sandbox advance (D-188) with the order Pidge's dummy GET returned.
      * Throws on a failure so a caller decides what that means; {@link #handle} turns it into a retry request.
      *
      * @return true when handled or deliberately ignored (unknown delivery), false when the object is unusable

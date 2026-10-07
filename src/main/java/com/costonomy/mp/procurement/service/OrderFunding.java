@@ -71,7 +71,7 @@ public class OrderFunding {
         return intents;
     }
 
-    /** Funds one order through a named method, whatever the order says it was created with (D-152). */
+    /** Funds one order through a named method, whatever the order says it was created with (D-186). */
     public void arrangeFundingVia(String paymentMethod, SupplierOrder order) {
         port(paymentMethod).arrangeFunding(List.of(order));
     }

@@ -4,7 +4,7 @@ import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 
 /**
- * Checks for the filters on the buyer's supplier lists (D-147), shared by the directory and the popular list so both
+ * Checks for the filters on the buyer's supplier lists (D-181), shared by the directory and the popular list so both
  * refuse the same values.
  */
 final class SupplierListFilters {

@@ -14,7 +14,7 @@ public interface CanonicalProductAliasRepository extends JpaRepository<Canonical
     List<CanonicalProductAlias> findByNormalizedAlias(String normalizedAlias);
 
     /**
-     * Aliases starting with a normalised prefix, served by {@code ix_alias_normalized} (D-148). The typeahead used to
+     * Aliases starting with a normalised prefix, served by {@code ix_alias_normalized} (D-182). The typeahead used to
      * load the whole table and filter in Java on every keystroke. A normalised prefix holds only letters, digits and
      * spaces, so it contains no LIKE wildcard.
      */

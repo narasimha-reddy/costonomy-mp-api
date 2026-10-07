@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 
 /**
- * Nightly purge of rows that only grow (D-148). Runs at 03:30 India time, when the platform is quietest; the lock keeps
+ * Nightly purge of rows that only grow (D-182). Runs at 03:30 India time, when the platform is quietest; the lock keeps
  * two instances from both doing it. No transaction here, by design: see {@link RetentionPurger}.
  */
 @Component

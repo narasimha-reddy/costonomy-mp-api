@@ -10309,7 +10309,7 @@ class PaymentFlowIT extends AbstractIntegrationTest {
                 .at("/data/paymentStatus").asText();
     }
 
-    // ── Pay an unpaid card order another way (D-152) ─────────────────────
+    // ── Pay an unpaid card order another way (D-186) ─────────────────────
 
     @Nested
     @DisplayName("paying an unpaid card order another way")
