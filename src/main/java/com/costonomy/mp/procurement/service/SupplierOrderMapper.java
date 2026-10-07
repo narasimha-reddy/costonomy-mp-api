@@ -1,5 +1,6 @@
 package com.costonomy.mp.procurement.service;
 
+import com.costonomy.mp.credit.service.CreditReadService;
 import com.costonomy.mp.catalog.repository.CanonicalProductRepository;
 import com.costonomy.mp.common.domain.Serviceability;
 import com.costonomy.mp.catalog.service.SkuDirectory;
@@ -41,8 +42,36 @@ public class SupplierOrderMapper {
     private final ProcurementDirectory directory;
     private final DeliverySlotRepository deliverySlots;
     private final OrderFunding funding;
+    private final CreditReadService creditRead;
 
     public ProcurementDtos.SupplierOrderResponse toResponse(SupplierOrder order) {
+        return toResponse(order, creditOf(List.of(order)));
+    }
+
+    /**
+     * As {@link #toResponse(SupplierOrder)} without the credit dates (all null), for a caller that reads only the
+     * rest, such as the supplier's incoming-order lists, so they do not pay a credit read per order.
+     */
+    public ProcurementDtos.SupplierOrderResponse toResponseWithoutCredit(SupplierOrder order) {
+        return toResponse(order, Map.of());
+    }
+
+    /** A list of orders: the credit dates of all of them come from one read, not one per order. */
+    public List<ProcurementDtos.SupplierOrderResponse> toResponses(List<SupplierOrder> orders) {
+        var credit = creditOf(orders);
+        return orders.stream().map(order -> toResponse(order, credit)).toList();
+    }
+
+    /** Credit dates for the orders paid on credit; an order paid any other way never asks the credit module. */
+    private Map<Long, CreditReadService.OrderCredit> creditOf(List<SupplierOrder> orders) {
+        return creditRead.orderCredit(orders.stream()
+                .filter(o -> "CREDIT".equals(o.getPaymentMethod()))
+                .map(SupplierOrder::getId).toList());
+    }
+
+    private ProcurementDtos.SupplierOrderResponse toResponse(
+            SupplierOrder order, Map<Long, CreditReadService.OrderCredit> credit) {
+        var orderCredit = credit.get(order.getId());
         var items = supplierOrderItems.findBySupplierOrderId(order.getId());
         var store = directory.stores(List.of(order.getSupplierStoreId()))
                 .get(order.getSupplierStoreId());
@@ -100,6 +129,9 @@ public class SupplierOrderMapper {
                 order.getCancelledBy(), order.getCancellationReason(),
                 cancelRefund == null ? null : cancelRefund.amount(),
                 cancelRefund == null ? null : cancelRefund.completedAt(),
+                orderCredit == null ? null : orderCredit.dueDate(),
+                orderCredit == null ? null : orderCredit.settledAt(),
+                orderCredit == null ? null : orderCredit.dueState(),
                 items.stream()
                         .map(item -> new ProcurementDtos.SupplierOrderItemResponse(
                                 item.getId(), item.getCanonicalProductId(),

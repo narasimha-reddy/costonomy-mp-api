@@ -312,6 +312,23 @@ public final class ProcurementDtos {
              * {@code refundAmount != null && refundedAt == null}.
              */
             Instant refundedAt,
+            /**
+             * On a credit order whose invoice is still owed: the earliest due date, an India calendar day. Null once
+             * it is settled, before the invoice is raised (at draw-down), and on every order not paid on credit.
+             * Additive. D-189.
+             */
+            LocalDate creditDueDate,
+            /**
+             * On a credit order, when its invoice(s) settled (paid in full, or written off); null while any is owed,
+             * and on every other order. A client shows it in India time, as the credit screens do.
+             */
+            Instant creditSettledAt,
+            /**
+             * The credit module's due state of that invoice ({@code DUE_LATER}, {@code DUE_SOON}, {@code DUE_TODAY},
+             * {@code IN_GRACE}, {@code OVERDUE}, or {@code PAID} / {@code WRITTEN_OFF} once settled); null as above.
+             * The app shows it and never works it out.
+             */
+            String creditDueState,
             List<SupplierOrderItemResponse> items) {
     }
 

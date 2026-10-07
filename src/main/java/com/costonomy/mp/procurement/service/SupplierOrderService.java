@@ -378,7 +378,7 @@ public class SupplierOrderService {
     // ── internals ────────────────────────────────────────────────────────
 
     private ProcurementDtos.IncomingOrderResponse toIncoming(SupplierOrder order, Instant now) {
-        var full = mapper.toResponse(order);
+        var full = mapper.toResponseWithoutCredit(order);
         var outlet = directory.outletSummary(order.getOutletId());
 
         long remaining = order.getAcceptanceDeadline() == null ? 0L

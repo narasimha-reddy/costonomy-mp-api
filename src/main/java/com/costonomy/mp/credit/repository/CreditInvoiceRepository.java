@@ -49,6 +49,9 @@ public interface CreditInvoiceRepository extends JpaRepository<CreditInvoice, Lo
 
     Optional<CreditInvoice> findBySupplierOrderId(Long supplierOrderId);
 
+    /** The invoices of several orders in one query, for a list of orders. */
+    List<CreditInvoice> findBySupplierOrderIdIn(java.util.Collection<Long> supplierOrderIds);
+
     /**
      * The id of an order's invoice and nothing else, so the caller can take {@link #lockById} before the row is in the
      * persistence context: a locking query does not refresh an instance the context already holds.
