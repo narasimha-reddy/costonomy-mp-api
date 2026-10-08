@@ -27,10 +27,10 @@ import org.springframework.stereotype.Service;
  * {@code (event_id, channel)}.
  *
  * <p><b>Deliberately not {@code @Transactional}.</b> This runs inside the outbox
- * drain's transaction, which is publishing a batch of up to a hundred events. Each
+ * drain's transaction for the one event being published (one transaction per event, D-194). Each
  * projection therefore commits separately, through {@link RealtimeEventStore} —
- * otherwise one duplicate would mark the drain's transaction rollback-only and
- * take the whole batch down with it (D-021, and see the store for the detail).
+ * otherwise one duplicate would mark that transaction rollback-only and
+ * make the outbox retry the whole event (D-021, and see the store for the detail).
  */
 @Service
 @RequiredArgsConstructor

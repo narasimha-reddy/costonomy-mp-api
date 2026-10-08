@@ -33,7 +33,7 @@ public class OutboxCommitTrigger {
 
     static final int MAX_BUSY_RETRIES = 20;
     static final long BUSY_RETRY_MILLIS = 100;
-    static final long SHUTDOWN_WAIT_MILLIS = 10_000;
+    static final long SHUTDOWN_WAIT_MILLIS = 30_000; // Spring's default spring.lifecycle.timeout-per-shutdown-phase
 
     private final OutboxPublisher publisher;
     private final boolean enabled;
@@ -63,6 +63,8 @@ public class OutboxCommitTrigger {
         this.enabled = enabled;
         this.retryMillis = retryMillis;
         executor.setRemoveOnCancelPolicy(true);
+        // A queued busy-lock retry must not fire after shutdown(): it would start a new drain while the app stops.
+        executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
     }
 
     /** Call from inside the transaction that writes the event; the drain starts only if that transaction commits. */

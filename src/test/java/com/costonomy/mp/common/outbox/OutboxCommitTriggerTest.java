@@ -137,6 +137,28 @@ class OutboxCommitTriggerTest {
     }
 
     @Test
+    void shutdownDropsADelayedRetryInsteadOfRunningItAfterShutdown() throws Exception {
+        when(publisher.drainAfterCommit()).thenReturn(null);
+        trigger = new OutboxCommitTrigger(publisher, true, 1500, 5000);
+        trigger.request();
+        verify(publisher, timeout(2000).times(1)).drainAfterCommit();
+        Thread.sleep(200); // let the run queue its retry (1.5 s ahead) before shutting down
+
+        long start = System.nanoTime();
+        trigger.stop(); // the busy-lock retry is queued 1.5 s ahead; it must not run, nor be waited for
+        Thread.sleep(2000);
+
+        verify(publisher, times(1)).drainAfterCommit();
+        assertThat(Duration.ofNanos(System.nanoTime() - start - TimeUnit.SECONDS.toNanos(2)))
+                .describedAs("stop did not wait for the delayed retry").isLessThan(Duration.ofMillis(1000));
+    }
+
+    @Test
+    void theGracefulWaitMatchesSpringsDefaultShutdownPhaseTimeout() {
+        assertThat(OutboxCommitTrigger.SHUTDOWN_WAIT_MILLIS).isEqualTo(30_000);
+    }
+
+    @Test
     void shutdownInterruptsADrainThatOutlastsTheWaitAndNeverHangs() throws Exception {
         var inDrain = new CountDownLatch(1);
         var interrupted = new CountDownLatch(1);

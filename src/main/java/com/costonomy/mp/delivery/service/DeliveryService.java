@@ -17,6 +17,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -155,8 +157,14 @@ public class DeliveryService {
     /**
      * Automated dispatch triggered by warehouse/kitchen events (e.g. SupplierOrderReady).
      * Does not require a user session.
+     *
+     * <p>{@code REQUIRES_NEW}, never joining the outbox event's transaction (D-194): once the provider has accepted
+     * the booking its order exists outside our database. If this ran inside the event's transaction, any later
+     * failure there (another listener, the commit itself) would roll back the delivery row and its attempt and
+     * ledger rows but not the courier, and the retry would find no delivery and book a second courier. Committed
+     * on its own, the retry meets the existing-delivery check below instead.
      */
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public DeliveryDtos.DeliveryResponse autoDispatch(Long supplierOrderId) {
         var order = directory.order(supplierOrderId);
         if (order == null) {

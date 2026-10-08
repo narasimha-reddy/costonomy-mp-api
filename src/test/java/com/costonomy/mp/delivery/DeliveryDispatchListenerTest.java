@@ -12,6 +12,11 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
 
+import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.common.error.ErrorCode;
+
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -82,5 +87,26 @@ class DeliveryDispatchListenerTest {
         listener.onDomainEvent(envelope);
 
         verify(deliveryService, never()).autoDispatch(anyLong());
+    }
+
+    private static OutboxPublisher.DomainEventEnvelope ready(long orderId) {
+        return new OutboxPublisher.DomainEventEnvelope("evt-r", "SupplierOrderReady", "SUPPLIER_ORDER", orderId, 1,
+                "{}", 10L, "corr-r", Instant.now());
+    }
+
+    @Test
+    void aPermanentBusinessRefusalIsSwallowed() {
+        doThrow(new BusinessException(ErrorCode.DELIVERY_UNAVAILABLE, "This supplier has no delivery option configured."))
+                .when(deliveryService).autoDispatch(42L);
+
+        assertThatCode(() -> listener.onDomainEvent(ready(42L))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void anyOtherFailureIsRethrownSoTheOutboxRetriesAndShowsTheRealCause() {
+        var boom = new IllegalStateException("connection reset");
+        doThrow(boom).when(deliveryService).autoDispatch(42L);
+
+        assertThatThrownBy(() -> listener.onDomainEvent(ready(42L))).isSameAs(boom);
     }
 }

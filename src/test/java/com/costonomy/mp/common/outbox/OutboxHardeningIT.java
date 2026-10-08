@@ -52,7 +52,8 @@ class OutboxHardeningIT extends AbstractIntegrationTest {
         static final Map<String, Boolean> rollbackOnlyAndSwallow = new ConcurrentHashMap<>();
         static final Map<String, CountDownLatch> holdUntil = new ConcurrentHashMap<>();
         static final Map<String, CountDownLatch> holding = new ConcurrentHashMap<>();
-        static volatile long sleepMillis;
+        static final Map<String, Throwable> toThrow = new ConcurrentHashMap<>();
+        static volatile CountDownLatch overlap;
         static volatile List<Boolean> lockHeldAtBeforeCommit;
         static volatile LockProvider lockProvider;
         static volatile String watchedType;
@@ -65,8 +66,18 @@ class OutboxHardeningIT extends AbstractIntegrationTest {
                 return;
             }
             deliveries.computeIfAbsent(e.eventId(), k -> new AtomicInteger()).incrementAndGet();
-            if (sleepMillis > 0) {
-                Thread.sleep(sleepMillis);
+            var latch = overlap;
+            if (latch != null) {
+                // Every drain waits here for the other to be inside a handler too: overlap is forced, not hoped for.
+                latch.countDown();
+                latch.await(10, TimeUnit.SECONDS);
+            }
+            var error = toThrow.get(type);
+            if (error instanceof Error err) {
+                throw err;
+            }
+            if (error instanceof RuntimeException ex) {
+                throw ex;
             }
             var hold = holdUntil.get(type);
             if (hold != null) {
@@ -113,7 +124,8 @@ class OutboxHardeningIT extends AbstractIntegrationTest {
         Handlers.rollbackOnlyAndSwallow.clear();
         Handlers.holdUntil.clear();
         Handlers.holding.clear();
-        Handlers.sleepMillis = 0;
+        Handlers.toThrow.clear();
+        Handlers.overlap = null;
         Handlers.watchedType = null;
         Handlers.lockProvider = lockProvider;
         // This context's start-up drain may still hold the lock: wait until it is free.
@@ -198,10 +210,11 @@ class OutboxHardeningIT extends AbstractIntegrationTest {
     void theClaimQueryIsForUpdateSkipLocked() {
         publish("HardSql" + UUID.randomUUID());
         Long id = jdbc.queryForObject("select max(id) from outbox_event", Long.class);
-        CountingStatementInspector.reset();
+        CountingStatementInspector.startCapture();
 
         new TransactionTemplate(txManager).executeWithoutResult(s ->
                 repository.lockDispatchable(id, Instant.now()));
+        CountingStatementInspector.stopCapture();
 
         assertThat(CountingStatementInspector.statements()).anyMatch(q -> q.toLowerCase().contains("for update skip locked"));
     }
@@ -212,7 +225,7 @@ class OutboxHardeningIT extends AbstractIntegrationTest {
         for (int i = 0; i < 24; i++) {
             publish(prefix);
         }
-        Handlers.sleepMillis = 15;
+        Handlers.overlap = new CountDownLatch(2);
         var pool = Executors.newFixedThreadPool(2);
         try {
             var go = new CountDownLatch(1);
@@ -231,6 +244,7 @@ class OutboxHardeningIT extends AbstractIntegrationTest {
         } finally {
             pool.shutdownNow();
         }
+        assertThat(Handlers.overlap.getCount()).describedAs("both drains were inside a handler at once").isZero();
         var ids = jdbc.queryForList("select event_id from outbox_event where event_type = ?", String.class, prefix);
         assertThat(ids).hasSize(24);
         for (String id : ids) {
@@ -320,5 +334,38 @@ class OutboxHardeningIT extends AbstractIntegrationTest {
 
         assertThat(row(bad).get("status")).isEqualTo("FAILED");
         assertThat(row(bad).get("attempt_count")).isEqualTo(10);
+    }
+
+    // ---- review follow-up: Errors and error text ---------------------------------------------------------------
+
+    @Test
+    void aHandlerThatThrowsAnErrorIsCountedAndTheRestOfTheBatchIsStillPublished() {
+        String ok1 = "HardOkA" + UUID.randomUUID();
+        String bad = "HardError" + UUID.randomUUID();
+        String ok2 = "HardOkC" + UUID.randomUUID();
+        Handlers.toThrow.put(bad, new StackOverflowError("deep"));
+        publish(ok1);
+        publish(bad);
+        publish(ok2);
+
+        publisher.drainUnlocked();
+
+        assertThat(row(ok1).get("status")).isEqualTo("PUBLISHED");
+        assertThat(row(ok2).get("status")).isEqualTo("PUBLISHED");
+        assertThat(row(bad).get("status")).isEqualTo("PENDING");
+        assertThat(row(bad).get("attempt_count")).isEqualTo(1);
+        assertThat(row(bad).get("last_error").toString()).contains("StackOverflowError");
+    }
+
+    @Test
+    void lastErrorNamesTheExceptionClassEvenWhenItHasNoMessage() {
+        String bad = "HardNpe" + UUID.randomUUID();
+        Handlers.toThrow.put(bad, new NullPointerException());
+        publish(bad);
+
+        publisher.drainUnlocked();
+
+        assertThat(row(bad).get("last_error")).isNotNull();
+        assertThat(row(bad).get("last_error").toString()).contains("NullPointerException");
     }
 }

@@ -3,6 +3,7 @@ package com.costonomy.mp.common.outbox;
 import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.core.NestedExceptionUtils;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -70,9 +71,10 @@ public class OutboxPublisher {
     }
 
     /**
-     * The drain without the lock. Public so a test can run two drains at once to prove the row claim holds when
-     * the lock does not (expired, lost, or another instance with a skewed clock); production code goes through
-     * {@link #drain()} or {@link #drainAfterCommit()}.
+     * The drain without the lock. TESTS ONLY: public because tests in other packages run two drains at once to
+     * prove the row claim holds when the lock does not (expired, lost, or another instance with a skewed clock),
+     * and a package-private method on this proxied bean would reach the proxy's empty fields. Production code goes
+     * through {@link #drain()} or {@link #drainAfterCommit()}.
      */
     public int drainUnlocked() {
         var ids = repository.findDispatchableIds(Instant.now(), PageRequest.of(0, BATCH_SIZE));
@@ -95,7 +97,9 @@ public class OutboxPublisher {
                 event.setLastError(null);
                 repository.save(event);
             });
-        } catch (Exception ex) {
+        } catch (Throwable ex) {
+            // Throwable, not Exception: an Error from a handler (StackOverflowError, NoClassDefFoundError) must be
+            // counted against its own event, not abort the drain and starve the rest of the batch.
             // The event's transaction is rolled back (including a handler's rollback-only mark that its listener
             // swallowed). Count the attempt in a transaction of its own so the rest of the batch is unaffected.
             try {
@@ -104,8 +108,11 @@ public class OutboxPublisher {
                             recordFailure(e, ex);
                             repository.save(e);
                         }));
-            } catch (Exception recordEx) {
+            } catch (Throwable recordEx) {
                 log.error("Could not record the outbox failure for event row {}; it stays pending", id, recordEx);
+            }
+            if (ex instanceof OutOfMemoryError oom) {
+                throw oom; // recorded; a StackOverflowError is only one handler's problem, an OOM is the JVM's
             }
         }
     }
@@ -123,17 +130,18 @@ public class OutboxPublisher {
                 event.getOccurredAt()));
     }
 
-    private void recordFailure(OutboxEvent event, Exception ex) {
+    private void recordFailure(OutboxEvent event, Throwable ex) {
         int attempts = event.getAttemptCount() + 1;
         event.setAttemptCount(attempts);
-        event.setLastError(truncate(ex.getMessage()));
+        event.setLastError(truncate(describe(ex)));
 
         if (attempts >= MAX_ATTEMPTS) {
             // Terminal and visible. An unpublished SupplierOrderAccepted means a
             // restaurant was never notified; that needs an alert, not a silent
             // row. Operations dashboards read countByStatus(FAILED) (doc 08 §11).
             event.setStatus(OutboxEvent.Status.FAILED);
-            log.error("Outbox event failed permanently after {} attempts: id={} type={}",
+            log.error("Outbox event FAILED permanently after {} attempts and will not be retried or replayed: "
+                            + "id={} type={}",
                     attempts, event.getEventId(), event.getEventType(), ex);
             return;
         }
@@ -144,6 +152,15 @@ public class OutboxPublisher {
         event.setNextAttemptAt(Instant.now().plus(Duration.ofSeconds(delaySeconds)));
         log.warn("Outbox event failed, retrying in {}s: id={} type={} attempt={}",
                 delaySeconds, event.getEventId(), event.getEventType(), attempts);
+    }
+
+    /** The class name plus the root cause's message: a null or generic message (NPE, rollback-only) still says what it was. */
+    private static String describe(Throwable ex) {
+        Throwable root = NestedExceptionUtils.getMostSpecificCause(ex);
+        String message = root.getMessage();
+        String top = ex.getClass().getSimpleName();
+        String cause = root == ex ? "" : " (" + root.getClass().getSimpleName() + ")";
+        return top + cause + (message == null ? "" : ": " + message);
     }
 
     private static String truncate(String message) {
