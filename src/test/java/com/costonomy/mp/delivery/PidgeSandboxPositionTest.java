@@ -50,10 +50,10 @@ class PidgeSandboxPositionTest {
     }
 
     @Test
-    @DisplayName("out for pickup is a fixed 800 m short of the pickup, on the far side from the drop")
+    @DisplayName("out for pickup is about 2 km short of the pickup, on the far side from the drop")
     void outForPickupIsShortOfThePickup() {
         var p = at("fulfilled|out for pickup");
-        assertThat(fromPickup(p)).isBetween(790.0, 810.0);
+        assertThat(fromPickup(p)).isBetween(1990.0, 2010.0);
         assertThat(fromDrop(p)).isGreaterThan(metres(P_LAT.doubleValue(), P_LNG.doubleValue(),
                 D_LAT.doubleValue(), D_LNG.doubleValue()));
     }

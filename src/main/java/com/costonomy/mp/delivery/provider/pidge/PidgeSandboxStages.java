@@ -69,7 +69,7 @@ public final class PidgeSandboxStages {
     }
 
     private static final Map<String, Spot> SPOTS = Map.of(
-            "fulfilled|out for pickup", Spot.shortOfPickup(800),
+            "fulfilled|out for pickup", Spot.shortOfPickup(2000),
             "fulfilled|reached pickup", Spot.along(0.0),
             "fulfilled|picked up", Spot.along(0.0),
             "fulfilled|ofd", Spot.along(0.4),

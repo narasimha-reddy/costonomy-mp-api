@@ -36,9 +36,24 @@ public class OutboxPublisher {
     private final ApplicationEventPublisher eventPublisher;
 
     @Scheduled(fixedDelayString = "${costonomy.mp.outbox.poll-interval:PT2S}")
-    @SchedulerLock(name = "outbox-publisher", lockAtMostFor = "PT1M", lockAtLeastFor = "PT1S")
+    @SchedulerLock(name = "outbox-publisher", lockAtMostFor = "PT1M", lockAtLeastFor = "PT0S")
     @Transactional
     public void drain() {
+        drainBatch();
+    }
+
+    /**
+     * The same drain, started right after a commit that wrote an event (D-191). Same lock name as the poll, so it
+     * never runs beside a poll or another instance's drain; if the lock is taken it simply does nothing and the
+     * next poll picks the event up. No minimum hold, so a poll that just finished does not delay it.
+     */
+    @SchedulerLock(name = "outbox-publisher", lockAtMostFor = "PT1M", lockAtLeastFor = "PT0S")
+    @Transactional
+    public void drainAfterCommit() {
+        drainBatch();
+    }
+
+    private void drainBatch() {
         var batch = repository.findDispatchable(Instant.now(), PageRequest.of(0, BATCH_SIZE));
         if (batch.isEmpty()) {
             return;

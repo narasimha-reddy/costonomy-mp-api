@@ -38,6 +38,7 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private PidgeProperties properties;
+    @Autowired private com.costonomy.mp.delivery.provider.pidge.PidgeWebhookService webhook;
     @MockBean private PidgeApiClient pidge;
 
     private ApiClient api;
@@ -227,16 +228,17 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
 
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "select latitude, longitude, recorded_at from delivery_location where delivery_id = ? order by recorded_at, id", id);
-        // The first stage is before a driver is trackable, so it stores nothing; the other five each store a fix.
-        assertThat(rows).hasSize(5);
-        double previous = -1;
+        // Every stage stores a fix, the first (out for pickup, the status moves to DRIVER_ASSIGNED) included.
+        assertThat(rows).hasSize(6);
+        double previous = Double.NEGATIVE_INFINITY;
         Instant previousAt = null;
         for (var row : rows) {
             double lat = ((BigDecimal) row.get("latitude")).doubleValue();
             double lng = ((BigDecimal) row.get("longitude")).doubleValue();
             // Never the fixed Gurugram point.
             assertThat(lat).isBetween(12.9, 13.0);
-            double fromPickup = metres(12.9352, 77.6245, lat, lng);
+            // The first fix is short of the pickup (negative), the rest are along the line toward the drop.
+            double fromPickup = (previousAt == null ? -1 : 1) * metres(12.9352, 77.6245, lat, lng);
             assertThat(fromPickup).isGreaterThanOrEqualTo(previous - 1.0);
             previous = fromPickup;
             Instant at = ((java.sql.Timestamp) row.get("recorded_at")).toInstant();
@@ -251,9 +253,76 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
                 ((BigDecimal) last.get("longitude")).doubleValue())).isLessThan(50.0);
         // The 40 percent fix sits strictly between the two ends.
         assertThat(previous).isGreaterThan(5000.0);
-        var ofd = rows.get(2);
+        var ofd = rows.get(3);
         assertThat(metres(12.9352, 77.6245, ((BigDecimal) ofd.get("latitude")).doubleValue(),
                 ((BigDecimal) ofd.get("longitude")).doubleValue())).isBetween(1500.0, 3000.0);
+    }
+
+    private JsonNode orderAt(String providerDeliveryId, String stage, String at, String lat, String lng) throws Exception {
+        return json.readTree("""
+                {"id": "%s", "status": "fulfilled", "fulfillment": {"status": "%s", "logs": [
+                  {"timestamp": "%s", "status": "%s", "location": {"latitude": %s, "longitude": %s},
+                   "rider": {"id": "306", "name": "Sandbox Sunil", "mobile": "9876543210"}}]}}
+                """.formatted(providerDeliveryId, stage, at, stage, lat, lng));
+    }
+
+    @Test
+    void anAssignedRiderPositionIsStoredAndReturnedOnTheFirstStage() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "PROVIDER_SELECTED");
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|out for pickup"))).thenReturn(dummyAt(pid, "OUT_FOR_PICKUP"));
+
+        assertThat(advance(supplierToken, id)).isEqualTo(200);
+
+        assertThat(jdbc.queryForObject("select status from delivery where id = ?", String.class, id))
+                .isEqualTo("DRIVER_ASSIGNED");
+        for (String token : new String[] {supplierToken, buyerToken}) {
+            JsonNode d = api.get(token, "/api/v1/deliveries/" + id).get("data");
+            assertThat(d.at("/status").asText()).isEqualTo("DRIVER_ASSIGNED");
+            assertThat(d.at("/trackable").asBoolean()).isTrue();
+            assertThat(d.at("/location").isNull()).isFalse();
+            // About 2 km short of the pickup, on the side away from the drop.
+            double lat = d.at("/location/latitude").asDouble();
+            double lng = d.at("/location/longitude").asDouble();
+            assertThat(metres(12.9352, 77.6245, lat, lng)).isBetween(1990.0, 2010.0);
+            assertThat(lat).isLessThan(12.9352);
+        }
+    }
+
+    @Test
+    void theFirstStageLocationIsRecordedAfterTheStatusMovesAndOneFixIsOneRow() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "PROVIDER_SELECTED");
+        var order = orderAt(pid, "OUT_FOR_PICKUP", "2026-10-06T10:02:00.000Z", "12.9170000", "77.6340000");
+
+        webhook.process(order);
+
+        assertThat(jdbc.queryForObject("select status from delivery where id = ?", String.class, id))
+                .isEqualTo("DRIVER_ASSIGNED");
+        assertThat(jdbc.queryForObject("select count(*) from delivery_location where delivery_id = ?", Integer.class, id))
+                .isEqualTo(1);
+
+        // The same fix again (a retry, or the 30 s poll) stays one row.
+        webhook.process(order);
+        webhook.process(order);
+        assertThat(jdbc.queryForObject("select count(*) from delivery_location where delivery_id = ?", Integer.class, id))
+                .isEqualTo(1);
+
+        // A new fix at a new time is a second row.
+        webhook.process(orderAt(pid, "OUT_FOR_PICKUP", "2026-10-06T10:03:00.000Z", "12.9200000", "77.6320000"));
+        assertThat(jdbc.queryForObject("select count(*) from delivery_location where delivery_id = ?", Integer.class, id))
+                .isEqualTo(2);
+    }
+
+    @Test
+    void aLocationForADeliveryStillWaitingForADriverIsNotStored() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "PROVIDER_SELECTED");
+        // Pidge says CREATED (no stage that assigns a driver), so no rider exists yet.
+        webhook.process(orderAt(pid, "CREATED", "2026-10-06T10:02:00.000Z", "12.9170000", "77.6340000"));
+
+        assertThat(jdbc.queryForObject("select count(*) from delivery_location where delivery_id = ?", Integer.class, id))
+                .isZero();
     }
 
     @Test
