@@ -2,13 +2,15 @@ package com.costonomy.mp.common.outbox;
 
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -19,24 +21,41 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * drain, which takes the whole batch). The drain itself is {@link OutboxPublisher#drainAfterCommit()}, which holds
  * the same ShedLock lock as the poll, so it cannot overlap a poll or another instance. It never runs on the
  * committing request's thread, and a failure here is only logged: the event is still PENDING for the poll.
+ *
+ * <p>A request is never dropped because the lock is busy (D-191 addendum): a drain that finds the lock taken
+ * (the poll, or a drain on another instance, which has usually already read its batch) is tried again after a
+ * short delay, a bounded number of times, and a drain that took a full batch goes on at once, so a backlog does
+ * not leave the newest event waiting for the poll.
  */
 @Component
 @Slf4j
 public class OutboxCommitTrigger {
 
+    static final int MAX_BUSY_RETRIES = 20;
+    static final long BUSY_RETRY_MILLIS = 100;
+
     private final OutboxPublisher publisher;
     private final boolean enabled;
+    private final long retryMillis;
+    /** True while a drain is queued or waiting to retry and has not yet started its attempt. */
     private final AtomicBoolean queued = new AtomicBoolean();
-    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+    private final ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, r -> {
         var t = new Thread(r, "outbox-after-commit");
         t.setDaemon(true);
         return t;
     });
 
+    @Autowired
     public OutboxCommitTrigger(OutboxPublisher publisher,
                                @Value("${costonomy.mp.outbox.drain-on-commit:true}") boolean enabled) {
+        this(publisher, enabled, BUSY_RETRY_MILLIS);
+    }
+
+    OutboxCommitTrigger(OutboxPublisher publisher, boolean enabled, long retryMillis) {
         this.publisher = publisher;
         this.enabled = enabled;
+        this.retryMillis = retryMillis;
+        executor.setRemoveOnCancelPolicy(true);
     }
 
     /** Call from inside the transaction that writes the event; the drain starts only if that transaction commits. */
@@ -56,18 +75,32 @@ public class OutboxCommitTrigger {
         if (!queued.compareAndSet(false, true)) {
             return;
         }
+        submit(0, 0);
+    }
+
+    private void submit(int busyRetries, long delayMillis) {
         try {
-            executor.execute(() -> {
-                // Cleared before the drain, so a commit that lands during it queues one more.
-                queued.set(false);
-                try {
-                    publisher.drainAfterCommit();
-                } catch (RuntimeException ex) {
-                    log.warn("Outbox drain after commit failed; the poll will retry", ex);
-                }
-            });
-        } catch (RuntimeException ex) {
+            executor.schedule(() -> run(busyRetries), delayMillis, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException ex) {
             queued.set(false);
+        }
+    }
+
+    private void run(int busyRetries) {
+        // Cleared before the drain, so a commit that lands during it queues one more.
+        queued.set(false);
+        try {
+            Integer taken = publisher.drainAfterCommit();
+            if (taken == null) {
+                // The lock is held by a poll or another instance. Try again shortly rather than wait for the poll.
+                if (busyRetries < MAX_BUSY_RETRIES && queued.compareAndSet(false, true)) {
+                    submit(busyRetries + 1, retryMillis);
+                }
+            } else if (taken >= OutboxPublisher.BATCH_SIZE && queued.compareAndSet(false, true)) {
+                submit(0, 0);
+            }
+        } catch (RuntimeException ex) {
+            log.warn("Outbox drain after commit failed; the poll will retry", ex);
         }
     }
 

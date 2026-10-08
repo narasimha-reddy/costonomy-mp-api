@@ -29,7 +29,7 @@ import java.time.Instant;
 @Slf4j
 public class OutboxPublisher {
 
-    private static final int BATCH_SIZE = 100;
+    static final int BATCH_SIZE = 100;
     private static final int MAX_ATTEMPTS = 10;
 
     private final OutboxRepository repository;
@@ -46,17 +46,21 @@ public class OutboxPublisher {
      * The same drain, started right after a commit that wrote an event (D-191). Same lock name as the poll, so it
      * never runs beside a poll or another instance's drain; if the lock is taken it simply does nothing and the
      * next poll picks the event up. No minimum hold, so a poll that just finished does not delay it.
+     *
+     * @return how many events this drain took, or {@code null} when the lock was taken and nothing ran (ShedLock
+     *         skips the call). The caller uses it to try again shortly instead of leaving the event to the poll,
+     *         and to go on when the batch was full (a backlog).
      */
     @SchedulerLock(name = "outbox-publisher", lockAtMostFor = "PT1M", lockAtLeastFor = "PT0S")
     @Transactional
-    public void drainAfterCommit() {
-        drainBatch();
+    public Integer drainAfterCommit() {
+        return drainBatch();
     }
 
-    private void drainBatch() {
+    private int drainBatch() {
         var batch = repository.findDispatchable(Instant.now(), PageRequest.of(0, BATCH_SIZE));
         if (batch.isEmpty()) {
-            return;
+            return 0;
         }
 
         for (OutboxEvent event : batch) {
@@ -71,6 +75,7 @@ public class OutboxPublisher {
         }
 
         repository.saveAll(batch);
+        return batch.size();
     }
 
     private void dispatch(OutboxEvent event) {
