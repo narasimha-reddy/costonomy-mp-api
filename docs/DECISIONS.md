@@ -6655,3 +6655,13 @@ The buyer's bill must read "On credit, due {date}" and then "Paid on {date}", an
 4. **No permission change.** Whoever could read the order reads the same order, with these fields.
 5. **Tests.** `CreditOrderDatesIT` (unsettled, due states, partial, full repayment, written off, non-credit, batched list read once, permissions). Dropping the settled mapping fails it.
 
+## D-190 — The sandbox rider walks the real route, not Pidge's fixed point
+
+Pidge's dummy answer always carries the same rider position (28.4425540, 77.0802300, near Gurugram, about 1700 km from a Bengaluru route) stamped a few minutes ahead, so in local testing the truck on the buyer map never moved, was nowhere near the route, and the future timestamp made the position look fresh forever. Decision: in the sandbox advance only, replace the position and time of the stage the dummy answer carries.
+
+1. **A point on the straight pickup-to-drop line**, from the delivery's stored `pickup_*` and `drop_*` coordinates (table in `PidgeSandboxStages`): out for pickup 800 m short of the pickup; reached pickup and picked up at the pickup; ofd 40% of the way; reached delivery 30 m short of the drop (so the 50 m "reached" and 300 m "arriving" states can be exercised); delivered at the drop. Seven decimals, clamped to the line.
+2. **Stamped now**, never ahead, so each stage stores a new `delivery_location` row (the same-`recordedAt` dedupe still holds) and the position goes stale normally.
+3. **Fallback.** A delivery with no stored pickup or drop coordinates keeps Pidge's answer unchanged.
+4. **Nothing else changes.** The 404 guard, `PidgeWebhookService`, the signature path, `PidgeDeliveryProvider` and the poll are untouched; the rewrite lives in `PidgeSandboxService` only. A position sent before a driver is trackable is still not stored (existing rule), so the "out for pickup" fix is dropped.
+5. **Tests.** `PidgeSandboxPositionTest` (fractions, 800 m, 30 m, strictly between, 7 decimals, same point, short route, unknown stage) and `PidgeSandboxAdvanceIT` (the stored rows move from the pickup toward the drop, the last within 50 m, none in the future; no coordinates keeps Pidge's point).
+

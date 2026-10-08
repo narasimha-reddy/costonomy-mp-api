@@ -17,6 +17,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -96,9 +99,11 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
         jdbc.update("""
                 insert into delivery (supplier_order_id, outlet_id, supplier_store_id, mode, status,
                                       provider_code, provider_delivery_id, fee, currency,
-                                      pickup_address, drop_address, requested_at, created_at, updated_at, version)
+                                      pickup_address, pickup_latitude, pickup_longitude,
+                                      drop_address, drop_latitude, drop_longitude, requested_at, created_at, updated_at, version)
                 values (?, ?, ?, ?, ?, 'PIDGE', ?, 65.0000, 'INR',
-                        'Pickup Point, Bengaluru', 'Drop Point, Bengaluru', now(6), now(6), now(6), 0)
+                        'Pickup Point, Bengaluru', 12.9352000, 77.6245000,
+                        'Drop Point, Bengaluru', 12.9716000, 77.5946000, now(6), now(6), now(6), 0)
                 """, supplierOrderId, outletId, storeId, mode, status, providerDeliveryId);
         return jdbc.queryForObject("select id from delivery where provider_delivery_id = ?", Long.class,
                 providerDeliveryId);
@@ -112,6 +117,25 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
                    "location": {"latitude": 17.44, "longitude": 78.49},
                    "rider": {"id": "306", "name": "Sandbox Sunil", "mobile": "9876543210"}}]}}}
                 """.formatted(providerDeliveryId));
+    }
+
+    /** Pidge's dummy answer for a stage: always the same Gurugram point, stamped a few minutes ahead. */
+    private JsonNode dummyAt(String providerDeliveryId, String stage) throws Exception {
+        return json.readTree("""
+                {"data": {"id": "%s", "status": "fulfilled", "fulfillment": {"status": "%s", "logs": [
+                  {"timestamp": "2026-10-06T10:00:00.000Z", "status": "CREATED"},
+                  {"timestamp": "%s", "status": "%s",
+                   "location": {"latitude": 28.4425540, "longitude": 77.0802300},
+                   "rider": {"id": "306", "name": "Sandbox Sunil", "mobile": "9876543210"}}]}}}
+                """.formatted(providerDeliveryId, stage, Instant.now().plusSeconds(180), stage));
+    }
+
+    private double metres(double lat1, double lng1, double lat2, double lng2) {
+        double p1 = Math.toRadians(lat1);
+        double p2 = Math.toRadians(lat2);
+        double a = Math.pow(Math.sin((p2 - p1) / 2), 2)
+                + Math.cos(p1) * Math.cos(p2) * Math.pow(Math.sin(Math.toRadians(lng2 - lng1) / 2), 2);
+        return 2 * 6371008.8 * Math.asin(Math.sqrt(a));
     }
 
     private int advance(String token, Long deliveryId) throws Exception {
@@ -184,5 +208,65 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
 
         assertThat(advance(supplierToken, id)).isEqualTo(409);
         assertThat(api.get(supplierToken, "/api/v1/deliveries/" + id).at("/data/sandboxControls").asBoolean()).isFalse();
+    }
+
+    @Test
+    void theRiderWalksFromThePickupToTheDropWhateverPointPidgeSends() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "PROVIDER_SELECTED");
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|out for pickup"))).thenReturn(dummyAt(pid, "OUT_FOR_PICKUP"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|reached pickup"))).thenReturn(dummyAt(pid, "REACHED_PICKUP"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|picked up"))).thenReturn(dummyAt(pid, "PICKED_UP"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|ofd"))).thenReturn(dummyAt(pid, "OUT_FOR_DELIVERY"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|reached delivery"))).thenReturn(dummyAt(pid, "REACHED_DELIVERY"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|delivered"))).thenReturn(dummyAt(pid, "DELIVERED"));
+
+        for (int i = 0; i < 6; i++) {
+            assertThat(advance(supplierToken, id)).isEqualTo(200);
+        }
+
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "select latitude, longitude, recorded_at from delivery_location where delivery_id = ? order by recorded_at, id", id);
+        // The first stage is before a driver is trackable, so it stores nothing; the other five each store a fix.
+        assertThat(rows).hasSize(5);
+        double previous = -1;
+        Instant previousAt = null;
+        for (var row : rows) {
+            double lat = ((BigDecimal) row.get("latitude")).doubleValue();
+            double lng = ((BigDecimal) row.get("longitude")).doubleValue();
+            // Never the fixed Gurugram point.
+            assertThat(lat).isBetween(12.9, 13.0);
+            double fromPickup = metres(12.9352, 77.6245, lat, lng);
+            assertThat(fromPickup).isGreaterThanOrEqualTo(previous - 1.0);
+            previous = fromPickup;
+            Instant at = ((java.sql.Timestamp) row.get("recorded_at")).toInstant();
+            assertThat(at).isBefore(Instant.now().plusSeconds(1));
+            if (previousAt != null) {
+                assertThat(at).isAfter(previousAt);
+            }
+            previousAt = at;
+        }
+        var last = rows.get(rows.size() - 1);
+        assertThat(metres(12.9716, 77.5946, ((BigDecimal) last.get("latitude")).doubleValue(),
+                ((BigDecimal) last.get("longitude")).doubleValue())).isLessThan(50.0);
+        // The 40 percent fix sits strictly between the two ends.
+        assertThat(previous).isGreaterThan(5000.0);
+        var ofd = rows.get(2);
+        assertThat(metres(12.9352, 77.6245, ((BigDecimal) ofd.get("latitude")).doubleValue(),
+                ((BigDecimal) ofd.get("longitude")).doubleValue())).isBetween(1500.0, 3000.0);
+    }
+
+    @Test
+    void withoutStoredCoordinatesTheDummyPositionStillGoesThrough() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "DRIVER_ASSIGNED");
+        jdbc.update("update delivery set pickup_latitude = null, pickup_longitude = null where id = ?", id);
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|reached pickup"))).thenReturn(dummyAt(pid, "REACHED_PICKUP"));
+
+        assertThat(advance(supplierToken, id)).isEqualTo(200);
+
+        var lat = jdbc.queryForObject(
+                "select latitude from delivery_location where delivery_id = ?", BigDecimal.class, id);
+        assertThat(lat).isEqualByComparingTo("28.4425540");
     }
 }

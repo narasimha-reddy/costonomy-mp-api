@@ -10,9 +10,14 @@ import com.costonomy.mp.delivery.domain.DeliveryMode;
 import com.costonomy.mp.delivery.repository.DeliveryRepository;
 import com.costonomy.mp.delivery.service.DeliveryService;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 
 /**
  * Test-only: move a Pidge SANDBOX delivery to its next stage (D-188).
@@ -66,7 +71,31 @@ public class PidgeSandboxService {
                     "The sandbox gave no order to apply.");
         }
         log.info("Pidge sandbox advance: delivery {} {} -> '{}'", deliveryId, delivery.getStatus(), dummy);
-        webhook.process(order);
+        webhook.process(withSyntheticPosition(order, dummy, delivery));
         return deliveryService.get(actorId, deliveryId);
+    }
+
+    /**
+     * Pidge's dummy answer always carries the same rider point (near Gurugram) stamped a few minutes ahead, so the
+     * truck on the map never moves and never goes stale (D-190). Put the stage's point on the straight line from the
+     * delivery's pickup to its drop instead, stamped now. Without stored coordinates, or if the answer has no stage
+     * log to carry a position, the answer is returned as Pidge sent it.
+     */
+    private JsonNode withSyntheticPosition(JsonNode order, String dummy,
+                                           com.costonomy.mp.delivery.domain.Delivery delivery) {
+        var position = PidgeSandboxStages.position(dummy, delivery.getPickupLatitude(),
+                delivery.getPickupLongitude(), delivery.getDropLatitude(), delivery.getDropLongitude());
+        var logs = order.path("fulfillment").path("logs");
+        if (position.isEmpty() || !logs.isArray() || logs.isEmpty()
+                || !(logs.get(logs.size() - 1) instanceof ObjectNode)) {
+            return order;
+        }
+        var copy = order.deepCopy();
+        var stage = (ObjectNode) copy.path("fulfillment").path("logs").get(logs.size() - 1);
+        stage.put("timestamp", Instant.now().truncatedTo(ChronoUnit.MILLIS).toString());
+        var location = stage.putObject("location");
+        location.put("latitude", position.get().latitude().toPlainString());
+        location.put("longitude", position.get().longitude().toPlainString());
+        return copy;
     }
 }

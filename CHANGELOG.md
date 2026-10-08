@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 - Delivery response (restyle B1): `pickupLocation` (supplier store) and `dropLocation` (buyer outlet), each `{latitude, longitude}` or null when either coordinate is not stored; both sides get them. Additive.
 - Pidge poll records the rider position (B2): `PidgeDeliveryProvider.location()` returns the position from the status answer `status()` just fetched (no second call) and `DeliveryEventService.recordLocation` stores the same fix once.
+- Sandbox rider position (D-190): the sandbox advance replaces Pidge's fixed dummy point with a point on the straight pickup-to-drop line for the stage (reached delivery 30 m short of the drop), stamped now; no stored coordinates keeps Pidge's point. Test only.
 - Test-only sandbox rider control (D-188): `POST /deliveries/{id}/sandbox/advance` (supplier, sandbox on, Pidge only; 404 elsewhere) moves a Pidge sandbox delivery to its next stage through the webhook's own code; `DeliveryResponse.sandboxControls`.
 - [Credit] The supplier-order response gains `creditDueDate`, `creditSettledAt` and `creditDueState` (all nullable, additive): the earliest unsettled due date and its state while a credit order is owed, the settled instant once it is settled, null for non-credit orders. The outlet's order list reads them in one query (D-189).
 - Pay another way (D-186): `POST /supplier-orders/{id}/payment-method` funds an unpaid card order from the wallet or on credit and retires the card payment; the payment-intent read says `switchable`.
