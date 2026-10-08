@@ -571,6 +571,9 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
                     .andReturn().getResponse().getContentAsString();
             var retried = json.readTree(body).at("/data");
 
+            // Show the whole response if the reassign was refused: an intermittent failure here was only ever seen
+            // as a NullPointerException, which hid the real error.
+            assertThat(retried.has("id")).as("reassign response: %s", body).isTrue();
             assertThat(retried.get("id").asLong()).isEqualTo(deliveryId);
             assertThat(retried.get("status").asText()).isEqualTo("PROVIDER_SELECTED");
             assertThat(jdbc.queryForObject(
