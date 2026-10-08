@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -22,6 +23,11 @@ class OutboxCommitTriggerTest {
 
     private OutboxCommitTrigger trigger() {
         trigger = new OutboxCommitTrigger(publisher, true, 20);
+        return trigger;
+    }
+
+    private OutboxCommitTrigger trigger(long shutdownWaitMillis) {
+        trigger = new OutboxCommitTrigger(publisher, true, 20, shutdownWaitMillis);
         return trigger;
     }
 
@@ -104,5 +110,73 @@ class OutboxCommitTriggerTest {
         trigger.requestAfterCommit();
         Thread.sleep(100);
         verify(publisher, times(0)).drainAfterCommit();
+    }
+
+    @Test
+    void shutdownLetsARunningDrainFinishInsteadOfInterruptingIt() throws Exception {
+        var inDrain = new CountDownLatch(1);
+        var interrupted = new java.util.concurrent.atomic.AtomicBoolean();
+        var finished = new CountDownLatch(1);
+        when(publisher.drainAfterCommit()).thenAnswer(inv -> {
+            inDrain.countDown();
+            try {
+                Thread.sleep(400);
+            } catch (InterruptedException ex) {
+                interrupted.set(true);
+            }
+            finished.countDown();
+            return 1;
+        });
+        trigger(5000).request();
+        assertThat(inDrain.await(2, TimeUnit.SECONDS)).isTrue();
+
+        trigger.stop();
+
+        assertThat(finished.getCount()).describedAs("stop waited for the drain").isZero();
+        assertThat(interrupted).describedAs("the drain was interrupted mid-transaction").isFalse();
+    }
+
+    @Test
+    void shutdownInterruptsADrainThatOutlastsTheWaitAndNeverHangs() throws Exception {
+        var inDrain = new CountDownLatch(1);
+        var interrupted = new CountDownLatch(1);
+        when(publisher.drainAfterCommit()).thenAnswer(inv -> {
+            inDrain.countDown();
+            try {
+                Thread.sleep(30_000);
+            } catch (InterruptedException ex) {
+                interrupted.countDown();
+            }
+            return 1;
+        });
+        trigger(200).request();
+        assertThat(inDrain.await(2, TimeUnit.SECONDS)).isTrue();
+
+        long start = System.nanoTime();
+        trigger.stop();
+
+        assertThat(interrupted.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(5));
+    }
+
+    @Test
+    void anErrorThrownByADrainIsLoggedNotSwallowedSilently() throws Exception {
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(OutboxCommitTrigger.class);
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            when(publisher.drainAfterCommit()).thenThrow(new StackOverflowError("deep"));
+            trigger().request();
+            verify(publisher, timeout(2000).times(1)).drainAfterCommit();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (appender.list.isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertThat(appender.list).anyMatch(e -> e.getThrowableProxy() != null
+                    && e.getThrowableProxy().getClassName().equals("java.lang.StackOverflowError"));
+        } finally {
+            logger.detachAppender(appender);
+        }
     }
 }

@@ -33,10 +33,12 @@ public class OutboxCommitTrigger {
 
     static final int MAX_BUSY_RETRIES = 20;
     static final long BUSY_RETRY_MILLIS = 100;
+    static final long SHUTDOWN_WAIT_MILLIS = 10_000;
 
     private final OutboxPublisher publisher;
     private final boolean enabled;
     private final long retryMillis;
+    private final long shutdownWaitMillis;
     /** True while a drain is queued or waiting to retry and has not yet started its attempt. */
     private final AtomicBoolean queued = new AtomicBoolean();
     private final ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, r -> {
@@ -52,6 +54,11 @@ public class OutboxCommitTrigger {
     }
 
     OutboxCommitTrigger(OutboxPublisher publisher, boolean enabled, long retryMillis) {
+        this(publisher, enabled, retryMillis, SHUTDOWN_WAIT_MILLIS);
+    }
+
+    OutboxCommitTrigger(OutboxPublisher publisher, boolean enabled, long retryMillis, long shutdownWaitMillis) {
+        this.shutdownWaitMillis = shutdownWaitMillis;
         this.publisher = publisher;
         this.enabled = enabled;
         this.retryMillis = retryMillis;
@@ -99,13 +106,24 @@ public class OutboxCommitTrigger {
             } else if (taken >= OutboxPublisher.BATCH_SIZE && queued.compareAndSet(false, true)) {
                 submit(0, 0);
             }
-        } catch (RuntimeException ex) {
+        } catch (Throwable ex) {
+            // Throwable, not RuntimeException: the executor's FutureTask would swallow an Error without a trace.
             log.warn("Outbox drain after commit failed; the poll will retry", ex);
         }
     }
 
     @PreDestroy
     void stop() {
-        executor.shutdownNow();
+        // Let a drain that is mid-event finish: interrupting it would roll back the PUBLISHED mark of an event
+        // whose handler already did its external work, and the next instance would deliver it again (D-194).
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(shutdownWaitMillis, TimeUnit.MILLISECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException ex) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }

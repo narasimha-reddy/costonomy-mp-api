@@ -1,13 +1,14 @@
 package com.costonomy.mp.common.outbox;
 
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -22,10 +23,10 @@ import java.time.Instant;
  *
  * <p>{@code @SchedulerLock} so a multi-instance deployment publishes each event
  * once. Without it, every instance would drain the same batch, and at-least-once
- * would quietly become at-least-N-times.
+ * would quietly become at-least-N-times. The lock is the first line; the second is the row claim
+ * ({@code FOR UPDATE SKIP LOCKED}) inside each event's own transaction (D-194).
  */
 @Component
-@RequiredArgsConstructor
 @Slf4j
 public class OutboxPublisher {
 
@@ -34,12 +35,23 @@ public class OutboxPublisher {
 
     private final OutboxRepository repository;
     private final ApplicationEventPublisher eventPublisher;
+    /** One transaction per event (D-194): a failing handler rolls back and retries only its own event. */
+    private final TransactionTemplate perEvent;
 
+    public OutboxPublisher(OutboxRepository repository, ApplicationEventPublisher eventPublisher,
+                           PlatformTransactionManager transactionManager) {
+        this.repository = repository;
+        this.eventPublisher = eventPublisher;
+        this.perEvent = new TransactionTemplate(transactionManager);
+        this.perEvent.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    }
+
+    // No @Transactional on the drain itself: the ShedLock wraps the whole drain (SchedulingConfig orders it outside
+    // every transaction) and each event has its own transaction inside it.
     @Scheduled(fixedDelayString = "${costonomy.mp.outbox.poll-interval:PT2S}")
-    @SchedulerLock(name = "outbox-publisher", lockAtMostFor = "PT1M", lockAtLeastFor = "PT0S")
-    @Transactional
+    @SchedulerLock(name = "outbox-publisher", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
     public void drain() {
-        drainBatch();
+        drainUnlocked();
     }
 
     /**
@@ -49,33 +61,53 @@ public class OutboxPublisher {
      *
      * @return how many events this drain took, or {@code null} when the lock was taken and nothing ran (ShedLock
      *         skips the call). The caller uses it to try again shortly instead of leaving the event to the poll,
-     *         and to go on when the batch was full (a backlog).
+     *         and to go on when the batch was full (a backlog). Must stay {@code Integer}: with a primitive
+     *         {@code int} ShedLock throws on every skipped call and the trigger would silently fall back to the poll.
      */
-    @SchedulerLock(name = "outbox-publisher", lockAtMostFor = "PT1M", lockAtLeastFor = "PT0S")
-    @Transactional
+    @SchedulerLock(name = "outbox-publisher", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
     public Integer drainAfterCommit() {
-        return drainBatch();
+        return drainUnlocked();
     }
 
-    private int drainBatch() {
-        var batch = repository.findDispatchable(Instant.now(), PageRequest.of(0, BATCH_SIZE));
-        if (batch.isEmpty()) {
-            return 0;
+    /**
+     * The drain without the lock. Public so a test can run two drains at once to prove the row claim holds when
+     * the lock does not (expired, lost, or another instance with a skewed clock); production code goes through
+     * {@link #drain()} or {@link #drainAfterCommit()}.
+     */
+    public int drainUnlocked() {
+        var ids = repository.findDispatchableIds(Instant.now(), PageRequest.of(0, BATCH_SIZE));
+        for (Long id : ids) {
+            process(id);
         }
+        return ids.size();
+    }
 
-        for (OutboxEvent event : batch) {
-            try {
+    private void process(Long id) {
+        try {
+            perEvent.executeWithoutResult(status -> {
+                var event = repository.lockDispatchable(id, Instant.now()).orElse(null);
+                if (event == null) {
+                    return; // another drain has it, or it is no longer pending and due
+                }
                 dispatch(event);
                 event.setStatus(OutboxEvent.Status.PUBLISHED);
                 event.setPublishedAt(Instant.now());
                 event.setLastError(null);
-            } catch (Exception ex) {
-                recordFailure(event, ex);
+                repository.save(event);
+            });
+        } catch (Exception ex) {
+            // The event's transaction is rolled back (including a handler's rollback-only mark that its listener
+            // swallowed). Count the attempt in a transaction of its own so the rest of the batch is unaffected.
+            try {
+                perEvent.executeWithoutResult(status ->
+                        repository.lockDispatchable(id, Instant.now()).ifPresent(e -> {
+                            recordFailure(e, ex);
+                            repository.save(e);
+                        }));
+            } catch (Exception recordEx) {
+                log.error("Could not record the outbox failure for event row {}; it stays pending", id, recordEx);
             }
         }
-
-        repository.saveAll(batch);
-        return batch.size();
     }
 
     private void dispatch(OutboxEvent event) {

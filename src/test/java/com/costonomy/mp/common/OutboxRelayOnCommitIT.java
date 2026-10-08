@@ -70,7 +70,7 @@ class OutboxRelayOnCommitIT extends AbstractIntegrationTest {
     @BeforeEach
     void quietOutbox() throws Exception {
         // Rows other classes left PENDING are not this test's business; take them out of the way.
-        jdbc.update("update outbox_event set status = 'PUBLISHED' where status = 'PENDING'");
+        jdbc.update("update outbox_event set status = 'PUBLISHED', published_at = now(3) where status = 'PENDING'");
         // A drain from this context's start-up may still be running and holding the lock: wait until it is free.
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
         while (true) {

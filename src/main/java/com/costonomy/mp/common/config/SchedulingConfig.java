@@ -4,6 +4,7 @@ import net.javacrumbs.shedlock.core.LockProvider;
 import net.javacrumbs.shedlock.provider.jdbctemplate.JdbcTemplateLockProvider;
 import net.javacrumbs.shedlock.spring.annotation.EnableSchedulerLock;
 import org.springframework.context.annotation.Bean;
+import org.springframework.core.Ordered;
 import com.costonomy.mp.common.logging.CorrelatedTaskScheduler;
 import org.springframework.boot.task.ThreadPoolTaskExecutorBuilder;
 import org.springframework.boot.task.ThreadPoolTaskSchedulerBuilder;
@@ -23,7 +24,9 @@ import javax.sql.DataSource;
  * concurrently is exactly the race doc 10 §2 requires us not to have.
  */
 @Configuration
-@EnableSchedulerLock(defaultLockAtMostFor = "PT5M")
+// order: the lock advisor must wrap the transaction advisor, so a job's lock is released only after its
+// transaction has committed (D-194). Both default to LOWEST_PRECEDENCE, which left it to bean-registration order.
+@EnableSchedulerLock(defaultLockAtMostFor = "PT5M", order = Ordered.HIGHEST_PRECEDENCE)
 public class SchedulingConfig {
 
     /**
