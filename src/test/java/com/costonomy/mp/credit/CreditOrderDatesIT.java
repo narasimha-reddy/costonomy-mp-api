@@ -44,6 +44,7 @@ class CreditOrderDatesIT extends AbstractIntegrationTest {
 
     @MockBean(name = "creditClock") private Clock creditClock;
     @SpyBean private CreditReadService creditRead;
+    @Autowired private com.costonomy.mp.notification.NotificationRelayAccess notifications;
 
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
     private static final LocalDate TODAY = LocalDate.of(2026, 3, 10);
@@ -109,6 +110,32 @@ class CreditOrderDatesIT extends AbstractIntegrationTest {
         assertThat(payload.get("notificationVariant").asText()).isEqualTo("CREDIT_DUE");
         assertThat(payload.get("dueDate").asText()).isEqualTo(dueText);
         assertThat(payload.get("restaurantName").asText()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("the supplier gets exactly one 'Order confirmed' for a credit order, saying on credit with the date")
+    void oneConfirmationForACreditOrder() throws Exception {
+        var line = s.creditLine("200000");
+        s.invoice(line, "65", 100);
+
+        var events = jdbc.queryForList("""
+                select event_id, event_type, aggregate_type, aggregate_id, payload from outbox_event
+                 where event_type in ('IntentOrdered', 'SupplierOrderConfirmed')
+                   and json_extract(payload, '$.outletId') = ? order by id""", line.buyer().outletId());
+        assertThat(events).extracting(e -> e.get("event_type")).contains("IntentOrdered", "SupplierOrderConfirmed");
+        for (var e : events) {
+            notifications.publish(new com.costonomy.mp.common.outbox.OutboxPublisher.DomainEventEnvelope(
+                    (String) e.get("event_id"), (String) e.get("event_type"), (String) e.get("aggregate_type"),
+                    ((Number) e.get("aggregate_id")).longValue(), 1, e.get("payload").toString(), null, null,
+                    Instant.now()));
+        }
+
+        var told = jdbc.queryForList("""
+                select body from notification where title = 'Order confirmed' and event_id in (
+                    select event_id from outbox_event where json_extract(payload, '$.outletId') = ?)""",
+                String.class, line.buyer().outletId());
+        assertThat(told).hasSize(1);
+        assertThat(told.get(0)).contains("on credit, due").doesNotContainIgnoringCase("paid");
     }
 
     @Test

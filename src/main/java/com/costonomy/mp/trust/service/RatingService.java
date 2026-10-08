@@ -102,10 +102,13 @@ public class RatingService {
         rated.put("supplierOrderId", supplierOrderId);
         rated.put("orderNumber", order.orderNumber());
         rated.put("overall", request.overall());
-        var restaurantName = directory.restaurantNameOfOutlet(order.outletId());
-        if (restaurantName != null) {
-            rated.put("restaurantName", restaurantName);
+        String restaurantName = null;
+        try {
+            restaurantName = directory.restaurantNameOfOutlet(order.outletId());
+        } catch (RuntimeException e) {
+            log.warn("Could not look up the restaurant for rating of order {}", order.orderNumber(), e);
         }
+        rated.put("restaurantName", restaurantName == null || restaurantName.isBlank() ? "A restaurant" : restaurantName);
         outbox.publish("RatingSubmitted", "RATING", rating.getId(), rated, actorId);
 
         return toResponse(rating);

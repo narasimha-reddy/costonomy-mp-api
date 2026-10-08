@@ -2,7 +2,6 @@ package com.costonomy.mp.procurement.service;
 
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.outbox.OutboxService;
-import com.costonomy.mp.credit.service.CreditReadService;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
 import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
 import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
@@ -42,7 +41,6 @@ public class OrderReleaseService {
     private final AuditService auditService;
     private final OutboxService outbox;
     private final ProcurementDirectory directory;
-    private final CreditReadService creditRead;
 
     /**
      * Release an order if its funding is secured.
@@ -127,21 +125,26 @@ public class OrderReleaseService {
         // One event now: every released order is confirmed. "Released" used to
         // mean "this needs your answer, and the clock has started", which after
         // D-091 is never true.
-        // Who ordered, and how it is funded, so the supplier is told "on credit, due 7 Nov" and never "paid for"
-        // for a credit order (flow review 6).
-        var outlet = directory.outletSummary(order.getOutletId());
-        if (outlet != null && outlet.restaurantName() != null) {
-            payload.put("restaurantName", outlet.restaurantName());
+        // Who ordered, and how it is funded, so the supplier is told "on credit, due 7 Nov 2026" and never "paid for"
+        // for a credit order (flow review 6). Notification wording only: a lookup that fails must not undo a release
+        // that has already secured the money, so it falls back to a name-less, variant-less (neutral) text.
+        String restaurantName = null;
+        String variant = null;
+        try {
+            var outlet = directory.outletSummary(order.getOutletId());
+            restaurantName = outlet == null ? null : outlet.restaurantName();
+            LocalDate dueDate = "CREDIT".equals(order.getPaymentMethod())
+                    ? directory.creditDueDateOf(order.getId()) : null;
+            variant = confirmationVariant(order.getPaymentMethod(), dueDate);
+            if (dueDate != null) {
+                payload.put("dueDate", DUE_DATE.format(dueDate));
+            }
+        } catch (RuntimeException e) {
+            log.warn("Could not word the confirmation of order {}; sending the neutral text", order.getOrderNumber(), e);
+            payload.remove("dueDate");
+            variant = null;
         }
-        LocalDate dueDate = null;
-        if ("CREDIT".equals(order.getPaymentMethod())) {
-            var credit = creditRead.orderCredit(java.util.List.of(order.getId())).get(order.getId());
-            dueDate = credit == null ? null : credit.dueDate();
-        }
-        if (dueDate != null) {
-            payload.put("dueDate", DUE_DATE.format(dueDate));
-        }
-        var variant = confirmationVariant(order.getPaymentMethod(), dueDate);
+        payload.put("restaurantName", restaurantName == null || restaurantName.isBlank() ? FALLBACK_NAME : restaurantName);
         if (variant != null) {
             payload.put("notificationVariant", variant);
         }
@@ -156,15 +159,24 @@ public class OrderReleaseService {
 
     private static final DateTimeFormatter DUE_DATE = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.ENGLISH);
 
+    /** Said when the restaurant's name cannot be found, so the text never starts with nothing. */
+    static final String FALLBACK_NAME = "A restaurant";
+
     /**
-     * The wording of the supplier's "Order confirmed": null (paid up front) for wallet and online, CREDIT for a
-     * credit order, CREDIT_DUE when its due date is already known. The server picks it, the template only reads it.
+     * The wording of the supplier's "Order confirmed", one per funded method: WALLET (paid), PREPAID (a card,
+     * secured and collected when the order is marked ready), CREDIT, CREDIT_DUE (credit with its due date known).
+     * Null for anything else, which reads neutrally. The server picks it, the template only reads it.
      */
     public static String confirmationVariant(String paymentMethod, LocalDate dueDate) {
-        if (!"CREDIT".equals(paymentMethod)) {
+        if (paymentMethod == null) {
             return null;
         }
-        return dueDate == null ? "CREDIT" : "CREDIT_DUE";
+        return switch (paymentMethod) {
+            case "WALLET" -> "WALLET";
+            case "PREPAID" -> "PREPAID";
+            case "CREDIT" -> dueDate == null ? "CREDIT" : "CREDIT_DUE";
+            default -> null;
+        };
     }
 
     /**

@@ -130,6 +130,22 @@ public class ProductionProviderGuard {
             throw new IllegalStateException("costonomy.mp.pidge.webhook-secret is not set while Pidge is the delivery "
                     + "provider under a production profile. Set PIDGE_WEBHOOK_SECRET.");
         }
+        // D-193: the realtime socket accepts browsers from the origins listed, and the default list is the local dev
+        // servers. A deploy that forgets REALTIME_ALLOWED_ORIGINS would run on that default: live updates refused for
+        // the real web app, and localhost pages allowed to open a socket. The variable must be set itself, and no
+        // origin in the list may be a local one.
+        if (blank(environment.getProperty("REALTIME_ALLOWED_ORIGINS"))) {
+            throw new IllegalStateException("REALTIME_ALLOWED_ORIGINS is not set under a production profile. Set it "
+                    + "to the web app's https origin(s), comma separated.");
+        }
+        for (String origin : environment.getProperty("costonomy.mp.realtime.allowed-origins", "").split(",")) {
+            String host = origin.strip().toLowerCase(java.util.Locale.ROOT);
+            if (host.contains("localhost") || host.contains("127.0.0.1")) {
+                throw new IllegalStateException("costonomy.mp.realtime.allowed-origins contains '" + origin.strip()
+                        + "' under a production profile. Local origins are for development; set "
+                        + "REALTIME_ALLOWED_ORIGINS to the deployed origins only.");
+            }
+        }
         // The signing key that used to be the property's default is in the repository history, so it
         // is known to everyone with read access. Under production it is refused, as is a short or
         // missing one (JwtService also refuses short keys, but this names the cause).

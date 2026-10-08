@@ -444,6 +444,12 @@ public final class ProcurementDtos {
             BigDecimal acceptedAmount,
             String paymentMethod,
             boolean hasColdChainItems,
+            /**
+             * How the goods travel: PICKUP, COSTONOMY_DELIVERY or SUPPLIER_DELIVERY, as on the single-order read. What
+             * tells the supplier's app whether a ready order is theirs to send out, a rider's, or waiting for the
+             * restaurant. Additive.
+             */
+            DeliveryMode deliveryMode,
             List<SupplierOrderItemResponse> items) {
     }
 

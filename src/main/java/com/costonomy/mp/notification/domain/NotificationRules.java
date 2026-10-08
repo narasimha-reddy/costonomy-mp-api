@@ -114,7 +114,7 @@ public final class NotificationRules {
         add(rules, new NotificationRule("SupplierOrderReady#SUPPLIER_DELIVERY", OUTLET, ORDERS, false,
                 List.of(IN_APP, PUSH),
                 "Order packed",
-                "Order {orderNumber} is packed and will be delivered by {supplierName}.", "SUPPLIER_ORDER"));
+                "Order {orderNumber} is packed and will be delivered by {supplierName|the supplier}.", "SUPPLIER_ORDER"));
 
         // ── Orders, supplier side ────────────────────────────────────────
         add(rules, new NotificationRule("SupplierOrderReleased", SUPPLIER_STORE, ORDERS, true,
@@ -133,22 +133,39 @@ public final class NotificationRules {
         // the supplier committed to these quantities when they answered the
         // request, so the only thing left is to prepare it. The ONE "Order confirmed" a supplier gets per order:
         // IntentOrdered used to add a second, and fired before a prepaid order was even paid (flow review 6).
-        // Worded by how it is funded, so a credit order is never "paid for": the producer names CREDIT or
-        // CREDIT_DUE (the due date known) in notificationVariant; anything else was paid up front.
+        // Worded by how it is funded, named by the producer in notificationVariant. The default, used when there is
+        // no variant (an outbox row from before the variants, a payment method added later), says nothing about
+        // money: a credit order must never be announced as paid.
         add(rules, new NotificationRule("SupplierOrderConfirmed", SUPPLIER_STORE, ORDERS, true,
                 List.of(IN_APP, PUSH),
                 "Order confirmed",
-                "{restaurantName} ordered {orderNumber}, paid up front. Ready to prepare.", "SUPPLIER_ORDER"));
+                "Order[ {orderNumber}][ from {restaurantName}] is confirmed. Ready to prepare.", "SUPPLIER_ORDER"));
+
+        // Actually paid: the wallet is debited when the order is placed.
+        add(rules, new NotificationRule("SupplierOrderConfirmed#WALLET", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Order confirmed",
+                "Order[ {orderNumber}][ from {restaurantName}] is confirmed and paid from the wallet. Ready to prepare.",
+                "SUPPLIER_ORDER"));
+
+        // A card is authorised and held, not charged (D-103): the money is collected when the supplier marks the
+        // order ready, and that can still be refused, so this is not "paid".
+        add(rules, new NotificationRule("SupplierOrderConfirmed#PREPAID", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Order confirmed",
+                "Order[ {orderNumber}][ from {restaurantName}] is confirmed. Payment is secured and collected when you "
+                        + "mark it ready.", "SUPPLIER_ORDER"));
 
         add(rules, new NotificationRule("SupplierOrderConfirmed#CREDIT", SUPPLIER_STORE, ORDERS, true,
                 List.of(IN_APP, PUSH),
                 "Order confirmed",
-                "{restaurantName} ordered {orderNumber} on credit. Ready to prepare.", "SUPPLIER_ORDER"));
+                "Order[ {orderNumber}][ from {restaurantName}] is confirmed, on credit. Ready to prepare.",
+                "SUPPLIER_ORDER"));
 
         add(rules, new NotificationRule("SupplierOrderConfirmed#CREDIT_DUE", SUPPLIER_STORE, ORDERS, true,
                 List.of(IN_APP, PUSH),
                 "Order confirmed",
-                "{restaurantName} ordered {orderNumber} on credit, due {dueDate}. Ready to prepare.",
+                "Order[ {orderNumber}][ from {restaurantName}] is confirmed, on credit[, due {dueDate}]. Ready to prepare.",
                 "SUPPLIER_ORDER"));
 
         // ── Chat ─────────────────────────────────────────────────────────
@@ -181,7 +198,7 @@ public final class NotificationRules {
         add(rules, new NotificationRule("IntentSent", SUPPLIER_STORE, ORDERS, true,
                 List.of(IN_APP, PUSH),
                 "New request",
-                "{restaurantName} ({outletName}) is asking what you can supply. Request {reference}.",
+                "{restaurantName|A restaurant}[ ({outletName})] is asking what you can supply.[ Request {reference}.]",
                 "INTENT"));
 
         // The restaurant's window to order starts the moment this is sent, and
@@ -563,7 +580,7 @@ public final class NotificationRules {
         add(rules, new NotificationRule("RatingSubmitted", SUPPLIER_STORE, MARKETPLACE, false,
                 List.of(IN_APP),
                 "New rating",
-                "{restaurantName} rated order {orderNumber} {overall} out of 5.",
+                "{restaurantName|A restaurant} rated your order[ {orderNumber}]: {overall} out of 5.",
                 "SUPPLIER_ORDER", "supplierOrderId"));
 
         return rules;

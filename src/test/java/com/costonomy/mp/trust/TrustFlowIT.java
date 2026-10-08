@@ -554,6 +554,24 @@ class TrustFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("the rating event carries the order number and the restaurant's name, for the supplier's notification")
+        void ratingEventNamesTheOrderAndRestaurant() throws Exception {
+            var order = deliveredOrder(10);
+            receive(order, List.of(countedLine(order.itemId(), "10", "0", "0")), null);
+            long ratingId = rate(order, 4, "Good").get("id").asLong();
+
+            var payload = json.readTree(jdbc.queryForObject("""
+                    select payload from outbox_event where aggregate_type = 'RATING' and aggregate_id = ?
+                       and event_type = 'RatingSubmitted'""", String.class, ratingId));
+
+            assertThat(payload.get("orderNumber").asText()).isEqualTo(jdbc.queryForObject(
+                    "select order_number from supplier_order where id = ?", String.class, order.orderId()));
+            assertThat(payload.get("restaurantName").asText()).isEqualTo(jdbc.queryForObject("""
+                    select r.name from supplier_order o join outlet t on t.id = o.outlet_id
+                      join restaurant r on r.id = t.restaurant_id where o.id = ?""", String.class, order.orderId()));
+        }
+
+        @Test
         @DisplayName("a rating a moderator hid is not shown on the order")
         void hiddenRatingIsNotShown() throws Exception {
             var order = deliveredOrder(10);

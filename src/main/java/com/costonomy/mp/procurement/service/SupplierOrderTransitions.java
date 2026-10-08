@@ -137,15 +137,18 @@ public class SupplierOrderTransitions {
         auditService.record(actorId, null, "SUPPLIER_ORDER_" + target.name(), "SUPPLIER_ORDER",
                 orderId, current.name(), target.name(), null, "API");
 
-        outbox.publish(eventFor(target), "SUPPLIER_ORDER", orderId,
-                Map.of("orderNumber", order.getOrderNumber(),
-                        "supplierName", supplierNameOf(order.getSupplierStoreId()),
-                        "supplierStoreId", order.getSupplierStoreId(),
-                        "deliveryMode", mode.name(),
-                        // Ready is worded by how the goods travel: collect, partner or the supplier's own van.
-                        "notificationVariant", mode.name(),
-                        "outletId", order.getOutletId()),
-                actorId);
+        var event = eventFor(target);
+        var payload = new java.util.HashMap<String, Object>();
+        payload.put("orderNumber", order.getOrderNumber());
+        payload.put("supplierName", supplierNameOf(order.getSupplierStoreId()));
+        payload.put("supplierStoreId", order.getSupplierStoreId());
+        payload.put("deliveryMode", mode.name());
+        payload.put("outletId", order.getOutletId());
+        if ("SupplierOrderReady".equals(event)) {
+            // Ready is worded by how the goods travel: collect, partner or the supplier's own van.
+            payload.put("notificationVariant", mode.name());
+        }
+        outbox.publish(event, "SUPPLIER_ORDER", orderId, payload, actorId);
 
         return mapper.toResponse(order);
     }

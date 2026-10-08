@@ -53,12 +53,35 @@ class NotificationWordingTest {
         }
 
         @Test
-        @DisplayName("a wallet or online order says it was paid up front, and names the restaurant")
-        void prepaidOrder() {
-            var text = only("SupplierOrderConfirmed", null, Audience.SUPPLIER_STORE).render(fields);
+        @DisplayName("a wallet order says it was paid, and names the restaurant")
+        void walletOrder() {
+            var text = only("SupplierOrderConfirmed", "WALLET", Audience.SUPPLIER_STORE).render(fields);
 
             assertThat(text).contains("Spice Route").contains("MP-261007-000123")
                     .containsIgnoringCase("paid").doesNotContain("credit");
+        }
+
+        @Test
+        @DisplayName("a card order is secured, collected when the supplier marks it ready, never 'paid'")
+        void cardOrder() {
+            var text = only("SupplierOrderConfirmed", "PREPAID", Audience.SUPPLIER_STORE).render(fields);
+
+            assertThat(text).contains("Spice Route").contains("MP-261007-000123")
+                    .contains("secured").contains("collected when you mark it ready")
+                    .doesNotContainIgnoringCase("paid").doesNotContain("credit");
+        }
+
+        @Test
+        @DisplayName("no variant (an old outbox row, a payment method added later) is neutral: neither paid nor credit")
+        void defaultIsNeutral() {
+            var text = only("SupplierOrderConfirmed", null, Audience.SUPPLIER_STORE).render(fields);
+
+            assertThat(text).contains("MP-261007-000123").contains("Spice Route").contains("confirmed")
+                    .doesNotContainIgnoringCase("paid").doesNotContainIgnoringCase("credit")
+                    .doesNotContainIgnoringCase("up front");
+            // An unknown variant lands on the same neutral rule.
+            assertThat(only("SupplierOrderConfirmed", "SOMETHING_NEW", Audience.SUPPLIER_STORE).render(fields))
+                    .isEqualTo(text);
         }
 
         @Test
@@ -67,8 +90,11 @@ class NotificationWordingTest {
             assertThat(OrderReleaseService.confirmationVariant("CREDIT", LocalDate.of(2026, 11, 7)))
                     .isEqualTo("CREDIT_DUE");
             assertThat(OrderReleaseService.confirmationVariant("CREDIT", null)).isEqualTo("CREDIT");
-            assertThat(OrderReleaseService.confirmationVariant("PREPAID", null)).isNull();
-            assertThat(OrderReleaseService.confirmationVariant("WALLET", LocalDate.of(2026, 11, 7))).isNull();
+            assertThat(OrderReleaseService.confirmationVariant("PREPAID", null)).isEqualTo("PREPAID");
+            assertThat(OrderReleaseService.confirmationVariant("WALLET", LocalDate.of(2026, 11, 7)))
+                    .isEqualTo("WALLET");
+            assertThat(OrderReleaseService.confirmationVariant("SOMETHING_NEW", null)).isNull();
+            assertThat(OrderReleaseService.confirmationVariant(null, null)).isNull();
         }
 
         @Test
@@ -178,5 +204,84 @@ class NotificationWordingTest {
                     .doesNotContainIgnoringCase("driver");
         }
         assertThat(only("DriverAssigned", null, Audience.OUTLET).title()).isEqualTo("Delivery partner on the way");
+    }
+
+    @Nested
+    @DisplayName("text stays readable when a field is missing (pre-deploy outbox rows, a failed lookup)")
+    class MissingFields {
+
+        private final java.util.regex.Pattern BROKEN = java.util.regex.Pattern.compile(
+                "\\(\\s*\\)|\\[|]|[{}]|^\\s*[.,:]|\\s[.,:]|\\s{2,}|\\s$");
+
+        private void readsCleanly(String text) {
+            assertThat(text).isNotBlank();
+            assertThat(BROKEN.matcher(text).find()).describedAs("'%s'", text).isFalse();
+            assertThat(Character.isUpperCase(text.charAt(0))).describedAs("'%s' starts a sentence", text).isTrue();
+        }
+
+        @Test
+        @DisplayName("every order-confirmed variant reads correctly with no restaurant, and with no fields at all")
+        void confirmed() {
+            for (String variant : new String[]{null, "WALLET", "PREPAID", "CREDIT", "CREDIT_DUE"}) {
+                var rule = only("SupplierOrderConfirmed", variant, Audience.SUPPLIER_STORE);
+                readsCleanly(rule.render(Map.of("orderNumber", "MP-1", "dueDate", "7 Nov 2026")));
+                readsCleanly(rule.render(Map.of()));
+            }
+            assertThat(only("SupplierOrderConfirmed", "CREDIT_DUE", Audience.SUPPLIER_STORE)
+                    .render(Map.of("orderNumber", "MP-1", "dueDate", "7 Nov 2026"))).contains("7 Nov 2026");
+        }
+
+        @Test
+        @DisplayName("a new request without a restaurant says 'A restaurant'; without an outlet there is no empty bracket")
+        void newRequest() {
+            var rule = only("IntentSent", null, Audience.SUPPLIER_STORE);
+
+            assertThat(rule.render(Map.of("reference", "REQ-77")))
+                    .isEqualTo("A restaurant is asking what you can supply. Request REQ-77.");
+            assertThat(rule.render(Map.of("reference", "REQ-77", "restaurantName", "Spice Route")))
+                    .isEqualTo("Spice Route is asking what you can supply. Request REQ-77.");
+            assertThat(rule.render(Map.of("reference", "REQ-77", "restaurantName", "Spice Route",
+                    "outletName", "Indiranagar")))
+                    .isEqualTo("Spice Route (Indiranagar) is asking what you can supply. Request REQ-77.");
+            readsCleanly(rule.render(Map.of()));
+        }
+
+        @Test
+        @DisplayName("an old rating row (no order number, no restaurant) still reads as a sentence")
+        void oldRating() {
+            var rule = only("RatingSubmitted", null, Audience.SUPPLIER_STORE);
+
+            assertThat(rule.render(Map.of("overall", "4"))).isEqualTo("A restaurant rated your order: 4 out of 5.");
+            readsCleanly(rule.render(Map.of("overall", "4")));
+            readsCleanly(rule.render(Map.of("overall", "4", "orderNumber", "MP-1")));
+        }
+
+        @Test
+        @DisplayName("the supplier's own delivery reads correctly without a supplier name")
+        void ownDeliveryWithoutName() {
+            var rule = only("SupplierOrderReady", "SUPPLIER_DELIVERY", Audience.OUTLET);
+
+            readsCleanly(rule.render(Map.of("orderNumber", "MP-1")));
+            assertThat(rule.render(Map.of("orderNumber", "MP-1"))).contains("delivered by the supplier");
+        }
+    }
+
+    @Test
+    @DisplayName("a variant keeps every audience its event's own rule has: a variant replaces the list, so nobody may be dropped")
+    void variantsCoverEveryAudience() {
+        var byEvent = NotificationRules.all().stream()
+                .collect(java.util.stream.Collectors.groupingBy(NotificationRule::eventType));
+        var variants = byEvent.keySet().stream().filter(k -> k.contains("#")).toList();
+
+        assertThat(variants).isNotEmpty();
+        for (String key : variants) {
+            String base = key.substring(0, key.indexOf('#'));
+            var baseAudiences = byEvent.get(base).stream().map(NotificationRule::audience).collect(
+                    java.util.stream.Collectors.toSet());
+            var variantAudiences = byEvent.get(key).stream().map(NotificationRule::audience).collect(
+                    java.util.stream.Collectors.toSet());
+            assertThat(variantAudiences).describedAs("%s must cover the audiences of %s", key, base)
+                    .containsAll(baseAudiences);
+        }
     }
 }
