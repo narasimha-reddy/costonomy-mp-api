@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [phase6/known-bugs] - Known bugs (D-135 onward)
 
 ### Added
+- Sandbox rider on real roads (D-192): for the seeded Bengaluru pair the sandbox stages follow a stored OSM driving route (`pidge-sandbox/route-bengaluru.json`) instead of the straight line, and `POST /deliveries/{id}/sandbox/move?leg=approach|delivery&fraction=0..1` places the rider at one point on it (supplier, sandbox on; one location fix, status unchanged). Other deliveries keep the straight line. Test only.
 - Delivery response (restyle B1): `pickupLocation` (supplier store) and `dropLocation` (buyer outlet), each `{latitude, longitude}` or null when either coordinate is not stored; both sides get them. Additive.
 - Pidge poll records the rider position (B2): `PidgeDeliveryProvider.location()` returns the position from the status answer `status()` just fetched (no second call) and `DeliveryEventService.recordLocation` stores the same fix once.
 - Rider visible from assignment (D-191): the Pidge webhook records the rider position again after the stage is applied, so the first fix (out for pickup, status DRIVER_ASSIGNED) is stored and returned; sandbox out-for-pickup is 2.0 km short of the pickup; outbox events are relayed right after commit (same lock as the poll; `costonomy.mp.outbox.drain-on-commit`), poll lock hold PT1S to PT0S.

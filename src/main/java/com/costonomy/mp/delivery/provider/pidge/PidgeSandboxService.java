@@ -7,7 +7,9 @@ import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.delivery.domain.DeliveryMode;
+import com.costonomy.mp.delivery.repository.DeliveryLocationRepository;
 import com.costonomy.mp.delivery.repository.DeliveryRepository;
+import com.costonomy.mp.delivery.service.DeliveryEventService;
 import com.costonomy.mp.delivery.service.DeliveryService;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -41,6 +43,8 @@ public class PidgeSandboxService {
     private final PidgeProperties properties;
     private final PidgeApiClient client;
     private final PidgeWebhookService webhook;
+    private final DeliveryEventService events;
+    private final DeliveryLocationRepository locations;
 
     public DeliveryDtos.DeliveryResponse advance(Long actorId, Long deliveryId) {
         var delivery = deliveries.findById(deliveryId)
@@ -76,6 +80,83 @@ public class PidgeSandboxService {
     }
 
     /**
+     * Test-only: put the rider at one point along the road (or the straight line, off the stored route) without
+     * changing the delivery's status (D-192). One location fix stamped now, and always later than the previous fix of
+     * this delivery so the same-time dedupe in {@code recordLocation} never swallows it.
+     */
+    public DeliveryDtos.DeliveryResponse move(Long actorId, Long deliveryId, String legName, String fractionText) {
+        var delivery = deliveries.findById(deliveryId)
+                .orElseThrow(() -> new NotFoundException("Delivery", deliveryId));
+        accessControl.requireScoped(actorId, Permissions.ORDER_READY,
+                ScopeType.SUPPLIER_STORE, delivery.getSupplierStoreId(), "Delivery");
+        if (!properties.isSandbox()) {
+            throw new NotFoundException("Delivery", deliveryId);
+        }
+        if (!PidgeSandboxStages.isPidge(delivery) || delivery.getProviderDeliveryId() == null) {
+            throw new NotFoundException("Delivery", deliveryId);
+        }
+        if (delivery.getMode() != DeliveryMode.COSTONOMY) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "The supplier carries this delivery, so there is no rider to move.");
+        }
+        var leg = parseLeg(legName);
+        double fraction = parseFraction(fractionText);
+        if (!delivery.getStatus().isTrackable()) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "This delivery is " + delivery.getStatus() + ", so there is no rider to move.");
+        }
+
+        PidgeSandboxStages.Position position;
+        if (onRoad(delivery)) {
+            var point = PidgeSandboxRoute.shared().pointAt(leg, fraction);
+            position = new PidgeSandboxStages.Position(point.latitude(), point.longitude());
+        } else {
+            position = PidgeSandboxStages.straightMove(leg, fraction, delivery.getPickupLatitude(),
+                    delivery.getPickupLongitude(), delivery.getDropLatitude(), delivery.getDropLongitude())
+                    .orElseThrow(() -> new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                            "This delivery has no stored pickup and drop to move along."));
+        }
+
+        var at = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+        var last = locations.findFirstByDeliveryIdOrderByRecordedAtDescIdDesc(deliveryId);
+        if (last.isPresent() && !at.isAfter(last.get().getRecordedAt())) {
+            at = last.get().getRecordedAt().plusMillis(1);
+        }
+        log.info("Pidge sandbox move: delivery {} {} {}", deliveryId, leg, fraction);
+        events.recordLocation(delivery, position.latitude(), position.longitude(), null, null, at);
+        return deliveryService.get(actorId, deliveryId);
+    }
+
+    private static PidgeSandboxRoute.Leg parseLeg(String leg) {
+        if (leg != null) {
+            for (var candidate : PidgeSandboxRoute.Leg.values()) {
+                if (candidate.name().equalsIgnoreCase(leg.trim())) {
+                    return candidate;
+                }
+            }
+        }
+        throw new BusinessException(ErrorCode.VALIDATION_ERROR, "leg must be approach or delivery.");
+    }
+
+    private static double parseFraction(String text) {
+        try {
+            double value = Double.parseDouble(text == null ? "" : text.trim());
+            if (Double.isFinite(value) && value >= 0.0 && value <= 1.0) {
+                return value;
+            }
+        } catch (NumberFormatException ignored) {
+            // falls through to the 400 below
+        }
+        throw new BusinessException(ErrorCode.VALIDATION_ERROR, "fraction must be a number from 0 to 1.");
+    }
+
+    /** True when the delivery's stored pickup and drop are the stored road route's supplier and outlet. */
+    private static boolean onRoad(com.costonomy.mp.delivery.domain.Delivery delivery) {
+        return PidgeSandboxRoute.shared().matches(delivery.getPickupLatitude(), delivery.getPickupLongitude(),
+                delivery.getDropLatitude(), delivery.getDropLongitude());
+    }
+
+    /**
      * Pidge's dummy answer always carries the same rider point (near Gurugram) stamped a few minutes ahead, so the
      * truck on the map never moves and never goes stale (D-190). Put the stage's point on the straight line from the
      * delivery's pickup to its drop instead, stamped now. Without stored coordinates, or if the answer has no stage
@@ -83,8 +164,11 @@ public class PidgeSandboxService {
      */
     private JsonNode withSyntheticPosition(JsonNode order, String dummy,
                                            com.costonomy.mp.delivery.domain.Delivery delivery) {
-        var position = PidgeSandboxStages.position(dummy, delivery.getPickupLatitude(),
-                delivery.getPickupLongitude(), delivery.getDropLatitude(), delivery.getDropLongitude());
+        var route = PidgeSandboxRoute.shared();
+        var position = onRoad(delivery)
+                ? PidgeSandboxStages.roadPosition(dummy, route)
+                : PidgeSandboxStages.position(dummy, delivery.getPickupLatitude(),
+                        delivery.getPickupLongitude(), delivery.getDropLatitude(), delivery.getDropLongitude());
         var logs = order.path("fulfillment").path("logs");
         if (position.isEmpty() || !logs.isArray() || logs.isEmpty()
                 || !(logs.get(logs.size() - 1) instanceof ObjectNode)) {

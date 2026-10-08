@@ -116,6 +116,48 @@ public final class PidgeSandboxStages {
         return Optional.of(new Position(scale7(lat), scale7(lng)));
     }
 
+    /**
+     * The same stages on the real road route (D-192): out for pickup at the start of the approach, reached and
+     * picked up at the supplier, ofd 35% along the delivery leg, reached delivery 30 m of road short of the end,
+     * delivered at the end. Empty for a stage that is not in the table.
+     */
+    public static Optional<Position> roadPosition(String dummyStatus, PidgeSandboxRoute route) {
+        if (dummyStatus == null) {
+            return Optional.empty();
+        }
+        var point = switch (dummyStatus) {
+            case "fulfilled|out for pickup" -> route.pointAt(PidgeSandboxRoute.Leg.APPROACH, 0.0);
+            case "fulfilled|reached pickup", "fulfilled|picked up" -> route.pointAt(PidgeSandboxRoute.Leg.APPROACH, 1.0);
+            case "fulfilled|ofd" -> route.pointAt(PidgeSandboxRoute.Leg.DELIVERY, 0.35);
+            case "fulfilled|reached delivery" -> route.pointAtMetersFromEnd(PidgeSandboxRoute.Leg.DELIVERY, 30);
+            case "fulfilled|delivered" -> route.pointAt(PidgeSandboxRoute.Leg.DELIVERY, 1.0);
+            default -> null;
+        };
+        return point == null ? Optional.empty() : Optional.of(new Position(point.latitude(), point.longitude()));
+    }
+
+    /**
+     * One free-form point for the manual move control (D-192) when the delivery is not on the stored road route:
+     * the delivery leg is the straight pickup-to-drop line, the approach leg runs from 2 km before the pickup to it.
+     */
+    public static Optional<Position> straightMove(PidgeSandboxRoute.Leg leg, double fraction, BigDecimal pickupLat,
+                                                  BigDecimal pickupLng, BigDecimal dropLat, BigDecimal dropLng) {
+        if (pickupLat == null || pickupLng == null || dropLat == null || dropLng == null) {
+            return Optional.empty();
+        }
+        double f = Math.max(0.0, Math.min(1.0, fraction));
+        if (leg == PidgeSandboxRoute.Leg.DELIVERY) {
+            double lat = pickupLat.doubleValue() + (dropLat.doubleValue() - pickupLat.doubleValue()) * f;
+            double lng = pickupLng.doubleValue() + (dropLng.doubleValue() - pickupLng.doubleValue()) * f;
+            return Optional.of(new Position(scale7(lat), scale7(lng)));
+        }
+        // 2 km short of the pickup, on the side away from the drop, same as the "out for pickup" stage.
+        var start = position("fulfilled|out for pickup", pickupLat, pickupLng, dropLat, dropLng).orElseThrow();
+        double lat = start.latitude().doubleValue() + (pickupLat.doubleValue() - start.latitude().doubleValue()) * f;
+        double lng = start.longitude().doubleValue() + (pickupLng.doubleValue() - start.longitude().doubleValue()) * f;
+        return Optional.of(new Position(scale7(lat), scale7(lng)));
+    }
+
     private static BigDecimal scale7(double value) {
         return BigDecimal.valueOf(value).setScale(7, RoundingMode.HALF_UP);
     }

@@ -338,4 +338,240 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
                 "select latitude from delivery_location where delivery_id = ?", BigDecimal.class, id);
         assertThat(lat).isEqualByComparingTo("28.4425540");
     }
+
+    // ── D-192: real roads ────────────────────────────────────────────────
+
+    private void onTheSeedRoute(Long id) {
+        jdbc.update("""
+                update delivery set pickup_latitude = 12.9611000, pickup_longitude = 77.6387000,
+                                    drop_latitude = 12.9784000, drop_longitude = 77.6408000 where id = ?
+                """, id);
+    }
+
+    private void stubAllStages(String pid) throws Exception {
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|out for pickup"))).thenReturn(dummyAt(pid, "OUT_FOR_PICKUP"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|reached pickup"))).thenReturn(dummyAt(pid, "REACHED_PICKUP"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|picked up"))).thenReturn(dummyAt(pid, "PICKED_UP"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|ofd"))).thenReturn(dummyAt(pid, "OUT_FOR_DELIVERY"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|reached delivery"))).thenReturn(dummyAt(pid, "REACHED_DELIVERY"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|delivered"))).thenReturn(dummyAt(pid, "DELIVERED"));
+    }
+
+    /** Smallest distance in metres from a point to the polyline (vertices and segments, flat-earth locally). */
+    private double metresToPolyline(double lat, double lng, java.util.List<double[]> pts) {
+        double best = Double.MAX_VALUE;
+        double cos = Math.cos(Math.toRadians(lat));
+        for (int i = 0; i < pts.size() - 1; i++) {
+            double ax = (pts.get(i)[1] - lng) * 111_320 * cos, ay = (pts.get(i)[0] - lat) * 111_320;
+            double bx = (pts.get(i + 1)[1] - lng) * 111_320 * cos, by = (pts.get(i + 1)[0] - lat) * 111_320;
+            double dx = bx - ax, dy = by - ay;
+            if (dx == 0 && dy == 0) {
+                continue;
+            }
+            double t = Math.max(0, Math.min(1, -(ax * dx + ay * dy) / (dx * dx + dy * dy)));
+            best = Math.min(best, Math.hypot(ax + dx * t, ay + dy * t));
+        }
+        return best;
+    }
+
+    private static double metresAlong(com.costonomy.mp.delivery.provider.pidge.PidgeSandboxRoute route, double lat, double lng) {
+        // Distance along approach + delivery of the nearest vertex, as a monotone ruler.
+        double ruler = 0;
+        double best = Double.MAX_VALUE;
+        double at = 0;
+        for (var leg : com.costonomy.mp.delivery.provider.pidge.PidgeSandboxRoute.Leg.values()) {
+            var pts = route.points(leg);
+            var cum = route.cumulativeMetres(leg);
+            for (int i = 0; i < pts.size(); i++) {
+                double d = Math.hypot((pts.get(i)[0] - lat) * 111_320,
+                        (pts.get(i)[1] - lng) * 111_320 * Math.cos(Math.toRadians(lat)));
+                if (d < best) {
+                    best = d;
+                    at = ruler + cum[i];
+                }
+            }
+            ruler += route.lengthMetres(leg);
+        }
+        return at;
+    }
+
+    private java.util.List<Map<String, Object>> fixes(Long id) {
+        return jdbc.queryForList(
+                "select latitude, longitude, recorded_at from delivery_location where delivery_id = ? order by recorded_at, id", id);
+    }
+
+    @Test
+    void aMatchingDeliveryWalksTheRoadStageByStage() throws Exception {
+        var route = com.costonomy.mp.delivery.provider.pidge.PidgeSandboxRoute.shared();
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "PROVIDER_SELECTED");
+        onTheSeedRoute(id);
+        stubAllStages(pid);
+
+        for (int i = 0; i < 6; i++) {
+            assertThat(advance(supplierToken, id)).isEqualTo(200);
+        }
+
+        var rows = fixes(id);
+        assertThat(rows).hasSize(6);
+        var all = new java.util.ArrayList<double[]>(route.points(com.costonomy.mp.delivery.provider.pidge.PidgeSandboxRoute.Leg.APPROACH));
+        all.addAll(route.points(com.costonomy.mp.delivery.provider.pidge.PidgeSandboxRoute.Leg.DELIVERY));
+        double previous = -1;
+        for (var row : rows) {
+            double lat = ((BigDecimal) row.get("latitude")).doubleValue();
+            double lng = ((BigDecimal) row.get("longitude")).doubleValue();
+            // (a) on the road polyline, (b) in order along it.
+            assertThat(metresToPolyline(lat, lng, all)).isLessThan(5.0);
+            double along = metresAlong(route, lat, lng);
+            assertThat(along).isGreaterThanOrEqualTo(previous);
+            previous = along;
+        }
+        // Reached and picked up are the same spot, the supplier; the last is the outlet.
+        assertThat(rows.get(1).get("latitude")).isEqualTo(rows.get(2).get("latitude"));
+        var last = rows.get(5);
+        assertThat(metres(12.978401, 77.640814, ((BigDecimal) last.get("latitude")).doubleValue(),
+                ((BigDecimal) last.get("longitude")).doubleValue())).isLessThan(5.0);
+        var near = rows.get(4);
+        assertThat(metres(12.978401, 77.640814, ((BigDecimal) near.get("latitude")).doubleValue(),
+                ((BigDecimal) near.get("longitude")).doubleValue())).isBetween(20.0, 35.0);
+    }
+
+    @Test
+    void aNonMatchingDeliveryStillUsesTheStraightLine() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "DRIVER_ASSIGNED");
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|reached pickup"))).thenReturn(dummyAt(pid, "REACHED_PICKUP"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|picked up"))).thenReturn(dummyAt(pid, "PICKED_UP"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|ofd"))).thenReturn(dummyAt(pid, "OUT_FOR_DELIVERY"));
+
+        for (int i = 0; i < 3; i++) {
+            assertThat(advance(supplierToken, id)).isEqualTo(200);
+        }
+        var rows = fixes(id);
+        var ofd = rows.get(2);
+        // 40 percent of the straight line (the road stage would be 35 percent of a different leg).
+        assertThat(metres(12.9352, 77.6245, ((BigDecimal) ofd.get("latitude")).doubleValue(),
+                ((BigDecimal) ofd.get("longitude")).doubleValue())).isBetween(2000.0, 2300.0);
+        assertThat(((BigDecimal) ofd.get("latitude")).doubleValue()).isEqualTo(12.9352 + 0.4 * (12.9716 - 12.9352), org.assertj.core.data.Offset.offset(1e-6));
+    }
+
+    private org.springframework.test.web.servlet.MvcResult move(String token, Long id, String leg, String fraction) throws Exception {
+        var req = MockMvcRequestBuilders.post("/api/v1/deliveries/" + id + "/sandbox/move")
+                .header("Authorization", "Bearer " + token)
+                .header("Idempotency-Key", UUID.randomUUID().toString());
+        if (leg != null) {
+            req.param("leg", leg);
+        }
+        if (fraction != null) {
+            req.param("fraction", fraction);
+        }
+        return mvc.perform(req).andReturn();
+    }
+
+    @Test
+    void moveStoresStrictlyLaterFixesAlongTheApproachAndKeepsTheStatus() throws Exception {
+        var route = com.costonomy.mp.delivery.provider.pidge.PidgeSandboxRoute.shared();
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "DRIVER_ASSIGNED");
+        onTheSeedRoute(id);
+
+        double[] fractions = {0.0, 0.25, 0.5, 0.75, 1.0};
+        for (double f : fractions) {
+            var result = move(supplierToken, id, "approach", String.valueOf(f));
+            assertThat(result.getResponse().getStatus()).isEqualTo(200);
+            var body = json.readTree(result.getResponse().getContentAsString());
+            assertThat(body.at("/data/status").asText()).isEqualTo("DRIVER_ASSIGNED");
+            assertThat(body.at("/data/location").isNull()).isFalse();
+            assertThat(body.at("/data/location/latitude").asDouble()).isEqualTo(
+                    route.pointAt(com.costonomy.mp.delivery.provider.pidge.PidgeSandboxRoute.Leg.APPROACH, f).latitude().doubleValue(),
+                    org.assertj.core.data.Offset.offset(1e-7));
+        }
+        assertThat(jdbc.queryForObject("select status from delivery where id = ?", String.class, id)).isEqualTo("DRIVER_ASSIGNED");
+
+        var rows = fixes(id);
+        assertThat(rows).hasSize(5);
+        Instant previousAt = null;
+        double previous = -1;
+        for (var row : rows) {
+            Instant at = ((java.sql.Timestamp) row.get("recorded_at")).toInstant();
+            if (previousAt != null) {
+                assertThat(at).isAfter(previousAt);
+            }
+            assertThat(at).isBeforeOrEqualTo(Instant.now());
+            previousAt = at;
+            double along = metresAlong(route, ((BigDecimal) row.get("latitude")).doubleValue(),
+                    ((BigDecimal) row.get("longitude")).doubleValue());
+            assertThat(along).isGreaterThanOrEqualTo(previous);
+            previous = along;
+        }
+        // The same point twice in a row is still two rows (a later stamp each time).
+        assertThat(move(supplierToken, id, "delivery", "0.5").getResponse().getStatus()).isEqualTo(200);
+        assertThat(move(supplierToken, id, "delivery", "0.5").getResponse().getStatus()).isEqualTo(200);
+        assertThat(fixes(id)).hasSize(7);
+    }
+
+    @Test
+    void moveBeatsAFutureDatedLastFixByOneMillisecond() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "DRIVER_ASSIGNED");
+        onTheSeedRoute(id);
+        jdbc.update("insert into delivery_location (delivery_id, latitude, longitude, recorded_at) "
+                + "values (?, 12.96, 77.63, ?)", id, java.sql.Timestamp.from(Instant.now().plusSeconds(120)));
+        var future = jdbc.queryForObject("select max(recorded_at) from delivery_location where delivery_id = ?",
+                java.sql.Timestamp.class, id).toInstant();
+
+        assertThat(move(supplierToken, id, "approach", "0.5").getResponse().getStatus()).isEqualTo(200);
+
+        var newest = jdbc.queryForObject("select max(recorded_at) from delivery_location where delivery_id = ?",
+                java.sql.Timestamp.class, id).toInstant();
+        assertThat(newest).isEqualTo(future.plusMillis(1));
+        assertThat(fixes(id)).hasSize(2);
+    }
+
+    @Test
+    void moveOffTheRouteUsesTheStraightLine() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "DRIVER_ASSIGNED");
+
+        assertThat(move(supplierToken, id, "approach", "0").getResponse().getStatus()).isEqualTo(200);
+        assertThat(move(supplierToken, id, "delivery", "1").getResponse().getStatus()).isEqualTo(200);
+
+        var rows = fixes(id);
+        assertThat(metres(12.9352, 77.6245, ((BigDecimal) rows.get(0).get("latitude")).doubleValue(),
+                ((BigDecimal) rows.get(0).get("longitude")).doubleValue())).isBetween(1990.0, 2010.0);
+        assertThat(metres(12.9716, 77.5946, ((BigDecimal) rows.get(1).get("latitude")).doubleValue(),
+                ((BigDecimal) rows.get(1).get("longitude")).doubleValue())).isLessThan(1.0);
+    }
+
+    @Test
+    void moveGuards() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "DRIVER_ASSIGNED");
+        onTheSeedRoute(id);
+
+        // Buyer: it does not exist.
+        assertThat(move(buyerToken, id, "approach", "0.5").getResponse().getStatus()).isEqualTo(404);
+        // Bad leg and bad fractions.
+        assertThat(move(supplierToken, id, "sideways", "0.5").getResponse().getStatus()).isEqualTo(400);
+        assertThat(move(supplierToken, id, null, "0.5").getResponse().getStatus()).isEqualTo(400);
+        assertThat(move(supplierToken, id, "approach", "1.5").getResponse().getStatus()).isEqualTo(400);
+        assertThat(move(supplierToken, id, "approach", "-0.1").getResponse().getStatus()).isEqualTo(400);
+        assertThat(move(supplierToken, id, "approach", "abc").getResponse().getStatus()).isEqualTo(400);
+        assertThat(move(supplierToken, id, "approach", "NaN").getResponse().getStatus()).isEqualTo(400);
+        assertThat(move(supplierToken, id, "approach", null).getResponse().getStatus()).isEqualTo(400);
+        assertThat(fixes(id)).isEmpty();
+
+        // Not trackable: waiting for a driver, and delivered.
+        jdbc.update("update delivery set status = 'PROVIDER_SELECTED' where id = ?", id);
+        assertThat(move(supplierToken, id, "approach", "0.5").getResponse().getStatus()).isEqualTo(409);
+        jdbc.update("update delivery set status = 'DELIVERED' where id = ?", id);
+        assertThat(move(supplierToken, id, "approach", "0.5").getResponse().getStatus()).isEqualTo(409);
+        assertThat(fixes(id)).isEmpty();
+
+        // Sandbox off: 404 and nothing stored.
+        jdbc.update("update delivery set status = 'DRIVER_ASSIGNED' where id = ?", id);
+        properties.setSandbox(false);
+        assertThat(move(supplierToken, id, "approach", "0.5").getResponse().getStatus()).isEqualTo(404);
+        assertThat(fixes(id)).isEmpty();
+    }
 }
