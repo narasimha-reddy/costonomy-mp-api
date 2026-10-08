@@ -163,13 +163,73 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
 
         JsonNode response = advanceBody(supplierToken, id);
         assertThat(response.at("/data/status").asText()).isEqualTo("DRIVER_ASSIGNED");
-        assertThat(response.at("/data/driverName").asText()).isEqualTo("Sandbox Sunil");
+        // D-195: the dummy rider's name is replaced by the delivery's made-up sandbox rider.
+        var rider = com.costonomy.mp.delivery.provider.pidge.PidgeSandboxStages.rider(id);
+        assertThat(response.at("/data/driverName").asText()).isEqualTo(rider.name());
         assertThat(jdbc.queryForObject("select status from delivery where id = ?", String.class, id))
                 .isEqualTo("DRIVER_ASSIGNED");
         assertThat(jdbc.queryForObject("select driver_name from delivery where id = ?", String.class, id))
-                .isEqualTo("Sandbox Sunil");
+                .isEqualTo(rider.name());
         // The response never names the provider.
         assertThat(response.toString()).doesNotContain("PIDGE").doesNotContain("Pidge");
+    }
+
+    /** Pidge's sandbox answer as it really comes: the placeholder partner "Rider name" on every stage. */
+    private JsonNode placeholderRider(String providerDeliveryId, String stage) throws Exception {
+        return json.readTree("""
+                {"data": {"id": "%s", "status": "fulfilled", "fulfillment": {"status": "%s", "logs": [
+                  {"timestamp": "2026-10-06T10:00:00.000Z", "status": "CREATED"},
+                  {"timestamp": "2026-10-06T10:01:00.000Z", "status": "OUT_FOR_PICKUP",
+                   "rider": {"id": "306", "name": "Rider name", "mobile": "9999999999"}},
+                  {"timestamp": "2026-10-06T10:02:00.000Z", "status": "%s",
+                   "location": {"latitude": 28.4425540, "longitude": 77.0802300},
+                   "rider": {"id": "306", "name": "Rider name", "mobile": "9999999999"}}]}}}
+                """.formatted(providerDeliveryId, stage, stage));
+    }
+
+    @Test
+    void theSandboxRiderGetsAMadeUpNameNumberAndBikeThatStayForTheWholeRide() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "PROVIDER_SELECTED");
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|out for pickup")))
+                .thenReturn(placeholderRider(pid, "OUT_FOR_PICKUP"));
+        when(pidge.simulateOrderStatus(eq(pid), eq("fulfilled|reached pickup")))
+                .thenReturn(placeholderRider(pid, "REACHED_PICKUP"));
+        var rider = com.costonomy.mp.delivery.provider.pidge.PidgeSandboxStages.rider(id);
+
+        JsonNode first = advanceBody(supplierToken, id);
+        assertThat(first.at("/data/status").asText()).isEqualTo("DRIVER_ASSIGNED");
+        assertThat(first.at("/data/driverName").asText()).isEqualTo(rider.name()).isNotEqualTo("Rider name");
+        assertThat(first.at("/data/driverPhone").asText()).isEqualTo(rider.phone()).matches("90000\\d{5}");
+        assertThat(first.at("/data/driverVehicle").asText()).isEqualTo(rider.vehicle()).startsWith("Bike, KA 01 EX ");
+        assertThat(first.toString()).doesNotContain("Rider name");
+        assertThat(api.get(buyerToken, "/api/v1/deliveries/" + id).at("/data/driverName").asText())
+                .isEqualTo(rider.name());
+
+        // The next stage carries the placeholder again; the same rider stays, vehicle included.
+        JsonNode second = advanceBody(supplierToken, id);
+        assertThat(second.at("/data/status").asText()).isEqualTo("DRIVER_AT_PICKUP");
+        assertThat(second.at("/data/driverName").asText()).isEqualTo(rider.name());
+        assertThat(second.at("/data/driverPhone").asText()).isEqualTo(rider.phone());
+        assertThat(second.at("/data/driverVehicle").asText()).isEqualTo(rider.vehicle());
+        assertThat(jdbc.queryForMap("select driver_name, driver_phone, driver_vehicle from delivery where id = ?", id))
+                .containsEntry("driver_name", rider.name())
+                .containsEntry("driver_phone", rider.phone())
+                .containsEntry("driver_vehicle", rider.vehicle());
+    }
+
+    @Test
+    void aRealWebhookKeepsTheRiderPidgeNamesEvenWithTheSandboxOn() throws Exception {
+        String pid = "pidg_sbx_" + System.nanoTime();
+        Long id = seed(pid, "COSTONOMY", "PROVIDER_SELECTED");
+
+        webhook.process(placeholderRider(pid, "OUT_FOR_PICKUP").path("data"));
+
+        assertThat(jdbc.queryForMap("select status, driver_name, driver_phone, driver_vehicle from delivery where id = ?", id))
+                .containsEntry("status", "DRIVER_ASSIGNED")
+                .containsEntry("driver_name", "Rider name")
+                .containsEntry("driver_phone", "9999999999")
+                .containsEntry("driver_vehicle", null);
     }
 
     @Test

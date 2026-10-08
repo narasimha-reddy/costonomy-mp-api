@@ -6,6 +6,7 @@ import com.costonomy.mp.delivery.domain.DeliveryStatus;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -160,5 +161,25 @@ public final class PidgeSandboxStages {
 
     private static BigDecimal scale7(double value) {
         return BigDecimal.valueOf(value).setScale(7, RoundingMode.HALF_UP);
+    }
+
+    /** A made-up sandbox rider: name, 10-digit mobile and "Bike, plate" (the width of driver_vehicle). */
+    public record Rider(String name, String phone, String vehicle) {
+    }
+
+    private static final List<String> RIDER_NAMES =
+            List.of("Ravi Kumar", "Imran Sheikh", "Suresh Babu", "Anil Reddy", "Manoj Yadav");
+
+    /**
+     * Pidge's dummy answer names every rider "Rider name", so the demo screens read "Rider name is on the way"
+     * (D-195). Give the sandbox delivery a believable rider instead, worked out from its id so every stage (and
+     * every re-read) shows the same one. The number sits in the 90000 xxxxx range and the plate in KA 01 EX, both
+     * plainly made up; no real rider or customer is named.
+     */
+    public static Rider rider(long deliveryId) {
+        String name = RIDER_NAMES.get((int) Math.floorMod(deliveryId, (long) RIDER_NAMES.size()));
+        String phone = "90000" + String.format("%05d", Math.floorMod(deliveryId, 100_000L));
+        String plate = "KA 01 EX " + (1000 + Math.floorMod(deliveryId, 9000L));
+        return new Rider(name, phone, "Bike, " + plate);
     }
 }

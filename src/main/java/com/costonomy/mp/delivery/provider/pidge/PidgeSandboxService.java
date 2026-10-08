@@ -75,7 +75,12 @@ public class PidgeSandboxService {
                     "The sandbox gave no order to apply.");
         }
         log.info("Pidge sandbox advance: delivery {} {} -> '{}'", deliveryId, delivery.getStatus(), dummy);
-        webhook.process(withSyntheticPosition(order, dummy, delivery));
+        var rider = PidgeSandboxStages.rider(deliveryId);
+        webhook.process(withSandboxRider(withSyntheticPosition(order, dummy, delivery), rider));
+        // Pidge's answer has no vehicle, so the webhook stores none; add the made-up bike to the rider it stored.
+        deliveries.findById(deliveryId)
+                .filter(stored -> rider.name().equals(stored.getDriverName()))
+                .ifPresent(stored -> events.recordDriver(stored, rider.name(), rider.phone(), rider.vehicle()));
         return deliveryService.get(actorId, deliveryId);
     }
 
@@ -154,6 +159,26 @@ public class PidgeSandboxService {
     private static boolean onRoad(com.costonomy.mp.delivery.domain.Delivery delivery) {
         return PidgeSandboxRoute.shared().matches(delivery.getPickupLatitude(), delivery.getPickupLongitude(),
                 delivery.getDropLatitude(), delivery.getDropLongitude());
+    }
+
+    /**
+     * Pidge's dummy answer names its rider "Rider name" (D-195). Replace the name and mobile of every rider in the
+     * stage logs with this delivery's made-up rider, so the webhook code stores (and announces) that one. Only this
+     * sandbox route calls it; a real webhook keeps the rider Pidge names.
+     */
+    private static JsonNode withSandboxRider(JsonNode order, PidgeSandboxStages.Rider rider) {
+        var logs = order.path("fulfillment").path("logs");
+        if (!logs.isArray()) {
+            return order;
+        }
+        var copy = order.deepCopy();
+        for (var stage : copy.path("fulfillment").path("logs")) {
+            if (stage.path("rider") instanceof ObjectNode stageRider && stageRider.hasNonNull("name")) {
+                stageRider.put("name", rider.name());
+                stageRider.put("mobile", rider.phone());
+            }
+        }
+        return copy;
     }
 
     /**
