@@ -104,6 +104,18 @@ public final class NotificationRules {
                 "Ready for pickup",
                 "Order {orderNumber} is packed and waiting for collection.", "SUPPLIER_ORDER"));
 
+        // "Ready" reads differently by how the goods travel (flow review 6). The default above is PICKUP, the
+        // one mode where somebody collects; the producer names the other two in notificationVariant.
+        add(rules, new NotificationRule("SupplierOrderReady#COSTONOMY_DELIVERY", OUTLET, ORDERS, false,
+                List.of(IN_APP, PUSH),
+                "Order packed",
+                "Order {orderNumber} is packed. A delivery partner is being arranged.", "SUPPLIER_ORDER"));
+
+        add(rules, new NotificationRule("SupplierOrderReady#SUPPLIER_DELIVERY", OUTLET, ORDERS, false,
+                List.of(IN_APP, PUSH),
+                "Order packed",
+                "Order {orderNumber} is packed and will be delivered by {supplierName}.", "SUPPLIER_ORDER"));
+
         // ── Orders, supplier side ────────────────────────────────────────
         add(rules, new NotificationRule("SupplierOrderReleased", SUPPLIER_STORE, ORDERS, true,
                 // The countdown starts now (doc 13). A supplier who misses this
@@ -117,13 +129,27 @@ public final class NotificationRules {
                 "Order expired",
                 "Order {orderNumber} expired without an answer.", "SUPPLIER_ORDER"));
 
-        // Paid for, and already agreed to. Nothing to accept and no countdown --
+        // Funded, and already agreed to. Nothing to accept and no countdown --
         // the supplier committed to these quantities when they answered the
-        // request, so the only thing left is to prepare it.
+        // request, so the only thing left is to prepare it. The ONE "Order confirmed" a supplier gets per order:
+        // IntentOrdered used to add a second, and fired before a prepaid order was even paid (flow review 6).
+        // Worded by how it is funded, so a credit order is never "paid for": the producer names CREDIT or
+        // CREDIT_DUE (the due date known) in notificationVariant; anything else was paid up front.
         add(rules, new NotificationRule("SupplierOrderConfirmed", SUPPLIER_STORE, ORDERS, true,
                 List.of(IN_APP, PUSH),
                 "Order confirmed",
-                "Order {orderNumber} is paid for and ready to prepare.", "SUPPLIER_ORDER"));
+                "{restaurantName} ordered {orderNumber}, paid up front. Ready to prepare.", "SUPPLIER_ORDER"));
+
+        add(rules, new NotificationRule("SupplierOrderConfirmed#CREDIT", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Order confirmed",
+                "{restaurantName} ordered {orderNumber} on credit. Ready to prepare.", "SUPPLIER_ORDER"));
+
+        add(rules, new NotificationRule("SupplierOrderConfirmed#CREDIT_DUE", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Order confirmed",
+                "{restaurantName} ordered {orderNumber} on credit, due {dueDate}. Ready to prepare.",
+                "SUPPLIER_ORDER"));
 
         // ── Chat ─────────────────────────────────────────────────────────
         //
@@ -155,7 +181,7 @@ public final class NotificationRules {
         add(rules, new NotificationRule("IntentSent", SUPPLIER_STORE, ORDERS, true,
                 List.of(IN_APP, PUSH),
                 "New request",
-                "A restaurant is asking what you can supply. Request {reference}.",
+                "{restaurantName} ({outletName}) is asking what you can supply. Request {reference}.",
                 "INTENT"));
 
         // The restaurant's window to order starts the moment this is sent, and
@@ -166,11 +192,8 @@ public final class NotificationRules {
                 "{reference}: your supplier replied. Order within the window to confirm it.",
                 "INTENT"));
 
-        add(rules, new NotificationRule("IntentOrdered", SUPPLIER_STORE, ORDERS, true,
-                List.of(IN_APP, PUSH),
-                "Order confirmed",
-                "{reference} became order {orderNumber}. It is yours to prepare.",
-                "SUPPLIER_ORDER", "supplierOrderId"));
+        // IntentOrdered tells nobody: the supplier hears "Order confirmed" once, from SupplierOrderConfirmed, when
+        // the order is funded. It used to say it too, a second time, and before a prepaid order was paid.
 
         // The supplier said no to everything. Commercially this is the old
         // "order rejected", and it costs the kitchen the same day, so it carries
@@ -226,7 +249,7 @@ public final class NotificationRules {
                 // Nothing reaches a supplier until this is fixed (guardrail 16).
                 List.of(IN_APP, PUSH, SMS),
                 "Payment failed",
-                "Payment for your order didn't go through. {reason}", "SUPPLIER_ORDER"));
+                "Payment for your order didn't go through. {reason}", "SUPPLIER_ORDER", "supplierOrderId"));
 
         // A subscription's delivery could not be arranged. Critical: a missed morning delivery is the cost, and
         // the restaurant can still fix a funding failure the same evening (generation retries hourly until
@@ -454,8 +477,8 @@ public final class NotificationRules {
         // ── Delivery ─────────────────────────────────────────────────────
         add(rules, new NotificationRule("DriverAssigned", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
-                "Driver on the way",
-                "A driver is collecting your order.", "DELIVERY", "supplierOrderId"));
+                "Delivery partner on the way",
+                "A delivery partner is collecting your order.", "DELIVERY", "supplierOrderId"));
 
         add(rules, new NotificationRule("DeliveryDelivered", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
@@ -469,7 +492,7 @@ public final class NotificationRules {
 
         add(rules, new NotificationRule("DeliveryReassigned", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
-                "New driver",
+                "New delivery partner",
                 "Your delivery partner is being reassigned.", "DELIVERY", "supplierOrderId"));
 
         // D-185: no partner after the automatic retries, and what the supplier then chose.
@@ -495,7 +518,7 @@ public final class NotificationRules {
         add(rules, new NotificationRule("DisputeCreated", SUPPLIER_STORE, MARKETPLACE, true,
                 List.of(IN_APP, PUSH),
                 "Dispute raised",
-                "A restaurant raised a {category} dispute on order {disputeNumber}.", "DISPUTE", "supplierOrderId"));
+                "A restaurant raised a {category} dispute ({disputeNumber}).", "DISPUTE", "supplierOrderId"));
 
         add(rules, new NotificationRule("DisputeResponded", OUTLET, MARKETPLACE, true,
                 List.of(IN_APP, PUSH),
@@ -540,8 +563,8 @@ public final class NotificationRules {
         add(rules, new NotificationRule("RatingSubmitted", SUPPLIER_STORE, MARKETPLACE, false,
                 List.of(IN_APP),
                 "New rating",
-                "A restaurant rated order {supplierOrderId} {overall} out of 5.",
-                "SUPPLIER_ORDER"));
+                "{restaurantName} rated order {orderNumber} {overall} out of 5.",
+                "SUPPLIER_ORDER", "supplierOrderId"));
 
         return rules;
     }

@@ -126,6 +126,20 @@ public class ProcurementDirectory {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** A published rating of an order: stars and comment. */
+    public record OrderRating(int overall, String comment) {
+    }
+
+    /** The order's rating when the restaurant left one and moderation has not hidden it; null otherwise. */
+    public OrderRating publishedRatingOf(Long supplierOrderId) {
+        var rows = jdbc.query("""
+                select overall_rating, comment from rating
+                 where supplier_order_id = ? and moderation_status = 'PUBLISHED'
+                """,
+                (rs, i) -> new OrderRating(rs.getInt(1), rs.getString(2)), supplierOrderId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     public Long restaurantIdOfOutlet(Long outletId) {
         var ids = jdbc.queryForList(
                 "select restaurant_id from outlet where id = ?", Long.class, outletId);

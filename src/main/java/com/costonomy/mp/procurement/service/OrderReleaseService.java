@@ -2,6 +2,7 @@ package com.costonomy.mp.procurement.service;
 
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.outbox.OutboxService;
+import com.costonomy.mp.credit.service.CreditReadService;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
 import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
 import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
@@ -11,6 +12,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -37,6 +41,8 @@ public class OrderReleaseService {
     private final OrderFunding funding;
     private final AuditService auditService;
     private final OutboxService outbox;
+    private final ProcurementDirectory directory;
+    private final CreditReadService creditRead;
 
     /**
      * Release an order if its funding is secured.
@@ -121,6 +127,24 @@ public class OrderReleaseService {
         // One event now: every released order is confirmed. "Released" used to
         // mean "this needs your answer, and the clock has started", which after
         // D-091 is never true.
+        // Who ordered, and how it is funded, so the supplier is told "on credit, due 7 Nov" and never "paid for"
+        // for a credit order (flow review 6).
+        var outlet = directory.outletSummary(order.getOutletId());
+        if (outlet != null && outlet.restaurantName() != null) {
+            payload.put("restaurantName", outlet.restaurantName());
+        }
+        LocalDate dueDate = null;
+        if ("CREDIT".equals(order.getPaymentMethod())) {
+            var credit = creditRead.orderCredit(java.util.List.of(order.getId())).get(order.getId());
+            dueDate = credit == null ? null : credit.dueDate();
+        }
+        if (dueDate != null) {
+            payload.put("dueDate", DUE_DATE.format(dueDate));
+        }
+        var variant = confirmationVariant(order.getPaymentMethod(), dueDate);
+        if (variant != null) {
+            payload.put("notificationVariant", variant);
+        }
         outbox.publish("SupplierOrderConfirmed",
                 "SUPPLIER_ORDER", order.getId(), payload, null, now);
 
@@ -128,6 +152,19 @@ public class OrderReleaseService {
                 order.getOrderNumber(), order.getSupplierStoreId(), target,
                 order.getAcceptanceDeadline());
         return true;
+    }
+
+    private static final DateTimeFormatter DUE_DATE = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.ENGLISH);
+
+    /**
+     * The wording of the supplier's "Order confirmed": null (paid up front) for wallet and online, CREDIT for a
+     * credit order, CREDIT_DUE when its due date is already known. The server picks it, the template only reads it.
+     */
+    public static String confirmationVariant(String paymentMethod, LocalDate dueDate) {
+        if (!"CREDIT".equals(paymentMethod)) {
+            return null;
+        }
+        return dueDate == null ? "CREDIT" : "CREDIT_DUE";
     }
 
     /**

@@ -142,6 +142,8 @@ public class SupplierOrderTransitions {
                         "supplierName", supplierNameOf(order.getSupplierStoreId()),
                         "supplierStoreId", order.getSupplierStoreId(),
                         "deliveryMode", mode.name(),
+                        // Ready is worded by how the goods travel: collect, partner or the supplier's own van.
+                        "notificationVariant", mode.name(),
                         "outletId", order.getOutletId()),
                 actorId);
 

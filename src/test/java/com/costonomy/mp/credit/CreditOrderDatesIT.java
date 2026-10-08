@@ -95,6 +95,23 @@ class CreditOrderDatesIT extends AbstractIntegrationTest {
     }
 
     @Test
+    @DisplayName("the supplier's order-confirmed event names the restaurant and says on credit with the due date (flow review 6)")
+    void confirmationEventIsWordedForCredit() throws Exception {
+        var line = s.creditLine("200000");
+        long invoice = s.invoice(line, "65", 100);
+        String dueText = jdbc.queryForObject("select due_date from credit_invoice where id = ?", java.sql.Date.class, invoice)
+                .toLocalDate().format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", java.util.Locale.ENGLISH));
+
+        var payload = json.readTree(jdbc.queryForObject("""
+                select payload from outbox_event where aggregate_type = 'SUPPLIER_ORDER' and aggregate_id = ?
+                   and event_type = 'SupplierOrderConfirmed'""", String.class, orderOf(invoice)));
+
+        assertThat(payload.get("notificationVariant").asText()).isEqualTo("CREDIT_DUE");
+        assertThat(payload.get("dueDate").asText()).isEqualTo(dueText);
+        assertThat(payload.get("restaurantName").asText()).isNotBlank();
+    }
+
+    @Test
     @DisplayName("the state is the credit module's: past the grace period it is OVERDUE, due today it is DUE_TODAY")
     void dueState() throws Exception {
         var line = s.creditLine("200000");

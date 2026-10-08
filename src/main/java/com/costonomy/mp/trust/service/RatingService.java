@@ -95,12 +95,18 @@ public class RatingService {
                 null, String.valueOf(request.overall()),
                 "Order " + order.orderNumber(), "API");
 
-        outbox.publish("RatingSubmitted", "RATING", rating.getId(),
-                Map.of("outletId", order.outletId(),
-                        "supplierStoreId", order.supplierStoreId(),
-                        "supplierOrderId", supplierOrderId,
-                        "overall", request.overall()),
-                actorId);
+        // The order number, not the row id, and who rated it (flow review 6).
+        var rated = new java.util.HashMap<String, Object>();
+        rated.put("outletId", order.outletId());
+        rated.put("supplierStoreId", order.supplierStoreId());
+        rated.put("supplierOrderId", supplierOrderId);
+        rated.put("orderNumber", order.orderNumber());
+        rated.put("overall", request.overall());
+        var restaurantName = directory.restaurantNameOfOutlet(order.outletId());
+        if (restaurantName != null) {
+            rated.put("restaurantName", restaurantName);
+        }
+        outbox.publish("RatingSubmitted", "RATING", rating.getId(), rated, actorId);
 
         return toResponse(rating);
     }

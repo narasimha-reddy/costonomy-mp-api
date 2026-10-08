@@ -329,6 +329,13 @@ public final class ProcurementDtos {
              * The app shows it and never works it out.
              */
             String creditDueState,
+            /**
+             * The restaurant's overall rating of this order (1-5) once it has rated it and the rating is not hidden
+             * by moderation; null otherwise. Filled on a single-order read only, never in lists. Additive. Flow review 28.
+             */
+            Integer rating,
+            /** The comment left with that rating, null when there is none. */
+            String ratingComment,
             List<SupplierOrderItemResponse> items) {
     }
 

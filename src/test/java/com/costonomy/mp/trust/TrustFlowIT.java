@@ -536,6 +536,40 @@ class TrustFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("the supplier reads the restaurant's rating and comment on the order (flow review 28)")
+        void supplierSeesTheRating() throws Exception {
+            var order = deliveredOrder(10);
+            receive(order, List.of(countedLine(order.itemId(), "10", "0", "0")), null);
+
+            var before = api.get(order.seller().token(),
+                    "/api/v1/supplier-orders/" + order.orderId()).at("/data");
+            assertThat(before.get("rating").isNull()).describedAs("no rating yet").isTrue();
+
+            rate(order, 4, "Good, a little late");
+
+            var seen = api.get(order.seller().token(),
+                    "/api/v1/supplier-orders/" + order.orderId()).at("/data");
+            assertThat(seen.get("rating").asInt()).isEqualTo(4);
+            assertThat(seen.get("ratingComment").asText()).isEqualTo("Good, a little late");
+        }
+
+        @Test
+        @DisplayName("a rating a moderator hid is not shown on the order")
+        void hiddenRatingIsNotShown() throws Exception {
+            var order = deliveredOrder(10);
+            receive(order, List.of(countedLine(order.itemId(), "10", "0", "0")), null);
+            long ratingId = rate(order, 1, "Defamatory").get("id").asLong();
+            api.post(moderator(), "/api/v1/internal/ratings/" + ratingId + "/moderate",
+                    Map.of("hide", true, "reason", "Defamatory content"));
+
+            var seen = api.get(order.seller().token(),
+                    "/api/v1/supplier-orders/" + order.orderId()).at("/data");
+
+            assertThat(seen.get("rating").isNull()).isTrue();
+            assertThat(seen.get("ratingComment").isNull()).isTrue();
+        }
+
+        @Test
         @DisplayName("an order can't be rated before it is received")
         void ratingNeedsCompletion() throws Exception {
             var order = deliveredOrder(10);

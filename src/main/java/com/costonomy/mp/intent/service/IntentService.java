@@ -407,13 +407,19 @@ public class IntentService {
         }
         intents.save(intent);
 
-        outbox.publish("IntentSent", "INTENT", intent.getId(),
-                Map.of("reference", intent.getReference(),
-                        "outletId", intent.getOutletId(),
-                        "supplierStoreId", intent.getSupplierStoreId(),
-                        "itemCount", lines.size(),
-                        "responseDeadline", intent.getResponseDeadline().toString()),
-                actorId, now);
+        // Names who is asking, so the supplier's notification is not just "a restaurant" (flow review 6).
+        var asking = directory.outletSummary(intent.getOutletId());
+        var sent = new java.util.HashMap<String, Object>();
+        sent.put("reference", intent.getReference());
+        sent.put("outletId", intent.getOutletId());
+        sent.put("supplierStoreId", intent.getSupplierStoreId());
+        sent.put("itemCount", lines.size());
+        sent.put("responseDeadline", intent.getResponseDeadline().toString());
+        if (asking != null) {
+            sent.put("restaurantName", asking.restaurantName());
+            sent.put("outletName", asking.outletName());
+        }
+        outbox.publish("IntentSent", "INTENT", intent.getId(), sent, actorId, now);
 
         return mapper.toResponse(intent);
     }

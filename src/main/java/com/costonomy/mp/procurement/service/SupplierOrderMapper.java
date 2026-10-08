@@ -45,7 +45,7 @@ public class SupplierOrderMapper {
     private final CreditReadService creditRead;
 
     public ProcurementDtos.SupplierOrderResponse toResponse(SupplierOrder order) {
-        return toResponse(order, creditOf(List.of(order)));
+        return toResponse(order, creditOf(List.of(order)), directory.publishedRatingOf(order.getId()));
     }
 
     /**
@@ -53,13 +53,13 @@ public class SupplierOrderMapper {
      * rest, such as the supplier's incoming-order lists, so they do not pay a credit read per order.
      */
     public ProcurementDtos.SupplierOrderResponse toResponseWithoutCredit(SupplierOrder order) {
-        return toResponse(order, Map.of());
+        return toResponse(order, Map.of(), null);
     }
 
     /** A list of orders: the credit dates of all of them come from one read, not one per order. */
     public List<ProcurementDtos.SupplierOrderResponse> toResponses(List<SupplierOrder> orders) {
         var credit = creditOf(orders);
-        return orders.stream().map(order -> toResponse(order, credit)).toList();
+        return orders.stream().map(order -> toResponse(order, credit, null)).toList();
     }
 
     /** Credit dates for the orders paid on credit; an order paid any other way never asks the credit module. */
@@ -70,7 +70,8 @@ public class SupplierOrderMapper {
     }
 
     private ProcurementDtos.SupplierOrderResponse toResponse(
-            SupplierOrder order, Map<Long, CreditReadService.OrderCredit> credit) {
+            SupplierOrder order, Map<Long, CreditReadService.OrderCredit> credit,
+            ProcurementDirectory.OrderRating rating) {
         var orderCredit = credit.get(order.getId());
         var items = supplierOrderItems.findBySupplierOrderId(order.getId());
         var store = directory.stores(List.of(order.getSupplierStoreId()))
@@ -132,6 +133,8 @@ public class SupplierOrderMapper {
                 orderCredit == null ? null : orderCredit.dueDate(),
                 orderCredit == null ? null : orderCredit.settledAt(),
                 orderCredit == null ? null : orderCredit.dueState(),
+                rating == null ? null : rating.overall(),
+                rating == null ? null : rating.comment(),
                 items.stream()
                         .map(item -> new ProcurementDtos.SupplierOrderItemResponse(
                                 item.getId(), item.getCanonicalProductId(),

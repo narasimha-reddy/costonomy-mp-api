@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [phase6/known-bugs] - Known bugs (D-135 onward)
 
 ### Added
+- Flow-review notification fixes (D-193): the supplier's "Order confirmed" says "on credit, due 7 Nov" for a credit order (never "paid for"), names the restaurant, and is sent once per order (IntentOrdered no longer adds a second); "Ready" to the buyer is worded by delivery mode (pickup / partner being arranged / delivered by the supplier); the supplier's "New request" names restaurant and outlet; the rating notification uses the order number and opens the order; a failed-payment notification opens its order; "Driver" becomes "Delivery partner" in customer text.
+- `SupplierOrderResponse.rating` (1-5) and `ratingComment`: the restaurant's published rating of the order, filled on the single-order read only (null in lists and when hidden by moderation). Additive (D-193).
+- Realtime handshake origins default to the web app and Expo dev origins (localhost and 127.0.0.1 on 7074, 7071, 8081, plus localhost:19006); `REALTIME_ALLOWED_ORIGINS` still overrides (D-193).
 - Sandbox rider on real roads (D-192): for the seeded Bengaluru pair the sandbox stages follow a stored OSM driving route (`pidge-sandbox/route-bengaluru.json`) instead of the straight line, and `POST /deliveries/{id}/sandbox/move?leg=approach|delivery&fraction=0..1` places the rider at one point on it (supplier, sandbox on; one location fix, status unchanged). Other deliveries keep the straight line. Test only.
 - Delivery response (restyle B1): `pickupLocation` (supplier store) and `dropLocation` (buyer outlet), each `{latitude, longitude}` or null when either coordinate is not stored; both sides get them. Additive.
 - Pidge poll records the rider position (B2): `PidgeDeliveryProvider.location()` returns the position from the status answer `status()` just fetched (no second call) and `DeliveryEventService.recordLocation` stores the same fix once.
