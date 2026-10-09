@@ -379,6 +379,11 @@ final class CreditPaySupport {
                 long idempotencyRecords, long providerRefunds) {
     }
 
+    /** Every create key claimed, FAILED ones too: a refusal inside the idempotent action leaves a FAILED key (platform rule). */
+    long allCreateKeys() {
+        return count("select count(*) from idempotency_record where operation = 'credit.pay.create'");
+    }
+
     Snap snapshot(Setup setup) {
         var lines = new ArrayList<CreditWalletSupport.Snapshot>();
         for (Line line : setup.lines()) {
@@ -390,7 +395,7 @@ final class CreditPaySupport {
                         + "on a.id = i.attempt_id where a.outlet_id = ?", setup.buyer().outletId()),
                 count("select count(*) from credit_payment_refund r join credit_payment_attempt a "
                         + "on a.id = r.attempt_id where a.outlet_id = ?", setup.buyer().outletId()),
-                count("select count(*) from idempotency_record where operation = 'credit.pay.create'"),
+                count("select count(*) from idempotency_record where operation = 'credit.pay.create' and state <> 'FAILED'"),
                 provider.refundCount());
     }
 

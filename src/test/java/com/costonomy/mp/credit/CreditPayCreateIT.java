@@ -196,11 +196,13 @@ class CreditPayCreateIT extends AbstractIntegrationTest {
         var missing = p.create(setup.buyer(), items, "UPI", null);
         var tooLong = p.create(setup.buyer(), items, "UPI", "k".repeat(101));
 
-        for (var reply : List.of(missing, tooLong)) {
-            assertThat(reply.status()).describedAs(reply.body().toString()).isEqualTo(400);
-            assertThat(reply.code()).isEqualTo("VALIDATION_ERROR");
-            assertThat(reply.body().toString()).contains("The Idempotency-Key must be 1 to 100 characters.");
-        }
+        // A missing header is the framework's 400 MALFORMED_REQUEST (as on every other keyed credit endpoint);
+        // the by-hand length check gives the contract's VALIDATION_ERROR.
+        assertThat(missing.status()).describedAs(missing.body().toString()).isEqualTo(400);
+        assertThat(missing.code()).isEqualTo("MALFORMED_REQUEST");
+        assertThat(tooLong.status()).describedAs(tooLong.body().toString()).isEqualTo(400);
+        assertThat(tooLong.code()).isEqualTo("VALIDATION_ERROR");
+        assertThat(tooLong.body().toString()).contains("The Idempotency-Key must be 1 to 100 characters.");
         assertThat(p.snapshot(setup)).isEqualTo(before);
         assertThat(p.create(setup.buyer(), items, "UPI", "k".repeat(100)).status()).isEqualTo(201);
     }

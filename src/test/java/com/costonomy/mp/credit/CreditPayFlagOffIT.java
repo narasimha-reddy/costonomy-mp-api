@@ -102,6 +102,7 @@ class CreditPayFlagOffIT extends AbstractIntegrationTest {
         p.s.topUp(setup.buyer(), "20000.00");
         var items = p.allItems(setup);
         var before = p.snapshot(setup);
+        long keysBefore = p.allCreateKeys();
 
         var replies = List.of(p.payable(setup.buyer()), p.quote(setup.buyer(), items),
                 p.create(setup.buyer(), items, "UPI"), p.create(setup.buyer(), items, "CARD"),
@@ -114,7 +115,7 @@ class CreditPayFlagOffIT extends AbstractIntegrationTest {
         }
         var after = p.snapshot(setup);
         assertThat(after).describedAs("not a row, a debit, a key or an idempotency record").isEqualTo(before);
-        assertThat(after.idempotencyRecords()).isEqualTo(before.idempotencyRecords());
+        assertThat(p.allCreateKeys()).describedAs("flag off claims no key at all, not even a FAILED one").isEqualTo(keysBefore);
         verify(provider, times(0)).createAuthorization(any());
     }
 
