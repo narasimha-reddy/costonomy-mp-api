@@ -22,6 +22,10 @@ public final class CreditEvents {
     public static final String REPAYMENT_RECORDED = "CreditRepaymentRecorded";
     /** A restaurant repaid from its own wallet; the supplier is told (D-153). */
     public static final String REPAYMENT_RECEIVED = "CreditRepaymentReceived";
+    /** The restaurant's online credit payment was applied after it left the screen (D-196). */
+    public static final String PAYMENT_COMPLETED = "CreditPaymentCompleted";
+    /** Part or all of an online credit payment is going back to the card or UPI it came from (D-196). */
+    public static final String PAYMENT_REFUND = "CreditPaymentRefund";
     /** A restaurant says it paid a supplier directly; the supplier is asked to confirm (D-155). */
     public static final String CLAIM_SUBMITTED = "CreditClaimSubmitted";
     /** The supplier confirmed a claim; the restaurant is told, instead of CreditRepaymentRecorded (D-155). */
@@ -59,7 +63,7 @@ public final class CreditEvents {
             REQUESTED, APPROVED, REJECTED, MODIFIED, SUSPENDED, REINSTATED, OVERDUE,
             INVOICE_ISSUED, REPAYMENT_RECORDED, REPAYMENT_RECEIVED, CLAIM_SUBMITTED, CLAIM_CONFIRMED,
             CLAIM_REJECTED, PAYMENT_REVERSED, CLOSED, OFFER_EXPIRED, DUE_DATE_EXTENDED, REMINDER, SUPPLIER_DIGEST,
-            CREDIT_NOTE_ISSUED, WRITTEN_OFF, REFUND_DUE, RESERVED, UTILIZED, RELEASED);
+            CREDIT_NOTE_ISSUED, WRITTEN_OFF, REFUND_DUE, PAYMENT_COMPLETED, PAYMENT_REFUND, RESERVED, UTILIZED, RELEASED);
 
     private CreditEvents() {
     }
