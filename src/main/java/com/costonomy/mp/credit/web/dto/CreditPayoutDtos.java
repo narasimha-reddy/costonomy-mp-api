@@ -18,7 +18,8 @@ public final class CreditPayoutDtos {
     /**
      * One wallet repayment Mandi collected for the store. {@code commissionAmount} and {@code commissionRatePercent}
      * are the snapshot taken when the repayment was made (null rate: none applied). The settlement fields are null
-     * while the payout is PENDING.
+     * while the payout is PENDING. {@code source} is WALLET or ONLINE (paid through Mandi, D-196);
+     * {@code paymentMethod} is how an ONLINE one was paid (UPI, CARD, ...) and null for WALLET.
      */
     public record PayoutResponse(
             Long payoutId,
@@ -37,7 +38,9 @@ public final class CreditPayoutDtos {
             LocalDate settlementDate,
             Instant appliedAt,
             Instant createdAt,
-            List<PayoutInvoice> invoices) {
+            List<PayoutInvoice> invoices,
+            String source,
+            String paymentMethod) {
     }
 
     /** The store's position, whatever filter or page the list is on. */

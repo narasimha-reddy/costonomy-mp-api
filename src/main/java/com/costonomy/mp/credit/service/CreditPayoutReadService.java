@@ -10,6 +10,7 @@ import com.costonomy.mp.credit.domain.CreditInvoice;
 import com.costonomy.mp.credit.domain.CreditPayment;
 import com.costonomy.mp.credit.domain.CreditRepayment;
 import com.costonomy.mp.credit.domain.CreditRepaymentPayout;
+import com.costonomy.mp.credit.domain.CreditRepaymentSource;
 import com.costonomy.mp.credit.repository.CreditInvoiceRepository;
 import com.costonomy.mp.credit.repository.CreditPayoutReadRepository;
 import com.costonomy.mp.credit.repository.CreditRepaymentRepository;
@@ -122,6 +123,12 @@ public class CreditPayoutReadService {
                             invoice == null ? null : invoice.getInvoiceNumber(), money(payment.getAmount())));
         }
 
+        // How an online repayment was paid: the method its payments carry (one repayment, one method).
+        Map<Long, String> methodByRepayment = new HashMap<>();
+        for (CreditPayment payment : payments) {
+            methodByRepayment.putIfAbsent(payment.getCreditRepaymentId(), payment.getMethod());
+        }
+
         Map<Long, SettlementRef> settlements = settlements(rows.stream()
                 .map(CreditRepaymentPayout::getSettlementId).filter(java.util.Objects::nonNull).distinct().toList());
         Map<Long, CreditDirectory.OutletInfo> outlets = new HashMap<>();
@@ -150,7 +157,10 @@ public class CreditPayoutReadService {
                     settlement == null ? null : settlement.date(),
                     payout.getAppliedAt(),
                     payout.getCreatedAt(),
-                    invoicesByRepayment.getOrDefault(payout.getCreditRepaymentId(), List.of())));
+                    invoicesByRepayment.getOrDefault(payout.getCreditRepaymentId(), List.of()),
+                    repayment == null ? null : repayment.getSource().name(),
+                    repayment != null && repayment.getSource() == CreditRepaymentSource.ONLINE
+                            ? methodByRepayment.get(payout.getCreditRepaymentId()) : null));
         }
         return result;
     }
