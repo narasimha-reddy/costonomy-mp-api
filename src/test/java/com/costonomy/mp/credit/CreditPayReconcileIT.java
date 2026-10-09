@@ -80,7 +80,7 @@ class CreditPayReconcileIT extends AbstractIntegrationTest {
                 String.class, paid.attemptId()));
         assertThat(payload.get("invoiceCount").asInt()).isEqualTo(3);
         assertThat(payload.get("invoiceCountText").asText()).isEqualTo("3 invoices");
-        assertThat(payload.get("amount").decimalValue()).isEqualByComparingTo("12480.00");
+        assertThat(new java.math.BigDecimal(payload.get("amount").asText())).isEqualByComparingTo("12480.00");
         p.relayEvents("CreditPaymentCompleted", paid.attemptId());
         var told = jdbc.queryForList("select title, body, audience from notification "
                 + "where event_type = 'CreditPaymentCompleted' and body like '%12,480.00%'");
