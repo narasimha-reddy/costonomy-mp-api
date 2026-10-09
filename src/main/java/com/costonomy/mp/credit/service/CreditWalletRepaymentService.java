@@ -3,25 +3,17 @@ package com.costonomy.mp.credit.service;
 import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
-import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.common.idempotency.IdempotencyService;
 import com.costonomy.mp.common.logging.TraceScope;
-import com.costonomy.mp.common.outbox.OutboxService;
 import com.costonomy.mp.common.text.Rupees;
-import com.costonomy.mp.credit.domain.CreditEvents;
 import com.costonomy.mp.credit.domain.CreditInvoice;
 import com.costonomy.mp.credit.domain.CreditInvoiceStatus;
-import com.costonomy.mp.credit.domain.CreditPaymentSource;
-import com.costonomy.mp.credit.domain.CreditRepayment;
-import com.costonomy.mp.credit.domain.CreditRepaymentSource;
-import com.costonomy.mp.credit.domain.CreditRepaymentStatus;
 import com.costonomy.mp.credit.repository.CreditAgreementRepository;
 import com.costonomy.mp.credit.repository.CreditExposureStore;
 import com.costonomy.mp.credit.repository.CreditInvoiceRepository;
-import com.costonomy.mp.credit.repository.CreditRepaymentRepository;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
 import com.costonomy.mp.wallet.service.WalletService;
 import lombok.RequiredArgsConstructor;
@@ -51,6 +43,7 @@ import java.util.Map;
  *   <li>the target invoices are locked {@code FOR UPDATE}, in ascending id order, this agreement's open ones only;</li>
  *   <li>the amount is allocated oldest due date first, and refused as {@link ErrorCode#CREDIT_OVERPAYMENT} if it is
  *       more than is owed, or as {@link ErrorCode#WALLET_INSUFFICIENT_BALANCE} if the wallet cannot cover it;</li>
+ *   <li>steps 4 to 7 below are {@link CreditRepaymentApplier#apply}, shared with paying whole invoices (D-196):</li>
  *   <li>the {@code credit_repayment} row is inserted and flushed;</li>
  *   <li>the wallet is debited, and the row is linked to the ledger entry;</li>
  *   <li>the {@code credit_repayment_payout} row (D-156): what Mandi now owes the supplier, with the commission snapshot;</li>
@@ -77,16 +70,12 @@ public class CreditWalletRepaymentService {
 
     private final CreditAgreementRepository agreements;
     private final CreditInvoiceRepository invoices;
-    private final CreditRepaymentRepository repayments;
+    private final CreditRepaymentApplier applier;
     private final CreditInvoiceService invoiceService;
     private final CreditExposureStore exposure;
-    private final CreditRepaymentPayoutWriter payoutWriter;
-    private final CreditDirectory directory;
     private final WalletService wallet;
     private final AccessControlService accessControl;
     private final IdempotencyService idempotency;
-    private final AuditService auditService;
-    private final OutboxService outbox;
     private final TransactionTemplate txTemplate;
 
     @Value("${costonomy.mp.credit.wallet-repay.enabled:false}")
@@ -177,62 +166,14 @@ public class CreditWalletRepaymentService {
             remaining = remaining.subtract(part);
         }
 
-        // d. The repayment row, flushed so its id exists for the wallet reference.
-        var repayment = new CreditRepayment();
-        repayment.setCreditAgreementId(agreementId);
-        repayment.setOutletId(outletId);
-        repayment.setSupplierStoreId(storeId);
-        repayment.setAmount(amount);
-        repayment.setSource(CreditRepaymentSource.WALLET);
-        repayment.setStatus(CreditRepaymentStatus.COMPLETED);
-        repayment.setIdempotencyKey("wallet:" + outletId + ":" + idempotencyKey);
-        repayment.setCreatedBy(actorId);
-        repayments.saveAndFlush(repayment);
-        Long repaymentId = repayment.getId();
-
-        // e. The debit (its own conditional update stays the last line of defence), then the link to its entry.
-        // The debit clears the persistence context, so the row is read again before it is changed.
-        var supplierStore = directory.store(storeId);
-        Long entryId = wallet.debitCreditRepayment(outletId, repaymentId, amount,
-                supplierStore == null ? null : supplierStore.storeName());
-        var linked = repayments.findById(repaymentId).orElseThrow();
-        linked.setWalletTransactionId(entryId);
-        repayments.saveAndFlush(linked);
-
-        // e2. What Mandi now owes the supplier (D-156). Right after the debit, because the debit is what put the
-        // restaurant's money in Mandi's hands; in this same transaction, so the payout exists if and only if the
-        // debit does, and a refusal anywhere after it rolls back both.
-        payoutWriter.record(linked);
-
-        // f. Each allocation through the one shared method, once per invoice.
-        String reference = "credit-repayment-" + repaymentId;
-        Instant now = Instant.now();
-        var allocations = new ArrayList<CreditDtos.WalletRepaymentAllocation>();
-        for (var step : plan) {
-            CreditInvoice invoice = step.getKey();
-            BigDecimal part = step.getValue();
-            invoiceService.applyPayment(invoice, part, "WALLET", reference, null, now, actorId,
-                    "wallet-repayment:" + repaymentId + ":" + invoice.getId(),
-                    CreditPaymentSource.WALLET, repaymentId);
-            allocations.add(new CreditDtos.WalletRepaymentAllocation(
-                    invoice.getId(), invoice.getInvoiceNumber(), part, invoice.getStatus()));
-        }
-
-        // g. Audit, and one event for the supplier. Not CreditRepaymentRecorded: that text says the supplier
-        // recorded the payment, and here the restaurant did it itself and has seen the result on screen.
-        auditService.record(actorId, null, "CREDIT_REPAYMENT_FROM_WALLET", "CREDIT_REPAYMENT", repaymentId,
-                null, CreditRepaymentStatus.COMPLETED.name(), amount.toPlainString(), "API");
-        var outlet = directory.outlet(outletId);
-        outbox.publish(CreditEvents.REPAYMENT_RECEIVED, "CREDIT_AGREEMENT", agreementId,
-                Map.of("creditAgreementId", agreementId,
-                        "outletId", outletId,
-                        "supplierStoreId", storeId,
-                        "restaurantName", outlet == null || outlet.restaurantName() == null ? "" : outlet.restaurantName(),
-                        "amount", amount.toPlainString(),
-                        "repaymentId", repaymentId),
-                actorId);
-        log.info("Credit repayment {} of {} from the wallet of outlet {} on agreement {}",
-                repaymentId, Rupees.of(amount), outletId, agreementId);
+        // d-g. The repayment, the debit, the payout, each invoice, the audit and the supplier's event: one shared
+        // method, the same one the new "pay whole invoices" paths use (D-196).
+        var lines = plan.stream().map(step -> new CreditRepaymentApplier.Line(step.getKey(), step.getValue())).toList();
+        var applied = applier.apply(actorId, agreementId, outletId, storeId, lines, CreditRepaymentApplier.Funding.wallet(
+                "wallet:" + outletId + ":" + idempotencyKey, "wallet-repayment:", null), Instant.now());
+        Long repaymentId = applied.repaymentId();
+        Long entryId = applied.walletEntryId();
+        var allocations = applied.allocations();
 
         // Read after the writes, from the row: the exposure moved by SQL, and the agreement may have been reinstated.
         var dues = invoiceService.duesFor(agreementId);

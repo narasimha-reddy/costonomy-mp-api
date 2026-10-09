@@ -48,6 +48,8 @@ import java.util.Map;
 public class CreditCancellationService {
 
     static final String WALLET_NOTE = "wallet-funded: ops refund";
+    /** Money paid online through Mandi (D-196) is held by Mandi exactly like wallet money: the supplier cannot refund it. */
+    static final String ONLINE_NOTE = "paid online through Mandi: ops refund";
 
     private final CreditReservationRepository reservations;
     private final CreditInvoiceRepository invoices;
@@ -100,7 +102,10 @@ public class CreditCancellationService {
         }
     }
 
-    /** What was paid on the invoice is owed back: the supplier's part off-platform, the wallet's part to ops. */
+    /**
+     * What was paid on the invoice is owed back: the supplier's part off-platform, the wallet's and the online part to
+     * ops (Mandi holds that money; D-177, D-196).
+     */
     private void refundPaidPart(com.costonomy.mp.credit.domain.CreditInvoice invoice, Long noteId, String orderLabel) {
         BigDecimal paid = invoice.getPaidAmount();
         if (paid.signum() <= 0) {
@@ -108,7 +113,9 @@ public class CreditCancellationService {
         }
         // A locking read: a wallet repayment that committed while this waited for the invoice must be counted.
         BigDecimal viaWallet = payments.lockedSumByInvoiceAndSource(invoice.getId(), CreditPaymentSource.WALLET.name()).min(paid);
-        BigDecimal direct = paid.subtract(viaWallet);
+        BigDecimal viaOnline = payments.lockedSumByInvoiceAndSource(invoice.getId(), CreditPaymentSource.ONLINE.name())
+                .min(paid.subtract(viaWallet));
+        BigDecimal direct = paid.subtract(viaWallet).subtract(viaOnline);
 
         if (direct.signum() > 0) {
             var row = newRefund(invoice, noteId, direct, CreditRefundDue.Channel.OFF_PLATFORM, null);
@@ -135,6 +142,17 @@ public class CreditCancellationService {
                     "SYSTEM");
             log.warn("Wallet-funded refund of {} owed on cancelled order {} (invoice {}): ops must refund it",
                     Rupees.of(viaWallet), orderLabel, invoice.getInvoiceNumber());
+        }
+        if (viaOnline.signum() > 0) {
+            var row = newRefund(invoice, noteId, viaOnline, CreditRefundDue.Channel.ONLINE, ONLINE_NOTE);
+            // As the wallet part: Mandi holds this money, so only ops can put it right. Nothing moves here.
+            auditService.record(null, null, "CREDIT_REFUND_DUE_OPS", "CREDIT_REFUND_DUE", row.getId(), null,
+                    CreditRefundDue.Status.OPEN.name(),
+                    "%s of order %s (invoice %s) was paid online through Mandi and is owed back: %s"
+                            .formatted(viaOnline.toPlainString(), orderLabel, invoice.getInvoiceNumber(), ONLINE_NOTE),
+                    "SYSTEM");
+            log.warn("Online-paid refund of {} owed on cancelled order {} (invoice {}): ops must refund it",
+                    Rupees.of(viaOnline), orderLabel, invoice.getInvoiceNumber());
         }
     }
 
