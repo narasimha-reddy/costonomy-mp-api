@@ -287,8 +287,10 @@ final class CreditPaySupport {
         jdbc.update("""
                 insert into commission_configuration (scope_type, scope_id, rate_percent, config_version, description,
                     effective_from, status, created_at, updated_at, version)
-                values ('SUPPLIER', ?, ?, 1, 'D-196 test', now(6) - interval 1 minute, 'ACTIVE', now(6), now(6), 0)
-                """, org, new BigDecimal(rate));
+                select 'SUPPLIER', ?, ?, coalesce(max(config_version), 0) + 1, 'D-196 test', now(6) - interval 1 minute,
+                       'ACTIVE', now(6), now(6), 0
+                from commission_configuration where scope_type = 'SUPPLIER' and scope_id = ?
+                """, org, new BigDecimal(rate), org);
     }
 
     // ── reading rows back ────────────────────────────────────────────────

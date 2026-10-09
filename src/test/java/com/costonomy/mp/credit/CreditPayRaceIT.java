@@ -134,7 +134,7 @@ class CreditPayRaceIT extends AbstractIntegrationTest {
                 + "where event_type = 'CreditPaymentRefund' and json_extract(payload, '$.attemptId') = ?",
                 String.class, paid.attemptId()));
         assertThat(payload.get("skippedText").asText()).isEqualTo("1 invoice");
-        assertThat(payload.get("amount").decimalValue()).isEqualByComparingTo("4000.00");
+        assertThat(new BigDecimal(payload.get("amount").asText())).isEqualByComparingTo("4000.00");
         p.relayEvents("CreditPaymentRefund", paid.attemptId());
         var told = p.jdbc.queryForList("select title, body, audience from notification "
                 + "where event_type = 'CreditPaymentRefund'");
@@ -199,7 +199,7 @@ class CreditPayRaceIT extends AbstractIntegrationTest {
             assertThat(p.invoiceStatus(setup.inv(0))).isEqualTo("OVERDUE");
             var extend = p.e.call("POST", setup.line(1).seller().token(),
                     "/api/v1/credit/invoices/" + setup.inv(2).id() + "/extend-due", UUID.randomUUID().toString(),
-                    Map.of("newDueDate", CreditEdgeSupport.today().plusDays(20).toString(), "reason", "More time"));
+                    Map.of("newDueDate", CreditEdgeSupport.today().plusDays(60).toString(), "reason", "More time"));
             assertThat(extend.status()).describedAs(extend.body().toString()).isEqualTo(200);
         });
 
