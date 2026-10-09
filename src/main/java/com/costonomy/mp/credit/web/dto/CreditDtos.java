@@ -174,7 +174,9 @@ public final class CreditDtos {
             /** The sum of the agreements' open "I paid" claims (D-155); 0 when none. */
             BigDecimal openClaimsAmount,
             /** The sum of the agreements' reportable amounts (D-157). */
-            BigDecimal reportableAmount) {
+            BigDecimal reportableAmount,
+            /** Whether paying dues online is switched on (D-196); the app then hides 'Paid direct' and shows 'Pay dues'. */
+            boolean onlinePayEnabled) {
     }
 
     public record LedgerEntryResponse(

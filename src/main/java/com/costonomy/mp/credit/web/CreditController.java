@@ -212,8 +212,8 @@ public class CreditController {
     @Operation(summary = "The store's payment feed",
             description = "Payments received against the store's credit invoices, newest first: date, restaurant, "
                     + "invoice number, amount, source, method, reference. `from` and `to` are India calendar days "
-                    + "(YYYY-MM-DD, both inclusive, either optional), `source` is SUPPLIER_RECORDED, WALLET or "
-                    + "CLAIM_CONFIRMED. `page` from 0, `size` default 20, at most 100. Same access as `/receivables`.")
+                    + "(YYYY-MM-DD, both inclusive, either optional), `source` is SUPPLIER_RECORDED, WALLET, "
+                    + "CLAIM_CONFIRMED or ONLINE (paid through Mandi by UPI or card). `page` from 0, `size` default 20, at most 100. Same access as `/receivables`.")
     public ApiResponse<CreditDtos.PageOf<CreditDtos.PaymentFeedItem>> storePayments(
             @PathVariable Long storeId,
             @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(
