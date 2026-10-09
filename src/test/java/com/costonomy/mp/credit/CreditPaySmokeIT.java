@@ -111,7 +111,7 @@ class CreditPaySmokeIT extends AbstractIntegrationTest {
         assertThat(jdbc.queryForObject("select count(*) from credit_repayment_payout p join credit_repayment r on r.id = p.credit_repayment_id where r.credit_payment_attempt_id = ?", Integer.class, attemptId)).isEqualTo(2);
         assertThat(jdbc.queryForObject("select count(*) from credit_invoice where status = 'PAID' and id in (?,?,?)", Integer.class, a1, a2, b1)).isEqualTo(3);
         assertThat(jdbc.queryForObject("select sum(utilized_amount) from credit_agreement where id in (?,?)", BigDecimal.class, a.agreementId(), b.agreementId())).isEqualByComparingTo("0");
-        assertThat(jdbc.queryForObject("select count(*) from credit_payment where source = 'ONLINE' and method = 'UPI'", Integer.class)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("select count(*) from credit_payment cp join credit_repayment r on r.id = cp.credit_repayment_id where cp.source = 'ONLINE' and cp.method = 'UPI' and r.credit_payment_attempt_id = ?", Integer.class, attemptId)).isEqualTo(3);
 
         // skip: a new selection where the supplier records a part payment before the capture
         long c1 = s.invoice(a, "10", 100);
