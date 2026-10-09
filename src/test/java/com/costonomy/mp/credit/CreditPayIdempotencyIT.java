@@ -138,6 +138,45 @@ class CreditPayIdempotencyIT extends AbstractIntegrationTest {
     }
 
     @Test
+    @DisplayName("the apply waits for the attempt row: while another transaction holds it and marks the payment applied, the apply reads that and does nothing")
+    void applyWaitsForTheAttemptRow() throws Exception {
+        var setup = p.standard();
+        var paid = p.createAndPay(setup.buyer(), p.allItems(setup));
+        var pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+        try (var holder = jdbc.getDataSource().getConnection()) {
+            holder.setAutoCommit(false);
+            try (var lock = holder.prepareStatement("select id from credit_payment_attempt where id = ? for update")) {
+                lock.setLong(1, paid.attemptId());
+                lock.executeQuery();
+            }
+            // What a concurrent apply that has not committed yet would have written to the attempt row.
+            try (var mark = holder.prepareStatement(
+                    "update credit_payment_attempt set status = 'PAID', razorpay_payment_id = ?, paid_at = now(6) where id = ?")) {
+                mark.setString(1, paid.paymentId());
+                mark.setLong(2, paid.attemptId());
+                mark.executeUpdate();
+            }
+
+            var waiting = pool.submit(() -> p.verify(setup.buyer(), paid.attemptId(), paid.paymentId()));
+            Thread.sleep(2500);
+            assertThat(waiting.isDone()).describedAs("the apply must wait for the attempt row").isFalse();
+
+            holder.commit();
+            var reply = waiting.get(60, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(reply.status()).describedAs(reply.body().toString()).isEqualTo(200);
+        } finally {
+            pool.shutdownNow();
+        }
+
+        // The apply saw the attempt already applied with this payment, so it did not apply it a second time.
+        assertThat(p.repayments(paid.attemptId())).isZero();
+        assertThat(p.refundRows(paid.attemptId())).isEmpty();
+        for (var inv : setup.invoices()) {
+            assertThat(p.invoiceStatus(inv)).isNotEqualTo("PAID");
+        }
+    }
+
+    @Test
     @DisplayName("a webhook redelivered with the same event id is a duplicate: accepted, ignored, nothing applied twice")
     void webhookRedelivery() throws Exception {
         var setup = p.standard();
