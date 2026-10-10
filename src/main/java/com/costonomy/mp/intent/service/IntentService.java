@@ -407,13 +407,30 @@ public class IntentService {
         }
         intents.save(intent);
 
-        outbox.publish("IntentSent", "INTENT", intent.getId(),
-                Map.of("reference", intent.getReference(),
-                        "outletId", intent.getOutletId(),
-                        "supplierStoreId", intent.getSupplierStoreId(),
-                        "itemCount", lines.size(),
-                        "responseDeadline", intent.getResponseDeadline().toString()),
-                actorId, now);
+        // Names who is asking, so the supplier's notification is not just "a restaurant" (flow review 6).
+        // Wording only: a failed lookup must not undo sending the request, so it reads as "A restaurant".
+        ProcurementDirectory.OutletSummary asking = null;
+        try {
+            asking = directory.outletSummary(intent.getOutletId());
+        } catch (RuntimeException e) {
+            log.warn("Could not look up who is asking for request {}", intent.getReference(), e);
+        }
+        var sent = new java.util.HashMap<String, Object>();
+        sent.put("reference", intent.getReference());
+        sent.put("outletId", intent.getOutletId());
+        sent.put("supplierStoreId", intent.getSupplierStoreId());
+        sent.put("itemCount", lines.size());
+        sent.put("responseDeadline", intent.getResponseDeadline().toString());
+        // Always a name; the outlet only when it adds something (an outlet called like its restaurant would read
+        // "Spice Route (Spice Route)").
+        String restaurant = asking == null || asking.restaurantName() == null || asking.restaurantName().isBlank()
+                ? "A restaurant" : asking.restaurantName();
+        sent.put("restaurantName", restaurant);
+        if (asking != null && asking.outletName() != null && !asking.outletName().isBlank()
+                && !asking.outletName().trim().equalsIgnoreCase(restaurant.trim())) {
+            sent.put("outletName", asking.outletName());
+        }
+        outbox.publish("IntentSent", "INTENT", intent.getId(), sent, actorId, now);
 
         return mapper.toResponse(intent);
     }

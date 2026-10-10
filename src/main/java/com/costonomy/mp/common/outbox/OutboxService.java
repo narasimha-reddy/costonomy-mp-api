@@ -26,6 +26,7 @@ public class OutboxService {
 
     private final OutboxRepository repository;
     private final ObjectMapper objectMapper;
+    private final OutboxCommitTrigger commitTrigger;
 
     /**
      * @param eventType  e.g. {@code SupplierOrderAccepted} (doc 08 §1)
@@ -57,6 +58,7 @@ public class OutboxService {
         event.setStatus(OutboxEvent.Status.PENDING);
 
         repository.save(event);
+        commitTrigger.requestAfterCommit();
     }
 
     @Transactional

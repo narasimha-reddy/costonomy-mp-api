@@ -121,6 +121,14 @@ OTP `123456` for all of them. The **resend cooldown and attempt limits are real*
 on the local profile, deliberately — those paths are part of the product. Expect
 a genuine 429 if you re-request a code for the same number inside a minute.
 
+### Deployed environments: variables that must be set
+
+Under the `prod` / `production` profile `ProductionProviderGuard` refuses to start on local defaults. Besides the
+providers, the invoice reader and `JWT_SECRET`, **`REALTIME_ALLOWED_ORIGINS`** must be set: a comma-separated list of
+the origins allowed to open the live-updates socket, for example `https://app.costonomy.example`. Unset, or any entry
+containing `localhost` or `127.0.0.1`, stops the start (D-193). Locally the default already allows the web app (7074),
+Expo web (19006, 8081) and 7071.
+
 ---
 
 ## 2. The development loop

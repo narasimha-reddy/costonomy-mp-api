@@ -378,7 +378,7 @@ public class SupplierOrderService {
     // ── internals ────────────────────────────────────────────────────────
 
     private ProcurementDtos.IncomingOrderResponse toIncoming(SupplierOrder order, Instant now) {
-        var full = mapper.toResponse(order);
+        var full = mapper.toResponseWithoutCredit(order);
         var outlet = directory.outletSummary(order.getOutletId());
 
         long remaining = order.getAcceptanceDeadline() == null ? 0L
@@ -394,7 +394,7 @@ public class SupplierOrderService {
                 remaining, order.getCreatedAt(),
                 order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
                 order.getAcceptedAmount(), order.getPaymentMethod(),
-                order.isHasColdChainItems(), full.items());
+                order.isHasColdChainItems(), order.getDeliveryMode(), full.items());
     }
 
     @Transactional(readOnly = true)

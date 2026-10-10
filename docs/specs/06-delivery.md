@@ -119,6 +119,8 @@ After driver assignment:
 - stale indicator
 - driver identity/contact where supported
 
+Delivery response coordinates (both buyer and supplier): `pickupLocation` (supplier store) and `dropLocation` (buyer outlet), each `{"latitude": 17.4399, "longitude": 78.4983}`, or `null` when either coordinate is not stored. They are fixed points, separate from `location` (the rider's latest fix).
+
 Do not fabricate location updates.
 
 If location timestamp exceeds configured freshness threshold, show stale state.

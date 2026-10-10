@@ -38,9 +38,9 @@ import java.util.Set;
  * can only ever contain an order number.
  *
  * <p><b>Deliberately not {@code @Transactional}.</b> Like the realtime relay, this
- * runs inside the outbox drain's transaction. Each notification is written by
- * {@code NotificationStore} under {@code REQUIRES_NEW}, so a duplicate for one
- * recipient cannot roll back a batch of a hundred events — or the notifications of
+ * runs inside the outbox drain's transaction for the one event being published (D-194). Each notification is
+ * written by {@code NotificationStore} under {@code REQUIRES_NEW}, so a duplicate for one
+ * recipient cannot roll back that event's transaction (and make the outbox retry it) — or the notifications of
  * everyone else on this one.
  */
 @Service

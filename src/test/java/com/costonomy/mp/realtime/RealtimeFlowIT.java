@@ -34,6 +34,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Realtime end to end. Doc 06 §9, doc 05 §16, doc 09 §4.
@@ -161,6 +162,10 @@ class RealtimeFlowIT extends AbstractIntegrationTest {
     }
 
     private Socket connect(String ticket) throws Exception {
+        return connect(ticket, null);
+    }
+
+    private Socket connect(String ticket, String origin) throws Exception {
         var frames = new LinkedBlockingQueue<JsonNode>();
         var client = new StandardWebSocketClient();
 
@@ -173,9 +178,17 @@ class RealtimeFlowIT extends AbstractIntegrationTest {
                     // A frame we cannot read is a failure the assertions will show.
                 }
             }
-        }, new WebSocketHttpHeaders(), socketUri(ticket)).get(10, TimeUnit.SECONDS);
+        }, headersWithOrigin(origin), socketUri(ticket)).get(10, TimeUnit.SECONDS);
 
         return new Socket(session, frames);
+    }
+
+    private static WebSocketHttpHeaders headersWithOrigin(String origin) {
+        var headers = new WebSocketHttpHeaders();
+        if (origin != null) {
+            headers.setOrigin(origin);
+        }
+        return headers;
     }
 
     private URI socketUri(String ticket) {
@@ -280,6 +293,30 @@ class RealtimeFlowIT extends AbstractIntegrationTest {
             // like one that is broken, so it is refused rather than issued.
             assertThat(api.postStatus(token, "/api/v1/realtime/ticket", Map.of()))
                     .isEqualTo(403);
+        }
+
+        @Test
+        @DisplayName("the web app and the Expo dev servers may open a socket (flow review 1)")
+        void localWebOriginsAreAllowed() throws Exception {
+            for (String origin : List.of("http://localhost:7074", "http://127.0.0.1:7074",
+                    "http://localhost:19006", "http://localhost:8081", "http://127.0.0.1:8081",
+                    "http://localhost:7071", "http://127.0.0.1:7071")) {
+                var ticket = ticketFor(newBuyer().token());
+                try (var socket = connect(ticket.get("ticket").asText(), origin)) {
+                    assertThat(socket.await("ready", json))
+                            .describedAs("a handshake from %s is accepted", origin)
+                            .isNotNull();
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("a page from any other origin is refused with 403")
+        void foreignOriginIsRefused() throws Exception {
+            var ticket = ticketFor(newBuyer().token());
+
+            assertThatThrownBy(() -> connect(ticket.get("ticket").asText(), "https://evil.example"))
+                    .hasStackTraceContaining("403");
         }
 
         private void assertThatConnectionIsRefused(String ticket) {

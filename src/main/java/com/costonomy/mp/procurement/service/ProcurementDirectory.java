@@ -126,6 +126,33 @@ public class ProcurementDirectory {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /**
+     * The earliest unsettled due date of the order's credit invoices, or null (not on credit, or none open). Plain
+     * JDBC on purpose: it only words a notification, and a read that goes through the credit module's transactional
+     * service would mark the releasing transaction rollback-only if it threw, even when the caller catches it.
+     */
+    public java.time.LocalDate creditDueDateOf(Long supplierOrderId) {
+        var dates = jdbc.queryForList("""
+                select min(due_date) from credit_invoice
+                 where supplier_order_id = ? and status not in ('PAID', 'WRITTEN_OFF')
+                """, java.sql.Date.class, supplierOrderId);
+        return dates.isEmpty() || dates.get(0) == null ? null : dates.get(0).toLocalDate();
+    }
+
+    /** A published rating of an order: stars and comment. */
+    public record OrderRating(int overall, String comment) {
+    }
+
+    /** The order's rating when the restaurant left one and moderation has not hidden it; null otherwise. */
+    public OrderRating publishedRatingOf(Long supplierOrderId) {
+        var rows = jdbc.query("""
+                select overall_rating, comment from rating
+                 where supplier_order_id = ? and moderation_status = 'PUBLISHED'
+                """,
+                (rs, i) -> new OrderRating(rs.getInt(1), rs.getString(2)), supplierOrderId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     public Long restaurantIdOfOutlet(Long outletId) {
         var ids = jdbc.queryForList(
                 "select restaurant_id from outlet where id = ?", Long.class, outletId);

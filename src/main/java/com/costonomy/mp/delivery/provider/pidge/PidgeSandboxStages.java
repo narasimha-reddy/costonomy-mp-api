@@ -4,6 +4,10 @@ import com.costonomy.mp.delivery.domain.Delivery;
 import com.costonomy.mp.delivery.domain.DeliveryMode;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -40,5 +44,142 @@ public final class PidgeSandboxStages {
 
     public static boolean isPidge(Delivery delivery) {
         return PidgeDeliveryProvider.CODE.equals(delivery.getProviderCode());
+    }
+
+    /** A rider position, 7 decimals (the width of delivery_location). */
+    public record Position(BigDecimal latitude, BigDecimal longitude) {
+    }
+
+    /**
+     * Where the simulated rider is at each stage, as a fraction of the straight line from pickup (0) to drop (1),
+     * or a fixed distance from an end. Pidge's dummy answer always carries one fixed point near Gurugram, far from
+     * any Bengaluru route, so the sandbox replaces it with a point on the line (D-190).
+     */
+    private record Spot(double fraction, double metresShortOfPickup, double metresShortOfDrop) {
+        static Spot along(double fraction) {
+            return new Spot(fraction, 0, 0);
+        }
+
+        static Spot shortOfPickup(double metres) {
+            return new Spot(0, metres, 0);
+        }
+
+        static Spot shortOfDrop(double metres) {
+            return new Spot(1, 0, metres);
+        }
+    }
+
+    private static final Map<String, Spot> SPOTS = Map.of(
+            "fulfilled|out for pickup", Spot.shortOfPickup(2000),
+            "fulfilled|reached pickup", Spot.along(0.0),
+            "fulfilled|picked up", Spot.along(0.0),
+            "fulfilled|ofd", Spot.along(0.4),
+            "fulfilled|reached delivery", Spot.shortOfDrop(30),
+            "fulfilled|delivered", Spot.along(1.0));
+
+    private static final double METRES_PER_DEGREE = 111_320.0;
+
+    /**
+     * The synthetic rider position for a dummy stage, or empty when the stage is not in the table or the delivery
+     * has no stored pickup or drop (the caller then keeps what Pidge sent).
+     */
+    public static Optional<Position> position(String dummyStatus, BigDecimal pickupLat, BigDecimal pickupLng,
+                                              BigDecimal dropLat, BigDecimal dropLng) {
+        var spot = dummyStatus == null ? null : SPOTS.get(dummyStatus);
+        if (spot == null || pickupLat == null || pickupLng == null || dropLat == null || dropLng == null) {
+            return Optional.empty();
+        }
+        double pLat = pickupLat.doubleValue();
+        double pLng = pickupLng.doubleValue();
+        double dLat = dropLat.doubleValue();
+        double dLng = dropLng.doubleValue();
+        // Local flat-earth metres: plenty for a city-sized line.
+        double cos = Math.cos(Math.toRadians(pLat));
+        double dy = (dLat - pLat) * METRES_PER_DEGREE;
+        double dx = (dLng - pLng) * METRES_PER_DEGREE * cos;
+        double length = Math.hypot(dx, dy);
+
+        double lat;
+        double lng;
+        if (length < 0.5) {
+            lat = pLat;
+            lng = pLng;
+        } else if (spot.metresShortOfPickup() > 0) {
+            double back = spot.metresShortOfPickup() / length;
+            lat = pLat - (dLat - pLat) * back;
+            lng = pLng - (dLng - pLng) * back;
+        } else {
+            double f = spot.fraction() - spot.metresShortOfDrop() / length;
+            f = Math.max(0.0, Math.min(1.0, f));
+            lat = pLat + (dLat - pLat) * f;
+            lng = pLng + (dLng - pLng) * f;
+        }
+        return Optional.of(new Position(scale7(lat), scale7(lng)));
+    }
+
+    /**
+     * The same stages on the real road route (D-192): out for pickup at the start of the approach, reached and
+     * picked up at the supplier, ofd 35% along the delivery leg, reached delivery 30 m of road short of the end,
+     * delivered at the end. Empty for a stage that is not in the table.
+     */
+    public static Optional<Position> roadPosition(String dummyStatus, PidgeSandboxRoute route) {
+        if (dummyStatus == null) {
+            return Optional.empty();
+        }
+        var point = switch (dummyStatus) {
+            case "fulfilled|out for pickup" -> route.pointAt(PidgeSandboxRoute.Leg.APPROACH, 0.0);
+            case "fulfilled|reached pickup", "fulfilled|picked up" -> route.pointAt(PidgeSandboxRoute.Leg.APPROACH, 1.0);
+            case "fulfilled|ofd" -> route.pointAt(PidgeSandboxRoute.Leg.DELIVERY, 0.35);
+            case "fulfilled|reached delivery" -> route.pointAtMetersFromEnd(PidgeSandboxRoute.Leg.DELIVERY, 30);
+            case "fulfilled|delivered" -> route.pointAt(PidgeSandboxRoute.Leg.DELIVERY, 1.0);
+            default -> null;
+        };
+        return point == null ? Optional.empty() : Optional.of(new Position(point.latitude(), point.longitude()));
+    }
+
+    /**
+     * One free-form point for the manual move control (D-192) when the delivery is not on the stored road route:
+     * the delivery leg is the straight pickup-to-drop line, the approach leg runs from 2 km before the pickup to it.
+     */
+    public static Optional<Position> straightMove(PidgeSandboxRoute.Leg leg, double fraction, BigDecimal pickupLat,
+                                                  BigDecimal pickupLng, BigDecimal dropLat, BigDecimal dropLng) {
+        if (pickupLat == null || pickupLng == null || dropLat == null || dropLng == null) {
+            return Optional.empty();
+        }
+        double f = Math.max(0.0, Math.min(1.0, fraction));
+        if (leg == PidgeSandboxRoute.Leg.DELIVERY) {
+            double lat = pickupLat.doubleValue() + (dropLat.doubleValue() - pickupLat.doubleValue()) * f;
+            double lng = pickupLng.doubleValue() + (dropLng.doubleValue() - pickupLng.doubleValue()) * f;
+            return Optional.of(new Position(scale7(lat), scale7(lng)));
+        }
+        // 2 km short of the pickup, on the side away from the drop, same as the "out for pickup" stage.
+        var start = position("fulfilled|out for pickup", pickupLat, pickupLng, dropLat, dropLng).orElseThrow();
+        double lat = start.latitude().doubleValue() + (pickupLat.doubleValue() - start.latitude().doubleValue()) * f;
+        double lng = start.longitude().doubleValue() + (pickupLng.doubleValue() - start.longitude().doubleValue()) * f;
+        return Optional.of(new Position(scale7(lat), scale7(lng)));
+    }
+
+    private static BigDecimal scale7(double value) {
+        return BigDecimal.valueOf(value).setScale(7, RoundingMode.HALF_UP);
+    }
+
+    /** A made-up sandbox rider: name, 10-digit mobile and "Bike, plate" (the width of driver_vehicle). */
+    public record Rider(String name, String phone, String vehicle) {
+    }
+
+    private static final List<String> RIDER_NAMES =
+            List.of("Ravi Kumar", "Imran Sheikh", "Suresh Babu", "Anil Reddy", "Manoj Yadav");
+
+    /**
+     * Pidge's dummy answer names every rider "Rider name", so the demo screens read "Rider name is on the way"
+     * (D-195). Give the sandbox delivery a believable rider instead, worked out from its id so every stage (and
+     * every re-read) shows the same one. The number sits in the 90000 xxxxx range and the plate in KA 01 EX, both
+     * plainly made up; no real rider or customer is named.
+     */
+    public static Rider rider(long deliveryId) {
+        String name = RIDER_NAMES.get((int) Math.floorMod(deliveryId, (long) RIDER_NAMES.size()));
+        String phone = "90000" + String.format("%05d", Math.floorMod(deliveryId, 100_000L));
+        String plate = "KA 01 EX " + (1000 + Math.floorMod(deliveryId, 9000L));
+        return new Rider(name, phone, "Bike, " + plate);
     }
 }

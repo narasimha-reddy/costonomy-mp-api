@@ -112,6 +112,15 @@ public class DeliveryEventService {
             return;
         }
 
+        // The same fix again (Pidge's 30 s poll keeps returning its last milestone position, and the webhook may
+        // have stored it first) is one row, not one per poll. Only a fix with the provider's own time can repeat.
+        if (recordedAt != null) {
+            var latest = locations.findFirstByDeliveryIdOrderByRecordedAtDescIdDesc(delivery.getId());
+            if (latest.isPresent() && recordedAt.equals(latest.get().getRecordedAt())) {
+                return;
+            }
+        }
+
         var location = new DeliveryLocation();
         location.setDeliveryId(delivery.getId());
         location.setLatitude(latitude);
