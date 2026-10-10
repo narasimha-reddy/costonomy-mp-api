@@ -90,6 +90,26 @@ public class Delivery extends BaseEntity {
     @Column(name = "drop_contact_phone", length = 32)
     private String dropContactPhone;
 
+    @Column(name = "tracking_url", length = 1000)
+    private String trackingUrl;
+
+    @Column(name = "weight_kg", precision = 19, scale = 4)
+    private BigDecimal weightKg;
+
+    @Column(name = "volume_cbm", precision = 19, scale = 4)
+    private BigDecimal volumeCbm;
+
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(name = "vehicle_type", length = 32)
+    private VehicleType vehicleType;
+
+    /**
+     * Whether this delivery contains temperature-sensitive items requiring cold-chain handling.
+     */
+    @Column(name = "requires_cold_chain", nullable = false)
+    private boolean requiresColdChain = false;
+
     /** Null until a driver exists. Never filled with a placeholder. */
     @Column(name = "driver_name", length = 150)
     private String driverName;
@@ -125,6 +145,13 @@ public class Delivery extends BaseEntity {
     @Column(name = "assigned_at")
     private Instant assignedAt;
 
+    /**
+     * Timeout window after booking before unassigned delivery automatically
+     * cascades to the next provider quote in the waterfall.
+     */
+    @Column(name = "assignment_deadline")
+    private Instant assignmentDeadline;
+
     @Column(name = "picked_up_at")
     private Instant pickedUpAt;
 
@@ -137,4 +164,29 @@ public class Delivery extends BaseEntity {
     /** When the provider last told us anything. Drives the staleness indicator. */
     @Column(name = "last_provider_update_at")
     private Instant lastProviderUpdateAt;
+
+    /** When the search for a partner first failed; null while one is booked. D-185. */
+    @Column(name = "no_partner_since")
+    private Instant noPartnerSince;
+
+    @Column(name = "auto_retry_count", nullable = false)
+    private int autoRetryCount;
+
+    @Column(name = "last_retry_at")
+    private Instant lastRetryAt;
+
+    /** When the supplier was first offered delivering it themselves. */
+    @Column(name = "own_delivery_offered_at")
+    private Instant ownDeliveryOfferedAt;
+
+    public void markNoPartner(Instant now) {
+        if (noPartnerSince == null) {
+            noPartnerSince = now;
+        }
+    }
+
+    public void clearNoPartner() {
+        noPartnerSince = null;
+        ownDeliveryOfferedAt = null;
+    }
 }

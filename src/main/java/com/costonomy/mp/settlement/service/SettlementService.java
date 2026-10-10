@@ -59,6 +59,10 @@ public class SettlementService {
     private final AuditService auditService;
     private final OutboxService outbox;
     private final JdbcTemplate jdbc;
+    private final SettlementTotals totals;
+    private final SupplierRefundLedger refundLedger;
+    private final SettlementReconciliationService reconciliation;
+    private final CreditRepaymentPayoutLedger repaymentPayouts;
 
     // ── Generation ───────────────────────────────────────────────────────
 
@@ -71,18 +75,25 @@ public class SettlementService {
     public int generate(Instant periodStart, Instant periodEnd) {
         int touched = 0;
 
-        for (Long storeId : directory.storesWithSettleableOrders(periodStart, periodEnd)) {
+        // Stores with orders to settle, and stores with a wallet repayment waiting to be paid out (D-156).
+        var withPayouts = new java.util.HashSet<>(repaymentPayouts.storesWithPending(periodEnd));
+        var storeIds = new java.util.LinkedHashSet<>(directory.storesWithSettleableOrders(periodStart, periodEnd));
+        storeIds.addAll(withPayouts);
+
+        for (Long storeId : storeIds) {
             var orders = directory.settleableOrders(periodStart, periodEnd).stream()
                     .filter(order -> order.supplierStoreId().equals(storeId))
                     .toList();
-            if (orders.isEmpty()) {
+            if (orders.isEmpty() && !withPayouts.contains(storeId)) {
                 continue;
             }
 
             var settlement = settlements
                     .findBySupplierStoreIdAndPeriodStartAndPeriodEnd(
                             storeId, periodStart, periodEnd)
-                    .orElseGet(() -> create(storeId, orders.get(0).supplierOrganizationId(),
+                    .orElseGet(() -> create(storeId,
+                            orders.isEmpty() ? repaymentPayouts.organisationOf(storeId)
+                                    : orders.get(0).supplierOrganizationId(),
                             periodStart, periodEnd));
 
             if (!settlement.getStatus().isMutable()) {
@@ -100,6 +111,11 @@ public class SettlementService {
                     calculations.save(calculation);
                 }
             }
+            // Refunds approved before the orders were settled come out of this
+            // payout, with them (D-104).
+            refundLedger.applyPending(settlement, ordersIn(settlement));
+            // Wallet repayments Mandi holds for this supplier are paid out with it, less commission (D-156).
+            repaymentPayouts.applyPending(settlement, periodEnd);
 
             recompute(settlement);
             settlement.setStatus(SettlementStatus.CALCULATED);
@@ -139,45 +155,61 @@ public class SettlementService {
         return settlements.save(settlement);
     }
 
-    /**
-     * Re-total from the lines.
-     *
-     * <p>Sums the <b>stored</b> figures rather than recalculating commission. The
-     * distinction is the whole of doc 05 §33: adding up what was calculated is
-     * reproducible, recalculating is a function of today's configuration.
-     */
     private void recompute(Settlement settlement) {
-        BigDecimal gross = BigDecimal.ZERO;
-        BigDecimal commissionTotal = BigDecimal.ZERO;
-        int count = 0;
+        totals.recompute(settlement);
+    }
 
-        for (var calculation : calculations.findBySettlementId(settlement.getId())) {
-            gross = gross.add(calculation.getGrossAmount());
-            commissionTotal = commissionTotal.add(calculation.getCommissionAmount());
-            count++;
-        }
-
-        BigDecimal adjustmentTotal = BigDecimal.ZERO;
-        for (var adjustment : adjustments.findBySettlementIdOrderByIdAsc(settlement.getId())) {
-            adjustmentTotal = adjustmentTotal.add(adjustment.signedAmount());
-        }
-
-        settlement.setGrossAmount(gross);
-        settlement.setCommissionAmount(commissionTotal);
-        settlement.setAdjustmentAmount(adjustmentTotal);
-        // Gross - Commission ± Adjustments = Net. Doc 01 §17.
-        settlement.setNetAmount(gross.subtract(commissionTotal).add(adjustmentTotal));
-        settlement.setOrderCount(count);
+    private List<Long> ordersIn(Settlement settlement) {
+        return calculations.findBySettlementId(settlement.getId()).stream()
+                .map(CommissionCalculation::getSupplierOrderId)
+                .toList();
     }
 
     // ── Operations ───────────────────────────────────────────────────────
 
     @Transactional
     public SettlementDtos.SettlementResponse approve(Long actorId, Long settlementId,
-                                                     String note) {
+                                                     String note, String acknowledgeMismatchNote) {
         accessControl.require(actorId, Permissions.SETTLEMENT_OPERATE, ScopeType.PLATFORM, null);
 
         var settlement = load(settlementId);
+
+        // D-104. A refund decided after approval would have nothing to come out of
+        // but Costonomy's pocket, so an undecided one holds the payout.
+        var waiting = directory.undecidedRefunds(settlementId);
+        if (!waiting.isEmpty()) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Refund requests on this settlement's orders need a decision first: "
+                            + String.join(", ", waiting));
+        }
+        // One decided after the settlement was generated, not yet in it.
+        if (refundLedger.applyPending(settlement, ordersIn(settlement)) > 0) {
+            recompute(settlement);
+        }
+        if (settlement.getNetAmount().signum() < 0) {
+            // Refunds larger than the payout: only possible if the commission rate
+            // rose between a refund's approval and the settlement. Paying out a
+            // negative figure is not a payment; someone has to decide.
+            log.error("Settlement {} nets {} after refunds; not approved",
+                    settlement.getSettlementNumber(), settlement.getNetAmount().toPlainString());
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Refunds on this settlement are more than its payout. It needs a correction first.");
+        }
+
+        // A fresh answer, not the last hourly one: a capture can fail between sweeps. Inline, in
+        // this transaction: its locking read sees the current row, where a separate transaction
+        // would leave this one's snapshot stale and the later save would lose to its version bump.
+        var check = reconciliation.reconcileInternal(settlementId, actorId);
+        if (!check.matched()) {
+            if (acknowledgeMismatchNote == null || acknowledgeMismatchNote.isBlank()) {
+                throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "Settlement does not reconcile with what was collected ("
+                                + check.note() + "). Resolve it, or approve with acknowledgeMismatchNote.");
+            }
+            auditService.record(actorId, null, "SETTLEMENT_APPROVED_WITH_MISMATCH", "SETTLEMENT",
+                    settlementId, check.settlementGross().toPlainString(),
+                    check.capturedGross().toPlainString(), acknowledgeMismatchNote, "ADMIN");
+        }
         transition(settlement, SettlementStatus.APPROVED);
         settlement.setApprovedBy(actorId);
         settlement.setApprovedAt(Instant.now());

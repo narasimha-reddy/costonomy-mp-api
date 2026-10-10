@@ -36,6 +36,7 @@ public class AdminController {
     private final AdminModerationService moderation;
     private final AdminConfigService config;
     private final OperationsDashboardService dashboard;
+    private final com.costonomy.mp.trust.service.DisputeRefundService disputeRefunds;
 
     // ── Suppliers ────────────────────────────────────────────────────────
 
@@ -142,6 +143,56 @@ public class AdminController {
         return ApiResponse.ok(Map.of("responseSlaSeconds", seconds));
     }
 
+    @PutMapping("/supplier-stores/{id}/direct-orders")
+    @Operation(summary = "Let restaurants order from a store without asking first",
+            description = """
+                    Turns off the request round trip for this store. It exists to find out
+                    whether the goods are there; a store that keeps stock already knows,
+                    and a supplier who told us on the phone should not have to find the
+                    screen.
+
+                    Requests and orders already in flight are untouched. Requires a reason,
+                    because from the supplier's side this is a setting they never changed.
+                    """)
+    public ApiResponse<Map<String, Object>> setDirectOrders(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> request) {
+        boolean enabled = Boolean.parseBoolean(String.valueOf(request.get("directOrdersEnabled")));
+        moderation.setDirectOrders(ActorContext.requireUserId(), id, enabled,
+                String.valueOf(request.getOrDefault("reason", "Operations change")));
+        return ApiResponse.ok(Map.of("directOrdersEnabled", enabled));
+    }
+
+    @PutMapping("/outlets/{id}/chat")
+    @Operation(summary = "Turn chat on or off for an outlet",
+            description = """
+                    Stops new messages between this outlet and every supplier it talks to.
+                    Messages already sent stay readable to both sides — the record of what
+                    was agreed is not the platform's to delete — and the app shows the
+                    chat action disabled with a line pointing at support, rather than a
+                    control that silently does nothing.
+                    """)
+    public ApiResponse<Map<String, Object>> setOutletChat(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> request) {
+        boolean enabled = Boolean.parseBoolean(String.valueOf(request.get("chatEnabled")));
+        moderation.setChatEnabled(ActorContext.requireUserId(), "outlet", id, enabled,
+                String.valueOf(request.getOrDefault("reason", "Operations change")));
+        return ApiResponse.ok(Map.of("chatEnabled", enabled));
+    }
+
+    @PutMapping("/supplier-stores/{id}/chat")
+    @Operation(summary = "Turn chat on or off for a supplier store",
+            description = "As for an outlet, from the other side of the conversation.")
+    public ApiResponse<Map<String, Object>> setStoreChat(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> request) {
+        boolean enabled = Boolean.parseBoolean(String.valueOf(request.get("chatEnabled")));
+        moderation.setChatEnabled(ActorContext.requireUserId(), "supplier_store", id, enabled,
+                String.valueOf(request.getOrDefault("reason", "Operations change")));
+        return ApiResponse.ok(Map.of("chatEnabled", enabled));
+    }
+
     // ── Orders ───────────────────────────────────────────────────────────
 
     @GetMapping("/orders")
@@ -233,6 +284,65 @@ public class AdminController {
                 request.get("resolutionType"), request.get("resolution"),
                 request.get("internalNote"));
         return ApiResponse.ok(Map.of("resolved", true));
+    }
+
+    // ── Payments ─────────────────────────────────────────────────────────
+
+    @PostMapping("/payments/{id}/clear-review")
+    @Operation(
+            summary = "Put a payment stopped for a person back in the cancellation job's hands",
+            description = """
+                    Requires PAYMENT_RECONCILE and a `reason` (what was checked), which is
+                    audited. A cancelled order's payment is stopped for a person when it
+                    cannot safely be returned automatically (Razorpay does not know it, it
+                    does not match the order, it was refunded outside Mandi); this clears
+                    that flag so the job asks Razorpay again on its next run. It does not
+                    capture, release or refund anything itself, and it decides nothing about
+                    the money: fix or check the cause first, then clear. Refused if the
+                    payment is not waiting for a person.
+                    """)
+    public ApiResponse<Map<String, Object>> clearPaymentReview(
+            @PathVariable Long id,
+            @Valid @RequestBody AdminDtos.ClearPaymentReviewRequest request) {
+        moderation.clearPaymentReview(ActorContext.requireUserId(), id, request.reason());
+        return ApiResponse.ok(Map.of("cleared", true));
+    }
+
+    // ── Dispute refunds (D-104) ──────────────────────────────────────────
+
+    @GetMapping("/dispute-refunds")
+    @Operation(summary = "Refunds waiting for operations",
+            description = "Declined by the supplier, or unanswered for 48 hours. Oldest first. "
+                    + "Requires DISPUTE_INSPECT. Each one holds the supplier's payout for its "
+                    + "order until it is decided.")
+    public ApiResponse<List<com.costonomy.mp.trust.web.dto.TrustDtos.DisputeRefundResponse>> escalatedRefunds() {
+        return ApiResponse.ok(disputeRefunds.escalated(ActorContext.requireUserId()));
+    }
+
+    @PostMapping("/dispute-refunds/{id}/approve")
+    @Operation(
+            summary = "Approve a refund the supplier declined or did not answer",
+            description = """
+                    Requires REFUND_DECIDE and a `note`, which both parties see. **Moves
+                    money**: the restaurant's wallet is credited now and the supplier's payout
+                    for the order is charged — Costonomy never funds a refund (D-104). Refused
+                    if that payout cannot cover it or has already been approved.
+                    """)
+    public ApiResponse<com.costonomy.mp.trust.web.dto.TrustDtos.DisputeRefundResponse> approveRefund(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> request) {
+        return ApiResponse.ok(disputeRefunds.opsApprove(ActorContext.requireUserId(), id,
+                request.get("note")));
+    }
+
+    @PostMapping("/dispute-refunds/{id}/decline")
+    @Operation(summary = "Decline a refund the supplier declined or did not answer",
+            description = "Requires REFUND_DECIDE and a `note`. Final.")
+    public ApiResponse<com.costonomy.mp.trust.web.dto.TrustDtos.DisputeRefundResponse> declineRefund(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> request) {
+        return ApiResponse.ok(disputeRefunds.opsDecline(ActorContext.requireUserId(), id,
+                request.get("note")));
     }
 
     // ── Audit ────────────────────────────────────────────────────────────

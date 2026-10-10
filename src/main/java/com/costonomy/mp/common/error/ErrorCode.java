@@ -36,6 +36,9 @@ public enum ErrorCode {
             "Your session has expired. Please sign in again."),
     FORBIDDEN(HttpStatus.FORBIDDEN,
             "You don't have permission to do that."),
+    /** The outlet's wallet is on hold, so money cannot leave it (D-159). Not the same as a feature that is off. */
+    WALLET_ON_HOLD(HttpStatus.FORBIDDEN,
+            "Your wallet is on hold. Please contact support."),
     /**
      * The actor holds the permission but the resource belongs to a different
      * restaurant, outlet, supplier or store. Kept separate from FORBIDDEN so
@@ -66,6 +69,31 @@ public enum ErrorCode {
             "This request was already made with different details."),
     IDEMPOTENT_REQUEST_IN_PROGRESS(HttpStatus.CONFLICT,
             "That request is still being processed."),
+    /**
+     * The first attempt with this key ran and failed (D-159). Definitive: the key will never run again, so the client
+     * must use a NEW key to try again. Unlike {@link #IDEMPOTENT_REQUEST_IN_PROGRESS}, waiting changes nothing.
+     */
+    IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED(HttpStatus.CONFLICT,
+            "The previous attempt did not go through. Please try again."),
+
+    // ── Requests (409) ───────────────────────────────────────────────────
+    //
+    // Its own code rather than SUPPLIER_ORDER_EXPIRED, which is what it would
+    // otherwise be borrowing. A client matching on codes to decide what to show
+    // would tell a supplier their *order* expired when what lapsed was a request
+    // they had not answered yet — and D-018 exists to stop exactly that kind of
+    // accurate-but-useless report.
+    INTENT_EXPIRED(HttpStatus.CONFLICT,
+            "This request can no longer be answered."),
+    /**
+     * The request moved while somebody was reading it.
+     *
+     * <p>Its own code rather than CONCURRENT_MODIFICATION, which is what D-018
+     * calls accurate and useless: this one tells the supplier what to do about
+     * it, which is to look again.
+     */
+    INTENT_CHANGED(HttpStatus.CONFLICT,
+            "This request changed while you were reading it."),
 
     // ── Supplier orders (409, 422) ───────────────────────────────────────
     SUPPLIER_ORDER_EXPIRED(HttpStatus.CONFLICT,
@@ -98,6 +126,79 @@ public enum ErrorCode {
             "You don't have an active credit agreement with this supplier."),
     CREDIT_SINGLE_ORDER_CAP_EXCEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
             "This order is larger than the per-order credit limit."),
+    /**
+     * A repayment of more than the chosen invoices (or the whole line) still owe (D-153). Refused rather than kept as a
+     * balance. The details carry {@code outstanding}, what can be repaid right now.
+     */
+    CREDIT_OVERPAYMENT(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That's more than you owe."),
+
+    /**
+     * The supplier recorded a payment whose reference (a UTR or cheque number) is already on a payment in this store
+     * within 90 days (D-164). The details carry {@code receiptId} (null for a payment recorded one invoice at a time),
+     * {@code paidOn} and {@code amount} of the earlier one; sending {@code allowDuplicateReference: true} records it anyway.
+     */
+    CREDIT_DUPLICATE_REFERENCE(HttpStatus.CONFLICT,
+            "That payment reference was already recorded."),
+
+    /**
+     * A claim that "I paid" is not in a state that allows this (D-155): it was already confirmed, rejected or
+     * withdrawn, or the invoice it points at is already settled. Nothing was changed.
+     */
+    CREDIT_CLAIM_STATE(HttpStatus.CONFLICT,
+            "This payment claim has already been dealt with."),
+
+    // ── Undoing a recorded payment (B6, D-169) ───────────────────────────
+    /** The payment is not one a supplier may undo: paid through Mandi (WALLET), part of a receipt, or on a written-off invoice. */
+    CREDIT_REVERSAL_NOT_ALLOWED(HttpStatus.CONFLICT,
+            "This payment can't be undone here."),
+    /** Too late to undo: 7 India days after it was recorded, 30 for a cheque. The details carry {@code closedOn}, the first day it was closed. */
+    CREDIT_REVERSAL_WINDOW_CLOSED(HttpStatus.CONFLICT,
+            "It's too late to undo this payment."),
+    CREDIT_ALREADY_REVERSED(HttpStatus.CONFLICT,
+            "This payment was already undone."),
+    /**
+     * Putting the debt back would take the line past its limit, because the credit the payment freed has been used
+     * (or the limit was cut). The details carry {@code needed}, {@code available} and {@code shortBy}; nothing moved.
+     */
+    CREDIT_REVERSAL_NO_HEADROOM(HttpStatus.UNPROCESSABLE_ENTITY,
+            "The restaurant has used the credit this payment freed."),
+
+    // ── Credit notes and write-offs (B7, B8, D-175..D-180) ───────────────
+    /** A credit note or write-off of more than the invoice still owes. The details carry {@code outstanding}; nothing moved. */
+    CREDIT_NOTE_EXCEEDS_OUTSTANDING(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That's more than is still owed on this invoice."),
+    /** The invoice is PAID or WRITTEN_OFF: a credit note cannot reach money already paid (the supplier refunds it directly, D-177). */
+    CREDIT_NOTE_INVOICE_SETTLED(HttpStatus.CONFLICT,
+            "This invoice is already settled, so a credit note can't be issued on it."),
+    /** Nothing is owed on the invoice (or the whole line), so there is nothing to write off. */
+    CREDIT_WRITE_OFF_NOTHING_OWED(HttpStatus.CONFLICT,
+            "Nothing is owed here, so there is nothing to write off."),
+    /** A refund due that was paid from the Mandi wallet is put right by Mandi, not marked refunded by the supplier. */
+    CREDIT_REFUND_OPS_ONLY(HttpStatus.CONFLICT,
+            "This refund was paid from the restaurant's wallet, so Mandi will settle it."),
+
+    // ── Credit rules hardening (D-160) ───────────────────────────────────
+    /** The restaurant accepted a terms version that is no longer the agreement's current one. Nothing changed. */
+    CREDIT_TERMS_CHANGED(HttpStatus.CONFLICT,
+            "The supplier changed the terms. Please review them again."),
+
+    // ── Credit reminders and exports (D-171, D-172) ──────────────────────
+    /** A manual reminder was already sent on this line within 24 hours. Details: {@code nextAllowedAt}. */
+    CREDIT_REMINDER_TOO_SOON(HttpStatus.TOO_MANY_REQUESTS,
+            "You already reminded this restaurant in the last 24 hours."),
+    /**
+     * Too many reminders: 3 per line in a rolling 7 days ({@code limit} WEEK) or 50 per store in an India day
+     * ({@code limit} STORE_DAY). Details: {@code limit}, {@code max}, {@code nextAllowedAt}.
+     */
+    CREDIT_REMINDER_LIMIT(HttpStatus.TOO_MANY_REQUESTS,
+            "You have reached the reminder limit."),
+    /** Nothing to remind about: nothing overdue or due within 3 days, or every such invoice is covered by a claim. Details: {@code reason}, {@code skipped}. */
+    CREDIT_REMINDER_NOT_NEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "There is nothing to remind this restaurant about right now."),
+    /** An export of more than 20,000 rows. Details: {@code max}, {@code rows}. Narrow the dates. */
+    CREDIT_EXPORT_TOO_LARGE(HttpStatus.PAYLOAD_TOO_LARGE,
+            "That is too many rows for one export. Please choose a shorter period."),
 
     // ── Payments (422, 409) ──────────────────────────────────────────────
     PAYMENT_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
@@ -106,8 +207,55 @@ public enum ErrorCode {
             "This payment has already moved on."),
     REFUND_ALREADY_REQUESTED(HttpStatus.CONFLICT,
             "A refund has already been requested for this."),
+    /**
+     * A top-up's payment has not been captured yet (D-107). Not a failure: the
+     * money is safe and a background job credits it as soon as it clears, so the
+     * client should say "processing" and look at the top-up again, not retry
+     * the payment.
+     */
+    TOP_UP_PROCESSING(HttpStatus.CONFLICT,
+            "Your payment is still being processed. It will be added to your wallet as soon as it clears."),
+    /**
+     * Adding this money would take the wallet past what it may hold, or past the
+     * month's top-up limit (D-107). At order time it is a refusal; at credit time
+     * it means the payment was captured and is being returned.
+     */
+    WALLET_LIMIT_EXCEEDED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That would take your wallet over its limit."),
+    /**
+     * The wallet holds less than a repayment from it (D-153). The details carry {@code shortBy}, the amount missing,
+     * so the app can say "You're ₹X short" and offer to add money.
+     */
+    WALLET_INSUFFICIENT_BALANCE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "Your wallet doesn't have enough for that."),
+    /**
+     * A wallet statement for the period would run to more rows than a file can
+     * reasonably hold (D-108). The customer's fix is a shorter period.
+     */
+    STATEMENT_TOO_LARGE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That period has too many entries for one statement. Please choose a shorter period."),
     WEBHOOK_SIGNATURE_INVALID(HttpStatus.BAD_REQUEST,
             "Invalid webhook signature."),
+    /**
+     * More was asked to go back to the card or bank than can. The details carry
+     * {@code withdrawableNow} (what can go back right now, and so what to offer instead),
+     * {@code blocked} (wallet money whose original payment can no longer be refunded) and
+     * {@code unavailable} (money that could not be checked with the provider just now) (D-110).
+     */
+    WITHDRAWAL_EXCEEDS_REFUNDABLE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "That much can't go back to your card or bank right now."),
+    /** Operations acted on a refund without a fresh read of the provider's refunds behind it (D-110). */
+    REFUND_VERIFICATION_REQUIRED(HttpStatus.CONFLICT,
+            "Check this refund against the payment provider first."),
+    /** A money-moving operations action above the threshold needs a second person (D-110). */
+    SECOND_APPROVER_REQUIRED(HttpStatus.CONFLICT,
+            "This needs a second person to approve it."),
+    /** What operations said about the provider's records is not what the provider's records show (D-110). */
+    REFUND_VERIFICATION_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "The payment provider's records don't match."),
+    /** Refunds are failing for a reason on our side (D-110); nothing is lost and the wallet is untouched. */
+    WITHDRAWALS_PAUSED(HttpStatus.SERVICE_UNAVAILABLE,
+            "Withdrawals are paused for a short while. Your money is safe in your wallet."),
 
     // ── Delivery (422) ───────────────────────────────────────────────────
     DELIVERY_UNAVAILABLE(HttpStatus.UNPROCESSABLE_ENTITY,
@@ -124,6 +272,34 @@ public enum ErrorCode {
     // ── Catalog import (422) ─────────────────────────────────────────────
     IMPORT_VALIDATION_FAILED(HttpStatus.UNPROCESSABLE_ENTITY,
             "Some rows in that file couldn't be imported."),
+
+    // ── Tax invoices (D-133, 422) ────────────────────────────────────────
+    TAX_INVOICE_DATA_MISSING(HttpStatus.UNPROCESSABLE_ENTITY,
+            "This tax invoice can't be issued until some details are filled in."),
+    TAX_INVOICE_NOT_ALLOWED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "A tax invoice can't be issued for this order yet."),
+
+    // ── Wallet bills (D-113) ─────────────────────────────────────────────
+    INVOICE_EXISTS(HttpStatus.CONFLICT,
+            "This payment already has a bill. Remove it first to add another."),
+    INVOICE_NOT_FOUND(HttpStatus.NOT_FOUND,
+            "This payment has no bill."),
+    INVOICE_NOT_ALLOWED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "A bill can only be added to a payment made from your wallet."),
+    INVOICE_FILE_TYPE(HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+            "Please upload a JPEG, PNG or WebP photo, or a PDF."),
+    INVOICE_LIMIT_REACHED(HttpStatus.TOO_MANY_REQUESTS,
+            "You have added the most bills allowed for today. Please try again tomorrow."),
+    INVOICE_CHANGED(HttpStatus.CONFLICT,
+            "This bill was changed since you opened it. Reload it and try again."),
+    INVOICE_STILL_READING(HttpStatus.CONFLICT,
+            "This bill is still being read. Please try again in a moment."),
+    /** D-115: the same Idempotency-Key was sent again with a different review. */
+    IDEMPOTENCY_KEY_REUSED(HttpStatus.UNPROCESSABLE_ENTITY,
+            "This save was already made with different details. Reload the bill and try again."),
+    /** D-115: the outlet has no cost-app outlet mapped, so the cost app's lists are not offered. */
+    INVOICE_LOOKUP_NOT_AVAILABLE(HttpStatus.FORBIDDEN,
+            "Supplier and SKU lists are not available for this outlet. You can still type a name."),
 
     // ── Unexpected (500) ─────────────────────────────────────────────────
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR,

@@ -1,6 +1,9 @@
 package com.costonomy.mp.discovery.service;
 
 import com.costonomy.mp.common.domain.Serviceability;
+import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.common.error.ErrorCode;
+import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -10,7 +13,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * What a restaurant can actually buy, and from whom.
@@ -35,9 +40,6 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class StorefrontService {
-
-    /** Matches the recommendation feed's fallback for a store that declared none. */
-    private static final BigDecimal DEFAULT_RADIUS_KM = BigDecimal.valueOf(25);
 
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 100;
@@ -76,6 +78,7 @@ public class StorefrontService {
     private final JdbcTemplate jdbc;
     private final DiscoveryDirectory directory;
     private final SupplierPerformanceProvider performance;
+    private final ServiceabilityPolicy serviceabilityPolicy;
 
     /**
      * SKUs matching a term, across every supplier that serves this outlet.
@@ -156,8 +159,37 @@ public class StorefrontService {
     @Transactional(readOnly = true)
     public DiscoveryDtos.SupplierSearchPage searchSuppliers(String query, Long outletId,
                                                             BigDecimal radiusKm) {
+        return searchSuppliers(query, outletId, radiusKm, null, 0, 50);
+    }
+
+    @Transactional(readOnly = true)
+    public DiscoveryDtos.SupplierSearchPage searchSuppliers(String query, Long outletId,
+                                                            BigDecimal radiusKm, String reach) {
+        return searchSuppliers(query, outletId, radiusKm, reach, 0, 50);
+    }
+
+    @Transactional(readOnly = true)
+    public DiscoveryDtos.SupplierSearchPage searchSuppliers(String query, Long outletId,
+                                                            BigDecimal radiusKm, String reach,
+                                                            Integer offset, Integer limit) {
+        return searchSuppliers(query, outletId, radiusKm, reach, offset, limit, null, null, null);
+    }
+
+    @Transactional(readOnly = true)
+    public DiscoveryDtos.SupplierSearchPage searchSuppliers(String query, Long outletId,
+                                                            BigDecimal radiusKm, String reach,
+                                                            Integer offset, Integer limit,
+                                                            Boolean openNow, Integer minRating, String sort) {
+        String effectiveSort = SupplierListFilters.requireSort(sort);
+        SupplierListFilters.requireMinRating(minRating);
+
         String term = query == null ? "" : query.trim().toLowerCase();
         boolean filtered = term.length() >= MIN_TERM;
+        boolean reachAll = "all".equalsIgnoreCase(reach);
+
+        int effectiveOffset = Math.max(0, offset == null ? 0 : offset);
+        int requestedLimit = limit == null ? 50 : limit;
+        int effectiveLimit = Math.min(Math.max(1, requestedLimit), 100);
 
         var outlet = outletId == null ? null : directory.outlet(outletId).orElse(null);
 
@@ -199,7 +231,6 @@ public class StorefrontService {
             args.add(term);
             args.add(term);
         }
-        sql.append(" order by o.display_name limit 100");
 
         record Row(Long storeId, String supplierName, String storeName, String city,
                    BigDecimal latitude, BigDecimal longitude, int productCount,
@@ -216,7 +247,7 @@ public class StorefrontService {
                 args.toArray());
 
         if (rows.isEmpty()) {
-            return new DiscoveryDtos.SupplierSearchPage(List.of(), 0);
+            return new DiscoveryDtos.SupplierSearchPage(List.of(), 0, 0, null);
         }
 
         var storeInfo = directory.stores(rows.stream().map(Row::storeId).toList());
@@ -231,7 +262,7 @@ public class StorefrontService {
             Double distance = outlet == null ? null : Serviceability.distanceKm(
                     outlet.latitude(), outlet.longitude(), row.latitude(), row.longitude());
 
-            boolean serves = outlet == null || store == null
+            boolean serves = reachAll || outlet == null || store == null
                     || serves(store, outlet.pincode(), distance);
             // A supplier who cannot deliver here is not a search result. The old
             // behaviour returned them with `serviceable: false`, which the app had
@@ -241,43 +272,81 @@ public class StorefrontService {
             }
 
             var metrics = ratings.get(row.storeId());
+            boolean isOpen = store == null || store.openNow();
+            if (Boolean.TRUE.equals(openNow) && !isOpen) {
+                continue;
+            }
+
+            BigDecimal avgRating = metrics == null ? null : metrics.averageRating().orElse(null);
+            if (minRating != null) {
+                if (avgRating == null || avgRating.compareTo(BigDecimal.valueOf(minRating)) < 0) {
+                    continue;
+                }
+            }
+
             sized.add(new Sized(new DiscoveryDtos.SupplierSearchResult(
                     row.storeId(), row.supplierName(), row.storeName(), row.city(),
                     Serviceability.round(distance), true, row.productCount(),
                     row.matchingCount(),
-                    metrics == null ? null : metrics.averageRating().orElse(null),
+                    avgRating,
                     metrics == null ? 0 : metrics.ratingCount(),
-                    store == null || store.openNow(),
+                    isOpen,
                     store == null ? null : store.opensAt()), distance));
         }
 
-        // Nearest first, and a store with no coordinates last rather than first:
-        // an unknown distance is not a short one.
-        sized.sort(Comparator.comparing(
-                (Sized s) -> s.distance() == null ? Double.MAX_VALUE : s.distance()));
-
-        if (radiusKm == null) {
-            return new DiscoveryDtos.SupplierSearchPage(
-                    sized.stream().map(Sized::result).toList(), 0);
+        // Sort: nearest (default) or rating (highest first, then nearest, then store id)
+        if ("rating".equals(effectiveSort)) {
+            sized.sort(Comparator.comparing(
+                    (Sized s) -> s.result().averageRating() == null ? BigDecimal.valueOf(-1) : s.result().averageRating(),
+                    Comparator.reverseOrder())
+                    .thenComparing(s -> s.distance() == null ? Double.MAX_VALUE : s.distance())
+                    .thenComparing(s -> s.result().supplierStoreId()));
+        } else {
+            // Nearest first, tie-breaker store ID, and a store with no coordinates last:
+            // an unknown distance is not a short one.
+            sized.sort(Comparator.comparing(
+                    (Sized s) -> s.distance() == null ? Double.MAX_VALUE : s.distance())
+                    .thenComparing(s -> s.result().supplierStoreId()));
         }
 
-        var within = sized.stream()
-                .filter(s -> s.distance() == null
-                        || BigDecimal.valueOf(s.distance()).compareTo(radiusKm) <= 0)
-                .map(Sized::result)
-                .toList();
-        return new DiscoveryDtos.SupplierSearchPage(within, sized.size() - within.size());
+        int beyondRadius = 0;
+        List<DiscoveryDtos.SupplierSearchResult> candidates;
+        if (radiusKm != null) {
+            var within = sized.stream()
+                    .filter(s -> s.distance() == null
+                            || BigDecimal.valueOf(s.distance()).compareTo(radiusKm) <= 0)
+                    .toList();
+            beyondRadius = sized.size() - within.size();
+            candidates = within.stream().map(Sized::result).toList();
+        } else {
+            candidates = sized.stream().map(Sized::result).toList();
+        }
+
+        int total = candidates.size();
+        List<DiscoveryDtos.SupplierSearchResult> pageItems;
+        if (effectiveOffset >= total) {
+            pageItems = List.of();
+        } else {
+            int toIndex = Math.min(effectiveOffset + effectiveLimit, total);
+            pageItems = candidates.subList(effectiveOffset, toIndex);
+        }
+
+        Integer nextOffset = (effectiveOffset + effectiveLimit < total) ? effectiveOffset + effectiveLimit : null;
+        return new DiscoveryDtos.SupplierSearchPage(pageItems, beyondRadius, total, nextOffset);
     }
 
     // ── internals ────────────────────────────────────────────────────────
 
     /** One purchasable offer, before distance and ratings are attached. */
     private record SkuRow(Long offerId, Long skuId, String skuName, String brandName,
-                          BigDecimal packSize, String packUnit, BigDecimal sellingPrice,
+                          String grade, BigDecimal packSize, String packUnit,
+                          BigDecimal mrp, BigDecimal sellingPrice,
                           BigDecimal gstRate, String availability, BigDecimal availableQuantity,
                           String skuImageUrl, String canonicalImageUrl,
                           Long canonicalProductId, String canonicalProductName,
-                          Long storeId, String supplierName, String storeName) {
+                          Long storeId, String supplierName, String storeName,
+                          Long categoryId, String categoryName,
+                          BigDecimal measureValue, String measureUnit) {
     }
 
     private List<SkuRow> fetchSkuRows(String extraWhere, List<Object> args, Integer limit) {
@@ -290,13 +359,17 @@ public class StorefrontService {
                        f.availability, f.available_quantity,
                        k.image_url, cp.image_url,
                        cp.id, cp.name,
-                       s.id, o.display_name, s.name
+                       s.id, o.display_name, s.name,
+                       cp.category_id, pc.name,
+                       k.measure_value, k.measure_unit,
+                       k.grade, coalesce(f.mrp, k.mrp) as mrp
                   from supplier_offer f
                   join supplier_sku k on k.id = f.supplier_sku_id
                   join canonical_product cp on cp.id = k.canonical_product_id
                   join supplier_store s on s.id = f.supplier_store_id
                   join supplier_organization o on o.id = s.supplier_organization_id
                   left join brand b on b.id = k.brand_id
+                  left join product_category pc on pc.id = cp.category_id
                  where f.status = 'ACTIVE'
                    and k.status = 'ACTIVE'
                    and s.status = 'ACTIVE'
@@ -309,11 +382,14 @@ public class StorefrontService {
                 rs -> {
                     rows.add(new SkuRow(
                             rs.getLong(1), rs.getLong(2), rs.getString(3), rs.getString(4),
-                            rs.getBigDecimal(5), rs.getString(6), rs.getBigDecimal(7),
+                            rs.getString(22), rs.getBigDecimal(5), rs.getString(6),
+                            rs.getBigDecimal(23), rs.getBigDecimal(7),
                             rs.getBigDecimal(8), rs.getString(9), rs.getBigDecimal(10),
                             rs.getString(11), rs.getString(12),
                             rs.getLong(13), rs.getString(14),
-                            rs.getLong(15), rs.getString(16), rs.getString(17)));
+                            rs.getLong(15), rs.getString(16), rs.getString(17),
+                            (Long) rs.getObject(18), rs.getString(19),
+                            rs.getBigDecimal(20), rs.getString(21)));
                 },
                 args.toArray());
         return rows;
@@ -339,6 +415,43 @@ public class StorefrontService {
         var ratings = performance.forStores(storeIds);
         var outlet = outletId == null ? null : directory.outlet(outletId).orElse(null);
 
+        Map<String, List<DiscoveryDtos.BrandOption>> brandOptionsByStoreProduct = new HashMap<>();
+        for (SkuRow row : rows) {
+            String key = row.storeId() + ":" + row.canonicalProductId();
+            BigDecimal incl = row.sellingPrice() != null
+                    ? packInclusiveOfGst(row.sellingPrice(), row.gstRate()) : null;
+            BigDecimal discountAmount = Pricing.discountAmount(row.mrp(), row.sellingPrice());
+            Integer discountPercent = Pricing.discountPercent(row.mrp(), row.sellingPrice());
+            brandOptionsByStoreProduct.computeIfAbsent(key, k -> new ArrayList<>())
+                    .add(new DiscoveryDtos.BrandOption(
+                            row.skuId(),
+                            row.offerId(),
+                            row.skuName(),
+                            row.brandName(),
+                            row.grade(),
+                            row.packSize(),
+                            row.packUnit(),
+                            row.mrp(),
+                            row.sellingPrice(),
+                            discountAmount,
+                            discountPercent,
+                            row.gstRate(),
+                            incl,
+                            blankToNull(row.skuImageUrl()) != null
+                                    ? row.skuImageUrl() : blankToNull(row.canonicalImageUrl()),
+                            row.availability(),
+                            row.availableQuantity(),
+                            row.measureValue(),
+                            row.measureUnit()
+                    ));
+        }
+
+        // Lowest priced brand option first
+        for (List<DiscoveryDtos.BrandOption> options : brandOptionsByStoreProduct.values()) {
+            options.sort(Comparator.comparing(DiscoveryDtos.BrandOption::sellingPrice,
+                    Comparator.nullsLast(Comparator.naturalOrder())));
+        }
+
         record Sized(DiscoveryDtos.StorefrontSku sku, Double distance) {
         }
 
@@ -354,9 +467,20 @@ public class StorefrontService {
             }
 
             var metrics = ratings.get(row.storeId());
+            String key = row.storeId() + ":" + row.canonicalProductId();
+            List<DiscoveryDtos.BrandOption> brandOptions = brandOptionsByStoreProduct.getOrDefault(key, List.of());
+            BigDecimal rowDiscountAmount = Pricing.discountAmount(row.mrp(), row.sellingPrice());
+            Integer rowDiscountPercent = Pricing.discountPercent(row.mrp(), row.sellingPrice());
+
             out.add(new Sized(new DiscoveryDtos.StorefrontSku(
                     row.offerId(), row.skuId(), row.skuName(), row.brandName(),
-                    row.packSize(), row.packUnit(), row.sellingPrice(), row.gstRate(),
+                    row.grade(),
+                    row.packSize(), row.packUnit(),
+                    row.mrp(),
+                    row.sellingPrice(),
+                    rowDiscountAmount,
+                    rowDiscountPercent,
+                    row.gstRate(),
                     row.availability(), row.availableQuantity(),
                     // The SKU's own picture when the supplier uploaded one, the
                     // canonical product's otherwise. Blank is not a URL — an empty
@@ -370,7 +494,10 @@ public class StorefrontService {
                     store == null ? null : store.opensAt(),
                     store == null ? null : store.preparationMinutes(),
                     metrics == null ? null : metrics.averageRating().orElse(null),
-                    metrics == null ? 0 : metrics.ratingCount()), distance));
+                    metrics == null ? 0 : metrics.ratingCount(),
+                    row.categoryId(), row.categoryName(),
+                    row.measureValue(), row.measureUnit(),
+                    brandOptions), distance));
         }
 
         // Cheapest first is the SQL order and the useful one for a buyer. Distance
@@ -379,17 +506,18 @@ public class StorefrontService {
         return new Decorated(out.stream().map(Sized::sku).toList());
     }
 
-    /** Doc 07 §13: a declared pincode list wins, then the store's own radius. */
+    /** Doc 07 §13: a declared pincode list wins, then the store's own radius. D-138. */
     private boolean serves(DiscoveryDirectory.StoreInfo store, String outletPincode, Double distanceKm) {
-        if (store.serviceablePincodes() != null && !store.serviceablePincodes().isEmpty()) {
-            return outletPincode != null && store.serviceablePincodes().contains(outletPincode);
+        return serviceabilityPolicy.serves(store, outletPincode, distanceKm);
+    }
+
+    private static BigDecimal packInclusiveOfGst(BigDecimal sellingPrice, BigDecimal gstRate) {
+        if (sellingPrice == null) {
+            return null;
         }
-        if (distanceKm == null) {
-            return true;
-        }
-        BigDecimal radius = store.maxDeliveryRadiusKm() == null
-                ? DEFAULT_RADIUS_KM : store.maxDeliveryRadiusKm();
-        return BigDecimal.valueOf(distanceKm).compareTo(radius) <= 0;
+        BigDecimal rate = gstRate == null ? BigDecimal.ZERO : gstRate;
+        BigDecimal value = Pricing.lineItemValue(sellingPrice, BigDecimal.ONE);
+        return Pricing.lineTotal(value, Pricing.lineGst(value, rate));
     }
 
     private static String blankToNull(String value) {

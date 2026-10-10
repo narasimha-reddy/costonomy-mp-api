@@ -22,6 +22,10 @@ public final class PaymentDtos {
              * here (doc 01 §14, guardrail 3).
              */
             @NotBlank(message = "providerPaymentId is required")
+            // A provider id is letters, digits and underscores (pay_…, mock_pay_…).
+            // Anything else never reaches the provider's URL or our logs (D-101).
+            @Size(max = 64, message = "That isn't a payment id")
+            @Pattern(regexp = "[A-Za-z0-9_]+", message = "That isn't a payment id")
             String providerPaymentId) {
     }
 
@@ -50,6 +54,31 @@ public final class PaymentDtos {
             List<TransactionResponse> transactions) {
     }
 
+    /**
+     * An order's payment, as the pay screen needs it (D-102).
+     *
+     * @param payable whether a checkout can still be opened against
+     *                {@code providerOrderId}. False once funded, or once ended.
+     */
+    public record PaymentIntentResponse(
+            Long paymentId,
+            Long supplierOrderId,
+            String provider,
+            String providerOrderId,
+            BigDecimal amount,
+            String currency,
+            String publicKey,
+            PaymentStatus status,
+            boolean fundsSecured,
+            boolean payable,
+            String failureReason,
+            /** The order's status and funding method, so a screen reopened after a switch knows (D-186). */
+            String orderStatus,
+            String orderPaymentMethod,
+            /** The unpaid card order can still be paid another way, or cancelled. */
+            boolean switchable) {
+    }
+
     public record TransactionResponse(
             String type,
             BigDecimal amount,
@@ -58,20 +87,13 @@ public final class PaymentDtos {
             Instant createdAt) {
     }
 
-    public record RequestRefundRequest(
-            @NotNull(message = "Enter an amount")
-            @DecimalMin(value = "0.01", message = "The refund must be more than zero")
-            BigDecimal amount,
-            @NotBlank(message = "Choose a reason")
-            String reason,
-            @Size(max = 500) String note) {
-    }
-
     public record RefundResponse(
             Long id,
             Long paymentId,
             BigDecimal amount,
             String reason,
+            /** WALLET (credited to the outlet's wallet) or ORIGINAL (to the card). D-104. */
+            String destination,
             RefundStatus status,
             String failureReason,
             Instant completedAt,

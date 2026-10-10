@@ -80,4 +80,27 @@ class PricingTest {
         assertThat(Pricing.differs(null, null)).isFalse();
         assertThat(Pricing.differs(new BigDecimal("410"), null)).isTrue();
     }
+
+    @Test
+    @DisplayName("discount amount and percentage are calculated when MRP exceeds selling price")
+    void calculatesDiscountCorrectly() {
+        var mrp = new BigDecimal("500.00");
+        var sellingPrice = new BigDecimal("420.00");
+
+        assertThat(Pricing.discountAmount(mrp, sellingPrice)).isEqualByComparingTo("80.00");
+        assertThat(Pricing.discountPercent(mrp, sellingPrice)).isEqualTo(16);
+    }
+
+    @Test
+    @DisplayName("discount is null when MRP is absent or less than/equal to selling price")
+    void discountIsNullWhenNoMrpOrNoDiscount() {
+        assertThat(Pricing.discountAmount(null, new BigDecimal("420.00"))).isNull();
+        assertThat(Pricing.discountPercent(null, new BigDecimal("420.00"))).isNull();
+
+        assertThat(Pricing.discountAmount(new BigDecimal("400.00"), new BigDecimal("420.00"))).isNull();
+        assertThat(Pricing.discountPercent(new BigDecimal("400.00"), new BigDecimal("420.00"))).isNull();
+
+        assertThat(Pricing.discountAmount(new BigDecimal("420.00"), new BigDecimal("420.00"))).isNull();
+        assertThat(Pricing.discountPercent(new BigDecimal("420.00"), new BigDecimal("420.00"))).isNull();
+    }
 }

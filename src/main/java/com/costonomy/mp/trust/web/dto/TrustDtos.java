@@ -35,6 +35,7 @@ public final class TrustDtos {
             @NotNull @DecimalMin(value = "0.00") BigDecimal receivedQuantity,
             @NotNull @DecimalMin(value = "0.00") BigDecimal damagedQuantity,
             @NotNull @DecimalMin(value = "0.00") BigDecimal missingQuantity,
+            String rejectionReason,
             @Size(max = 500) String note) {
     }
 
@@ -48,9 +49,16 @@ public final class TrustDtos {
             BigDecimal totalReceivedQuantity,
             BigDecimal totalDamagedQuantity,
             BigDecimal totalMissingQuantity,
+            BigDecimal instantRefundAmount,
+            String creditNoteNumber,
             String notes,
             Instant receivedAt,
-            List<ReceivingItemResponse> items) {
+            List<ReceivingItemResponse> items,
+            /**
+             * Where the doorstep refund stands: {@code APPLIED}, or {@code PENDING_CAPTURE} while a card payment
+             * is still being captured and the refund waits for it (D-129). Null when nothing was rejected.
+             */
+            String refundStatus) {
     }
 
     public record ReceivingItemResponse(
@@ -62,6 +70,8 @@ public final class TrustDtos {
             BigDecimal receivedQuantity,
             BigDecimal damagedQuantity,
             BigDecimal missingQuantity,
+            String rejectionReason,
+            BigDecimal refundAmount,
             String unit,
             String note) {
     }
@@ -132,7 +142,52 @@ public final class TrustDtos {
             Instant createdAt,
             List<DisputeItemResponse> items,
             List<DisputeMessageResponse> messages,
-            List<EvidenceResponse> evidence) {
+            List<EvidenceResponse> evidence,
+            /** The refund asked for on this dispute, if any. D-104. */
+            DisputeRefundResponse refundRequest) {
+    }
+
+    // ── Refunds on a dispute (D-104) ─────────────────────────────────────
+
+    public record RequestDisputeRefundRequest(
+            @jakarta.validation.constraints.NotNull
+            @jakarta.validation.constraints.Positive
+            @jakarta.validation.constraints.Digits(integer = 15, fraction = 2) BigDecimal amount,
+            @jakarta.validation.constraints.Size(max = 500) String reason) {
+    }
+
+    /** A supplier's or an operator's answer. A note is required to decline. */
+    public record DisputeRefundDecisionRequest(
+            @jakarta.validation.constraints.Size(max = 500) String note) {
+    }
+
+    public record DisputeRefundResponse(
+            Long id,
+            Long disputeId,
+            Long supplierOrderId,
+            Long outletId,
+            Long supplierStoreId,
+            BigDecimal amount,
+            String reason,
+            com.costonomy.mp.trust.domain.DisputeRefundStatus status,
+            Instant requestedAt,
+            /** Until when the supplier alone decides; after it operations may too. */
+            Instant supplierAnswerBy,
+            String supplierNote,
+            Instant supplierDecidedAt,
+            String opsNote,
+            Instant opsDecidedAt,
+            /** The wallet refund an approval made, for a card-paid order. */
+            Long refundId) {
+    }
+
+    /**
+     * How much could be asked for on this dispute's order, or why nothing can.
+     * For the form, so the restaurant is told before asking rather than refused after.
+     */
+    public record DisputeRefundLimitResponse(
+            BigDecimal maxAmount,
+            String refusal) {
     }
 
     public record DisputeItemResponse(

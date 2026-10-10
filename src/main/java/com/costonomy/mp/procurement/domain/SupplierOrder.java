@@ -10,6 +10,7 @@ import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 
 /** One supplier's share of a procurement. Doc 02 §4, doc 03 §5. */
 @Entity
@@ -19,7 +20,14 @@ import java.time.Instant;
 @NoArgsConstructor
 public class SupplierOrder extends BaseEntity {
 
-    @Column(name = "procurement_id", nullable = false)
+    /**
+     * The cart this came from, or null when it came from an intent.
+     *
+     * <p>Nullable since V23. An order created from an accepted intent has no
+     * procurement behind it — the intent is the basket — and the link to its
+     * origin lives in {@code intent_order_link} instead.
+     */
+    @Column(name = "procurement_id")
     private Long procurementId;
 
     @Column(name = "supplier_store_id", nullable = false)
@@ -88,17 +96,74 @@ public class SupplierOrder extends BaseEntity {
     @Column(name = "accepted_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal acceptedAmount = BigDecimal.ZERO;
 
+    /**
+     * Adjustment for catch-weight variance at dispatch. Positive = refund to buyer, negative = surcharge.
+     */
+    @Column(name = "weight_adjustment_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal weightAdjustmentAmount = BigDecimal.ZERO;
+
+    /**
+     * Total refund credited back to buyer for goods rejected at the doorstep.
+     */
+    @Column(name = "doorstep_refund_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal doorstepRefundAmount = BigDecimal.ZERO;
+
+    /**
+     * Final reconciled payable amount after weight adjustments and doorstep rejections.
+     */
+    @Column(name = "final_payable_amount", precision = 19, scale = 4)
+    private BigDecimal finalPayableAmount;
+
+    /**
+     * Whether this order contains temperature-sensitive cold-chain items.
+     */
+    @Column(name = "has_cold_chain_items", nullable = false)
+    private boolean hasColdChainItems = false;
+
     @Column(name = "payment_method", nullable = false, length = 32)
     private String paymentMethod = "PREPAID";
 
     @Column(name = "payment_status", nullable = false, length = 32)
     private String paymentStatus = "PENDING";
 
-    @Column(name = "credit_status", length = 32)
-    private String creditStatus;
+    /**
+     * How the goods travel. D-091.
+     *
+     * <p>Chosen by the restaurant at order creation, because the restaurant pays
+     * the fee — and because the fee is part of what is charged, so it has to be
+     * settled before the payment intent exists. It is also an argument to
+     * {@link SupplierOrderStatus#allowedTransitions(DeliveryMode)}: where this
+     * order goes after {@code READY_FOR_PICKUP} depends on who is carrying it.
+     */
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(name = "delivery_mode", nullable = false, length = 32)
+    private DeliveryMode deliveryMode = DeliveryMode.PICKUP;
 
-    @Column(name = "delivery_mode", length = 32)
-    private String deliveryMode;
+    @Column(name = "delivery_slot_id")
+    private Long deliverySlotId;
+
+    @Column(name = "scheduled_delivery_date")
+    private LocalDate scheduledDeliveryDate;
+
+    @Column(name = "is_subscription_order", nullable = false)
+    private boolean isSubscriptionOrder = false;
+
+    @Column(name = "subscription_id")
+    private Long subscriptionId;
+
+    /**
+     * Who cancelled, when this order was. Null otherwise.
+     *
+     * <p>An attribute rather than a status per actor — see {@link CancelledBy}.
+     */
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.VARCHAR)
+    @Column(name = "cancelled_by", length = 32)
+    private CancelledBy cancelledBy;
+
+    @Column(name = "cancellation_reason", length = 500)
+    private String cancellationReason;
 
     /**
      * Whether the deadline has passed, against a supplied clock.

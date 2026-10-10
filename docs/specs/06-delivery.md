@@ -119,6 +119,8 @@ After driver assignment:
 - stale indicator
 - driver identity/contact where supported
 
+Delivery response coordinates (both buyer and supplier): `pickupLocation` (supplier store) and `dropLocation` (buyer outlet), each `{"latitude": 17.4399, "longitude": 78.4983}`, or `null` when either coordinate is not stored. They are fixed points, separate from `location` (the rider's latest fix).
+
 Do not fabricate location updates.
 
 If location timestamp exceeds configured freshness threshold, show stale state.
@@ -200,3 +202,33 @@ Provider callbacks must use:
 - idempotent event IDs
 
 Never expose provider credentials to mobile.
+
+## 14. Pidge Delivery Orchestration & Smart Dispatch
+
+Pidge serves as a premier delivery orchestration and multi-carrier smart dispatch layer, aggregating 1PL internal fleets alongside external 3PL courier partners (Shadowfax, Porter, Borzo, LoadShare):
+
+### Vehicle Selection & Weight Sizing
+Order parcel weight and volume are aggregated automatically from line items (`requested_quantity × SKU unit weight`):
+- **TWO_WHEELER**: Payload $\le 20$ kg
+- **THREE_WHEELER**: Payload $> 20$ kg and $\le 100$ kg
+- **FOUR_WHEELER_TRUCK**: Payload $> 100$ kg (bulk / heavy freight)
+
+### Resilient Ingress & Webhook Security
+- Webhook Ingress: `POST /api/v1/webhooks/delivery/pidge`
+- Cryptographic Signature: Constant-time HMAC-SHA256 validation via `X-Pidge-Signature` header.
+- Ingestion is idempotent: Out-of-order and duplicate provider events are safely ignored.
+- Real-time tracking URLs (`tracking_url`) are persisted and forwarded to notification outbox for WhatsApp/SMS sharing.
+
+### Event-Driven Waterfall Fallback
+- Strict SLA: 3-minute assignment deadline enforced upon carrier booking (`assignment_deadline`).
+- Event-Driven Reassignment: When a deadline expires or carrier signals unserviceability, `DeliveryWaterfallService` cascades consignment to the next best carrier without polling loops.
+- Stale Carrier Exclusion: The failed carrier is excluded from the re-quote candidate pool to prevent loops.
+
+## 15. Central Delivery Ledger
+
+Append-only financial audit table `delivery_ledger` tracks:
+- Carrier quoted vs booked amounts.
+- Margin accounting and drawdowns.
+- Auditable by operations via `GET /api/v1/admin/deliveries/{id}/ledger` (`DELIVERY_INSPECT` permission).
+- Manual waterfall override via `POST /api/v1/admin/deliveries/{id}/force-waterfall` (`DELIVERY_OPERATE` permission).
+

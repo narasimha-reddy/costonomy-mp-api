@@ -35,6 +35,12 @@ public final class Permissions {
     public static final String RATING_CREATE = "RATING_CREATE";
     public static final String CREDIT_REQUEST = "CREDIT_REQUEST";
     public static final String PAYMENT_CREATE = "PAYMENT_CREATE";
+    /** Send wallet money back to the card it came from. D-104, V42. */
+    public static final String WALLET_WITHDRAW = "WALLET_WITHDRAW";
+    /** Pay a shop by QR from the wallet. D-106, V44. */
+    public static final String QUICKSCAN_PAY = "QUICKSCAN_PAY";
+    /** Repay a supplier's credit invoice from the restaurant side. D-151, V77. */
+    public static final String CREDIT_REPAY = "CREDIT_REPAY";
 
     // Supplier
     public static final String SUPPLIER_VIEW = "SUPPLIER_VIEW";
@@ -54,10 +60,29 @@ public final class Permissions {
     public static final String CREDIT_APPROVE = "CREDIT_APPROVE";
     public static final String CREDIT_REJECT = "CREDIT_REJECT";
     public static final String CREDIT_MODIFY = "CREDIT_MODIFY";
+    /** Record a payment, confirm or reject a claim. {@link #CREDIT_MODIFY} is accepted wherever this is. V80. */
+    public static final String CREDIT_COLLECT = "CREDIT_COLLECT";
+    /** Write off a debt. Owner and admin only. V80. */
+    public static final String CREDIT_WRITE_OFF = "CREDIT_WRITE_OFF";
     /** Answer a dispute raised against this store's order. Doc 04 §16. */
     public static final String DISPUTE_RESPOND = "DISPUTE_RESPOND";
+    /** Approve or decline a dispute refund; an approval comes out of the payout. D-104, V43. */
+    public static final String DISPUTE_REFUND_DECIDE = "DISPUTE_REFUND_DECIDE";
     public static final String SETTLEMENT_VIEW = "SETTLEMENT_VIEW";
     public static final String PERFORMANCE_VIEW = "PERFORMANCE_VIEW";
+
+    /**
+     * Chat between an outlet and a store. D-095, seeded by {@code V33__chat.sql}.
+     *
+     * <p>Read and write are separate on both sides (D-046), and the two sides are
+     * separate codes rather than one: a permission carries a scope, a restaurant's
+     * is held on an outlet and a supplier's on a store, and one code held at both
+     * would make "can this person write here" a question with two answers.
+     */
+    public static final String CHAT_VIEW = "CHAT_VIEW";
+    public static final String CHAT_SEND = "CHAT_SEND";
+    public static final String CHAT_VIEW_SUPPLIER = "CHAT_VIEW_SUPPLIER";
+    public static final String CHAT_SEND_SUPPLIER = "CHAT_SEND_SUPPLIER";
 
     // Shared between both worlds; the scope of the grant disambiguates.
     public static final String ORDER_VIEW = "ORDER_VIEW";
@@ -88,5 +113,13 @@ public final class Permissions {
     public static final String PAYMENT_INSPECT = "PAYMENT_INSPECT";
     public static final String DELIVERY_INSPECT = "DELIVERY_INSPECT";
     public static final String DISPUTE_INSPECT = "DISPUTE_INSPECT";
+    /** Decide a dispute refund the supplier declined or did not answer. Moves money. D-104, V43. */
+    public static final String REFUND_DECIDE = "REFUND_DECIDE";
     public static final String CONFIG_VIEW = "CONFIG_VIEW";
+    /**
+     * Decide what happens to a refund the provider did not send: verify it, retry it, put a
+     * withdrawal back in the wallet, send a cancellation refund to the wallet, mark it done, block
+     * a payment as a refund source. Moves money. Its read side is PAYMENT_INSPECT. D-110, V48.
+     */
+    public static final String REFUND_OPERATE = "REFUND_OPERATE";
 }

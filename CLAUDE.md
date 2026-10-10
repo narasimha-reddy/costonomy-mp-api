@@ -16,11 +16,19 @@ Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 > charged to the restaurant, because it is only known after the payment is
 > authorised. Read it before touching the payment flow.
 >
-> **The mobile app is next.** Only its design system exists (`costonomy-mp-mobile`);
-> every screen in `docs/specs/05-mobile-screens.md` is still to build.
+> **The mobile app is built**, across both roles — see `costonomy-mp-mobile`.
+> Recent work adds wallets, direct orders, chat, SKU detail and store contacts
+> (migrations V31–V36, decisions D-092…D-097), then Razorpay checkout, capture at
+> "ready" and refunds to the wallet (V41–V42, D-098…D-104).
 >
-> **There are no open decisions.** OPEN-004 closed as D-020: a supplier order is
-> created `DRAFT` and released only once funding is secured.
+> **New here? Read `docs/ONBOARDING.md` first** — setup, seed accounts, how we
+> branch and review, and the questions that are genuinely still open.
+>
+> **Open questions are listed in `docs/ONBOARDING.md` §5** and are live, not
+> omissions — chat's missing realtime channel, serviceability filtering on the
+> supplier lists, and V36's deferred `NOT NULL` among them. Do not close one
+> silently. (OPEN-004 is closed, as D-020: a supplier order is created `DRAFT`
+> and released only once funding is secured.)
 
 ## Read before writing code
 
@@ -339,17 +347,28 @@ D-020. Submission creates supplier orders in `DRAFT` with **no acceptance
 deadline**; `OrderReleaseService.releaseIfFunded` moves them to
 `PENDING_ACCEPTANCE` and starts the clock at that moment, from whichever of the
 confirm call, the webhook or the reconciliation job arrives first. Funding means
-`PaymentStatus.fundsSecured()` — nothing else may decide it. Money is captured
-only after acceptance and only for what was accepted; the remainder of a partial
-acceptance is *released*, never refunded, so nothing reaches the restaurant's
-statement that should not be there.
+`PaymentStatus.fundsSecured()` — nothing else may decide it. Money is held from
+payment and captured only when the supplier marks the order ready (D-103), and
+only for what the order finally comes to (D-128: the accepted amount less any catch-weight shortfall, the same figure for card, wallet and credit); the remainder of a partial acceptance is *released*,
+never refunded, and so is the whole hold if the order is cancelled before ready —
+nothing reaches the restaurant's statement that should not be there.
 
 This applies identically to credit, which is why both go through
 `OrderFundingPort` and `OrderFunding` routes between them. A credit order differs
 only in timing: the reservation succeeds or fails inside the submission, so the
 order releases immediately and there is no intent for the client to complete. Add
 a funding method by adding an `OrderFundingPort`, never by branching on the
-payment method in procurement.
+payment method in procurement. Weighing never moves money: it fixes the billed quantity, and the money is settled once at ready through `onOrderDispatched`; after that it only goes down through `reduceAfterDispatch` (D-128).
+
+**A refund goes to the wallet, and leaves it only for the card it came from.**
+D-104. There is no endpoint for a restaurant to refund itself, and there must not
+be one. A refund is credited to the outlet's wallet in one transaction
+(`RefundService.refundToWallet`, `destination = WALLET`) and counts against the
+payment then; a withdrawal is a provider refund on the payment the money was
+refunded from, which must **not** count again. Only refund money can be
+withdrawn. Anything that decides what a wallet can give back holds the wallet row
+first and the payment second — the other order deadlocks with a withdrawal.
+**Costonomy never funds a refund**: the supplier bears it, from their payout.
 
 **Credit is supplier-funded and supplier-controlled.** Doc 01 §18. Every limit,
 term, per-order cap and suspension is the supplier's; Mandi runs the workflow,
@@ -407,7 +426,11 @@ of the two it is.
 Suspension stops new trade but leaves accepted orders alone; disabling a SKU
 supersedes its offer rather than deleting it; an operator resolving a dispute
 records an outcome rather than imposing one, and moves no money. Every mutation
-needs a reason and is audited.
+needs a reason and is audited. **The one exception is a refund the supplier
+declined or left unanswered for 48 hours** (D-104): an operator with
+`REFUND_DECIDE` may approve it, which credits the restaurant and charges the
+supplier's payout — the product owner's ruling, with its own permission so that
+`DISPUTE_MODERATE` still moves nothing.
 
 **A configuration change supersedes, never overwrites.** D-047. Settlement must
 stay reproducible (doc 09 §11), which is impossible if the rate that applied in
@@ -438,7 +461,7 @@ Notifications, realtime and analytics all match on these names.
 accepted quantity stays exactly as the supplier committed to it — that is what was
 paid for and what every dispute is argued from — and what arrived goes to
 `fulfilled_quantity`. Every line must be answered and
-`received + damaged + missing` must equal `accepted`; defaulting any of those
+`received + damaged + missing` must equal `accepted` (on a weighed catch-weight line, the billed weight, D-128); defaulting any of those
 would reinstate the blind "Complete" button §23A.22 forbids. A receiving shortfall
 does **not** re-open the requirement: it is a commercial dispute, and re-opening
 would have the restaurant order the same goods twice.
@@ -447,8 +470,14 @@ would have the restaurant order the same goods twice.
 quantities, not its payment — and the response carries the order status so the app
 can say so (§23A.26). Several disputes per order are allowed, because a delivery
 can be short *and* damaged. A supplier answers and proposes; only the restaurant
-resolves. **Mandi records disputes, it does not adjudicate them** — nothing here
-issues a refund or a credit note on anyone's behalf.
+resolves. **Mandi records disputes, it does not adjudicate them** — with one
+exception, D-104's refunds: a restaurant may ask for money back on a dispute
+(`DisputeRefundService`), the supplier approves or declines, and operations
+decides only after a decline or 48 hours of silence. An approval credits the
+wallet and charges the supplier's payout in one transaction
+(`SupplierRefundLedger`), capped at that payout and refused once it is approved;
+a payout cannot be approved while a refund on it is undecided. **Costonomy never
+funds a refund** — keep all three of those checks. Nothing issues a credit note.
 
 **Ratings publish on write and are removed by moderation, never gated by it.**
 D-037. Hiding one removes it from the public average *and* from ranking, which is

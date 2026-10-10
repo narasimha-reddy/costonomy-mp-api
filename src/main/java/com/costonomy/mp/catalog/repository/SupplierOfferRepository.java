@@ -16,6 +16,16 @@ public interface SupplierOfferRepository extends JpaRepository<SupplierOffer, Lo
     /** Price history, newest first. */
     List<SupplierOffer> findBySupplierSkuIdOrderByEffectiveFromDesc(Long supplierSkuId);
 
+    /**
+     * The live offers for a set of SKUs, in one query.
+     *
+     * <p>For pricing a whole basket: a request holds no prices of its own, so
+     * showing a kitchen what it is about to ask for means reading every line's
+     * current offer, and doing that one at a time makes a ten-line basket cost
+     * eleven queries to draw.
+     */
+    List<SupplierOffer> findBySupplierSkuIdInAndStatus(List<Long> supplierSkuIds, String status);
+
     List<SupplierOffer> findBySupplierStoreIdAndStatus(Long supplierStoreId, String status);
 
     /**

@@ -1,5 +1,6 @@
 package com.costonomy.mp.catalog.web.dto;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 
 import java.math.BigDecimal;
@@ -48,14 +49,31 @@ public final class CatalogDtos {
             String supplierName,
             String skuName,
             String brandName,
+            String grade,
             BigDecimal packSize,
             String packUnit,
+            BigDecimal mrp,
             BigDecimal sellingPrice,
+            BigDecimal discountAmount,
+            Integer discountPercent,
             BigDecimal gstRate,
             String availability,
             BigDecimal availableQuantity,
             Integer responseSlaSeconds,
             Integer preparationMinutes) {
+
+        public OfferResponse(
+                Long offerId, Long supplierSkuId, Long supplierStoreId,
+                String supplierStoreName, String supplierName, String skuName,
+                String brandName, BigDecimal packSize, String packUnit,
+                BigDecimal sellingPrice, BigDecimal gstRate, String availability,
+                BigDecimal availableQuantity, Integer responseSlaSeconds,
+                Integer preparationMinutes) {
+            this(offerId, supplierSkuId, supplierStoreId, supplierStoreName, supplierName,
+                    skuName, brandName, null, packSize, packUnit, null, sellingPrice,
+                    null, null, gstRate, availability, availableQuantity,
+                    responseSlaSeconds, preparationMinutes);
+        }
     }
 
     /**
@@ -77,12 +95,35 @@ public final class CatalogDtos {
 
     // ── Supplier-side SKU management ─────────────────────────────────────
 
+    /** One kitchen's verdict on a pack they received. D-096. */
+    public record CreateSkuReviewRequest(
+            @NotNull(message = "Choose a rating")
+            @Min(value = 1, message = "A rating is between 1 and 5")
+            @Max(value = 5, message = "A rating is between 1 and 5")
+            Integer rating,
+            @Size(max = 2000) String comment) {
+    }
+
+    public record SkuReviewResponse(
+            Long id,
+            Long supplierSkuId,
+            Long supplierOrderItemId,
+            Integer rating,
+            String comment,
+            /** Who, at outlet granularity. A person's name is not the point. */
+            String outletName,
+            Instant createdAt) {
+    }
+
     public record CreateSkuRequest(
             @NotNull(message = "Choose the product this SKU is")
             Long canonicalProductId,
             @Size(max = 120) String skuCode,
             @NotBlank(message = "Enter the product name") @Size(max = 250) String name,
             @Size(max = 200) String brandName,
+            @Size(max = 100) String grade,
+            Boolean isCatchWeight,
+            Boolean requiresColdChain,
             @NotNull(message = "Enter the pack size")
             @DecimalMin(value = "0.0001", message = "Pack size must be greater than zero")
             BigDecimal packSize,
@@ -96,7 +137,27 @@ public final class CatalogDtos {
             @DecimalMin(value = "0.0001", message = "Pack contents must be greater than zero")
             BigDecimal measureValue,
             @Size(max = 16) String measureUnit,
+            @DecimalMin(value = "0.0000", message = "MRP can't be negative")
+            BigDecimal mrp,
             @Size(max = 1000) String imageUrl,
+            /**
+             * Everything a kitchen decides on rather than compares on. D-096.
+             *
+             * <p>All optional. A listing without any of it behaves exactly as it
+             * did before the detail page existed.
+             */
+            @Size(max = 2000) String description,
+            /** Pack dimensions in centimetres. */
+            @DecimalMin(value = "0.00") BigDecimal lengthCm,
+            @DecimalMin(value = "0.00") BigDecimal widthCm,
+            @DecimalMin(value = "0.00") BigDecimal heightCm,
+            @DecimalMin(value = "0.00") BigDecimal weightGrams,
+            /** A YouTube link. Pasted, never uploaded. */
+            @Size(max = 500) String youtubeUrl,
+            /**
+             * The gallery, in order. `imageUrl` above stays the thumbnail.
+             */
+            List<@Size(max = 500) String> images,
             @NotNull(message = "Enter the price")
             @DecimalMin(value = "0.0000", message = "Price can't be negative")
             BigDecimal sellingPrice,
@@ -108,6 +169,34 @@ public final class CatalogDtos {
                      message = "Availability must be AVAILABLE or OUT_OF_STOCK")
             String availability,
             BigDecimal availableQuantity) {
+
+        public CreateSkuRequest(
+                Long canonicalProductId, String skuCode, String name, String brandName,
+                String grade, BigDecimal packSize, String packUnit, BigDecimal measureValue,
+                String measureUnit, BigDecimal mrp, String imageUrl, String description,
+                BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                BigDecimal weightGrams, String youtubeUrl, List<String> images,
+                BigDecimal sellingPrice, BigDecimal gstRate, String availability,
+                BigDecimal availableQuantity) {
+            this(canonicalProductId, skuCode, name, brandName, grade, false, false, packSize, packUnit,
+                    measureValue, measureUnit, mrp, imageUrl, description, lengthCm,
+                    widthCm, heightCm, weightGrams, youtubeUrl, images, sellingPrice,
+                    gstRate, availability, availableQuantity);
+        }
+
+        public CreateSkuRequest(
+                Long canonicalProductId, String skuCode, String name, String brandName,
+                BigDecimal packSize, String packUnit, BigDecimal measureValue,
+                String measureUnit, String imageUrl, String description,
+                BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                BigDecimal weightGrams, String youtubeUrl, List<String> images,
+                BigDecimal sellingPrice, BigDecimal gstRate, String availability,
+                BigDecimal availableQuantity) {
+            this(canonicalProductId, skuCode, name, brandName, null, false, false, packSize, packUnit,
+                    measureValue, measureUnit, null, imageUrl, description, lengthCm,
+                    widthCm, heightCm, weightGrams, youtubeUrl, images, sellingPrice,
+                    gstRate, availability, availableQuantity);
+        }
     }
 
     /**
@@ -115,21 +204,82 @@ public final class CatalogDtos {
      * to price, GST or availability supersedes the current offer rather than
      * editing it.
      */
+    /**
+     * Change how a SKU must be handled. Superseding, not editing: the reason is required and kept, and the change
+     * never touches an order already placed (D-134). A field left out is left as it is.
+     */
+    public record HandlingDeclarationRequest(
+            Boolean requiresColdChain,
+            Boolean isCatchWeight,
+            @jakarta.validation.constraints.NotBlank(message = "Say why the handling is changing")
+            @Size(max = 500) String reason) {
+    }
+
     public record UpdateSkuRequest(
             Long canonicalProductId,
             @Size(max = 120) String skuCode,
             @Size(max = 250) String name,
             @Size(max = 200) String brandName,
+            @Size(max = 100) String grade,
+            Boolean isCatchWeight,
+            Boolean requiresColdChain,
             @DecimalMin(value = "0.0001") BigDecimal packSize,
             @Size(max = 32) String packUnit,
             @DecimalMin(value = "0.0001") BigDecimal measureValue,
             @Size(max = 16) String measureUnit,
+            @DecimalMin(value = "0.0000") BigDecimal mrp,
             @Size(max = 1000) String imageUrl,
+            /**
+             * Everything a kitchen decides on rather than compares on. D-096.
+             *
+             * <p>All optional. A listing without any of it behaves exactly as it
+             * did before the detail page existed.
+             */
+            @Size(max = 2000) String description,
+            /** Pack dimensions in centimetres. */
+            @DecimalMin(value = "0.00") BigDecimal lengthCm,
+            @DecimalMin(value = "0.00") BigDecimal widthCm,
+            @DecimalMin(value = "0.00") BigDecimal heightCm,
+            @DecimalMin(value = "0.00") BigDecimal weightGrams,
+            /** A YouTube link. Pasted, never uploaded. */
+            @Size(max = 500) String youtubeUrl,
+            /**
+             * The gallery, in order. `imageUrl` above stays the thumbnail.
+             */
+            List<@Size(max = 500) String> images,
             @Pattern(regexp = "ACTIVE|INACTIVE") String status,
             @DecimalMin(value = "0.0000") BigDecimal sellingPrice,
             @DecimalMin(value = "0.0000") @DecimalMax(value = "100.0000") BigDecimal gstRate,
             @Pattern(regexp = "AVAILABLE|OUT_OF_STOCK") String availability,
             BigDecimal availableQuantity) {
+
+        public UpdateSkuRequest(
+                Long canonicalProductId, String skuCode, String name, String brandName,
+                String grade, BigDecimal packSize, String packUnit, BigDecimal measureValue,
+                String measureUnit, BigDecimal mrp, String imageUrl, String description,
+                BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                BigDecimal weightGrams, String youtubeUrl, List<String> images,
+                String status, BigDecimal sellingPrice, BigDecimal gstRate,
+                String availability, BigDecimal availableQuantity) {
+            this(canonicalProductId, skuCode, name, brandName, grade, null, null, packSize, packUnit,
+                    measureValue, measureUnit, mrp, imageUrl, description, lengthCm,
+                    widthCm, heightCm, weightGrams, youtubeUrl, images, status,
+                    sellingPrice, gstRate, availability, availableQuantity);
+        }
+
+        public UpdateSkuRequest(
+                Long canonicalProductId, String skuCode, String name, String brandName,
+                BigDecimal packSize, String packUnit, BigDecimal measureValue,
+                String measureUnit, String imageUrl, String description,
+                BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                BigDecimal weightGrams, String youtubeUrl, List<String> images,
+                String status, BigDecimal sellingPrice, BigDecimal gstRate,
+                String availability, BigDecimal availableQuantity) {
+            this(canonicalProductId, skuCode, name, brandName, null, null, null, packSize, packUnit,
+                    measureValue, measureUnit, null, imageUrl, description, lengthCm,
+                    widthCm, heightCm, weightGrams, youtubeUrl, images, status,
+                    sellingPrice, gstRate, availability, availableQuantity);
+        }
     }
 
     public record SkuResponse(
@@ -137,18 +287,13 @@ public final class CatalogDtos {
             Long supplierStoreId,
             Long canonicalProductId,
             String canonicalProductName,
-            /**
-             * The canonical product's category.
-             *
-             * <p>Free to include — the product is already loaded to get its name —
-             * and without it a supplier's own catalog cannot be grouped or filtered
-             * by category at all. The name is deliberately not repeated here: a
-             * client that needs it already holds the category list.
-             */
             Long categoryId,
             String skuCode,
             String name,
             String brandName,
+            String grade,
+            boolean isCatchWeight,
+            boolean requiresColdChain,
             BigDecimal packSize,
             String packUnit,
             /** What is inside one pack, or null when the pack unit already says. */
@@ -163,20 +308,117 @@ public final class CatalogDtos {
             /**
              * The canonical product's picture, so a listing has a face even when
              * the supplier has not given it one.
-             * <p>Free to include — the product is already loaded for its name —
-             * and it is what makes "the SKU's image, else the product's" a
-             * decision the client can take without a second request. The two are
-             * kept separate rather than merged server-side: a screen showing a
-             * supplier what they have uploaded must be able to tell the
-             * difference between their picture and the platform's.
              */
             String canonicalProductImageUrl,
+            /** D-096. Null or empty when the supplier has not filled them in. */
+            String description,
+            BigDecimal lengthCm,
+            BigDecimal widthCm,
+            BigDecimal heightCm,
+            BigDecimal weightGrams,
+            String youtubeUrl,
+            List<String> images,
             String status,
+            BigDecimal mrp,
             BigDecimal sellingPrice,
+            BigDecimal discountAmount,
+            Integer discountPercent,
             BigDecimal gstRate,
             String availability,
             BigDecimal availableQuantity,
             Instant priceEffectiveFrom) {
+
+        public SkuResponse(
+                Long id, Long supplierStoreId, Long canonicalProductId,
+                String canonicalProductName, Long categoryId, String skuCode,
+                String name, String brandName, String grade, BigDecimal packSize, String packUnit,
+                BigDecimal measureValue, String measureUnit, String imageUrl,
+                String canonicalProductImageUrl, String description,
+                BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                BigDecimal weightGrams, String youtubeUrl, List<String> images,
+                String status, BigDecimal mrp, BigDecimal sellingPrice,
+                BigDecimal discountAmount, Integer discountPercent, BigDecimal gstRate,
+                String availability, BigDecimal availableQuantity,
+                Instant priceEffectiveFrom) {
+            this(id, supplierStoreId, canonicalProductId, canonicalProductName, categoryId,
+                    skuCode, name, brandName, grade, false, false, packSize, packUnit, measureValue,
+                    measureUnit, imageUrl, canonicalProductImageUrl, description, lengthCm,
+                    widthCm, heightCm, weightGrams, youtubeUrl, images, status,
+                    mrp, sellingPrice, discountAmount, discountPercent, gstRate, availability,
+                    availableQuantity, priceEffectiveFrom);
+        }
+
+        public SkuResponse(
+                Long id, Long supplierStoreId, Long canonicalProductId,
+                String canonicalProductName, Long categoryId, String skuCode,
+                String name, String brandName, BigDecimal packSize, String packUnit,
+                BigDecimal measureValue, String measureUnit, String imageUrl,
+                String canonicalProductImageUrl, String description,
+                BigDecimal lengthCm, BigDecimal widthCm, BigDecimal heightCm,
+                BigDecimal weightGrams, String youtubeUrl, List<String> images,
+                String status, BigDecimal sellingPrice, BigDecimal gstRate,
+                String availability, BigDecimal availableQuantity,
+                Instant priceEffectiveFrom) {
+            this(id, supplierStoreId, canonicalProductId, canonicalProductName, categoryId,
+                    skuCode, name, brandName, null, false, false, packSize, packUnit, measureValue,
+                    measureUnit, imageUrl, canonicalProductImageUrl, description, lengthCm,
+                    widthCm, heightCm, weightGrams, youtubeUrl, images, status,
+                    null, sellingPrice, null, null, gstRate, availability,
+                    availableQuantity, priceEffectiveFrom);
+        }
+    }
+
+    /**
+     * Preset suggestion for a top-selling brand/grade combination under a product.
+     */
+    public record VariantPreset(
+            String brandName,
+            String grade,
+            BigDecimal packSize,
+            String packUnit,
+            BigDecimal typicalMrp,
+            boolean isTopSeller) {
+    }
+
+    /**
+     * Item-Centric Variant Management group for a supplier store.
+     * Select an item (e.g. Paneer) and manage all its brand and grade variants with
+     * combination of top selling items first.
+     */
+    public record ItemVariantGroupResponse(
+            Long canonicalProductId,
+            String productName,
+            Long categoryId,
+            String categoryName,
+            String imageUrl,
+            String baseUnit,
+            List<SkuResponse> variants,
+            List<VariantPreset> recommendedPresets) {
+    }
+
+    /**
+     * Single variant entry for batch creation or updating on the Item Variant Manager screen.
+     */
+    public record BatchVariantEntry(
+            Long skuId,
+            String skuCode,
+            String name,
+            String brandName,
+            String grade,
+            BigDecimal packSize,
+            String packUnit,
+            BigDecimal mrp,
+            BigDecimal sellingPrice,
+            BigDecimal gstRate,
+            String availability,
+            BigDecimal availableQuantity) {
+    }
+
+    public record BatchUpdateVariantsRequest(
+            @NotNull(message = "canonicalProductId is required")
+            Long canonicalProductId,
+            @NotEmpty(message = "At least one variant must be provided")
+            List<BatchVariantEntry> variants) {
     }
 
     public record PriceHistoryEntry(
@@ -216,5 +458,62 @@ public final class CatalogDtos {
 
     /** One problem with one field of one row. Doc 40 requires this granularity. */
     public record RowError(String field, String code, String message) {
+    }
+
+    // ── Morning Mandi Fast Rate Sheet (60-second Repricing Grid) ────────
+
+    public record RateSheetRow(
+            Long skuId,
+            Long canonicalProductId,
+            String productName,
+            String skuName,
+            String brandName,
+            String grade,
+            boolean isCatchWeight,
+            boolean requiresColdChain,
+            BigDecimal packSize,
+            String packUnit,
+            BigDecimal mrp,
+            BigDecimal sellingPrice,
+            BigDecimal gstRate,
+            String availability,
+            BigDecimal availableQuantity,
+            Instant updatedAt) {
+
+        public RateSheetRow(
+                Long skuId, Long canonicalProductId, String productName, String skuName,
+                String brandName, String grade, boolean isCatchWeight, BigDecimal packSize,
+                String packUnit, BigDecimal mrp, BigDecimal sellingPrice, BigDecimal gstRate,
+                String availability, BigDecimal availableQuantity, Instant updatedAt) {
+            this(skuId, canonicalProductId, productName, skuName, brandName, grade,
+                    isCatchWeight, false, packSize, packUnit, mrp, sellingPrice, gstRate,
+                    availability, availableQuantity, updatedAt);
+        }
+    }
+
+    public record RateSheetResponse(
+            Long supplierStoreId,
+            List<RateSheetRow> rows) {
+    }
+
+    public record UpdateRateSheetItem(
+            @NotNull(message = "SKU ID is required") Long skuId,
+            @NotNull(message = "Selling price is required")
+            @DecimalMin(value = "0.0001", message = "Selling price must be positive")
+            BigDecimal sellingPrice,
+            BigDecimal mrp,
+            @Pattern(regexp = "AVAILABLE|OUT_OF_STOCK", message = "Invalid availability status")
+            String availability,
+            BigDecimal availableQuantity) {
+    }
+
+    public record UpdateRateSheetRequest(
+            @NotEmpty(message = "At least one row must be updated")
+            @Valid List<UpdateRateSheetItem> rows) {
+    }
+
+    public record UpdateRateSheetResponse(
+            int updatedCount,
+            List<RateSheetRow> rows) {
     }
 }

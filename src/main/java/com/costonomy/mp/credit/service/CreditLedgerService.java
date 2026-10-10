@@ -1,5 +1,6 @@
 package com.costonomy.mp.credit.service;
 
+import com.costonomy.mp.credit.domain.CreditEvents;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.outbox.OutboxService;
@@ -104,7 +105,7 @@ public class CreditLedgerService {
         ledger.record(agreementId, CreditTransactionType.RESERVE, amount, reservation.getId(),
                 supplierOrderId, null, "Reserved for order " + supplierOrderId, null);
 
-        outbox.publish("CreditReserved", "CREDIT_AGREEMENT", agreementId,
+        outbox.publish(CreditEvents.RESERVED, "CREDIT_AGREEMENT", agreementId,
                 Map.of("supplierOrderId", supplierOrderId,
                         "amount", amount.toPlainString()),
                 null);
@@ -168,11 +169,43 @@ public class CreditLedgerService {
             invoices.issueFor(reservation, drawn);
         }
 
-        outbox.publish("CreditUtilized", "CREDIT_AGREEMENT", reservation.getCreditAgreementId(),
+        outbox.publish(CreditEvents.UTILIZED, "CREDIT_AGREEMENT", reservation.getCreditAgreementId(),
                 Map.of("supplierOrderId", supplierOrderId,
                         "amount", drawn.toPlainString(),
                         "released", returned.toPlainString()),
                 null);
+    }
+
+    /**
+     * Bring a drawn order down to what it finally comes to (D-128, D-129): the invoice, what is drawn against the
+     * limit, and the reservation's record of it, together. Idempotent: it acts only on the difference.
+     *
+     * @return what the invoice did, or null when this is not a drawn credit order
+     */
+    @Transactional
+    public CreditInvoiceService.Reduction reduceDrawnTo(Long supplierOrderId, BigDecimal finalPayable,
+                                                        BigDecimal adjustmentAmount, String reason) {
+        var reservation = reservations.findBySupplierOrderId(supplierOrderId).orElse(null);
+        if (reservation == null || reservation.getStatus() != CreditReservationStatus.UTILIZED) {
+            // Not a credit order, or not drawn yet (nothing to bring down).
+            return null;
+        }
+        var reduction = invoices.reduceTo(supplierOrderId, finalPayable, adjustmentAmount);
+        if (reduction == null || reduction.reduced().signum() <= 0) {
+            // Nothing came off the debt (already at the target, or already repaid beyond it). Exposure only ever
+            // comes down by what the invoice came down: the repayment has already freed the rest.
+            return reduction;
+        }
+        ledger.reduceDrawn(reduction.agreementId(), reservation.getId(), supplierOrderId,
+                reduction.invoiceId(), reduction.reduced(), reason);
+        reservation.setUtilizedAmount(reservation.getUtilizedAmount().subtract(reduction.reduced()));
+        reservations.save(reservation);
+
+        outbox.publish("CreditAdjusted", "CREDIT_AGREEMENT", reduction.agreementId(),
+                Map.of("supplierOrderId", supplierOrderId,
+                        "reduced", reduction.reduced().toPlainString()),
+                null);
+        return reduction;
     }
 
     /** The order will never be supplied. Give the whole hold back. */
@@ -198,7 +231,7 @@ public class CreditLedgerService {
         ledger.record(reservation.getCreditAgreementId(), CreditTransactionType.RELEASE, held,
                 reservation.getId(), supplierOrderId, null, reason, null);
 
-        outbox.publish("CreditReleased", "CREDIT_AGREEMENT", reservation.getCreditAgreementId(),
+        outbox.publish(CreditEvents.RELEASED, "CREDIT_AGREEMENT", reservation.getCreditAgreementId(),
                 Map.of("supplierOrderId", supplierOrderId,
                         "amount", held.toPlainString(), "reason", reason),
                 null);

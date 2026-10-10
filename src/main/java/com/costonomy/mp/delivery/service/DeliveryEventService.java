@@ -112,6 +112,15 @@ public class DeliveryEventService {
             return;
         }
 
+        // The same fix again (Pidge's 30 s poll keeps returning its last milestone position, and the webhook may
+        // have stored it first) is one row, not one per poll. Only a fix with the provider's own time can repeat.
+        if (recordedAt != null) {
+            var latest = locations.findFirstByDeliveryIdOrderByRecordedAtDescIdDesc(delivery.getId());
+            if (latest.isPresent() && recordedAt.equals(latest.get().getRecordedAt())) {
+                return;
+            }
+        }
+
         var location = new DeliveryLocation();
         location.setDeliveryId(delivery.getId());
         location.setLatitude(latitude);
@@ -159,10 +168,17 @@ public class DeliveryEventService {
         delivery.setLastProviderUpdateAt(Instant.now());
 
         switch (target) {
-            case DRIVER_ASSIGNED -> delivery.setAssignedAt(Instant.now());
+            case DRIVER_ASSIGNED -> {
+                delivery.setAssignedAt(Instant.now());
+                delivery.setAssignmentDeadline(null);
+            }
             case PICKED_UP -> delivery.setPickedUpAt(Instant.now());
-            case DELIVERED -> delivery.setDeliveredAt(Instant.now());
+            case DELIVERED -> {
+                delivery.setDeliveredAt(Instant.now());
+                delivery.setAssignmentDeadline(null);
+            }
             case DRIVER_CANCELLED, PICKUP_FAILED, DELIVERY_FAILED -> {
+                delivery.setAssignmentDeadline(null);
                 delivery.setFailureCode(target.name());
                 delivery.setFailureReason(event.description());
                 // The driver is gone with the job; keeping their name would show a

@@ -39,11 +39,40 @@ public class SupplierSku extends BaseEntity {
     @Column(name = "brand_id")
     private Long brandId;
 
+    /**
+     * Quality / variant grade of the product or brand (e.g. "Grade A", "Grade B",
+     * "Grade C", "Premium", "Standard", or loose commodity grade like "Elaichi Grade A").
+     */
+    @Column(name = "grade", length = 100)
+    private String grade;
+
+    /**
+     * Whether this SKU is variable / catch weight (e.g. whole fish, poultry, cuts of meat,
+     * paneer blocks, fresh produce) requiring exact weighing at dispatch.
+     */
+    @Column(name = "is_catch_weight", nullable = false)
+    private boolean isCatchWeight = false;
+
+    /**
+     * Whether this SKU requires temperature-controlled cold chain handling (refrigerated/insulated carrier).
+     */
+    @Column(name = "requires_cold_chain", nullable = false)
+    private boolean requiresColdChain = false;
+
     @Column(name = "pack_size", nullable = false, precision = 19, scale = 4)
     private BigDecimal packSize;
 
+    @Column(name = "hsn_code", length = 16)
+    private String hsnCode;
+
     @Column(name = "pack_unit", nullable = false, length = 32)
     private String packUnit;
+
+    /**
+     * Printed MRP or benchmark market retail price. Optional for loose/unbranded commodities.
+     */
+    @Column(name = "mrp", precision = 19, scale = 4)
+    private BigDecimal mrp;
 
     /**
      * How much is inside one pack, when the pack unit does not say.
@@ -60,8 +89,51 @@ public class SupplierSku extends BaseEntity {
     @Column(name = "measure_unit", length = 16)
     private String measureUnit;
 
+    /**
+     * What one pack weighs, in grams. D-091.
+     *
+     * <p>Nullable, and the delivery quote derives a figure when it is absent — a
+     * KG pack size is mass outright, a litre needs an assumed density, and a
+     * count carries no weight information at all. A supplier who has not filled
+     * this in still has orderable SKUs; the quote records that the weight was
+     * derived rather than stated.
+     */
+    @Column(name = "weight_grams", precision = 19, scale = 4)
+    private BigDecimal weightGrams;
+
+    /** The thumbnail. Every list, cart row and order line shows this one. */
     @Column(name = "image_url", length = 1000)
     private String imageUrl;
+
+    /**
+     * What it is, in the supplier's own words. D-096.
+     *
+     * <p>Optional, like everything else added for the detail page: a listing
+     * without it behaves exactly as it did, and a supplier filling one in is
+     * answering a question a kitchen would otherwise have to guess at.
+     */
+    @Column(name = "description", length = 2000)
+    private String description;
+
+    /**
+     * The pack, measured. Centimetres.
+     *
+     * <p>Structured rather than a line of text, because two sacks are only
+     * comparable if the numbers are numbers — and `weightGrams` above is
+     * already read by delivery quoting.
+     */
+    @Column(name = "length_cm", precision = 9, scale = 2)
+    private BigDecimal lengthCm;
+
+    @Column(name = "width_cm", precision = 9, scale = 2)
+    private BigDecimal widthCm;
+
+    @Column(name = "height_cm", precision = 9, scale = 2)
+    private BigDecimal heightCm;
+
+    /** Pasted, never uploaded. Hosting video is a different problem. */
+    @Column(name = "youtube_url", length = 500)
+    private String youtubeUrl;
 
     /** ACTIVE or INACTIVE. An inactive SKU is hidden from search but keeps its history. */
     @Column(name = "status", nullable = false, length = 32)

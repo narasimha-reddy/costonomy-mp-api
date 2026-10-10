@@ -100,7 +100,49 @@ public class GlobalExceptionHandler {
         // The parser's message can quote the request body, which may contain an
         // OTP or a token, so it is logged but never returned.
         log.warn("Malformed request: {}", ex.getMessage());
-        return respond(ErrorCode.MALFORMED_REQUEST, ErrorCode.MALFORMED_REQUEST.defaultMessage(), Map.of());
+        // D-115: name the field when it is known ("items[0].quantity", a query parameter or a header), with a
+        // plain sentence of our own; never the value or the parser's words.
+        String field = malformedField(ex);
+        Map<String, Object> details = field == null ? Map.of()
+                : Map.of("fields", Map.of(field, "This value could not be read. Check it and try again."));
+        return respond(ErrorCode.MALFORMED_REQUEST, ErrorCode.MALFORMED_REQUEST.defaultMessage(), details);
+    }
+
+    /** The field a malformed request is about, in the same path form as VALIDATION_ERROR uses, or null. */
+    static String malformedField(Exception ex) {
+        if (ex instanceof MethodArgumentTypeMismatchException m) {
+            return m.getName();
+        }
+        if (ex instanceof MissingServletRequestParameterException m) {
+            return m.getParameterName();
+        }
+        if (ex instanceof MissingRequestHeaderException m) {
+            return m.getHeaderName();
+        }
+        Throwable cause = ex.getCause();
+        if (cause instanceof com.fasterxml.jackson.databind.JsonMappingException jm && !jm.getPath().isEmpty()) {
+            var path = new StringBuilder();
+            for (var ref : jm.getPath()) {
+                if (ref.getFieldName() != null) {
+                    if (path.length() > 0) {
+                        path.append('.');
+                    }
+                    path.append(ref.getFieldName());
+                } else if (ref.getIndex() >= 0) {
+                    path.append('[').append(ref.getIndex()).append(']');
+                }
+            }
+            return path.length() == 0 ? null : path.toString();
+        }
+        return null;
+    }
+
+    /** A file over the multipart limit is refused by the container before any controller runs. */
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTooLarge(
+            org.springframework.web.multipart.MaxUploadSizeExceededException ex) {
+        return respond(ErrorCode.VALIDATION_ERROR,
+                "That file is too large. Each file must be 5 MB or smaller.", Map.of());
     }
 
     @ExceptionHandler(NoHandlerFoundException.class)
@@ -146,6 +188,17 @@ public class GlobalExceptionHandler {
         // Two actors raced on a versioned aggregate and this one lost. Expected
         // under concurrency — the client refetches and retries.
         log.warn("Optimistic lock conflict: {}", ex.getMessage());
+        return respond(ErrorCode.CONCURRENT_MODIFICATION,
+                ErrorCode.CONCURRENT_MODIFICATION.defaultMessage(), Map.of());
+    }
+
+    @ExceptionHandler(org.springframework.dao.PessimisticLockingFailureException.class)
+    public ResponseEntity<ApiResponse<Void>> handlePessimisticLock(
+            org.springframework.dao.PessimisticLockingFailureException ex) {
+        // A deadlock or a lock wait that timed out: the database rolled this request back and nothing was written. Safe
+        // to retry, so it is a conflict and not a fault (it surfaced as a 500 before). The paths that matter lock in a
+        // fixed order so that this should be rare; this is the backstop.
+        log.warn("Lock conflict, request rolled back: {}", ex.getMessage());
         return respond(ErrorCode.CONCURRENT_MODIFICATION,
                 ErrorCode.CONCURRENT_MODIFICATION.defaultMessage(), Map.of());
     }

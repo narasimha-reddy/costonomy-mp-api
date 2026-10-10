@@ -2,7 +2,9 @@ package com.costonomy.mp.procurement.repository;
 
 import com.costonomy.mp.procurement.domain.SupplierOrder;
 import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -11,6 +13,11 @@ import java.util.Collection;
 import java.util.List;
 
 public interface SupplierOrderRepository extends JpaRepository<SupplierOrder, Long> {
+
+    /** The order, locked for the rest of the transaction. See OrderReleaseService.releaseIfFunded. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select o from SupplierOrder o where o.id = :id")
+    java.util.Optional<SupplierOrder> lockById(@Param("id") Long id);
 
     List<SupplierOrder> findByProcurementId(Long procurementId);
 
@@ -35,18 +42,6 @@ public interface SupplierOrderRepository extends JpaRepository<SupplierOrder, Lo
             Instant from,
             Instant to);
 
-    /**
-     * Orders whose response window has closed. Read by the timeout job (Phase 8).
-     *
-     * <p>Selects candidates only — it does not expire them. Each is transitioned
-     * individually under optimistic locking, because a supplier may be accepting
-     * at the same instant and doc 03 §5 requires exactly one of the two to win.
-     */
-    @Query("""
-            select o from SupplierOrder o
-            where o.status = com.costonomy.mp.procurement.domain.SupplierOrderStatus.PENDING_ACCEPTANCE
-              and o.acceptanceDeadline < :now
-            order by o.acceptanceDeadline asc
-            """)
-    List<SupplierOrder> findExpiredCandidates(@Param("now") Instant now);
+    // No findExpiredCandidates. Nothing expires an order any more (D-091): the
+    // supplier committed on the request, and the request is what has a clock.
 }

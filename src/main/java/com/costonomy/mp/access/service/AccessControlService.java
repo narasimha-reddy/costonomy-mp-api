@@ -2,7 +2,6 @@ package com.costonomy.mp.access.service;
 
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.domain.UserRole;
-import com.costonomy.mp.access.repository.RoleRepository;
 import com.costonomy.mp.access.repository.UserRoleRepository;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
@@ -14,7 +13,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -48,7 +46,7 @@ public class AccessControlService {
     private static final String ACTIVE = "ACTIVE";
 
     private final UserRoleRepository userRoleRepository;
-    private final RoleRepository roleRepository;
+    private final RoleCodeCache roleCodeCache;
     private final RolePermissionCatalog catalog;
     private final ScopeResolver scopeResolver;
 
@@ -63,14 +61,13 @@ public class AccessControlService {
         }
 
         Set<ScopeResolver.ScopeRef> satisfying = satisfyingScopes(scopeType, scopeId);
-        Map<Long, String> roleCodes = roleCodesById();
 
         Set<String> permissions = new HashSet<>();
         for (UserRole grant : userRoleRepository.findByUserIdAndStatus(userId, ACTIVE)) {
             if (!matches(grant, satisfying)) {
                 continue;
             }
-            String roleCode = roleCodes.get(grant.getRoleId());
+            String roleCode = roleCodeCache.codeOf(grant.getRoleId());
             if (roleCode != null) {
                 permissions.addAll(catalog.permissionsForRole(roleCode));
             }
@@ -123,6 +120,21 @@ public class AccessControlService {
         }
     }
 
+    /** {@link #requireScoped} satisfied by holding any one of {@code permissions}. */
+    public void requireAnyScoped(
+            Long userId, ScopeType scopeType, Long scopeId, String entityName, String... permissions) {
+
+        Set<String> held = permissionsAt(userId, scopeType, scopeId);
+        for (String permission : permissions) {
+            if (held.contains(permission)) {
+                return;
+            }
+        }
+        log.warn("Scope violation: user={} permissions={} {}={} — reported as not found",
+                userId, List.of(permissions), entityName, scopeId);
+        throw new com.costonomy.mp.common.error.NotFoundException(entityName, scopeId);
+    }
+
     /** Every scope a user holds any grant in. Backs {@code /auth/me} memberships. */
     @Transactional(readOnly = true)
     public List<UserRole> activeGrants(Long userId) {
@@ -156,11 +168,5 @@ public class AccessControlService {
         }
         return satisfying.contains(
                 new ScopeResolver.ScopeRef(grant.getScopeType(), grant.getScopeId()));
-    }
-
-    private Map<Long, String> roleCodesById() {
-        Map<Long, String> codes = new HashMap<>();
-        roleRepository.findAll().forEach(role -> codes.put(role.getId(), role.getCode()));
-        return codes;
     }
 }

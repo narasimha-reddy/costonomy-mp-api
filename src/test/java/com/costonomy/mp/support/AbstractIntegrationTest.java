@@ -64,6 +64,12 @@ public abstract class AbstractIntegrationTest {
             .withCommand(
                     "--character-set-server=utf8mb4",
                     "--collation-server=utf8mb4_0900_ai_ci",
+                    // Every distinct test configuration (a @MockBean, a @TestPropertySource) caches its own
+                    // Spring context in the run, each with its own connection pool, all against this one
+                    // container. MySQL's default of 151 is exhausted a few dozen contexts in, and the classes
+                    // that happen to run last fail to start with "Too many connections": a capacity limit of
+                    // the test database, not a defect in the code under test.
+                    "--max-connections=1000",
                     // UTC, matching hibernate.jdbc.time_zone. A container on a
                     // different zone would make timestamp assertions pass locally
                     // and fail elsewhere.
@@ -87,6 +93,9 @@ public abstract class AbstractIntegrationTest {
         registry.add("spring.datasource.url", MYSQL::getJdbcUrl);
         registry.add("spring.datasource.username", MYSQL::getUsername);
         registry.add("spring.datasource.password", MYSQL::getPassword);
+        // D-116: lets a test count the statements one request prepares (CountingStatementInspector).
+        registry.add("spring.jpa.properties.hibernate.session_factory.statement_inspector",
+                CountingStatementInspector.class::getName);
         // Flyway builds the schema; Hibernate then validates its entities against
         // it. A mismatch fails the test run, which is how entity/migration drift
         // gets caught before a deploy does.

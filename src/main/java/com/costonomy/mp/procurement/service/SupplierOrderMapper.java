@@ -1,14 +1,17 @@
 package com.costonomy.mp.procurement.service;
 
+import com.costonomy.mp.credit.service.CreditReadService;
 import com.costonomy.mp.catalog.repository.CanonicalProductRepository;
 import com.costonomy.mp.common.domain.Serviceability;
-import com.costonomy.mp.catalog.repository.SupplierSkuRepository;
+import com.costonomy.mp.catalog.service.SkuDirectory;
 import com.costonomy.mp.procurement.domain.Procurement;
 import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
 import com.costonomy.mp.procurement.domain.SupplierOrderItem;
 import com.costonomy.mp.procurement.repository.SupplierOrderItemRepository;
 import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
+import com.costonomy.mp.delivery.slot.DeliverySlot;
+import com.costonomy.mp.delivery.slot.DeliverySlotRepository;
 import com.costonomy.mp.procurement.web.dto.ProcurementDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -34,15 +37,53 @@ public class SupplierOrderMapper {
 
     private final SupplierOrderRepository supplierOrders;
     private final SupplierOrderItemRepository supplierOrderItems;
-    private final SupplierSkuRepository skus;
+    private final SkuDirectory skuDirectory;
     private final CanonicalProductRepository products;
     private final ProcurementDirectory directory;
+    private final DeliverySlotRepository deliverySlots;
+    private final OrderFunding funding;
+    private final CreditReadService creditRead;
 
     public ProcurementDtos.SupplierOrderResponse toResponse(SupplierOrder order) {
+        return toResponse(order, creditOf(List.of(order)), directory.publishedRatingOf(order.getId()));
+    }
+
+    /**
+     * As {@link #toResponse(SupplierOrder)} without the credit dates (all null), for a caller that reads only the
+     * rest, such as the supplier's incoming-order lists, so they do not pay a credit read per order.
+     */
+    public ProcurementDtos.SupplierOrderResponse toResponseWithoutCredit(SupplierOrder order) {
+        return toResponse(order, Map.of(), null);
+    }
+
+    /** A list of orders: the credit dates of all of them come from one read, not one per order. */
+    public List<ProcurementDtos.SupplierOrderResponse> toResponses(List<SupplierOrder> orders) {
+        var credit = creditOf(orders);
+        return orders.stream().map(order -> toResponse(order, credit, null)).toList();
+    }
+
+    /** Credit dates for the orders paid on credit; an order paid any other way never asks the credit module. */
+    private Map<Long, CreditReadService.OrderCredit> creditOf(List<SupplierOrder> orders) {
+        return creditRead.orderCredit(orders.stream()
+                .filter(o -> "CREDIT".equals(o.getPaymentMethod()))
+                .map(SupplierOrder::getId).toList());
+    }
+
+    private ProcurementDtos.SupplierOrderResponse toResponse(
+            SupplierOrder order, Map<Long, CreditReadService.OrderCredit> credit,
+            ProcurementDirectory.OrderRating rating) {
+        var orderCredit = credit.get(order.getId());
         var items = supplierOrderItems.findBySupplierOrderId(order.getId());
         var store = directory.stores(List.of(order.getSupplierStoreId()))
                 .get(order.getSupplierStoreId());
         var outlet = directory.outletSummary(order.getOutletId());
+
+        String slotName = null;
+        if (order.getDeliverySlotId() != null) {
+            slotName = deliverySlots.findById(order.getDeliverySlotId())
+                    .map(DeliverySlot::getSlotName)
+                    .orElse(null);
+        }
 
         Map<Long, String> productNames = new HashMap<>();
         Map<Long, String> productImages = new HashMap<>();
@@ -54,10 +95,13 @@ public class SupplierOrderMapper {
                     productImages.put(product.getId(), product.getImageUrl());
                 });
 
-        Map<Long, String> skuNames = new HashMap<>();
-        skus.findAllById(items.stream().map(SupplierOrderItem::getSupplierSkuId).toList())
-                .forEach(sku -> skuNames.put(sku.getId(), sku.getName()));
+        // The same descriptor the request screens use, so a pack reads
+        // identically whether somebody is looking at the request or the order
+        // that came out of it.
+        var descriptors = skuDirectory.describe(
+                items.stream().map(SupplierOrderItem::getSupplierSkuId).toList());
 
+        var cancelRefund = funding.cancelRefund(order).orElse(null);
         return new ProcurementDtos.SupplierOrderResponse(
                 order.getId(), order.getOrderNumber(), order.getSupplierStoreId(),
                 store == null ? null : store.supplierName(),
@@ -72,17 +116,44 @@ public class SupplierOrderMapper {
                 order.getCreatedAt(),
                 order.getSubtotal(), order.getGstAmount(), order.getTotalAmount(),
                 order.getAcceptedAmount(), acceptedSubtotal(items), acceptedGst(items),
-                order.getPaymentMethod(), order.getPaymentStatus(),
+                order.getWeightAdjustmentAmount(), order.getDoorstepRefundAmount(), order.getFinalPayableAmount(),
+                // Live, from the funding method: the stored copy is written once,
+                // at release, and goes stale the moment the money moves again.
+                order.getPaymentMethod(), funding.paymentState(order),
+                funding.paymentInstrument(order),
+                order.getDeliveryMode(), order.getDeliveryFee(),
+                order.getDeliverySlotId(), slotName,
+                order.getScheduledDeliveryDate(),
+                order.isSubscriptionOrder(),
+                order.getSubscriptionId(),
+                order.isHasColdChainItems(),
+                order.getCancelledBy(), order.getCancellationReason(),
+                cancelRefund == null ? null : cancelRefund.amount(),
+                cancelRefund == null ? null : cancelRefund.completedAt(),
+                orderCredit == null ? null : orderCredit.dueDate(),
+                orderCredit == null ? null : orderCredit.settledAt(),
+                orderCredit == null ? null : orderCredit.dueState(),
+                rating == null ? null : rating.overall(),
+                rating == null ? null : rating.comment(),
                 items.stream()
                         .map(item -> new ProcurementDtos.SupplierOrderItemResponse(
                                 item.getId(), item.getCanonicalProductId(),
+                                item.getSupplierSkuId(),
                                 productNames.get(item.getCanonicalProductId()),
                                 productImages.get(item.getCanonicalProductId()),
-                                skuNames.get(item.getSupplierSkuId()),
+                                descriptors.get(item.getSupplierSkuId()),
                                 item.getRequestedQuantity(), item.getAcceptedQuantity(),
+                                item.getFulfilledQuantity(),
+                                item.getDispatchedWeight(), item.getBillableQuantity(), item.getWeighedAt(), item.getWeightDeltaAmount(),
+                                item.getDoorstepAcceptedQty(), item.getDoorstepRejectedQty(),
+                                item.getDoorstepRejectionReason(), item.getDoorstepRefundAmount(),
+                                item.isRequiresColdChain(),
+                                item.isCatchWeight(),
                                 item.getUnit(), item.getUnitPriceSnapshot(),
+                                Pricing.inclusiveOfGst(item.getUnitPriceSnapshot(),
+                                        item.getGstRateSnapshot()),
                                 item.getGstRateSnapshot(), item.getLineTotal(),
-                                acceptedLineTotal(item), item.getStatus()))
+                                acceptedLineTotal(item), item.getStatus().name()))
                         .toList());
     }
 

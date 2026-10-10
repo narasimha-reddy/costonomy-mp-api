@@ -112,6 +112,17 @@ public class IdempotencyStore {
                 });
     }
 
+    /**
+     * Forget the key: nothing was attempted, so there is no outcome to remember and no failure to replay. The
+     * same request with the same key is then a first request again. Only for a refusal made before anything
+     * was done and that says nothing about the request itself (a service paused for a while).
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void release(Long actorId, String operation, String key) {
+        repository.findByActorIdAndOperationAndIdempotencyKey(actorId, operation, key)
+                .ifPresent(repository::delete);
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int deleteExpired(Instant now) {
         return repository.deleteExpired(now);

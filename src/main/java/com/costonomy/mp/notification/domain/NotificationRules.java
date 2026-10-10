@@ -1,5 +1,6 @@
 package com.costonomy.mp.notification.domain;
 
+import com.costonomy.mp.credit.domain.CreditEvents;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -8,6 +9,7 @@ import static com.costonomy.mp.notification.domain.NotificationCategory.*;
 import static com.costonomy.mp.notification.domain.NotificationChannel.*;
 import static com.costonomy.mp.notification.domain.NotificationRule.Audience.OUTLET;
 import static com.costonomy.mp.notification.domain.NotificationRule.Audience.SUPPLIER_STORE;
+import static com.costonomy.mp.notification.domain.NotificationRule.Audience.SUPPLIER_STORE_CREDIT;
 
 /**
  * The catalogue. Doc 08 §1's event list, mapped to doc 08 §4's notifications.
@@ -42,6 +44,25 @@ public final class NotificationRules {
 
     public static List<NotificationRule> forEvent(String eventType) {
         return BY_EVENT.getOrDefault(eventType, List.of());
+    }
+
+    /**
+     * The rules for an event whose wording depends on how it happened (D-109): a
+     * refund that reached the wallet reads differently from one going back to the
+     * bank. The producer names the variant in the payload; an event with none, or
+     * one no rule was written for, keeps the event's own rule, so a mistyped or new
+     * variant can only ever refine wording, never lose a notification. A variant
+     * registered with no rule at all ({@code silence}) is the one deliberate way to
+     * send nothing.
+     */
+    public static List<NotificationRule> forEvent(String eventType, String variant) {
+        if (variant != null && !variant.isBlank()) {
+            var refined = BY_EVENT.get(eventType + "#" + variant);
+            if (refined != null) {
+                return refined;
+            }
+        }
+        return forEvent(eventType);
     }
 
     /** Every rule, for tests that assert properties across the whole catalogue. */
@@ -83,6 +104,18 @@ public final class NotificationRules {
                 "Ready for pickup",
                 "Order {orderNumber} is packed and waiting for collection.", "SUPPLIER_ORDER"));
 
+        // "Ready" reads differently by how the goods travel (flow review 6). The default above is PICKUP, the
+        // one mode where somebody collects; the producer names the other two in notificationVariant.
+        add(rules, new NotificationRule("SupplierOrderReady#COSTONOMY_DELIVERY", OUTLET, ORDERS, false,
+                List.of(IN_APP, PUSH),
+                "Order packed",
+                "Order {orderNumber} is packed. A delivery partner is being arranged.", "SUPPLIER_ORDER"));
+
+        add(rules, new NotificationRule("SupplierOrderReady#SUPPLIER_DELIVERY", OUTLET, ORDERS, false,
+                List.of(IN_APP, PUSH),
+                "Order packed",
+                "Order {orderNumber} is packed and will be delivered by {supplierName|the supplier}.", "SUPPLIER_ORDER"));
+
         // ── Orders, supplier side ────────────────────────────────────────
         add(rules, new NotificationRule("SupplierOrderReleased", SUPPLIER_STORE, ORDERS, true,
                 // The countdown starts now (doc 13). A supplier who misses this
@@ -95,6 +128,127 @@ public final class NotificationRules {
                 List.of(IN_APP, PUSH),
                 "Order expired",
                 "Order {orderNumber} expired without an answer.", "SUPPLIER_ORDER"));
+
+        // Funded, and already agreed to. Nothing to accept and no countdown --
+        // the supplier committed to these quantities when they answered the
+        // request, so the only thing left is to prepare it. The ONE "Order confirmed" a supplier gets per order:
+        // IntentOrdered used to add a second, and fired before a prepaid order was even paid (flow review 6).
+        // Worded by how it is funded, named by the producer in notificationVariant. The default, used when there is
+        // no variant (an outbox row from before the variants, a payment method added later), says nothing about
+        // money: a credit order must never be announced as paid.
+        add(rules, new NotificationRule("SupplierOrderConfirmed", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Order confirmed",
+                "Order[ {orderNumber}][ from {restaurantName}] is confirmed. Ready to prepare.", "SUPPLIER_ORDER"));
+
+        // Actually paid: the wallet is debited when the order is placed.
+        add(rules, new NotificationRule("SupplierOrderConfirmed#WALLET", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Order confirmed",
+                "Order[ {orderNumber}][ from {restaurantName}] is confirmed and paid from the wallet. Ready to prepare.",
+                "SUPPLIER_ORDER"));
+
+        // A card is authorised and held, not charged (D-103): the money is collected when the supplier marks the
+        // order ready, and that can still be refused, so this is not "paid".
+        add(rules, new NotificationRule("SupplierOrderConfirmed#PREPAID", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Order confirmed",
+                "Order[ {orderNumber}][ from {restaurantName}] is confirmed. Payment is secured and collected when you "
+                        + "mark it ready.", "SUPPLIER_ORDER"));
+
+        add(rules, new NotificationRule("SupplierOrderConfirmed#CREDIT", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Order confirmed",
+                "Order[ {orderNumber}][ from {restaurantName}] is confirmed, on credit. Ready to prepare.",
+                "SUPPLIER_ORDER"));
+
+        add(rules, new NotificationRule("SupplierOrderConfirmed#CREDIT_DUE", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Order confirmed",
+                "Order[ {orderNumber}][ from {restaurantName}] is confirmed, on credit[, due {dueDate}]. Ready to prepare.",
+                "SUPPLIER_ORDER"));
+
+        // ── Chat ─────────────────────────────────────────────────────────
+        //
+        // <p>Two rules for one thing, because a message reaches whichever side
+        // did not send it and a rule names one audience. D-095.
+        //
+        // <p><b>No preview in the body.</b> Doc 08 §8: a body renders from named
+        // fields so that a template asking for an order number can only ever
+        // contain an order number. A message preview is whatever somebody typed,
+        // and this lands on a lock screen — so it says who, and opening it says
+        // what.
+        add(rules, new NotificationRule("ChatMessageToSupplier", SUPPLIER_STORE, ORDERS, false,
+                List.of(IN_APP, PUSH),
+                "New message",
+                "{senderName} sent you a message.", "CHAT_THREAD"));
+
+        add(rules, new NotificationRule("ChatMessageToRestaurant", OUTLET, ORDERS, false,
+                List.of(IN_APP, PUSH),
+                "New message",
+                "{senderName} sent you a message.", "CHAT_THREAD"));
+
+        // ── Requests ─────────────────────────────────────────────────────
+        //
+        // The one notification in this file that decides whether the feature
+        // works at all. A request sits doing nothing until its supplier answers,
+        // and a supplier who is not told has no reason to open the app — so an
+        // unnotified request is a request that expires. Critical for that reason,
+        // not because the money is large: there is no money yet.
+        add(rules, new NotificationRule("IntentSent", SUPPLIER_STORE, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "New request",
+                "{restaurantName|A restaurant}[ ({outletName})] is asking what you can supply.[ Request {reference}.]",
+                "INTENT"));
+
+        // The restaurant's window to order starts the moment this is sent, and
+        // it is short. Missing it means the supplier held stock for nothing.
+        add(rules, new NotificationRule("IntentAnswered", OUTLET, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Supplier replied",
+                "{reference}: your supplier replied. Order within the window to confirm it.",
+                "INTENT"));
+
+        // IntentOrdered tells nobody: the supplier hears "Order confirmed" once, from SupplierOrderConfirmed, when
+        // the order is funded. It used to say it too, a second time, and before a prepaid order was paid.
+
+        // The supplier said no to everything. Commercially this is the old
+        // "order rejected", and it costs the kitchen the same day, so it carries
+        // the same SMS.
+        add(rules, new NotificationRule("IntentDeclined", OUTLET, ORDERS, true,
+                List.of(IN_APP, PUSH, SMS),
+                "Nothing available",
+                "{reference}: your supplier can't supply any of it. Find another supplier.",
+                "INTENT"));
+
+        // Nobody answered. The kitchen still needs these goods today, which is
+        // why this one is worth an SMS and the two below are not.
+        add(rules, new NotificationRule("IntentExpired", OUTLET, ORDERS, true,
+                List.of(IN_APP, PUSH, SMS),
+                "No reply in time",
+                "{reference}: your supplier didn't reply. Try another supplier.",
+                "INTENT"));
+
+        // Distinct from the above, and deliberately so: the supplier did their
+        // part here. Telling them their reply "expired" would read as a
+        // reprimand, so it says what it means — the stock is theirs again.
+        add(rules, new NotificationRule("IntentOrderWindowExpired", SUPPLIER_STORE, ORDERS, false,
+                List.of(IN_APP),
+                "Request closed",
+                "{reference} wasn't ordered in time. The stock you held is free again.",
+                "INTENT"));
+
+        add(rules, new NotificationRule("IntentOrderWindowExpired", OUTLET, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Reply expired",
+                "{reference}: the time to order from that reply has passed. Ask again.",
+                "INTENT"));
+
+        add(rules, new NotificationRule("IntentCancelled", SUPPLIER_STORE, ORDERS, false,
+                List.of(IN_APP),
+                "Request withdrawn",
+                "{reference} was withdrawn by the restaurant. No reply needed.",
+                "INTENT"));
 
         // ── Approvals ────────────────────────────────────────────────────
         add(rules, new NotificationRule("ProcurementApprovalRequested", OUTLET, APPROVALS, true,
@@ -112,48 +266,236 @@ public final class NotificationRules {
                 // Nothing reaches a supplier until this is fixed (guardrail 16).
                 List.of(IN_APP, PUSH, SMS),
                 "Payment failed",
-                "Payment for your order didn't go through. {reason}", "SUPPLIER_ORDER"));
+                "Payment for your order didn't go through. {reason}", "SUPPLIER_ORDER", "supplierOrderId"));
+
+        // A subscription's delivery could not be arranged. Critical: a missed morning delivery is the cost, and
+        // the restaurant can still fix a funding failure the same evening (generation retries hourly until
+        // 23:00 India time). Told once per date, by the producer (D-132).
+        add(rules, new NotificationRule("SubscriptionFundingFailed", OUTLET, PAYMENTS, true,
+                List.of(IN_APP, PUSH),
+                "Subscription delivery not arranged",
+                "Your subscription delivery for {scheduledDate} couldn't be paid for. {reason}",
+                "SUBSCRIPTION"));
+
+        add(rules, new NotificationRule("SubscriptionOrderSkipped", OUTLET, ORDERS, true,
+                List.of(IN_APP, PUSH),
+                "Subscription delivery skipped",
+                "Your subscription delivery for {scheduledDate} was skipped. {reason}",
+                "SUBSCRIPTION"));
 
         add(rules, new NotificationRule("RefundCompleted", OUTLET, PAYMENTS, false,
                 List.of(IN_APP, PUSH),
                 "Refund sent",
-                "{amount} has been refunded.", "SUPPLIER_ORDER"));
+                "{amount} has been refunded.", "SUPPLIER_ORDER", "supplierOrderId"));
+
+        // The same event, worded for where the money went (D-109). Selected by the
+        // payload's notificationVariant.
+        add(rules, new NotificationRule("RefundCompleted#WALLET", OUTLET, PAYMENTS, false,
+                List.of(IN_APP, PUSH),
+                "Added to your wallet",
+                "{amount} has been added to your wallet.", "SUPPLIER_ORDER", "supplierOrderId"));
+
+        add(rules, new NotificationRule("RefundCompleted#CANCELLATION_TO_SOURCE", OUTLET, PAYMENTS, false,
+                List.of(IN_APP, PUSH),
+                "Refund sent",
+                "{amount} for order {orderNumber} has been refunded to the account you paid from.",
+                "SUPPLIER_ORDER", "supplierOrderId"));
+
+        // Refunds the restaurant is already told about, or that would only mislead (F5).
+        // A variant with no rule sends nothing, unlike an unknown variant, which keeps the
+        // event's own rule: naming one of these is a decision, made by the producer.
+        //   DISPUTE    - an approved dispute refund; DisputeRefundApproved says it was added
+        //                to the wallet, and a second push for the same event is noise.
+        //   WITHDRAWAL - one part of a wallet withdrawal; each part would read "refunded"
+        //                and open whichever old order the money was drawn from.
+        silence(rules, "RefundCompleted#DISPUTE");
+        silence(rules, "RefundCompleted#WITHDRAWAL");
+
+        // A cancelled order whose money had already left the payer's account (D-109):
+        // told when the refund starts, not only when it lands days later.
+        add(rules, new NotificationRule("RefundRequested", OUTLET, PAYMENTS, false,
+                List.of(IN_APP, PUSH),
+                "Refund started",
+                "Refund started: {amount} for order {orderNumber} is on its way back to the account "
+                        + "you paid from (5–7 working days).", "SUPPLIER_ORDER", "supplierOrderId"));
+
+        // With instant refund switched on (costonomy.mp.razorpay.cancel-refund-speed=optimum)
+        // the days do not apply: it is sent instantly where the bank allows and falls back to
+        // the normal speed where not, so no number of days is promised either way (F5).
+        add(rules, new NotificationRule("RefundRequested#INSTANT", OUTLET, PAYMENTS, false,
+                List.of(IN_APP, PUSH),
+                "Refund started",
+                "Refund started: {amount} for order {orderNumber} is on its way back to the account "
+                        + "you paid from.", "SUPPLIER_ORDER", "supplierOrderId"));
 
         // ── Credit ───────────────────────────────────────────────────────
-        add(rules, new NotificationRule("CreditRequested", SUPPLIER_STORE, CREDIT, true,
+        add(rules, new NotificationRule(CreditEvents.REQUESTED, SUPPLIER_STORE, CREDIT, true,
                 List.of(IN_APP, PUSH),
                 "Credit request",
                 "A restaurant has asked you for {requestedLimit} of credit.",
                 "CREDIT_AGREEMENT"));
 
-        add(rules, new NotificationRule("CreditApproved", OUTLET, CREDIT, true,
+        add(rules, new NotificationRule(CreditEvents.APPROVED, OUTLET, CREDIT, true,
                 List.of(IN_APP, PUSH),
                 "Credit approved",
                 "You have {approvedLimit} of credit, payable in {creditPeriodDays} days.",
                 "CREDIT_AGREEMENT"));
 
-        add(rules, new NotificationRule("CreditModified", OUTLET, CREDIT, true,
+        add(rules, new NotificationRule(CreditEvents.MODIFIED, OUTLET, CREDIT, true,
                 // Terms changed under a restaurant's feet is exactly the thing they
                 // must not discover at a checkout.
                 List.of(IN_APP, PUSH),
                 "Credit terms changed",
                 "Your credit limit is now {approvedLimit}. {reason}", "CREDIT_AGREEMENT"));
 
-        add(rules, new NotificationRule("CreditSuspended", OUTLET, CREDIT, true,
+        add(rules, new NotificationRule(CreditEvents.SUSPENDED, OUTLET, CREDIT, true,
                 List.of(IN_APP, PUSH),
                 "Credit suspended",
                 "Credit with this supplier is suspended. {reason}", "CREDIT_AGREEMENT"));
 
-        add(rules, new NotificationRule("CreditOverdue", OUTLET, CREDIT, true,
+        add(rules, new NotificationRule(CreditEvents.OVERDUE, OUTLET, CREDIT, true,
                 List.of(IN_APP, PUSH, SMS),
                 "Payment overdue",
                 "{outstanding} was due on {dueDate}.", "CREDIT_INVOICE"));
 
+        // The restaurant is told about the rest of the credit lifecycle too (D-150). SMS stays
+        // for critical events only (D-041), and none of these is worth one: the overdue notice
+        // above is the credit event that is.
+        add(rules, new NotificationRule(CreditEvents.REJECTED, OUTLET, CREDIT, true,
+                List.of(IN_APP, PUSH),
+                "Credit request declined",
+                "{supplierName} declined your credit request. {reason}", "CREDIT_AGREEMENT"));
+
+        add(rules, new NotificationRule(CreditEvents.INVOICE_ISSUED, OUTLET, CREDIT, false,
+                List.of(IN_APP),
+                "Credit invoice issued",
+                "Invoice {invoiceNumber} for {amount} issued.", "CREDIT_INVOICE"));
+
+        add(rules, new NotificationRule(CreditEvents.REPAYMENT_RECORDED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment recorded",
+                "{supplierName} recorded your payment of {amount} against invoice {invoiceNumber}.",
+                "CREDIT_INVOICE"));
+
+        // A restaurant repaid from its own wallet (D-153): the supplier is told, the restaurant already saw the
+        // result on screen. Not CreditRepaymentRecorded, whose text says the supplier recorded it.
+        add(rules, new NotificationRule(CreditEvents.REPAYMENT_RECEIVED, SUPPLIER_STORE, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment received",
+                "{restaurantName} paid {amount} through Mandi.", "CREDIT_AGREEMENT"));
+
+        // "I paid" claims (D-155). The supplier is asked to check; the restaurant is told the answer. Never SMS and
+        // never critical: nothing here is owed today. A confirmation is told once, here, and not also as
+        // CreditRepaymentRecorded, whose text would say the same thing twice.
+        add(rules, new NotificationRule(CreditEvents.CLAIM_SUBMITTED, SUPPLIER_STORE, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment to confirm",
+                "{restaurantName} says it paid {amount}. Check and confirm the payment against invoice {invoiceNumber}.",
+                "CREDIT_INVOICE"));
+
+        add(rules, new NotificationRule(CreditEvents.CLAIM_CONFIRMED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment confirmed",
+                "{supplierName} confirmed your payment of {amount}.", "CREDIT_INVOICE"));
+
+        add(rules, new NotificationRule(CreditEvents.CLAIM_REJECTED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment not confirmed",
+                "{supplierName} could not confirm your payment of {amount}. {reason}", "CREDIT_INVOICE"));
+
+        // The supplier undid a payment it recorded (D-169): the restaurant's debt is back, so it is told, with the
+        // reason. Never SMS; the overdue notice is the credit event that is.
+        add(rules, new NotificationRule(CreditEvents.PAYMENT_REVERSED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment cancelled",
+                "Your supplier cancelled the payment of {amount} recorded on {recordedOnLabel}. Reason: {reason}",
+                "CREDIT_INVOICE"));
+
+        // A credit note (B7, D-175): the supplier took an amount off an invoice, or an order cancelled after the draw
+        // cleared its debt automatically. In-app and push, never SMS: this is good news, nothing is owed today.
+        add(rules, new NotificationRule(CreditEvents.CREDIT_NOTE_ISSUED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit note issued",
+                "{supplierName} issued credit note {creditNoteNumber} for {amount} on invoice {invoiceNumber}.",
+                "CREDIT_INVOICE"));
+
+        // A write-off (B8, D-179): in-app only and neutral. The supplier's reason is theirs and is not in the event.
+        add(rules, new NotificationRule(CreditEvents.WRITTEN_OFF, OUTLET, CREDIT, false,
+                List.of(IN_APP),
+                "Invoice closed",
+                "{supplierName} has closed invoice {invoiceNumber} ({amount}).", "CREDIT_INVOICE"));
+
+        // A cancelled order left money the restaurant had paid (D-177): the supplier is told it owes a refund.
+        add(rules, new NotificationRule(CreditEvents.REFUND_DUE, SUPPLIER_STORE, CREDIT, false,
+                List.of(IN_APP),
+                "Refund due",
+                "{amount} is due back to {restaurantName}: their order for invoice {invoiceNumber} was cancelled. "
+                        + "Refund them directly and mark it refunded.", "CREDIT_INVOICE"));
+
+        add(rules, new NotificationRule(CreditEvents.REINSTATED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit available again",
+                "Your credit with {supplierName} is available again.", "CREDIT_AGREEMENT"));
+
+        // A supplier closed the line (D-165): the restaurant is told, with the supplier's reason. In-app and push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.CLOSED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit line closed",
+                "{supplierName} closed your credit line. {reason}", "CREDIT_AGREEMENT"));
+
+        // An offer nobody accepted lapsed (D-166): both sides are told, by a job, so nobody is left waiting on a dead
+        // offer. In-app and push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.OFFER_EXPIRED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit offer expired",
+                "The credit offer from {supplierName} expired because it wasn't accepted in time. You can ask again.",
+                "CREDIT_AGREEMENT"));
+
+        add(rules, new NotificationRule(CreditEvents.OFFER_EXPIRED, SUPPLIER_STORE, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit offer expired",
+                "Your credit offer to {restaurantName} expired without being accepted.", "CREDIT_AGREEMENT"));
+
+        // The supplier moved an invoice's due date (D-167). Good news for the restaurant, but a date it plans around:
+        // told in-app and by push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.DUE_DATE_EXTENDED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Due date extended",
+                "{supplierName} moved the due date of invoice {invoiceNumber} to {newDueDateText}.",
+                "CREDIT_INVOICE"));
+
+        // A reminder to pay (D-171). The text is composed on the server (money and dates formatted there, the same text
+        // the supplier previews), so the template is only {message}. Which channels depends on the reminder, so the
+        // producer names a variant: IN_APP (three days ahead), PUSH (due day, weekly while overdue, manual) and SMS
+        // (a manual reminder while something is overdue). Only the SMS variant is critical, like CreditOverdue: SMS
+        // costs money and is reserved for what must be acted on today (an SMS rule is always critical, and the SMS
+        // list in NotificationRulesTest is closed). The others a restaurant may mute.
+        add(rules, new NotificationRule(CreditEvents.REMINDER, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment reminder", "{message}", "CREDIT_AGREEMENT"));
+        add(rules, new NotificationRule(CreditEvents.REMINDER + "#IN_APP", OUTLET, CREDIT, false,
+                List.of(IN_APP),
+                "Payment reminder", "{message}", "CREDIT_AGREEMENT"));
+        add(rules, new NotificationRule(CreditEvents.REMINDER + "#PUSH", OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment reminder", "{message}", "CREDIT_AGREEMENT"));
+        add(rules, new NotificationRule(CreditEvents.REMINDER + "#SMS", OUTLET, CREDIT, true,
+                List.of(IN_APP, PUSH, SMS),
+                "Payment reminder", "{message}", "CREDIT_AGREEMENT"));
+
+        // The supplier's daily credit summary (D-173): only people who may see credit, in-app and push, never SMS.
+        add(rules, new NotificationRule(CreditEvents.SUPPLIER_DIGEST, SUPPLIER_STORE_CREDIT, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Credit today", "{message}", "SUPPLIER_STORE"));
+
+        // CreditReserved, CreditUtilized and CreditReleased are exposure bookkeeping and stay
+        // silent on purpose; NotificationRulesTest keeps that list explicit.
+
         // ── Delivery ─────────────────────────────────────────────────────
         add(rules, new NotificationRule("DriverAssigned", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
-                "Driver on the way",
-                "A driver is collecting your order.", "DELIVERY", "supplierOrderId"));
+                "Delivery partner on the way",
+                "A delivery partner is collecting your order.", "DELIVERY", "supplierOrderId"));
 
         add(rules, new NotificationRule("DeliveryDelivered", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
@@ -167,14 +509,33 @@ public final class NotificationRules {
 
         add(rules, new NotificationRule("DeliveryReassigned", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
-                "New driver",
+                "New delivery partner",
                 "Your delivery partner is being reassigned.", "DELIVERY", "supplierOrderId"));
+
+        // D-185: no partner after the automatic retries, and what the supplier then chose.
+        add(rules, new NotificationRule("DeliveryOwnDeliveryOffered", SUPPLIER_STORE, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "No delivery partner found",
+                "We couldn't find a delivery partner for this order. You can deliver it yourself.",
+                "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DeliveryOwnDeliveryOffered", OUTLET, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Still finding a delivery partner",
+                "We can't find a delivery partner yet. Your supplier may deliver it themselves.",
+                "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DeliverySwitchedToSupplier", OUTLET, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Your supplier is delivering",
+                "Your supplier will deliver this order themselves. The delivery charge is unchanged.",
+                "DELIVERY", "supplierOrderId"));
 
         // ── Trust ────────────────────────────────────────────────────────
         add(rules, new NotificationRule("DisputeCreated", SUPPLIER_STORE, MARKETPLACE, true,
                 List.of(IN_APP, PUSH),
                 "Dispute raised",
-                "A restaurant raised a {category} dispute on order {disputeNumber}.", "DISPUTE", "supplierOrderId"));
+                "A restaurant raised a {category} dispute ({disputeNumber}).", "DISPUTE", "supplierOrderId"));
 
         add(rules, new NotificationRule("DisputeResponded", OUTLET, MARKETPLACE, true,
                 List.of(IN_APP, PUSH),
@@ -186,6 +547,31 @@ public final class NotificationRules {
                 "Dispute resolved",
                 "Dispute {disputeNumber} was closed.", "DISPUTE", "supplierOrderId"));
 
+        // D-104. Critical: the request has a 48-hour clock, and the answers are money.
+        add(rules, new NotificationRule("DisputeRefundRequested", SUPPLIER_STORE, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund requested",
+                "A restaurant asked for a refund of ₹{amount} on dispute {disputeNumber}. "
+                        + "Please answer within 48 hours.", "DISPUTE", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DisputeRefundApproved", OUTLET, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund approved",
+                "₹{amount} from dispute {disputeNumber} has been added to your wallet.",
+                "DISPUTE", "supplierOrderId"));
+
+        // The supplier too: it comes out of their payout, whoever approved it.
+        add(rules, new NotificationRule("DisputeRefundApproved", SUPPLIER_STORE, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund approved",
+                "A refund of ₹{amount} on dispute {disputeNumber} was approved. It will be "
+                        + "taken from your payout for the order.", "DISPUTE", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DisputeRefundDeclined", OUTLET, MARKETPLACE, true,
+                List.of(IN_APP, PUSH),
+                "Refund declined",
+                "Your refund on dispute {disputeNumber} was declined.", "DISPUTE", "supplierOrderId"));
+
         add(rules, new NotificationRule("ReceivingCompleted", SUPPLIER_STORE, ORDERS, false,
                 List.of(IN_APP),
                 "Order received",
@@ -194,10 +580,15 @@ public final class NotificationRules {
         add(rules, new NotificationRule("RatingSubmitted", SUPPLIER_STORE, MARKETPLACE, false,
                 List.of(IN_APP),
                 "New rating",
-                "A restaurant rated order {supplierOrderId} {overall} out of 5.",
-                "SUPPLIER_ORDER"));
+                "{restaurantName|A restaurant} rated your order[ {orderNumber}]: {overall} out of 5.",
+                "SUPPLIER_ORDER", "supplierOrderId"));
 
         return rules;
+    }
+
+    /** Registers a variant that deliberately sends nothing; see {@link #forEvent(String, String)}. */
+    private static void silence(Map<String, List<NotificationRule>> rules, String variantKey) {
+        rules.put(variantKey, List.of());
     }
 
     private static void add(Map<String, List<NotificationRule>> rules, NotificationRule rule) {

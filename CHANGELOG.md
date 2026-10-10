@@ -1,0 +1,691 @@
+# Changelog
+
+All notable changes across the platform (Procurement, Wallet, Payments, Delivery, Security, and Architecture) are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+---
+
+## [phase6/known-bugs] - Known bugs (D-135 onward)
+
+### Added
+- Sandbox rider identity (D-195): a Pidge sandbox advance replaces the dummy "Rider name" with a made-up rider worked out from the delivery id (one of five names, mobile 90000xxxxx, "Bike, KA 01 EX nnnn"), the same on every stage. The real webhook and the poll keep the rider Pidge names. Test only.
+- Outbox hardening review follow-up (D-194): automatic courier dispatch can no longer book a second courier when a later step of the same outbox event fails (`autoDispatch` commits on its own; only a business refusal is swallowed, anything else retries and shows its cause in `last_error`); the doorstep credit-note listener is isolated the same way; an `Error` in a handler no longer starves the batch; a permanently FAILED event logs `Outbox event FAILED permanently ... id=` (a FAILED ready event is not re-sent: needs an alert or manual replay); the after-commit trigger waits 30 s on shutdown and drops queued retries.
+- Flow-review notification fixes (D-193): the supplier's "Order confirmed" says "on credit, due 7 Nov 2026" for a credit order (never "paid for"), names the restaurant, and is sent once per order (IntentOrdered no longer adds a second); "Ready" to the buyer is worded by delivery mode (pickup / partner being arranged / delivered by the supplier); the supplier's "New request" names restaurant and outlet; the rating notification uses the order number and opens the order; a failed-payment notification opens its order; "Driver" becomes "Delivery partner" in customer text.
+- Follow-up to the review of D-193: the supplier's "Order confirmed" names how it is funded (WALLET paid; PREPAID card "payment secured, collected when you mark it ready"; CREDIT / CREDIT_DUE) and the default with no variant is neutral (never "paid"); templates read correctly when a name or number is missing (`[optional part]` and `{field|fallback}` in the template language); producers always send the restaurant name ("A restaurant" when unknown) and leave out an outlet name equal to it; the wording lookups can no longer roll back a release. `REALTIME_ALLOWED_ORIGINS` must be set (and not local) under the production profile or the API refuses to start. Supplier order lists (`IncomingOrderResponse`, e.g. `/orders/active`) gain `deliveryMode` (PICKUP / COSTONOMY_DELIVERY / SUPPLIER_DELIVERY), additive.
+- `SupplierOrderResponse.rating` (1-5) and `ratingComment`: the restaurant's published rating of the order, filled on the single-order read only (null in lists and when hidden by moderation). Additive (D-193).
+- Realtime handshake origins default to the web app and Expo dev origins (localhost and 127.0.0.1 on 7074, 7071, 8081, plus localhost:19006); `REALTIME_ALLOWED_ORIGINS` still overrides (D-193).
+- Sandbox rider on real roads (D-192): for the seeded Bengaluru pair the sandbox stages follow a stored OSM driving route (`pidge-sandbox/route-bengaluru.json`) instead of the straight line, and `POST /deliveries/{id}/sandbox/move?leg=approach|delivery&fraction=0..1` places the rider at one point on it (supplier, sandbox on; one location fix, status unchanged). Other deliveries keep the straight line. Test only.
+- Delivery response (restyle B1): `pickupLocation` (supplier store) and `dropLocation` (buyer outlet), each `{latitude, longitude}` or null when either coordinate is not stored; both sides get them. Additive.
+- Pidge poll records the rider position (B2): `PidgeDeliveryProvider.location()` returns the position from the status answer `status()` just fetched (no second call) and `DeliveryEventService.recordLocation` stores the same fix once.
+- Rider visible from assignment (D-191): the Pidge webhook records the rider position again after the stage is applied, so the first fix (out for pickup, status DRIVER_ASSIGNED) is stored and returned; sandbox out-for-pickup is 2.0 km short of the pickup; outbox events are relayed right after commit (same lock as the poll; `costonomy.mp.outbox.drain-on-commit`), poll lock hold PT1S to PT0S.
+- Sandbox rider position (D-190): the sandbox advance replaces Pidge's fixed dummy point with a point on the straight pickup-to-drop line for the stage (reached delivery 30 m short of the drop), stamped now; no stored coordinates keeps Pidge's point. Test only.
+- Test-only sandbox rider control (D-188): `POST /deliveries/{id}/sandbox/advance` (supplier, sandbox on, Pidge only; 404 elsewhere) moves a Pidge sandbox delivery to its next stage through the webhook's own code; `DeliveryResponse.sandboxControls`.
+- [Credit] The supplier-order response gains `creditDueDate`, `creditSettledAt` and `creditDueState` (all nullable, additive): the earliest unsettled due date and its state while a credit order is owed, the settled instant once it is settled, null for non-credit orders. The outlet's order list reads them in one query (D-189).
+- Pay another way (D-186): `POST /supplier-orders/{id}/payment-method` funds an unpaid card order from the wallet or on credit and retires the card payment; the payment-intent read says `switchable`.
+- Deliveries with no partner (D-185): an automatic retry job (every 2 min for 30 min), an offer to the supplier after 45 min, `POST /deliveries/{id}/switch-to-own`, and notifications to both sides. V87.
+
+### Fixed
+- Outbox commit relay no longer loses a trigger (D-191 addendum): when the lock is busy (poll or another instance mid-drain) the after-commit drain retries every 100 ms up to 20 times, and a full batch of 100 is followed by another drain at once; `OutboxRelayOnCommitIT` flake fixed (shared-database backlog), `OutboxCommitTriggerTest` added.
+- Outbox relay hardened (D-194): the ShedLock is explicitly ordered outside every transaction (`@EnableSchedulerLock(order = HIGHEST_PRECEDENCE)`; it only worked by bean-registration order), each event is claimed with `FOR UPDATE SKIP LOCKED` and handled in its own transaction (one failing handler no longer rolls back and re-runs the whole batch forever), the outbox lock may be held 5 minutes, shutdown waits up to 10 s for a running drain, and an `Error` in the after-commit drain is logged.
+- Permissions (D-182): a role added after the role-code cache loaded is recognised at once; it used to be ignored for up to ten minutes.
+- Delivery (D-187): the no-partner retry and own-delivery offer compare UTC times (they never fired on a non-UTC database); a quote refused for distance no longer stalls the outbox.
+- Delivery with no partner available (D-184): the existing reassign endpoint re-quotes a `QUOTE_FAILED` delivery; test added. The supplier app now offers "Try again".
+- Supplier list filters (D-181): the popular list no longer computes every store's ratings unless a rating filter or sort needs them, and `minRating` outside 1 to 5 is refused on both lists.
+- Sending one request now re-checks its prices like the basket send, and the free-delivery threshold no longer waives Costonomy rider fees or overrides a charge the supplier offered (D-146).
+- A rate-sheet row with no availability no longer puts a sold-out SKU back in stock; an item-variants update no longer relists a delisted SKU or resets GST and stock; a supplier can't list again a SKU Costonomy disabled (D-146).
+- A courier can no longer be booked for a pickup order, or for an order the supplier is delivering themselves: a delivery request used to override the order's own mode (D-145).
+- A truly simultaneous duplicate order no longer returns a 500: the intent is locked first, the loser gets the first order back, and a lock conflict that still occurs answers 409. Replaying an order key with a different delivery mode is now refused as a reused key (D-135).
+- The Razorpay checkout is opened after the order commits, not inside its transaction. If the gateway fails the caller is told nothing was charged, the unpaid order stays, and a retry opens the checkout; a payment never set up is ended after 30 minutes (D-136).
+- A basket can no longer end up with two drafts for one supplier, and adding, removing and sending now take turns on the draft, so a simultaneous add and send, or removal and add, loses no line. Removed lines and emptied drafts are audited (D-137).
+
+### Added
+- Sort (best value, lowest price, nearest, top rated) and filters (covers my quantity, open now, distance) on a product's supplier comparison. Filters apply after scoring so they never re-rank the rest, and `hiddenByFilters` says how many were removed (D-183).
+- Database quick wins from the audit (D-182): indexes for the queries that scanned growing tables (V86), a nightly batched purge of rows that only grew (idempotency records, published outbox events, old live locations, expired refresh tokens and OTP challenges), single-statement realtime cleanup, an indexed typeahead alias query, an in-memory role-code cache for permission checks, and a larger connection pool (30) with max-lifetime and leak detection.
+- Supplier directory and popular suppliers now support filters (`radiusKm`, `openNow`, `minRating`) and sort (`sort=nearest`, `sort=rating`). Unknown sort returns 422 `VALIDATION_ERROR`. Filters and sorting are evaluated server-side before pagination/clamping (D-181).
+- A restaurant is warned when a supplier's own delivery charge is high (at least 10% of the goods and at least ₹100, both configurable). A prompt, not a limit (D-144).
+- A restaurant says, for each supplier's request, whether it wants delivery or will collect (default delivery). The supplier answers knowing it; a pickup needs no delivery offer, and a supplier can say "I can't deliver this order", leaving pickup only (D-143).
+- As soon as possible is a delivery time (no slot, no day). A delivery slot is now checked when the order is created (the store's, active, not started, free), and a slot that has already started today is not offered (D-142).
+- A supplier chooses how a request is delivered when they answer it: they deliver free, they deliver at a charge they set for that order (0 is free; up to a sanity bound of ₹5,000), or Costonomy riders (requested once the order is Ready). The buyer can choose only what was offered, and free delivery is stated as free. The buyer was previously shown the supplier's own fee as "Free" (D-141).
+- A buyer can send a request as immediate or for a day (today to 30 days ahead). The supplier sees it, and the buyer's slot picker starts on it at order review. A preference, not a booking (D-140).
+- Supplier and popular lists now consistently filter by serviceability using a unified ServiceabilityPolicy (pincode list wins > store radius > default radius fallback; missing coordinates serviceable). Popular suppliers filter before applying the limit (clamped to at most 100). Credit request search supports reach=all. Unscoped outletId on discovery endpoints returns 404 (D-138).
+- The supplier directory no longer caps candidates alphabetically at 100 via SQL before sorting by distance: suppliers are sorted nearest first (null distance last, tie-breaker store ID) and paginated with offset and limit (default 50, max 100), returning total and nextOffset (D-139).
+
+---
+
+## [phase5/api-flags] - Flags the apps need (D-134, D-128)
+
+### Added
+- `isCatchWeight` and `requiresColdChain` on the SKU description (so on every cart item) and on each order-preview line, so the apps can tell a restaurant a catch-weight price is an estimate before they order.
+
+### Changed
+- The wallet statement label for a dispute refund reads "Refund from a dispute", matching the app.
+
+---
+
+## [phase4/cold-chain] - Cold chain and delivery safety (D-134)
+
+### Fixed
+- Cold chain, catch-weight and HSN are stamped on order lines from one place, so no order path can forget or recompute them. A product's own cold-chain flag now counts: a chilled product's SKU is chilled.
+- A chilled order is carried only by a carrier with recorded, evidenced capability. A quote that states no vehicle, or a vehicle the carrier is not verified for, is unserviceable; the requested vehicle is no longer inherited, and "a three-wheeler is insulated" is no longer assumed.
+- The checkout delivery fee for chilled goods no longer falls back to the rate card: with no verified carrier it is refused (422) before any quote, order or money exists. A fee quoted for ordinary goods can't be spent once the SKU is declared chilled. A chilled dispatch with no carrier fails as `NO_COLD_CHAIN_CARRIER` with nothing booked.
+- A supplier's cold-chain and catch-weight settings are no longer edited in place: each change supersedes the last with a reason and an audit row, and orders already placed keep what they were placed with.
+- The waterfall's audit row is no longer lost when a reassignment fails.
+
+### Added
+- V71 (`supplier_sku_handling_declaration`, `delivery_provider_cold_chain_capability`, `delivery_fee_quote.cold_chain`), `PUT /supplier-skus/{id}/handling`, `OrderLineStamper`, `ColdChainCarrierGate`. Only the two mock providers are seeded as capable (local and test use); with no real carrier verified, chilled goods go by pickup or supplier delivery.
+
+---
+
+## [phase3/tax-invoices] - Tax invoices and credit notes without invented data (D-133)
+
+### Fixed
+- Tax invoices can only be generated by the supplier, only from READY, and never with a missing GSTIN, address, state, buyer name or HSN code: the request is refused with a 422 listing everything missing. The made-up HSN (9968), state (36), placeholder parties and "Item" product name are gone.
+- The invoice states the order's stored figures (the billable weight, never raw `dispatched_weight`) and is checked against the order's final payable before anything is written.
+- Invoice and credit-note numbers are per supplier GSTIN and financial year, gap-free and at most 16 characters (`INV/2627/000123`). Two simultaneous generations return the same invoice instead of a 500.
+- A billing problem can no longer fail a doorstep check-in: credit notes are issued after commit and linked to the invoice.
+- Invoice and credit-note items no longer cascade-delete.
+- The GSTR-1 CSV is one row per invoice and rate, B2CS for a buyer with no GSTIN.
+
+### Added
+- `costonomy.mp.billing.tax-invoices.enabled` (default off: every billing route is 404). V70, `document_sequence`, `BillingDirectory`, `GstState`, HSN copied onto order lines at creation, error codes `TAX_INVOICE_DATA_MISSING` and `TAX_INVOICE_NOT_ALLOWED`. Tally and GSTR-1 exports are labelled unverified drafts. D-133 lists what a tax adviser still has to settle.
+
+---
+
+## [phase2/subscriptions] - Subscriptions on the normal funding path (D-132)
+
+### Fixed
+- Subscription orders are funded and released through `OrderFunding`/`OrderReleaseService`; a credit subscription order is now utilised and invoiced.
+- An unfunded subscription order is no longer left DRAFT, blocking its date. Each attempt is recorded in `subscription_run` and the restaurant is notified once.
+- Orders are generated by a scheduler (hourly 18:00-23:00 India time, for tomorrow); the supplier endpoint that could debit a restaurant for any date is removed.
+- WEEKLY and ALTERNATE_DAYS deliver on their schedule instead of every day.
+- A missing offer skips the delivery instead of ordering at Rs 0; the unit comes from the SKU; catch-weight and cold-chain flags are set on subscription lines.
+- Two generations for one date cannot double-order or double-debit (database key plus row lock).
+- Only people who can create orders for the outlet can pause, resume, cancel or skip a subscription.
+- Intent orders: the free-delivery threshold no longer waives the "store delivers" and delivery-minimum checks.
+
+### Added
+- V69 (`subscription_run`, `supplier_order.subscription_delivery_key`), `DeliveryCharges`, `OrderFundingPort.canFund`, `SubscriptionSchedule`, notification rules `SubscriptionFundingFailed` and `SubscriptionOrderSkipped`.
+
+---
+
+## [phase1/money-path-and-carriers] - Order adjustments and reconciliation (D-129, D-130)
+
+### Fixed
+- Wallet and credit orders no longer reconcile as mismatches against settlement: collected money is counted per funding method.
+- Settlement approval re-reconciles and refuses (409) a mismatch unless `acknowledgeMismatchNote` is supplied; the override is audited.
+- A doorstep rejection on a card order whose capture is pending no longer fails; it is recorded and applied when the capture lands.
+
+- Shiprocket, LoadShare, Blowhorn, Delhivery and Xpressbees decline quotes and refuse bookings until their fares are verified (D-131).
+- Pidge no longer invents fares, ETAs, weights, vehicle types or contacts; its webhook fails closed without a secret.
+- The JWT signing key is no longer committed as a default; production refuses the old key.
+
+### Added
+- `order_adjustment` (V68), `OrderAdjustmentService`/`OrderAdjustmentJobs`, `OrderFundingPort.Reduction`, `refundStatus` on the receiving response, `SettlementRepository.lockById`.
+
+---
+
+## [fix/d124-catchweight-settle-at-dispatch] - Catch-weight settles at dispatch (D-128)
+
+### Fixed
+- Weighing no longer moves money. A duplicated line, a partial re-weigh, weigh-then-cancel and an uncovered over-weight debit could each create money or leave the platform paying; none is possible now.
+- Receiving checks against the billed weight on a weighed catch-weight line, so a shortfall is no longer refunded twice.
+- Doorstep rejections go back through the order's funding method (card refund to the wallet, wallet credit, or a lower credit invoice) and no longer always become a closed wallet balance.
+- Settlement and dispute-refund coverage use the final payable. Commission throws on a negative base instead of clamping it.
+- Over-weight within the band is billed at the ordered quantity; readings outside -20% / +10% are refused.
+
+### Added
+- `CatchWeight` and `CatchWeightPolicy` (`costonomy.mp.catch-weight.*`), V67 (`billable_quantity`, final payable CHECK), `OrderFundingPort.reduceAfterDispatch`, credit invoice reduction, and `billableQuantity` on the order item response.
+- Ready now requires every catch-weight line to be weighed.
+
+### Removed
+- `WalletService.recordAdjustment` and its debit path.
+
+### Tests
+- `CatchWeightTest` (11) and `CatchWeightSettlementIT` (20), mutation-checked.
+
+---
+
+## [Credit]
+
+### [Credit notes, cancel after the draw, write-off] - B7, B8 (D-175 to D-180)
+#### Added
+- [Credit] `POST /api/v1/credit/invoices/{id}/credit-notes` (201) with `Idempotency-Key` and `{amount, reasonCode, note?, disputeId?}` (reasonCode: SHORT_SUPPLY, QUALITY, PRICE, CANCELLED, GOODWILL, OTHER): the supplier takes an amount off an invoice without a payment. `CREDIT_COLLECT` or `CREDIT_MODIFY`. Capped at what is owed (422 `CREDIT_NOTE_EXCEEDS_OUTSTANDING`, details `outstanding`); refused on a PAID or WRITTEN_OFF invoice (409 `CREDIT_NOTE_INVOICE_SETTLED`). Frees the credit, never a payout or commission. `GET /api/v1/credit/agreements/{id}/credit-notes?page&size` (either side). The restaurant gets `CreditNoteIssued` (in-app and push).
+- [Credit] An order cancelled after the draw (supplier or restaurant) now takes its debt off automatically: a system credit note for what is still owed, in the cancel transaction. Paid money becomes a refund due: `GET /api/v1/supplier-stores/{storeId}/credit/refunds-due?status=OPEN|REFUNDED`, `POST /api/v1/credit/refunds-due/{id}/mark-refunded` (`CREDIT_COLLECT`, idempotent). A wallet-funded part is a WALLET refund due for ops (`CREDIT_REFUND_OPS_ONLY`, 409, for the supplier); no wallet money moves.
+- [Credit] `POST /api/v1/credit/invoices/{id}/write-off` and `POST /api/v1/credit/agreements/{id}/write-off` with `Idempotency-Key` and `{amount?, reason, quickReason?, keepLineOpen?}`: `CREDIT_WRITE_OFF` only (owner, admin). Invoice becomes WRITTEN_OFF (partial keeps its status), the line is suspended "Written off" unless `keepLineOpen`, waiting claims on a fully written-off invoice are superseded. 409 `CREDIT_WRITE_OFF_NOTHING_OWED`. The restaurant gets `CreditWrittenOff` (in-app only).
+- [Credit] V83: `credit_invoice_note`, `credit_invoice_note_sequence`, `credit_refund_due`, `credit_invoice.credited_amount` (CHECK paid + credited <= amount), `credit_transaction.credit_note_id`.
+- [Credit] Statement lines gain `creditNoteNumber` and can be of type `CREDIT_NOTE` ("Credit note") or `WRITE_OFF` ("Written off"); invoices gain `creditedAmount`, the invoice detail gains `creditNotes`.
+#### Changed
+- [Credit] What is owed is now amount - paid - credited everywhere (receivables, ageing, dues, claim caps, allocations, the overdue sweep and event, reversal, admin exposure and dashboard). A fully credited invoice is PAID with `paidAmount` 0.
+- [Credit] A supplier cancelling or a restaurant cancelling a confirmed credit order no longer leaves the restaurant owing for it.
+
+### [Payment reversal] - B6 (D-169, D-170)
+#### Added
+- [Credit] `POST /api/v1/credit/receipts/{receiptId}/reverse` and `POST /api/v1/credit/payments/{paymentId}/reverse` with `Idempotency-Key` and `{reason}` (3 to 500 characters): the supplier undoes a payment it recorded (a typo, a bounced cheque). Never a delete: a `credit_payment_reversal` row (V82) per payment, the receipt becomes `REVERSED`, each invoice's paid amount and status are recomputed, the line's utilised goes back up and a `PAYMENT_REVERSED` ledger row is written, so the statement still adds up. 200 `{receiptId, paymentId, amount, reason, reversedAt, allocations[], agreement{due, overdue, available, status}}`. 7 India days from the day it was recorded, 30 for a cheque; never a WALLET payment. Errors: `CREDIT_REVERSAL_NOT_ALLOWED` (409), `CREDIT_REVERSAL_WINDOW_CLOSED` (409, details `closedOn`, `reversibleUntil`), `CREDIT_ALREADY_REVERSED` (409), `CREDIT_REVERSAL_NO_HEADROOM` (422, details `needed`, `available`, `shortBy`). Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; others get 404. A confirmed claim goes back to REJECTED. The restaurant gets a `CreditPaymentReversed` notification.
+- [Credit] The payment feed items (`GET /credit/agreements/{id}/payments`, `GET /supplier-stores/{id}/credit/payments`) gain `receiptId`, `reversible`, `reversibleUntil` and `reversedAt`; the invoice detail's payments gain `reversedAt`. Statement lines can now be of type `PAYMENT_REVERSED` ("Payment reversed").
+- [Credit] V82: `credit_payment_reversal`.
+#### Changed
+- [Credit] `collectedThisMonth` and the duplicate-reference check leave reversed payments out; the rows stay in the feeds.
+
+### [Supplier receipts] - B5 (D-164)
+#### Added
+- [Credit] `POST /api/v1/credit/agreements/{id}/payments/preview {amount, invoiceIds?}` (a pure read: allocations with `statusAfter`, the line's position after, and `pendingClaims` warnings) and `POST /api/v1/credit/agreements/{id}/payments` with `Idempotency-Key` and `{amount, method, reference, paidOn, note, invoiceIds?, allowDuplicateReference?}` (201 `{receiptId, amount, method, reference, paidOn, allocations[], agreement{due, overdue, available, status}}`). One `credit_repayment` receipt (source `SUPPLIER_RECORDED`) split oldest due date first (ties by invoice id), one `credit_payment` per invoice through the shared `applyPayment`, in one transaction. `method` is CASH, UPI, BANK_TRANSFER, CHEQUE or CARD (ADJUSTMENT is refused here); `reference` (4 to 64 characters) is required for UPI, BANK_TRANSFER and CHEQUE; `paidOn` is an India day, not in the future and not before the oldest targeted invoice was issued. Errors: `CREDIT_OVERPAYMENT` (422, details `outstanding`), `CREDIT_DUPLICATE_REFERENCE` (409, details `receiptId`, `paidOn`, `amount`; the same reference in this store within 90 days unless `allowDuplicateReference`), `IDEMPOTENCY_KEY_REUSE` (409). Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; others get 404. The single-invoice endpoint is unchanged.
+- [Credit] V81: `credit_repayment.source` widened to VARCHAR(32), new `method`, `reference`, `paid_on`, `note`; `ix_credit_payment_reference` for the duplicate check.
+
+### [feat/sup-b9-b12-lifecycle-context] - Close a credit line (B9, D-165) and offer expiry (D-166)
+#### Added
+- [Credit] `ClaimResponse` (supplier inbox `GET /supplier-stores/{id}/credit/claims`, agreement claims, invoice detail, claim replies) gains `ageDays`, `stale` (7+ days waiting), `invoiceOutstanding`, `invoiceOpenClaimsAmount`, `invoiceOtherOpenClaimsAmount`, `possibleDuplicateOf` and `possibleDuplicateKind` (D-168). Additive.
+- [Credit] `GET /api/v1/supplier-stores/{storeId}/credit/requests/{agreementId}/context` (D-168): this store's own history with the requesting outlet (90-day orders, average, last order, past line status and history, earlier overdue count); never another supplier's data. Needs `CREDIT_REQUEST_VIEW`; others 404.
+- [Credit] `POST /api/v1/credit/invoices/{id}/extend-due {newDueDate, reason}` (D-167): later only, at most 60 days past the original due date, not on settled invoices; an OVERDUE invoice that is no longer late goes back to ISSUED/PARTIALLY_PAID, a sweep suspension it caused lifts, the restaurant is told (`CreditDueDateExtended`). Idempotent via `Idempotency-Key`. V84 `credit_due_extension`; the invoice detail gains `extensions[]`.
+- [Credit] Reminders (V85, D-171): `POST /api/v1/credit/agreements/{id}/reminders` (`Idempotency-Key`, `{invoiceIds?, note?}`), `GET .../reminders/preview` (exact text, `canRemind`, `reason`, `nextAllowedAt`) and `GET .../reminders` (history). Limits 1 per line per 24 h (429 `CREDIT_REMINDER_TOO_SOON`), 3 per line per rolling 7 days and 50 per store per India day (429 `CREDIT_REMINDER_LIMIT`), claim-covered invoices skipped, 09:00-20:00 IST quiet hours (QUEUED, sent by the job), SMS only while something is overdue. Automatic T-3 (in-app), due-day and weekly (max 4) reminders by a job, off with `autoRemindersEnabled` on the credit policy (default on).
+- [Credit] CSV exports (D-172): `GET /api/v1/credit/agreements/{id}/statement.csv?from&to` (either side, same rows as the JSON statement) and `GET /api/v1/supplier-stores/{storeId}/credit/collections.csv?from&to&source`; formula-injection safe, India time, plain decimals, `CREDIT_EXPORT` audit row, 413 `CREDIT_EXPORT_TOO_LARGE` beyond 20,000 rows.
+- [Credit] Daily supplier digest (D-173): one in-app and push notification per store per India day from 08:30 IST (`CreditSupplierDigest`) to people holding `CREDIT_VIEW`: claims waiting, overdue, due this week, requests, payouts. Skipped when everything is zero.
+- [Credit] V84 `credit_agreement.offer_made_at`. An APPROVED offer the restaurant has not accepted for 14 India days becomes EXPIRED (hourly job, `costonomy.mp.credit.offer-expiry-interval`); both sides are told (`CreditOfferExpired`), an accept racing the job has exactly one winner, and the restaurant may ask again. `AgreementResponse` gains `offerMadeAt` and `offerExpiresOn` (null unless APPROVED).
+- [Credit] `POST /api/v1/credit/agreements/{id}/close {reason}`: a supplier closes an ACTIVE or SUSPENDED line. Refused with 409 `INVALID_STATE_TRANSITION` (details `owed`, `reserved`) while anything is owed or held for an order in flight. The restaurant is told (`CreditClosed`), a closed line takes no orders, and the restaurant may ask again. Needs `CREDIT_MODIFY` on the store; others get 404.
+
+### [Supplier payouts list] - B4
+#### Added
+- [Credit] `GET /api/v1/supplier-stores/{storeId}/credit/payouts?status=PENDING|APPLIED|ALL&from&to&page&size` and `GET .../payouts/{payoutId}`: the wallet repayments Mandi collected for the store, with gross, the commission as snapshotted at repayment time, net, the invoices each settled, and the settlement once applied; plus `summary {pendingNet, appliedNetThisMonth}`. Read-only, no schema change. Needs `CREDIT_VIEW` or `SETTLEMENT_VIEW` on the store; others get 404.
+
+### [feat/sup-b1-b2-permissions-reinstate] - Supplier collect permission (D-162) and manual-reinstate floor (D-163)
+- V80: `CREDIT_COLLECT` (SUP_OWNER, SUP_ADMIN, SUP_FINANCE_STAFF, SUP_STORE_MANAGER) and `CREDIT_WRITE_OFF` (SUP_OWNER, SUP_ADMIN), granted explicitly. Recording a payment and confirming or rejecting a claim now accept `CREDIT_COLLECT` or `CREDIT_MODIFY`; terms, suspend and reinstate stay `CREDIT_MODIFY`.
+
+- V80: `credit_agreement.overdue_floor`. A supplier's manual reinstate of a SYSTEM (overdue-sweep) suspension stores the overdue amount at that moment; the sweep suspends again only above `max(maxOverdueAmount, overdue_floor)`, and the floor clears when overdue returns to zero. No API change.
+
+---
+
+### [feat/sup-b3-receivables-reads] - supplier receivables read model (B3)
+#### Added
+- `GET /supplier-stores/{storeId}/credit/receivables`, `/receivables/restaurants`, `/ageing` and `/payments`, and `GET /credit/agreements/{id}/payments`: server-computed totals, restaurant rows, ageing buckets and payment feeds for the supplier's Receivables screens. India dates from `creditClock`; overdue by `CreditDueState`, never the status column. No migration.
+
+## [Architecture & Security Audit]
+
+### [Security Audit Report] - 2026-10-02
+#### Added
+- [`docs/SECURITY_AUDIT_REPORT.md`](file:///Users/rac/Documents/costonomy_projects/marketplace_be/costonomy-mp-api/docs/SECURITY_AUDIT_REPORT.md): Comprehensive code-level penetration testing report evaluating identity boundaries, financial invariants, multi-tenant IDOR isolation, and state machine integrity.
+#### Security
+- Evaluated ATO vectors: verified constant-time BCrypt/HMAC matching, independent `REQUIRES_NEW` transaction commits for OTP attempts in `OtpAttemptStore`, and automatic whole-lineage session revocation upon refresh token reuse.
+- Evaluated Financial Invariants: proved zero money creation (`paymentProvider != 'MOCK'` gate in production), zero double-spending (`UPDATE ... WHERE balance >= amount` and `SELECT FOR UPDATE` pessimistic locks), and strictly FIFO pinned payouts (gateway refunds).
+- Identified and remediated 3 hardening areas: VULN-01 (IP rate limiting on OTP requests), VULN-02 (300-second webhook freshness window), and VULN-03 (storage capability isolation).
+
+### [docs/architecture-sequence-diagrams] - Architecture Integration PR
+#### Added
+- Complete endpoint and domain sequence diagrams under `docs/architecture/sequence-diagrams/`:
+  - `01-payment-and-wallet.md`: Razorpay orders, checkout signature verification, top-up capture sweep, FIFO withdrawals, dispute refunds, and idempotency boundaries.
+  - `02-delivery-and-logistics.md`: Multi-carrier dispatch waterfall, vehicle auto-sizing, courier tracking webhooks, delivery milestone state transitions, and arrival radar.
+  - `03-intent-and-procurement.md`: Cart creation, line price snapshotting, multi-supplier order splitting, and atomic transitions.
+  - `04-trust-and-disputes.md`: Evidence upload, dispute life-cycle, manual mediation, and refund settlements.
+  - `05-credit-and-settlement.md`: BNPL supplier credit line underwriting, invoice settlements, and debit adjustments.
+  - `06-identity-and-orgs.md`: Passwordless OTP flow with MSG91, attempt tracking in isolated transactions, JWT issuance, and refresh token rotation with theft detection.
+  - `07-discovery-and-catalog.md`: Product listing, supplier stock checks, and catalog search.
+  - `08-communication-and-admin.md`: Outbox event publishing, notification dispatch, and tenant audit trails.
+  - `README.md`: Architecture directory map and visual guide.
+## [feat/item-multi-brand-options] - Multi-Brand Fulfillment Options with Lowest Price First
+### Added
+- **Multi-Brand Fulfillment Model (`DiscoveryDtos.BrandOption`)**:
+  - Added `BrandOption` record capturing `supplierSkuId`, `offerId`, `skuName`, `brandName`, `packSize`, `packUnit`, `sellingPrice`, `gstRate`, `unitPriceInclusiveGst`, `imageUrl`, `availability`, `availableQuantity`, `measureValue`, `measureUnit`.
+  - Added `List<BrandOption> brandOptions` to `RecommendedOffer`, `StorefrontSku`, and `SkuDetail` with backward-compatible overloaded constructors.
+  - Enriched `SkuSibling` with `brandName`, `gstRate`, `unitPriceInclusiveGst`, and `offerId`.
+- **Recommendation & Storefront Multi-Brand Sorting**:
+  - `RecommendationService`: Aggregates all purchasable brand options per supplier store for each canonical product, sorted in ascending order of `sellingPrice` (lowest priced one first).
+  - `StorefrontService`: Pre-aggregates active brand options per `(supplierStoreId, canonicalProductId)` and sorts them with lowest priced one first.
+  - `SkuDetailService`: Enriched `siblings` and added `brandOptions(sku)` sorted with lowest priced one first.
+- **Tests**:
+  - `RecommendationIT#displaysMultiBrandOptionsLowestPricedFirst`: Verifies multi-brand option aggregation and lowest-price-first ordering.
+
+## [feat/supplier-buyer-slots-subscriptions] - Delivery Slots, Subscriptions & Logistics Gating
+### Added
+- **Logistics Dispatch Gating**: Strict enforcement in `DeliveryService.autoDispatch` so that third-party courier dispatch (`quoteAndBook`) triggers *only* when `COSTONOMY` delivery mode is selected. `PICKUP` orders are skipped cleanly without driver assignment or courier auction. `SUPPLIER_OWN` orders assign the store contact directly as driver without booking third-party couriers.
+- **Database Migration `V53__delivery_slots_and_subscriptions.sql`**:
+  - `delivery_slot`: Time windows (`start_time`, `end_time`), same-day cutoff time (`order_cutoff_time`), daily capacity (`max_orders_per_day`), and active status.
+  - `subscription`: Recurring subscriptions (`frequency`, `preferred_slot_id`, `delivery_mode`, `status`, `start_date`, `next_delivery_date`).
+  - `subscription_skip_date`: Skip dates for vacations and closures.
+  - `supplier_order`: Added `delivery_slot_id`, `scheduled_delivery_date`, `is_subscription_order`, and `subscription_id`.
+- **Delivery Slots Domain & APIs**:
+  - `DeliverySlotService`: Slot CRUD and availability computation evaluating cutoffs for today and remaining capacity against active orders.
+  - `DeliverySlotController`: `GET /api/v1/supplier-stores/{storeId}/delivery-slots`, `GET /api/v1/supplier-stores/{storeId}/available-slots?date=YYYY-MM-DD`, `POST`, `PUT`, `DELETE`.
+- **Subscriptions Domain & Operational Manifest**:
+  - `SubscriptionService`: Create, pause, resume, cancel, skip date management.
+  - `getManifest`: Aggregated SKU volume packing lists and slot-grouped delivery dispatches for suppliers.
+  - `generateDailyOrders`: Idempotent replenishment order generation.
+  - `SubscriptionController`: Management endpoints for outlets and stores.
+- **Test Suites**:
+  - `DeliverySlotServiceTest` (3 tests).
+  - `SubscriptionServiceTest` (4 tests).
+  - `DeliveryGatingTest` (2 tests).
+  - `DeliverySlotsAndSubscriptionsIT` Testcontainers integration test.
+
+## [feat/xpressbees-provider] - Xpressbees Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Xpressbees** (`XPRESSBEES`) alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, Blowhorn, and Delhivery.
+- Database migration `V48__delivery_provider_xpressbees.sql` seeding `XPRESSBEES` row into `delivery_provider` table (seeded disabled, `enabled = 0`, priority 25).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.xpressbees.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `XpressbeesDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `XpressbeesApiClient` HTTP client for Xpressbees Logistics API:
+  - Header authentication via `Authorization: Bearer <token>`.
+  - Rate limiting with 20 RPS local token-bucket throttle protection.
+  - Hard 30 km intra-city radius ceiling enforcement (D-120).
+  - Quoting / Pricing via `POST /v1/courier/serviceability` extracting verified carrier fare (`data.rate`, `charges.total_amount`) based on pincodes and weight (fails closed per D-121 if missing fare).
+  - Order creation via `POST /v1/shipments/create` with structured pickup and delivery details, normalized phone numbers (`+91XXXXXXXXXX`), and pincodes, returning `awb_number` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /v1/shipments/track/{awb_number}` parsing `status` and `history`.
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first with duplicate event suppression via `uk_delivery_event_provider`.
+  - Cancellation via `POST /v1/shipments/cancel` with `awb_number` and `reason`.
+- `XpressbeesStatusMapper` mapping Xpressbees status strings to domain `ProviderDeliveryStatus`.
+- Test suites:
+  - `XpressbeesStatusMappingTest` (2 tests).
+  - `XpressbeesApiClientContractTest` WireMock tests (10 tests).
+  - `XpressbeesDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-126) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-020).
+
+## [feat/delhivery-provider] - Delhivery Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Delhivery** (`DELHIVERY`) alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare Networks, and Blowhorn.
+- Database migration `V47__delivery_provider_delhivery.sql` seeding `DELHIVERY` row into `delivery_provider` table (seeded disabled, `enabled = 0`, priority 24).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.delhivery.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `DelhiveryDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `DelhiveryApiClient` HTTP client for Delhivery Express API:
+  - Header authentication via `Authorization: Token <apiToken>`.
+  - Rate limiting with 20 RPS local token-bucket throttle protection.
+  - Hard 30 km intra-city radius ceiling enforcement (D-120).
+  - Quoting / Pricing via `GET /api/kinko/v1/invoice/charges.json` extracting verified carrier fare (`total_amount`, `gross_amount`) based on pincodes and weight (fails closed per D-121 if missing fare).
+  - Order creation via `POST /api/cmu/create.json` with structured pickup and drop shipment payloads, normalized phone numbers (`+91XXXXXXXXXX`), and pincodes, returning `waybill` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /api/v1/packages/json/?waybill={waybill}` parsing `ShipmentData.Shipment.Status` and `Scans`.
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first with duplicate event suppression via `uk_delivery_event_provider`.
+  - Cancellation via `POST /api/p/edit` with `cancellation: true`.
+- `DelhiveryStatusMapper` mapping Delhivery status strings to domain `ProviderDeliveryStatus`.
+- Test suites:
+  - `DelhiveryStatusMappingTest` (2 tests).
+  - `DelhiveryApiClientContractTest` WireMock tests (10 tests).
+  - `DelhiveryDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-125) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-018).
+
+## [feat/blowhorn-provider] - Blowhorn Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Blowhorn** (`BLOWHORN`) alongside Pidge, Borzo, Shadowfax, Porter, Shiprocket, and LoadShare Networks.
+- Database migration `V46__delivery_provider_blowhorn.sql` seeding `BLOWHORN` row into `delivery_provider` table (seeded disabled, `enabled = 0`, priority 23).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.blowhorn.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `BlowhornDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `BlowhornApiClient` HTTP client for Blowhorn Logistics API:
+  - Header authentication via `API_KEY` and `Authorization: Bearer <apiKey>`.
+  - Rate limiting with 20 RPS local token-bucket throttle protection.
+  - Hard 30 km intra-city radius ceiling enforcement (D-120).
+  - Quoting / Serviceability via `POST /v1/serviceability` extracting verified carrier fare (`fare.amount`, `currency`), distance, and ETA (fails closed per D-121 if missing fare).
+  - Vehicle type mapping for 2-wheelers, 3-wheelers, and mini-trucks (`TATA_ACE`).
+  - Order creation via `POST /v1/orders` with structured pickup and delivery points, normalized phone numbers (`+91XXXXXXXXXX`), and coordinates, returning `awb_number` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /v1/orders/{orderId}/track` parsing current status, driver details, and events.
+  - Driver location tracking via `GET /v1/orders/{orderId}/track` parsing `current_location` (`latitude`, `longitude`, `bearing`, `speed`).
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first with duplicate event suppression via `uk_delivery_event_provider`.
+  - Cancellation via `POST /v1/orders/{orderId}/cancel` with `cancellation_reason`.
+- `BlowhornStatusMapper` mapping Blowhorn status strings to domain `ProviderDeliveryStatus`.
+- Test suites:
+  - `BlowhornStatusMappingTest` (2 tests).
+  - `BlowhornApiClientContractTest` WireMock tests (11 tests).
+  - `BlowhornDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-124) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-016).
+
+## [feat/loadshare-provider] - LoadShare Networks Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **LoadShare Networks** (`LOADSHARE`) alongside Pidge, Borzo, Shadowfax, Porter, and Shiprocket.
+- Database migration `V45__delivery_provider_loadshare.sql` seeding `LOADSHARE` row into `delivery_provider` table (seeded disabled, `enabled = 0`, priority 22).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.loadshare.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `LoadshareDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `LoadshareApiClient` HTTP client for LoadShare Hyperlocal v2 Delivery API:
+  - Header authentication via `Customer-Code` and SHA-256 `Checksum` (`${authToken}|${customerCode}|${orderId}`).
+  - Rate limiting with 20 RPS local token-bucket throttle protection.
+  - Hard 30 km intra-city radius ceiling enforcement (D-120).
+  - Quoting / Serviceability via `POST /hyperlocal/v2/order/checkServiceability` extracting verified carrier fare (`fare.value`, `unit`), predicted distance, and promised SLA (fails closed per D-121 if missing fare).
+  - Order creation via `POST /hyperlocal/v2/order` with structured pickup and drop tasks, normalized phone numbers (`+91XXXXXXXXXX`), and coordinates, returning `orderId` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /hyperlocal/v2/order/{orderId}/track` parsing current status and `statusHistory`.
+  - Driver location tracking via `GET /hyperlocal/v2/order/{orderId}/track` parsing `currentLocation` (`latitude`, `longitude`, `bearing`, `speed`).
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first so `DeliveryOrderBridge` transitions `supplier_order` through `OUT_FOR_DELIVERY` to `DELIVERED` with duplicate event suppression via `uk_delivery_event_provider`.
+  - Cancellation via `POST /hyperlocal/v2/order/{orderId}/cancel` with `cancellationReason`.
+- `LoadshareStatusMapper` mapping LoadShare Hyperlocal status codes to domain `ProviderDeliveryStatus`.
+- Test suites:
+  - `LoadshareStatusMappingTest` (2 tests).
+  - `LoadshareApiClientContractTest` WireMock tests (11 tests).
+  - `LoadshareDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-123) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-014).
+
+## [feat/shiprocket-provider] - Shiprocket Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Shiprocket** alongside Pidge, Borzo, Shadowfax, and Porter.
+- Database migration `V48__delivery_provider_shiprocket.sql` seeding `SHIPROCKET` row into `delivery_provider` table (seeded disabled, `enabled = 0`).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.shiprocket.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `ShiprocketDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `ShiprocketApiClient` HTTP client for Shiprocket Logistics API:
+  - Token authentication via `Authorization: Bearer <token>` (direct API token or cached from `POST /v1/external/auth/login`).
+  - Rate limiting with 20 RPS local token-bucket protection.
+  - Hard 30 km intra-city radius ceiling enforcement (D-120).
+  - Quoting / Serviceability via `GET /v1/external/courier/serviceability/` selecting the cheapest available courier rate from `data.available_courier_companies`.
+  - Adhoc order creation via `POST /v1/external/orders/create/adhoc` with validated customer, address, contact, and item payloads, returning `shipment_id` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /v1/external/courier/track/shipment/{shipment_id}` parsing `current_status` and activities.
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first so `DeliveryOrderBridge` transitions `supplier_order` through `OUT_FOR_DELIVERY` to `DELIVERED`.
+  - Cancellation via `POST /v1/external/orders/cancel` with `ids: [shipment_id]`.
+- `ShiprocketStatusMapper` mapping Shiprocket status strings to domain `DeliveryStatus`.
+- Test suites:
+  - `ShiprocketStatusMappingTest` (2 tests).
+  - `ShiprocketApiClientContractTest` WireMock tests (9 tests).
+  - `ShiprocketDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decision recorded in `docs/DECISIONS.md` (D-122) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-009).
+
+## [feat/porter-provider] - Fail-closed carrier fares (D-121)
+### Fixed
+- Shadowfax and Porter no longer invent a fare or ETA from a configured rate card. Quotes decline with a reason; booking refuses before any HTTP call and the auction fails over to the next carrier.
+- Shadowfax serviceability check fails closed: it checks each pincode's `Regular` service, and an unreachable or malformed answer is a recorded failure, never "serviceable".
+- Shadowfax and Porter booking payloads use our own city, state, pincode, weight and goods value, and reject missing contact data instead of sending placeholder names, phone numbers, Bengaluru/Karnataka or Rs 500.
+- Porter `customer.name` is "Costonomy" (was "Costonomy Mandi").
+### Removed
+- `costonomy.mp.shadowfax.base-fee` / `per-km-fee` and `costonomy.mp.porter.base-fee` / `per-km-fee`.
+### Changed
+- `DeliveryProvider.BookingRequest` gains `pickupLocality`, `dropLocality` and `goodsValue` (shorter constructors kept for existing callers); new `DeliveryProvider.Locality`.
+- `DeliveryDirectory` gains `pickupLocality`, `dropLocality` and `goodsValue`; `DeliveryBookingService` passes them to the carrier.
+### Tests
+- `ShadowfaxApiClientContractTest` (16), `PorterApiClientContractTest` (9), `DeliveryBookingServiceTest` (+3), new `CarrierFareFailClosedIT` (2).
+
+## [feat/porter-provider] - Porter Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Porter** alongside Pidge, Borzo, and Shadowfax.
+- Database migration `V47__delivery_provider_porter.sql` seeding `PORTER` row into `delivery_provider` table (seeded disabled, `enabled = 0`).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.porter.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.enabled = 1`.
+- `PorterDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `PorterApiClient` HTTP client for Porter Logistics API:
+  - Authentication headers: `x-api-key: {apiKey}` and `Authorization: Bearer {apiKey}`.
+  - Rate limiting with 20 RPS local token-bucket protection.
+  - Quoting via `POST /v1/orders/cost` with vehicle category mapping (superseded by D-121: quoting now declines until a carrier fare is verified) (`TWO_WHEELER` -> `2_wheeler`, `THREE_WHEELER` -> `three_wheeler`, `FOUR_WHEELER_TRUCK` -> `tata_ace`).
+  - Order creation via `POST /v1/orders/create` with structured pickup/drop addresses, contacts, coordinates, and idempotency request ID, returning Porter `order_id` as `providerDeliveryId`.
+  - Tracking & Status polling via `GET /v1/orders/{order_id}` with partner/driver details parsing (`name`, `mobile`, `vehicle_number`).
+  - Timeline events synthesis ensuring `PICKED_UP` precedes `DELIVERED` newest-first so `DeliveryOrderBridge` transitions `supplier_order` through `OUT_FOR_DELIVERY` to `DELIVERED`.
+  - Cancellation via `POST /v1/orders/{order_id}/cancel`.
+- `PorterStatusMapper` mapping Porter status strings (`created`, `allocating`, `assigned`, `driver_arrived`, `started`, `picked_up`, `in_transit`, `arrived_at_destination`, `delivered`, `cancelled`) to domain `DeliveryStatus`.
+- Test suites:
+  - `PorterStatusMappingTest` (2 tests).
+  - `PorterApiClientContractTest` WireMock tests (8 tests including 30 km boundary rejection).
+  - `PorterDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decisions recorded in `docs/DECISIONS.md` (D-119) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-007).
+- Intra-City 30 km Radius Limit & Dynamic Tiered Deadlines (D-120):
+  - Hard 30 km maximum radius ceiling enforced across `DeliveryFeeQuoteService` (pre-order quoting), `DeliveryQuotingService` (multi-carrier auction gathering), and provider HTTP clients (`PorterApiClient`, `BorzoApiClient`, `ShadowfaxApiClient`).
+  - Dynamic assignment deadlines in `DeliveryBookingService`: 3 minutes for two-wheelers (`costonomy.mp.delivery.bike-assignment-timeout=PT3M`), 12 minutes for three-wheelers and mini-trucks (`costonomy.mp.delivery.truck-assignment-timeout=PT12M`).
+  - Unit test coverage in `DeliveryBookingServiceTest` (4 tests), `DeliveryQuotingServiceTest` (2 tests), and `DeliveryFeeQuoteServiceTest` (2 tests).
+
+---
+
+## [feat/shadowfax-provider] - Shadowfax Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Shadowfax** alongside Pidge and Borzo.
+- Database migration `V46__delivery_provider_shadowfax.sql` seeding `SHADOWFAX` row into `delivery_provider` table (seeded disabled, `is_active = 0`).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.shadowfax.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.is_active = 1`.
+- `ShadowfaxDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `ShadowfaxApiClient` HTTP client for Shadowfax Unified API (Forward Integrations):
+  - Token authentication via `Authorization: Token <token>`.
+  - Serviceability verification via `GET /v1/clients/serviceability/?service=Regular&pincodes={pincode}` with distance-based quoting and ETA calculation.
+  - Consignment booking via `POST /v3/clients/orders/` (`order_type: "marketplace"`), returning `awb_number` as `providerDeliveryId`.
+  - Status tracking & Polling via `GET /v4/clients/orders/{awb_number}/track/`, parsing current status and `tracking_details` history.
+  - Deterministic event synthesis (`sfx_evt_{awb}_{status}_{timestamp}`) ensuring `PICKED_UP` precedes `DELIVERED` newest-first so `DeliveryOrderBridge` transitions `supplier_order` through `OUT_FOR_DELIVERY` to `DELIVERED`.
+  - Cancellation via `POST /v3/clients/orders/cancel/` with `request_id: <awb_number>`.
+- `ShadowfaxStatusMapper` mapping Shadowfax statuses (`allocating`, `assigned`, `arrived`, `picked_up`, `out_for_delivery`, `delivered`, `cancelled`) to domain `DeliveryStatus`.
+- Test suites:
+  - `ShadowfaxStatusMappingTest` (2 tests).
+  - `ShadowfaxApiClientContractTest` WireMock tests (6 tests).
+  - `ShadowfaxDeliveryFlowIT` multi-carrier Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decisions recorded in `docs/DECISIONS.md` (D-118) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-005).
+
+---
+
+## [feat/borzo-provider-wip] - Borzo Delivery Provider Integration
+### Added
+- Multi-carrier delivery provider integration for **Borzo** alongside Pidge.
+- Database migration `V45__delivery_provider_borzo.sql` seeding `BORZO` row into `delivery_provider` table (seeded disabled, `is_active = 0`).
+- Dual-gate activation architecture:
+  - Spring Boot application property gate: `costonomy.mp.borzo.enabled` (defaults to `false`).
+  - Database registry gate: `delivery_provider.is_active = 1`.
+- `BorzoDeliveryProvider` adapter implementing `DeliveryProvider` SPI.
+- `BorzoApiClient` HTTP client for Borzo API (`calculate-order`, `create-order`, `orders`, `cancel-order`).
+  - Extended `QuoteRequest` with `pickupAddress` and `dropAddress`.
+  - Deterministic synthetic polling events (`borzo_evt_{id}_{status}`) ensuring `PICKED_UP` precedes `DELIVERED` newest-first for orderly state advancement through `DeliveryJobs.pollActiveDeliveries()`.
+  - Deduplication via `uk_delivery_event_provider`.
+- `BorzoStatusMapper` mapping Borzo order statuses to domain `DeliveryStatus`.
+- Test suites:
+  - `BorzoStatusMappingTest` (4 tests).
+  - `BorzoApiClientContractTest` (12 tests).
+  - `BorzoPidgeCoexistenceTest` (3 tests).
+  - `BorzoDeliveryFlowIT` Testcontainers MySQL 8 integration tests (4 tests).
+- Architecture decisions recorded in `docs/DECISIONS.md` (D-117) and requirement traceability in `docs/specs/IMPLEMENTATION_TRACEABILITY.md` (DEL-003).
+
+---
+
+## [feat/pidge-16-outlet-active-deliveries-and-arrival-radar] - PR 16
+### Added
+- Outlet Delivery Radar endpoint: `GET /api/v1/outlets/{outletId}/deliveries/radar`.
+  - Answers *“Which one is approaching the kitchen?”* by ranking active deliveries by arrival urgency (`AT_KITCHEN_DOOR` first, then `APPROACHING` by shortest ETA).
+  - Answers *“Is this supplier still on schedule?”* with real-time `ScheduleStatus` (`ON_SCHEDULE`, `RUNNING_LATE`, `CRITICALLY_DELAYED`) and exact `minutesOverdue`.
+  - Answers *“Did the driver call? Is there a problem?”* via `DriverInfo` contacts, `ProblemDetails` (`hasProblem`, `problemType`, carrier exceptions, stale GPS detection).
+  - Answers *“Which orders should I check in, receive, or escalate?”* with an actionable `KitchenAction` classifier (`CHECK_IN`, `MEET_DRIVER`, `PREPARE_DOCK`, `CALL_DRIVER`, `ESCALATE`, `MONITOR`).
+  - Aggregates `RadarSummaryResponse` counts (`totalActive`, `atDoorCount`, `approachingCount`, `delayedCount`, `pendingCheckInCount`, `requiresEscalationCount`).
+- Outlet Delivery Search & Pagination endpoint: `GET /api/v1/outlets/{outletId}/deliveries?page=0&size=10&status=...`.
+  - Scoped to outlet with `Permissions.ORDER_VIEW` access control and tenant isolation.
+- `OutletDeliveryRadarService` situational engine and comprehensive unit test suite `OutletDeliveryRadarServiceTest`.
+
+---
+
+## [Procurement & Open Requests]
+
+### [PR #17] [feat/edit-open-request-quantities]
+#### Added
+- Modification support for open procurement requests prior to supplier acceptance.
+- Real-time cart line revalidation against active supplier catalog pricing.
+#### Changed
+- `ProcurementRequestService`: enforces state checks ensuring quantities cannot be altered once a supplier has committed to fulfillment.
+
+---
+
+## [Wallet & QuickScan Payments]
+
+### [PR #15] [feat/wallet-2-history-statements] - Wallet History & Statements (D-108)
+#### Added
+- Database migration `V46__wallet_top_up_payment_method.sql` recording payment method instruments (card last 4, UPI).
+- `WalletHistoryService`: paginated ledger history with cursor-based navigation, Asia/Kolkata month aggregates, and entry kind/status filters.
+- `WalletStatementService`: PDF and CSV statement rendering engine (`WalletStatementPdf`, `WalletStatementCsv`) with strict mathematical reconciliation enforcement ($\text{Opening} + \text{Added} - \text{Spent} = \text{Closing}$).
+- Download endpoint `GET /api/v1/outlets/{outletId}/wallet/statement?range=...&format=PDF|CSV` (max 20,000 entries guard).
+- Integration test suites: `WalletHistoryIT`, `WalletStatementIT`, `StatementPeriodTest`, `WalletStatementFilesTest`.
+#### Security
+- Scoped strictly to outlet with `Permissions.ORDER_VIEW` access control and live database authorization.
+- Masked instrument details: never stores or renders full card numbers or sensitive credentials.
+
+### [PR #14] [feat/wallet-1-razorpay-top-up] - Razorpay Wallet Top-Ups (D-107)
+#### Added
+- Database migration `V45__wallet_top_up.sql` creating `wallet_top_up` ledger table.
+- `WalletTopUpService`: manages the complete lifecycle of prepaid balance loading via Razorpay checkout.
+  - `POST /api/v1/outlets/{outletId}/wallet/top-ups`: validates tiered limits, records top-up intent, and opens a Razorpay order configured for instant capture.
+  - `POST /api/v1/outlets/{outletId}/wallet/top-ups/{topUpId}/confirm`: verifies checkout HMAC signature and inspects provider payment state before crediting.
+  - `GET /api/v1/outlets/{outletId}/wallet/top-ups/{topUpId}`: returns live top-up status.
+- `WalletTopUpJobs`: background reconciliation sweeper crediting unconfirmed captured payments and expiring abandoned intents after 24 hours.
+- Integration tests: `WalletTopUpIT`, `WalletTopUpLimitsIT`, `WalletLimitsTest`.
+#### Security
+- Out-of-band verification: backend calls Razorpay API directly (`provider.inspect`) rather than trusting client-submitted payload amounts.
+- Over-limit protection: if crediting exceeds wallet max balance limits, funds are automatically refunded back to the originating funding instrument.
+
+### [PR #13] [feat/quickscan-1-wallet-payments] - QuickScan Wallet Payments (D-106)
+#### Added
+- Database migration `V48__quickscan.sql` creating `quickscan_payment` table and granting `QUICKSCAN_PAY` permission.
+- `QuickScanService`: allows restaurants to scan third-party merchant UPI QR codes and settle payments directly from their wallet balance.
+- Payout integration port `PayoutProvider` with testbed sandbox simulation `MockPayoutProvider`.
+- `QuickScanController`: endpoints `GET /config`, `POST /pay`, `GET /payments`, `GET /payments/{id}`.
+- Integration tests: `QuickScanFlowIT`, `QuickScanDisabledIT`.
+#### Security
+- Gated rollout: feature is controlled via `costonomy.mp.quickscan.enabled=false` by default; `ProductionProviderGuard` blocks startup if mock payout providers are active in production profiles.
+- Pessimistic locking: wallet is locked (`SELECT FOR UPDATE`) before balance debit, eliminating concurrency race conditions.
+
+---
+
+## [Razorpay Core Payments]
+
+### [PR #12] [feat/razorpay-17-withdrawal-failure-reversal] - Step 17 (D-110)
+#### Added
+- Database migration `V48__withdrawal_failure_reversal.sql` adding failure audit states and operator resolution tracking.
+- `WithdrawalReversalService`: verified bank proof validation before restoring failed withdrawals back to restaurant wallets.
+- `AdminRefundController`: dedicated administrative endpoints (`/api/v1/admin/refunds/...`) for manual audit review and override exits.
+- Concurrency utility `DeadlockRetry` with unit and integration tests.
+#### Security
+- Prevents double-credit reversals: reversal reference `withdrawal-reversal-{refundId}` is unique, guaranteeing single crediting even under concurrent retries.
+
+### [PR #11] [feat/razorpay-16-upi-cancel-refund] - Step 16 (D-109)
+#### Added
+- Database migration `V47__debited_payment_on_cancelled_order.sql`.
+- `CancellationService`: automated refund orchestration for debited/auto-captured orders (UPI/cards) cancelled prior to fulfillment.
+- Periodic background worker `cancelDebitedPayments` in `PaymentJobs` running every 15s to auto-refund cancelled orders.
+- Configuration parameters: `costonomy.mp.razorpay.manual-expiry-minutes` and `costonomy.mp.razorpay.cancel-refund-speed`.
+
+### [PR #10] [feat/razorpay-15-order-payment-status] - Step 15
+#### Added
+- Dynamic payment status resolution on `SupplierOrder`: live evaluation of payment state from the underlying funding mechanism (Razorpay, credit line, or wallet).
+- Updated `SupplierOrderMapper` and `CreditFundingAdapter` with live payment state queries.
+
+### [PR #9] [feat/razorpay-12-dispute-refund-requests] - Step 12
+#### Added
+- Database migration `V47__dispute_refunds.sql` supporting dispute refund allocations and ledger adjustments.
+- `SupplierRefundLedger`: automatic deduction of approved dispute refunds from supplier settlement balances in `SettlementService`.
+- Currency formatting utility `Rupees` rendering formatted INR amounts with two decimals in user notifications and messages.
+
+### [PR #8] [feat/razorpay-11-dispute-refunds] - Step 11
+#### Added
+- Database migration `V46__refunds_to_wallet.sql` for wallet refund destinations.
+- Wallet refund routing: refunds credit restaurant wallet balances immediately for frictionless re-orders.
+- `WalletWithdrawalService`: bank payouts restricted strictly back to the source payment method.
+
+### [PR #7] [feat/razorpay-10-capture-at-dispatch] - Step 10 (D-102)
+#### Added
+- Two-phase authorization & capture model: authorization holds placed at order creation; funds captured only upon order readiness / dispatch in `OrderReleaseService`.
+- Background reconciliation jobs to release/expire uncaptured authorization holds when orders are cancelled.
+
+### [PR #6] [feat/razorpay-9-payment-intent-lookup] - Step 9
+#### Added
+- Payment intent lookup endpoint: `GET /api/v1/orders/{id}/payment-intent` returning checkout parameters (order ID, amount in paise, currency, Razorpay key).
+
+### [PR #5] [feat/razorpay-8-review-fixes] - Step 8
+#### Added
+- Database migration `V45__refund_attempts.sql` for tracking max refund retry counts.
+- `ProductionProviderGuard`: strict startup check ensuring mock payment providers cannot be used in production environments.
+- Resilient failure recovery: secondary declined attempts do not corrupt previously successful order authorizations.
+
+### [PR #4] [feat/razorpay-7-payment-tracing] - Step 7
+#### Added
+- Distributed correlation tracing with `TraceScope` and `CorrelatedTaskScheduler` propagating payment IDs across HTTP endpoints, worker threads, and webhook handlers.
+
+### [PR #3] [feat/razorpay-3-small-fixes] - Step 3
+#### Added
+- Sandbox top-up protection in `WalletController`: prevents test wallet credits when real payment provider mode is active.
+- Quote token reuse prevention in `DeliveryFeeQuoteService`.
+
+### [PR #2] [feat/razorpay-2-hardening] - Step 2
+#### Added
+- Non-blocking external HTTP calls: connection release before invoking external Razorpay endpoints.
+- Pessimistic row-level locking on payment transactions to eliminate concurrent update race conditions.
+
+### [PR #1] [feat/razorpay-1-adapter] - Step 1 (D-098)
+#### Added
+- Production `RazorpayPaymentProvider` adhering strictly to Razorpay's API contracts.
+- Payment ownership enforcement ensuring orders are funded only by their own verified payment intent.
+- `docs/RAZORPAY.md` and test suite `PaymentOwnershipTest` & `RazorpayPaymentProviderTest`.
+
+---
+
+## [Delivery & Logistics Platform Integrations (Pidge)]
+
+### [PR 16] [feat/pidge-16-outlet-active-deliveries-and-arrival-radar]
+#### Added
+- Outlet Delivery Radar endpoint: `GET /api/v1/outlets/{outletId}/deliveries/radar`.
+  - Prioritizes active deliveries by urgency (`AT_KITCHEN_DOOR` first, then `APPROACHING` by shortest ETA).
+  - Evaluates `ScheduleStatus` (`ON_SCHEDULE`, `RUNNING_LATE`, `CRITICALLY_DELAYED`) with exact `minutesOverdue`.
+  - Surfaces driver contact info, carrier problem alerts, and actionable `KitchenAction` recommendations.
+- Outlet Delivery Search endpoint: `GET /api/v1/outlets/{outletId}/deliveries?page=0&size=10&status=...`.
+- `OutletDeliveryRadarService` situational engine and unit tests `OutletDeliveryRadarServiceTest`.
+
+### [PR 15] [feat/pidge-15-admin-delivery-search-and-late-tracking]
+#### Added
+- Operations Delivery Search endpoint: `GET /api/v1/admin/deliveries?page=0&size=10&status=...`.
+- Missed ETA Tracking endpoint: `GET /api/v1/admin/deliveries/late?liveOnly=true&page=0&size=10`.
+- Unit test coverage in `AdminDeliveryServiceTest`.
+
+### [PR 14] [feat/pidge-14-webhook-signature-verification]
+#### Added
+- Webhook secret configuration: `costonomy.mp.delivery.webhook-secret`.
+- Unit test suite `PidgeWebhookServiceTest` testing HMAC-SHA256 verification and payload tampering.
+#### Security
+- Constant-time HMAC comparison using `MessageDigest.isEqual` to prevent timing attacks.
+
+### [PR 13] [feat/pidge-13-bulk-delivery-export]
+#### Added
+- Streaming CSV and JSON delivery export endpoint: `GET /api/v1/admin/deliveries/export`.
+- `AdminDeliveryExportService` streaming service respecting 10,000-row memory protection limits.
+
+### [PR 12] [feat/pidge-12-provider-metrics]
+#### Added
+- Database migration `V27__delivery_provider_metrics.sql` for 2-hour rolling performance snapshots.
+- `DeliveryMetricsJob` aggregating P95 and average latencies from dispatch to delivery.
+
+### [PR 11] [feat/pidge-11-delivery-rate-limiting]
+#### Added
+- Per-endpoint rate limits for delivery API:
+  - `delivery-request`: `POST /api/v1/supplier-orders/**` (10/min per user)
+  - `delivery-reassign`: `POST /api/v1/deliveries/**` (5/min per user)
+  - `delivery-read`: `GET /api/v1/deliveries/**` (60/min per user)
+
+### [PR 10] [feat/pidge-10-provider-stats]
+#### Added
+- Database migration `V26__delivery_provider_stats.sql` for nightly provider reliability aggregation.
+- `DeliveryStatsJob` scheduled at 02:00 UTC under ShedLock.
+
+### [PR 09] [feat/pidge-09-docs-and-specs]
+#### Added
+- Architecture documentation in `docs/specs/06-delivery.md` detailing Pidge Smart Dispatch, waterfall cascade sequence, weight thresholds, and ledger schema.
+
+### [PR 08] [feat/pidge-08-integration-tests]
+#### Added
+- Testcontainers integration test suite `PidgeDeliveryFlowIT` using MySQL 8.
+
+### [PR 07] [feat/pidge-07-ops-reassign]
+#### Added
+- Operations delivery inspection and manual waterfall escalation endpoints:
+  - `GET /api/v1/admin/deliveries/{id}/ledger`
+  - `POST /api/v1/admin/deliveries/{id}/force-waterfall`
+
+### [PR 06] [feat/pidge-06-tracking-notifications]
+#### Added
+- Database migration `V25__delivery_tracking_url.sql` adding `tracking_url` column.
+- Live tracking URL injection into push notifications and SMS templates.
+
+### [PR 05] [feat/pidge-05-dispatch-triggers]
+#### Added
+- Event-driven dispatch triggers: `ORDER_ACCEPTED` quotes delivery; `READY_FOR_PICKUP` triggers auto-dispatch booking.
+
+### [PR 04] [feat/pidge-04-ledger-and-waterfall]
+#### Added
+- Database migration `V24__delivery_vehicle_and_weight.sql` creating `delivery_ledger`.
+- Event-driven waterfall cascading to fallback couriers upon timeout.
+
+### [PR 03] [feat/pidge-03-webhooks-and-security]
+#### Added
+- `/api/v1/webhooks/delivery/pidge` public webhook ingest endpoint with HMAC verification and deduplication.
+
+### [PR 02] [feat/pidge-02-provider-adapter]
+#### Added
+- `PidgeDeliveryProvider` adapter with token bucket rate limiting (20 RPS) and circuit breaker guards.
+
+### [PR 01] [feat/pidge-01-schema-and-vehicle-sizing]
+#### Added
+- Vehicle classification: `TWO_WHEELER` (<= 20 kg), `THREE_WHEELER` (20-100 kg), `FOUR_WHEELER_TRUCK` (> 100 kg).
+- Dynamic line item weight calculation: $\sum (\text{item.quantity} \times \text{sku.effectiveWeightKg})$.

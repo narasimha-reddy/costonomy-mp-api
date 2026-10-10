@@ -42,9 +42,12 @@ public class PaymentWebhookController {
             // The raw body, not a parsed object: the signature covers exact bytes,
             // and a parse-and-reserialise round trip changes them.
             @RequestBody String rawBody,
-            @RequestHeader(value = "X-Razorpay-Signature", required = false) String signature) {
+            @RequestHeader(value = "X-Razorpay-Signature", required = false) String signature,
+            // Razorpay's event id travels here, not in the body — and it is the
+            // key duplicates are recognised by.
+            @RequestHeader(value = "X-Razorpay-Event-Id", required = false) String eventId) {
 
-        boolean processed = webhooks.handle(rawBody, signature);
+        boolean processed = webhooks.handle(rawBody, signature, eventId);
         return ApiResponse.ok(Map.of("received", true, "processed", processed));
     }
 }

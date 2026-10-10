@@ -6,6 +6,7 @@ import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
 import com.costonomy.mp.support.TestCheckout;
+import com.costonomy.mp.support.TestOrder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,14 +43,17 @@ class TrustFlowIT extends AbstractIntegrationTest {
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private MockPaymentProvider paymentProvider;
+    @Autowired private com.costonomy.mp.payment.service.PaymentJobs paymentJobs;
 
     private ApiClient api;
     private TestCheckout checkout;
+    private TestOrder orders;
 
     @BeforeEach
     void setUp() {
         api = new ApiClient(mvc, json);
         checkout = new TestCheckout(paymentProvider, api);
+        orders = new TestOrder(mvc, json, api);
     }
 
     private record Buyer(String token, long outletId) {
@@ -79,7 +83,8 @@ class TrustFlowIT extends AbstractIntegrationTest {
         String token = api.loginFresh();
         JsonNode created = api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", "ABC Foods Pvt Ltd", "displayName", "ABC Foods",
-                "firstStore", Map.of("name", "ABC store", "addressLine1", "Road No 36",
+                "contactName", "Ops Desk", "contactPhone", "+919876500000",
+                "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", "name", "ABC store", "addressLine1", "Road No 36",
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
         jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
@@ -123,25 +128,25 @@ class TrustFlowIT extends AbstractIntegrationTest {
                 "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
                 Long.class, skuId);
 
-        long procurementId = api.post(buyer.token(),
-                "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                Map.of("supplierOfferId", offerId, "quantity", quantity)).at("/data/id").asLong();
-        api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                Map.of("acceptPriceChanges", false));
+        // Through the request. D-091 removed the cart, and with it the order
+        // acceptance this fixture used to perform -- the supplier commits when
+        // they answer, and the order is theirs to work on from the moment it is
+        // paid for.
+        //
+        // SUPPLIER_DELIVERY because this store carries its own, which is what
+        // lets the seller report the dispatch below. Under COSTONOMY_DELIVERY
+        // that is a courier's to report and the supplier is refused (§23A.38) --
+        // a rule the order's mode now decides rather than the store's policy.
+        var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                skuId, quantity, quantity, "SUPPLIER_DELIVERY", null, null);
+        checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
 
-        String body = mvc.perform(MockMvcRequestBuilders
-                        .post("/api/v1/procurements/" + procurementId + "/submit")
-                        .header("Authorization", "Bearer " + buyer.token())
-                        .header("Idempotency-Key", UUID.randomUUID().toString())
-                        .contentType(MediaType.APPLICATION_JSON))
-                .andReturn().getResponse().getContentAsString();
-        JsonNode submitted = json.readTree(body);
-        checkout.payAll(buyer.token(), submitted);
-
-        long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
-        supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/accept");
+        long orderId = placed.orderId();
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/preparing");
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/ready");
+        // The money is taken at ready by a job that runs every few seconds in production. A doorstep
+        // rejection refunds against a captured payment (D-128), so the fixture lets the capture land first.
+        paymentJobs.capturePending();
 
         long deliveryId = mvcPostDelivery(seller, orderId);
         api.post(seller.token(), "/api/v1/deliveries/" + deliveryId + "/dispatched", Map.of());
@@ -306,21 +311,15 @@ class TrustFlowIT extends AbstractIntegrationTest {
                     Map.of("canonicalProductId", productId, "skuCode", "P-" + productId,
                             "name", "Paneer", "packSize", 1, "packUnit", "KG",
                             "sellingPrice", "400", "gstRate", "0")).at("/data/id").asLong();
-            long offerId = jdbc.queryForObject(
-                    "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
-                    Long.class, skuId);
-            long procurementId = api.post(buyer.token(),
-                    "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                    Map.of("supplierOfferId", offerId, "quantity", 5)).at("/data/id").asLong();
-            api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                    Map.of("acceptPriceChanges", false));
-            String body = mvc.perform(MockMvcRequestBuilders
-                            .post("/api/v1/procurements/" + procurementId + "/submit")
-                            .header("Authorization", "Bearer " + buyer.token())
-                            .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON))
-                    .andReturn().getResponse().getContentAsString();
-            long orderId = json.readTree(body).at("/data/supplierOrders/0/id").asLong();
+            // Paid for and confirmed, but nothing has moved. A courier carries
+            // this one, so it has a delivery leg to not have completed yet --
+            // a pickup order would be receivable the moment it was ready. This
+            // seller has no delivery policy, which is also why it cannot be
+            // theirs to carry.
+            var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                    skuId, 5, 5, "COSTONOMY_DELIVERY", null, null);
+            checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
+            long orderId = placed.orderId();
             long itemId = jdbc.queryForObject(
                     "select id from supplier_order_item where supplier_order_id = ?",
                     Long.class, orderId);
@@ -534,6 +533,58 @@ class TrustFlowIT extends AbstractIntegrationTest {
             assertThat(jdbc.queryForObject(
                     "select count(*) from rating where supplier_order_id = ?",
                     Integer.class, order.orderId())).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("the supplier reads the restaurant's rating and comment on the order (flow review 28)")
+        void supplierSeesTheRating() throws Exception {
+            var order = deliveredOrder(10);
+            receive(order, List.of(countedLine(order.itemId(), "10", "0", "0")), null);
+
+            var before = api.get(order.seller().token(),
+                    "/api/v1/supplier-orders/" + order.orderId()).at("/data");
+            assertThat(before.get("rating").isNull()).describedAs("no rating yet").isTrue();
+
+            rate(order, 4, "Good, a little late");
+
+            var seen = api.get(order.seller().token(),
+                    "/api/v1/supplier-orders/" + order.orderId()).at("/data");
+            assertThat(seen.get("rating").asInt()).isEqualTo(4);
+            assertThat(seen.get("ratingComment").asText()).isEqualTo("Good, a little late");
+        }
+
+        @Test
+        @DisplayName("the rating event carries the order number and the restaurant's name, for the supplier's notification")
+        void ratingEventNamesTheOrderAndRestaurant() throws Exception {
+            var order = deliveredOrder(10);
+            receive(order, List.of(countedLine(order.itemId(), "10", "0", "0")), null);
+            long ratingId = rate(order, 4, "Good").get("id").asLong();
+
+            var payload = json.readTree(jdbc.queryForObject("""
+                    select payload from outbox_event where aggregate_type = 'RATING' and aggregate_id = ?
+                       and event_type = 'RatingSubmitted'""", String.class, ratingId));
+
+            assertThat(payload.get("orderNumber").asText()).isEqualTo(jdbc.queryForObject(
+                    "select order_number from supplier_order where id = ?", String.class, order.orderId()));
+            assertThat(payload.get("restaurantName").asText()).isEqualTo(jdbc.queryForObject("""
+                    select r.name from supplier_order o join outlet t on t.id = o.outlet_id
+                      join restaurant r on r.id = t.restaurant_id where o.id = ?""", String.class, order.orderId()));
+        }
+
+        @Test
+        @DisplayName("a rating a moderator hid is not shown on the order")
+        void hiddenRatingIsNotShown() throws Exception {
+            var order = deliveredOrder(10);
+            receive(order, List.of(countedLine(order.itemId(), "10", "0", "0")), null);
+            long ratingId = rate(order, 1, "Defamatory").get("id").asLong();
+            api.post(moderator(), "/api/v1/internal/ratings/" + ratingId + "/moderate",
+                    Map.of("hide", true, "reason", "Defamatory content"));
+
+            var seen = api.get(order.seller().token(),
+                    "/api/v1/supplier-orders/" + order.orderId()).at("/data");
+
+            assertThat(seen.get("rating").isNull()).isTrue();
+            assertThat(seen.get("ratingComment").isNull()).isTrue();
         }
 
         @Test

@@ -55,6 +55,7 @@ public class RecommendationService {
     private final DiscoveryDirectory directory;
     private final AccessControlService accessControl;
     private final AppConfigService config;
+    private final ServiceabilityPolicy serviceabilityPolicy;
 
     /**
      * Ranked offers for a product, for a specific outlet.
@@ -66,6 +67,32 @@ public class RecommendationService {
     @Transactional(readOnly = true)
     public DiscoveryDtos.ProductRecommendation recommendForProduct(
             Long actorId, Long productId, Long outletId, BigDecimal requestedQuantity) {
+        return recommendForProduct(actorId, productId, outletId, requestedQuantity, null, null, null, null);
+    }
+
+    /**
+     * The same, with the choices a buyer makes on the comparison (D-183).
+     *
+     * <p>Filters and sort apply <b>after</b> scoring: Best Value is relative to the suppliers compared, so scoring
+     * only the ones left would change every supplier's score and rank each time a filter was touched. A filter
+     * removes a card; it does not re-rank the rest.
+     *
+     * @param sort           {@code best_value} (default, the ranking), {@code price} (lowest per unit first),
+     *                       {@code nearest} or {@code rating}; anything else is a 422
+     * @param coversQuantity only suppliers with at least the quantity asked for
+     * @param openNow        only suppliers open right now
+     * @param radiusKm       only suppliers within this distance (an unknown distance is kept)
+     */
+    @Transactional(readOnly = true)
+    public DiscoveryDtos.ProductRecommendation recommendForProduct(
+            Long actorId, Long productId, Long outletId, BigDecimal requestedQuantity,
+            String sort, Boolean coversQuantity, Boolean openNow, BigDecimal radiusKm) {
+
+        String effectiveSort = requireSort(sort);
+        if (radiusKm != null && radiusKm.signum() <= 0) {
+            throw new com.costonomy.mp.common.error.BusinessException(
+                    com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR, "Distance must be more than zero.");
+        }
 
         accessControl.requireScoped(actorId, Permissions.OUTLET_VIEW,
                 ScopeType.OUTLET, outletId, "Outlet");
@@ -167,62 +194,139 @@ public class RecommendationService {
         Map<Long, SupplierOffer> offerById = new HashMap<>();
         purchasable.forEach(offer -> offerById.put(offer.getId(), offer));
 
+        Map<Long, List<DiscoveryDtos.BrandOption>> brandOptionsByStore = new HashMap<>();
+        for (SupplierOffer offer : purchasable) {
+            SupplierSku sku = skuById.get(offer.getSupplierSkuId());
+            if (sku == null || !"ACTIVE".equals(sku.getStatus())) {
+                continue;
+            }
+            var store = stores.get(offer.getSupplierStoreId());
+            if (store == null || !store.tradeable()) {
+                continue;
+            }
+            BigDecimal mrp = offer.getMrp() != null ? offer.getMrp() : sku.getMrp();
+            BigDecimal discountAmount = Pricing.discountAmount(mrp, offer.getSellingPrice());
+            Integer discountPercent = Pricing.discountPercent(mrp, offer.getSellingPrice());
+            brandOptionsByStore.computeIfAbsent(offer.getSupplierStoreId(), k -> new ArrayList<>())
+                    .add(new DiscoveryDtos.BrandOption(
+                            sku.getId(),
+                            offer.getId(),
+                            sku.getName(),
+                            sku.getBrandId() == null ? null : brandNames.get(sku.getBrandId()),
+                            sku.getGrade(),
+                            sku.getPackSize(),
+                            sku.getPackUnit(),
+                            mrp,
+                            offer.getSellingPrice(),
+                            discountAmount,
+                            discountPercent,
+                            offer.getGstRate(),
+                            packInclusiveOfGst(offer),
+                            blankToNull(sku.getImageUrl()) != null ? sku.getImageUrl() : blankToNull(product.getImageUrl()),
+                            offer.getAvailability(),
+                            offer.getAvailableQuantity(),
+                            sku.getMeasureValue(),
+                            sku.getMeasureUnit()
+                    ));
+        }
+
+        // Lowest priced brand option first
+        for (List<DiscoveryDtos.BrandOption> options : brandOptionsByStore.values()) {
+            options.sort(Comparator.comparing(DiscoveryDtos.BrandOption::sellingPrice,
+                    Comparator.nullsLast(Comparator.naturalOrder())));
+        }
+
+        /*
+         * One card per supplier — their best pack. D-096.
+         *
+         * A supplier may now list several packs of the same product, and every
+         * one of them scoring into this list turns a comparison of suppliers
+         * into a comparison of one supplier's shelf: a deep range fills the
+         * screen and pushes the others below the fold, on a screen whose entire
+         * job is to put them side by side.
+         *
+         * The ranking still decides which pack wins, so this keeps whichever
+         * the scorer put first. The rest are reachable from that pack's detail
+         * page, which says how many there are.
+         */
+        var seen = new HashSet<Long>();
+        var packsPerStore = new HashMap<Long, Integer>();
+        ranked.forEach(scored -> packsPerStore.merge(scored.supplierStoreId(), 1, Integer::sum));
+
+        // Filters, on the ranked list so that scores stay what they were. A supplier with several packs is kept if any
+        // one of them passes, and its card is then its best pack that passes.
+        boolean filtering = Boolean.TRUE.equals(coversQuantity) || Boolean.TRUE.equals(openNow) || radiusKm != null;
+        long suppliersBefore = ranked.stream().map(ScoredOffer::supplierStoreId).distinct().count();
+        if (filtering) {
+            ranked = ranked.stream().filter(scored -> {
+                if (Boolean.TRUE.equals(coversQuantity) && !scored.coversFullQuantity()) {
+                    return false;
+                }
+                var store = stores.get(scored.supplierStoreId());
+                if (Boolean.TRUE.equals(openNow) && store != null && !store.openNow()) {
+                    return false;
+                }
+                return radiusKm == null || scored.distanceKm() == null
+                        || BigDecimal.valueOf(scored.distanceKm().doubleValue()).compareTo(radiusKm) <= 0;
+            }).toList();
+        }
+        int hidden = (int) (suppliersBefore - ranked.stream().map(ScoredOffer::supplierStoreId).distinct().count());
+
         var results = ranked.stream()
+                .filter(scored -> seen.add(scored.supplierStoreId()))
                 .map(scored -> toResponse(scored, offerById.get(scored.offerId()),
                         skuById.get(scored.supplierSkuId()),
                         stores.get(scored.supplierStoreId()), brandNames, quantity,
                         product.getImageUrl(), performance.get(scored.supplierStoreId()),
-                        product.getBaseUnit()))
+                        product.getBaseUnit(),
+                        // What this card is standing in front of.
+                        packsPerStore.getOrDefault(scored.supplierStoreId(), 1) - 1,
+                        brandOptionsByStore.getOrDefault(scored.supplierStoreId(), List.of())))
                 .toList();
 
         return new DiscoveryDtos.ProductRecommendation(
                 product.getId(), product.getName(), quantity, product.getBaseUnit(),
-                results, null);
+                sorted(results, effectiveSort), null, hidden);
     }
 
     /**
-     * Whether a store delivers to an outlet. Doc 07 §13, doc 41.
+     * Whether a store delivers to an outlet. Doc 07 §13, doc 41. D-138.
      *
-     * <p>An explicit pincode list overrides geography entirely: a supplier who has
-     * said "these areas only" means it, and a distance calculation should not
-     * second-guess them.
-     *
-     * <p>When coordinates are missing the store is treated as serviceable rather
-     * than excluded. A supplier whose address has not been geocoded should not
-     * become invisible — that is a data gap on our side, and the checkout-time
-     * re-check (doc 41) is the place it gets caught.
+     * <p>Delegates to shared {@link ServiceabilityPolicy}.
      */
     private boolean servesOutlet(DiscoveryDirectory.StoreInfo store,
                                  DiscoveryDirectory.OutletInfo outlet,
                                  Double distanceKm, BigDecimal defaultRadius) {
-
-        if (store.serviceablePincodes() != null && !store.serviceablePincodes().isEmpty()) {
-            return outlet.pincode() != null && store.serviceablePincodes().contains(outlet.pincode());
-        }
-        if (distanceKm == null) {
-            return true;
-        }
-        BigDecimal radius = store.maxDeliveryRadiusKm() == null
-                ? defaultRadius : store.maxDeliveryRadiusKm();
-        return BigDecimal.valueOf(distanceKm).compareTo(radius) <= 0;
+        return serviceabilityPolicy.serves(
+                store.serviceablePincodes(), store.maxDeliveryRadiusKm(),
+                outlet.pincode(), distanceKm, defaultRadius);
     }
 
     private DiscoveryDtos.RecommendedOffer toResponse(
             ScoredOffer scored, SupplierOffer offer, SupplierSku sku,
             DiscoveryDirectory.StoreInfo store, Map<Long, String> brandNames, BigDecimal quantity,
-            String canonicalImageUrl, SupplierPerformance storePerformance, String baseUnit) {
+            String canonicalImageUrl, SupplierPerformance storePerformance, String baseUnit,
+            int otherPackCount, List<DiscoveryDtos.BrandOption> brandOptions) {
 
         BigDecimal itemTotal = offer.getSellingPrice().multiply(quantity);
         BigDecimal gstAmount = itemTotal.multiply(offer.getGstRate())
                 .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP);
+        BigDecimal mrp = offer.getMrp() != null ? offer.getMrp() : sku.getMrp();
+        BigDecimal discountAmount = Pricing.discountAmount(mrp, offer.getSellingPrice());
+        Integer discountPercent = Pricing.discountPercent(mrp, offer.getSellingPrice());
 
         return new DiscoveryDtos.RecommendedOffer(
                 scored.offerId(), sku.getId(), store.storeId(),
                 store.supplierName(), store.storeName(),
                 sku.getName(),
                 sku.getBrandId() == null ? null : brandNames.get(sku.getBrandId()),
+                sku.getGrade(),
                 sku.getPackSize(), sku.getPackUnit(),
-                offer.getSellingPrice(), offer.getGstRate(),
+                mrp,
+                offer.getSellingPrice(),
+                discountAmount,
+                discountPercent,
+                offer.getGstRate(),
                 itemTotal, gstAmount, scored.effectiveTotal(),
                 offer.getAvailability(), offer.getAvailableQuantity(),
                 scored.coversFullQuantity(),
@@ -237,7 +341,9 @@ public class RecommendationService {
                 storePerformance == null ? 0 : storePerformance.ratingCount(),
                 packInclusiveOfGst(offer),
                 pricePerBaseUnit(packInclusiveOfGst(offer), sku.getPackSize(),
-                        sku.getPackUnit(), baseUnit));
+                        sku.getPackUnit(), baseUnit),
+                otherPackCount,
+                brandOptions);
     }
 
     /**
@@ -267,6 +373,49 @@ public class RecommendationService {
             return null;
         }
         return packPrice.divide(packSize, 2, RoundingMode.HALF_UP);
+    }
+
+    private static String requireSort(String sort) {
+        if (sort == null || sort.isBlank()) {
+            return "best_value";
+        }
+        String normalized = sort.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!java.util.Set.of("best_value", "price", "nearest", "rating").contains(normalized)) {
+            throw new com.costonomy.mp.common.error.BusinessException(
+                    com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR,
+                    "Sort must be best_value, price, nearest or rating.");
+        }
+        return normalized;
+    }
+
+    /**
+     * Orders the one-card-per-supplier list. {@code best_value} is the ranking as scored. The others break ties by the
+     * score, so equal prices or distances keep the Best Value order, and a missing value (an unknown distance, an
+     * unrated supplier, a pack not measured in the product's unit) goes last rather than first.
+     */
+    private static List<DiscoveryDtos.RecommendedOffer> sorted(
+            List<DiscoveryDtos.RecommendedOffer> offers, String sort) {
+        Comparator<DiscoveryDtos.RecommendedOffer> byScore = Comparator.comparing(
+                DiscoveryDtos.RecommendedOffer::score, Comparator.nullsLast(Comparator.reverseOrder()));
+        return switch (sort) {
+            case "price" -> offers.stream().sorted(Comparator
+                    .comparing(DiscoveryDtos.RecommendedOffer::pricePerBaseUnit,
+                            Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing(DiscoveryDtos.RecommendedOffer::effectiveTotal,
+                            Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing(byScore)).toList();
+            case "nearest" -> offers.stream().sorted(Comparator
+                    .comparing(DiscoveryDtos.RecommendedOffer::distanceKm,
+                            Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing(byScore)).toList();
+            case "rating" -> offers.stream().sorted(Comparator
+                    .comparing(DiscoveryDtos.RecommendedOffer::averageRating,
+                            Comparator.nullsLast(Comparator.reverseOrder()))
+                    .thenComparing(DiscoveryDtos.RecommendedOffer::distanceKm,
+                            Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing(byScore)).toList();
+            default -> offers;
+        };
     }
 
     private static String blankToNull(String value) {

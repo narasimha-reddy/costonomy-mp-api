@@ -41,6 +41,15 @@ public class DeliveryBookingService {
     private final DeliveryProviderRegistry registry;
     private final DeliveryTimeline timeline;
     private final AuditService auditService;
+    private final DeliveryLedgerRepository ledger;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+    private final DeliveryDirectory directory;
+
+    @org.springframework.beans.factory.annotation.Value("${costonomy.mp.delivery.bike-assignment-timeout:PT3M}")
+    private java.time.Duration bikeAssignmentTimeout = java.time.Duration.ofMinutes(3);
+
+    @org.springframework.beans.factory.annotation.Value("${costonomy.mp.delivery.truck-assignment-timeout:PT12M}")
+    private java.time.Duration truckAssignmentTimeout = java.time.Duration.ofMinutes(12);
 
     /**
      * Book the cheapest courier that will take it.
@@ -50,7 +59,7 @@ public class DeliveryBookingService {
      */
     @Transactional
     public boolean book(Delivery delivery, List<String> excludedProviderCodes, String attemptType) {
-        var usable = quoting.usableQuotes(delivery.getId(), excludedProviderCodes);
+        var usable = quoting.usableQuotes(delivery.getId(), excludedProviderCodes, delivery.isRequiresColdChain());
 
         if (usable.isEmpty()) {
             return fail(delivery, DeliveryStatus.PROVIDER_UNAVAILABLE, "NO_QUOTES",
@@ -73,22 +82,51 @@ public class DeliveryBookingService {
                 delivery.setDeliveryProviderId(quote.getDeliveryProviderId());
                 delivery.setProviderCode(quote.getProviderCode());
                 delivery.setProviderDeliveryId(booking.providerDeliveryId());
-                delivery.setFee(booking.amount());
-                delivery.setCurrency(booking.currency());
-                delivery.setEtaMinutes(booking.etaMinutes());
-                delivery.setEstimatedArrivalAt(booking.estimatedArrivalAt());
+                // A carrier that does not restate the fare or arrival time on booking (Pidge) is booked at the quote's.
+                var bookedAmount = booking.amount() != null ? booking.amount() : quote.getAmount();
+                var bookedCurrency = booking.currency() != null ? booking.currency() : quote.getCurrency();
+                var bookedEta = booking.etaMinutes() != null ? booking.etaMinutes() : quote.getEtaMinutes();
+                var bookedArrival = booking.estimatedArrivalAt() != null ? booking.estimatedArrivalAt()
+                        : bookedEta == null ? null : Instant.now().plusSeconds(bookedEta * 60L);
+                delivery.setFee(bookedAmount);
+                delivery.setCurrency(bookedCurrency);
+                delivery.setEtaMinutes(bookedEta);
+                delivery.setEstimatedArrivalAt(bookedArrival);
+                if (booking.trackingUrl() != null) {
+                    delivery.setTrackingUrl(booking.trackingUrl());
+                }
                 delivery.setStatus(DeliveryStatus.PROVIDER_SELECTED);
                 delivery.setBookedAt(Instant.now());
+                java.time.Duration deadlineTimeout = (delivery.getVehicleType() == VehicleType.THREE_WHEELER
+                        || delivery.getVehicleType() == VehicleType.FOUR_WHEELER_TRUCK)
+                        ? truckAssignmentTimeout
+                        : bikeAssignmentTimeout;
+                delivery.setAssignmentDeadline(Instant.now().plus(deadlineTimeout));
                 // Cleared, because this attempt is not the failed one. A stale
                 // failure left on the row would show a restaurant an error about a
                 // courier who is no longer involved.
                 delivery.setFailureCode(null);
                 delivery.setFailureReason(null);
+                delivery.clearNoPartner();
                 deliveries.save(delivery);
+
+                eventPublisher.publishEvent(new com.costonomy.mp.delivery.domain.DeliveryBookedEvent(
+                        delivery.getId(), delivery.getAssignmentDeadline()));
 
                 attempt.setOutcome("BOOKED");
                 attempt.setProviderDeliveryId(booking.providerDeliveryId());
                 attempts.save(attempt);
+
+                // Record into central delivery financial ledger
+                var ledgerEntry = new DeliveryLedgerEntry();
+                ledgerEntry.setDeliveryId(delivery.getId());
+                ledgerEntry.setProviderCode(quote.getProviderCode());
+                ledgerEntry.setProviderDeliveryId(booking.providerDeliveryId());
+                ledgerEntry.setEntryType("BOOKED");
+                ledgerEntry.setAmount(bookedAmount);
+                ledgerEntry.setCurrency(bookedCurrency);
+                ledgerEntry.setDescription("Consignment booked with %s (Attempt %d)".formatted(quote.getProviderCode(), attemptNumber));
+                ledger.save(ledgerEntry);
 
                 // No provider name in the description. Doc 06 §10: the restaurant
                 // sees their delivery, not our supply chain.
@@ -143,6 +181,10 @@ public class DeliveryBookingService {
     }
 
     private DeliveryProvider.BookingRequest bookingRequest(Delivery delivery, DeliveryQuote quote) {
+        var vehicleType = quote.getVehicleType() != null ? quote.getVehicleType()
+                : delivery.getVehicleType() != null ? delivery.getVehicleType()
+                : VehicleType.fromWeight(delivery.getWeightKg());
+
         return new DeliveryProvider.BookingRequest(
                 delivery.getSupplierOrderId(), quote.getProviderQuoteId(),
                 delivery.getPickupAddress(), delivery.getPickupLatitude(),
@@ -152,11 +194,18 @@ public class DeliveryBookingService {
                 delivery.getDropLongitude(), delivery.getDropContactName(),
                 delivery.getDropContactPhone(),
                 // Ours, so a retried booking cannot produce two couriers at one door.
-                "mp-delivery-%d-%d".formatted(delivery.getId(), delivery.getAttemptCount() + 1));
+                "mp-delivery-%d-%d".formatted(delivery.getId(), delivery.getAttemptCount() + 1),
+                delivery.getWeightKg(), delivery.getVolumeCbm(), vehicleType,
+                // Read from our own records at booking time; a carrier that needs a city,
+                // pincode or declared value is told the truth or refuses, never a default.
+                directory.pickupLocality(delivery.getSupplierStoreId()),
+                directory.dropLocality(delivery.getOutletId()),
+                directory.goodsValue(delivery.getSupplierOrderId()));
     }
 
     private boolean fail(Delivery delivery, DeliveryStatus status, String code, String reason) {
         delivery.setStatus(status);
+        delivery.markNoPartner(Instant.now());
         delivery.setFailureCode(code);
         delivery.setFailureReason(reason);
         deliveries.save(delivery);

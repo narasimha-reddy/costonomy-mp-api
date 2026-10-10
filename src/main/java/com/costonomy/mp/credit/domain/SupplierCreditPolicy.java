@@ -51,4 +51,8 @@ public class SupplierCreditPolicy extends BaseEntity {
 
     @Column(name = "max_overdue_amount", precision = 19, scale = 4)
     private BigDecimal maxOverdueAmount;
+
+    /** Whether the system sends the automatic payment reminders for this store's lines (D-171). On unless turned off. */
+    @Column(name = "auto_reminders_enabled", nullable = false)
+    private Boolean autoRemindersEnabled = true;
 }

@@ -1,0 +1,48 @@
+package com.costonomy.mp.notification;
+
+import com.costonomy.mp.credit.domain.CreditEvents;
+import com.costonomy.mp.notification.domain.NotificationChannel;
+import com.costonomy.mp.notification.domain.NotificationRule;
+import com.costonomy.mp.notification.domain.NotificationRules;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/** The notification rules of the credit reminder and the supplier digest (D-171, D-173). */
+class CreditReminderRulesTest {
+
+    @Test
+    @DisplayName("a reminder goes to the restaurant: T-3 in-app only, due-day and weekly in-app and push, SMS only on the SMS variant; only the SMS one is critical")
+    void reminderChannelsByVariant() {
+        assertThat(NotificationRules.forEvent(CreditEvents.REMINDER, "IN_APP").get(0).channels())
+                .containsExactly(NotificationChannel.IN_APP);
+        assertThat(NotificationRules.forEvent(CreditEvents.REMINDER, "PUSH").get(0).channels())
+                .containsExactly(NotificationChannel.IN_APP, NotificationChannel.PUSH);
+        assertThat(NotificationRules.forEvent(CreditEvents.REMINDER, "SMS").get(0).channels())
+                .containsExactly(NotificationChannel.IN_APP, NotificationChannel.PUSH, NotificationChannel.SMS);
+        // No variant, or one nobody wrote a rule for, never uses SMS.
+        assertThat(NotificationRules.forEvent(CreditEvents.REMINDER).get(0).channels())
+                .doesNotContain(NotificationChannel.SMS);
+        assertThat(NotificationRules.forEvent(CreditEvents.REMINDER, "SOMETHING").get(0).channels())
+                .doesNotContain(NotificationChannel.SMS);
+        for (String variant : new String[]{"IN_APP", "PUSH", "SMS"}) {
+            var rule = NotificationRules.forEvent(CreditEvents.REMINDER, variant).get(0);
+            assertThat(rule.audience()).isEqualTo(NotificationRule.Audience.OUTLET);
+            // Only the SMS one is critical (an SMS rule must be); the rest a restaurant may mute.
+            assertThat(rule.critical()).describedAs(variant).isEqualTo("SMS".equals(variant));
+            assertThat(rule.body()).isEqualTo("{message}");
+        }
+    }
+
+    @Test
+    @DisplayName("the digest goes to the store's credit viewers, in-app and push, never SMS")
+    void digestRule() {
+        var rules = NotificationRules.forEvent(CreditEvents.SUPPLIER_DIGEST);
+        assertThat(rules).hasSize(1);
+        assertThat(rules.get(0).audience()).isEqualTo(NotificationRule.Audience.SUPPLIER_STORE_CREDIT);
+        assertThat(rules.get(0).channels()).containsExactly(NotificationChannel.IN_APP, NotificationChannel.PUSH);
+        assertThat(rules.get(0).critical()).isFalse();
+        assertThat(CreditEvents.ALL).contains(CreditEvents.REMINDER, CreditEvents.SUPPLIER_DIGEST);
+    }
+}

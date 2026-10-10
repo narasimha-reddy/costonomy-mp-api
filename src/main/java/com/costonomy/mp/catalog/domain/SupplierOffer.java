@@ -42,6 +42,10 @@ public class SupplierOffer extends BaseEntity {
     @Column(name = "selling_price", nullable = false, precision = 19, scale = 4)
     private BigDecimal sellingPrice;
 
+    /** Maximum Retail Price (MRP) at this point in time, against which selling price offers discounts. */
+    @Column(name = "mrp", precision = 19, scale = 4)
+    private BigDecimal mrp;
+
     @Column(name = "gst_rate", nullable = false, precision = 9, scale = 4)
     private BigDecimal gstRate;
 

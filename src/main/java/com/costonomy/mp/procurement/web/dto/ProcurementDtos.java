@@ -1,15 +1,20 @@
 package com.costonomy.mp.procurement.web.dto;
 
+import com.costonomy.mp.catalog.service.SkuDirectory;
+
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
 import com.costonomy.mp.procurement.domain.ApprovalStatus;
 import com.costonomy.mp.procurement.domain.ProcurementStatus;
 import com.costonomy.mp.procurement.domain.RequirementStatus;
+import com.costonomy.mp.procurement.domain.CancelledBy;
+import com.costonomy.mp.procurement.domain.DeliveryMode;
 import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 
 public final class ProcurementDtos {
@@ -251,8 +256,86 @@ public final class ProcurementDtos {
              */
             BigDecimal acceptedSubtotal,
             BigDecimal acceptedGst,
+            BigDecimal weightAdjustmentAmount,
+            BigDecimal doorstepRefundAmount,
+            BigDecimal finalPayableAmount,
             String paymentMethod,
+            /**
+             * Where the money stands, live. Beside AUTHORIZED, CAPTURED, RELEASED and the
+             * refund states: {@code RETURNING} (a cancelled order's debited money is on its
+             * way back), {@code RETURNED} (the payment provider returned it itself) and
+             * {@code RETURN_DELAYED} (the return is taking longer than it should and a
+             * person has been told). D-109.
+             */
             String paymentStatus,
+            /**
+             * How the order was paid for — {@code card}, {@code upi}, {@code netbanking},
+             * {@code wallet}, {@code emi}, {@code paylater} — or null when unknown or not
+             * applicable. For wording only: "you were not charged" is true of a released
+             * card hold and false of a UPI payment, so no client may say it without this.
+             */
+            String paymentInstrument,
+            /**
+             * How the goods travel, and what the carriage costs. D-091.
+             *
+             * <p>On the wire because the screen's actions depend on it: who may
+             * move the order, and whether "ready" means a van is leaving or that
+             * there are crates waiting on a counter.
+             */
+            DeliveryMode deliveryMode,
+            BigDecimal deliveryFee,
+            Long deliverySlotId,
+            String deliverySlotName,
+            LocalDate scheduledDeliveryDate,
+            boolean isSubscriptionOrder,
+            Long subscriptionId,
+            boolean hasColdChainItems,
+            /**
+             * Whose decision ended it, on a cancelled order. Null otherwise.
+             *
+             * <p>This is what replaced {@code REJECTED}: one ending, with the
+             * actor recorded, rather than a status per party.
+             */
+            CancelledBy cancelledBy,
+            String cancellationReason,
+            /**
+             * How much of a cancelled order's money is being sent back to the account it
+             * was paid from (D-109): the amount of the cancellation refund, present from
+             * the moment it is raised. Null on any order that has no such refund: not
+             * cancelled, a card hold that was simply dropped, paid another way, or not
+             * refunded yet. Additive: a client that does not read it is unaffected.
+             */
+            BigDecimal refundAmount,
+            /**
+             * When that refund completed at the payment provider, null until then (and
+             * whenever {@code refundAmount} is null). Money "on its way back" is
+             * {@code refundAmount != null && refundedAt == null}.
+             */
+            Instant refundedAt,
+            /**
+             * On a credit order whose invoice is still owed: the earliest due date, an India calendar day. Null once
+             * it is settled, before the invoice is raised (at draw-down), and on every order not paid on credit.
+             * Additive. D-189.
+             */
+            LocalDate creditDueDate,
+            /**
+             * On a credit order, when its invoice(s) settled (paid in full, or written off); null while any is owed,
+             * and on every other order. A client shows it in India time, as the credit screens do.
+             */
+            Instant creditSettledAt,
+            /**
+             * The credit module's due state of that invoice ({@code DUE_LATER}, {@code DUE_SOON}, {@code DUE_TODAY},
+             * {@code IN_GRACE}, {@code OVERDUE}, or {@code PAID} / {@code WRITTEN_OFF} once settled); null as above.
+             * The app shows it and never works it out.
+             */
+            String creditDueState,
+            /**
+             * The restaurant's overall rating of this order (1-5) once it has rated it and the rating is not hidden
+             * by moderation; null otherwise. Filled on a single-order read only, never in lists. Additive. Flow review 28.
+             */
+            Integer rating,
+            /** The comment left with that rating, null when there is none. */
+            String ratingComment,
             List<SupplierOrderItemResponse> items) {
     }
 
@@ -360,6 +443,13 @@ public final class ProcurementDtos {
              */
             BigDecimal acceptedAmount,
             String paymentMethod,
+            boolean hasColdChainItems,
+            /**
+             * How the goods travel: PICKUP, COSTONOMY_DELIVERY or SUPPLIER_DELIVERY, as on the single-order read. What
+             * tells the supplier's app whether a ready order is theirs to send out, a rider's, or waiting for the
+             * restaurant. Additive.
+             */
+            DeliveryMode deliveryMode,
             List<SupplierOrderItemResponse> items) {
     }
 
@@ -392,6 +482,14 @@ public final class ProcurementDtos {
     public record SupplierOrderItemResponse(
             Long id,
             Long canonicalProductId,
+            /**
+             * The exact pack that was bought. D-096.
+             *
+             * <p>Already on the row; carried out so an order line can open the
+             * pack's own page — an order is often where somebody goes to check
+             * what a thing actually was before ordering it again.
+             */
+            Long supplierSkuId,
             String productName,
             /**
              * The canonical product's picture, or null when it has none.
@@ -401,12 +499,28 @@ public final class ProcurementDtos {
              * rendering an order must not make one request per item to draw it.
              */
             String productImageUrl,
-            String skuName,
+            /** The same pack description the request screens use. */
+            SkuDirectory.SkuDescriptor sku,
             BigDecimal requestedQuantity,
             /** Null until the supplier answers; zero means they declined this line. */
             BigDecimal acceptedQuantity,
+            BigDecimal fulfilledQuantity,
+            BigDecimal dispatchedWeight,
+            /** What the buyer is billed for on a weighed line: the reading, capped at what was accepted (D-128). */
+            BigDecimal billableQuantity,
+            Instant weighedAt,
+            /** Positive: the buyer pays this much less than the agreed line because it weighed less. */
+            BigDecimal weightDeltaAmount,
+            BigDecimal doorstepAcceptedQty,
+            BigDecimal doorstepRejectedQty,
+            String doorstepRejectionReason,
+            BigDecimal doorstepRefundAmount,
+            boolean requiresColdChain,
+            boolean isCatchWeight,
             String unit,
             BigDecimal unitPrice,
+            /** The same price with its GST added. See {@code Pricing.inclusiveOfGst}. */
+            BigDecimal unitPriceInclusiveGst,
             BigDecimal gstRate,
             BigDecimal lineTotal,
             /**
@@ -424,5 +538,21 @@ public final class ProcurementDtos {
              */
             BigDecimal acceptedLineTotal,
             String status) {
+    }
+
+    public record RecordDispatchWeightItem(
+            @NotNull(message = "Item ID is required") Long supplierOrderItemId,
+            @NotNull(message = "Dispatched weight is required")
+            @DecimalMin(value = "0.0001", message = "Weight must be greater than zero")
+            BigDecimal dispatchedWeight) {
+    }
+
+    public record RecordDispatchWeightsRequest(
+            @NotEmpty(message = "Enter weights for dispatched lines")
+            @Valid List<RecordDispatchWeightItem> weights) {
+    }
+
+    /** Pay an unpaid card order another way (D-186): {@code WALLET} or {@code CREDIT}. */
+    public record ChangePaymentMethodRequest(String method) {
     }
 }

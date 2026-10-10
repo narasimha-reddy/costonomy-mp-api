@@ -62,12 +62,48 @@ public class CommissionService {
             return existing;
         }
 
+        var figures = preview(order);
+
+        var calculation = new CommissionCalculation();
+        calculation.setSupplierOrderId(order.orderId());
+        calculation.setSupplierStoreId(order.supplierStoreId());
+        calculation.setSupplierOrganizationId(order.supplierOrganizationId());
+        calculation.setGrossAmount(figures.gross());
+        calculation.setRatePercent(figures.ratePercent());
+        calculation.setCommissionConfigurationId(figures.configurationId());
+        calculation.setCommissionAmount(figures.commission());
+        calculation.setNetAmount(figures.net());
+        calculation.setCalculatedAt(Instant.now());
+
+        return calculations.save(calculation);
+    }
+
+    /** What a calculation for this order would say now, without recording it. */
+    public record Figures(BigDecimal gross, BigDecimal ratePercent, Long configurationId,
+                          BigDecimal commission, BigDecimal net) {
+    }
+
+    /**
+     * The calculation {@link #calculate} would record now, without recording it.
+     *
+     * <p>For a refund that has to know the supplier's payout for an order before the
+     * order is settled (D-104). Never saved: a calculation row is what marks an order
+     * as settled, and one written early would drop the order from generation.
+     */
+    @Transactional(readOnly = true)
+    public Figures preview(SettlementDirectory.SettleableOrder order) {
         // Delivery out of the base. It is currently zero on every order — the fee
         // lives on the delivery record — but subtracting it is what keeps this
         // correct if it is ever folded into the order total.
         BigDecimal gross = order.acceptedAmount()
-                .subtract(order.deliveryFee() == null ? BigDecimal.ZERO : order.deliveryFee())
-                .max(BigDecimal.ZERO);
+                .subtract(order.deliveryFee() == null ? BigDecimal.ZERO : order.deliveryFee());
+        if (gross.signum() < 0) {
+            // Clamping it to zero would pay the supplier nothing and quietly make the platform whole for a
+            // figure that is simply wrong (D-128). The figures are guarded where they are written; if one
+            // still gets here, stop and let a person look.
+            throw new IllegalStateException("Commission base for order %d is negative (%s)"
+                    .formatted(order.orderId(), gross.toPlainString()));
+        }
 
         var configuration = resolve(order.supplierStoreId(), order.supplierOrganizationId());
         BigDecimal rate = configuration
@@ -77,19 +113,9 @@ public class CommissionService {
         BigDecimal commission = gross.multiply(rate)
                 .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
 
-        var calculation = new CommissionCalculation();
-        calculation.setSupplierOrderId(order.orderId());
-        calculation.setSupplierStoreId(order.supplierStoreId());
-        calculation.setSupplierOrganizationId(order.supplierOrganizationId());
-        calculation.setGrossAmount(gross.setScale(2, RoundingMode.HALF_UP));
-        calculation.setRatePercent(rate);
-        calculation.setCommissionConfigurationId(
-                configuration.map(CommissionConfiguration::getId).orElse(null));
-        calculation.setCommissionAmount(commission);
-        calculation.setNetAmount(gross.subtract(commission).setScale(2, RoundingMode.HALF_UP));
-        calculation.setCalculatedAt(Instant.now());
-
-        return calculations.save(calculation);
+        return new Figures(gross.setScale(2, RoundingMode.HALF_UP), rate,
+                configuration.map(CommissionConfiguration::getId).orElse(null),
+                commission, gross.subtract(commission).setScale(2, RoundingMode.HALF_UP));
     }
 
     /**

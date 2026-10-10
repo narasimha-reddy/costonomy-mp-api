@@ -79,6 +79,21 @@ public class SupplierStore extends BaseEntity {
     @Column(name = "preparation_minutes", nullable = false)
     private Integer preparationMinutes = 60;
 
+    /**
+     * Whether a restaurant may order from this store without asking first.
+     *
+     * <p>The request round trip exists to establish that the goods are there. A
+     * store that keeps stock already knows, so this turns the question off and
+     * lets an order be created straight from the cart at the listed price.
+     *
+     * <p><b>Off is the safe default and stays it.</b> A store that has not said
+     * it holds inventory has not said it, and treating silence as consent would
+     * put orders in front of suppliers who expected to be asked. The supplier
+     * sets it; an operator may set it for them, and either way it is audited.
+     */
+    @Column(name = "direct_orders_enabled", nullable = false)
+    private boolean directOrdersEnabled = false;
+
     public boolean isOperational() {
         return "ACTIVE".equals(status);
     }

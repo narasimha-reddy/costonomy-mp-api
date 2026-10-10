@@ -115,7 +115,7 @@ class MigrationIT extends AbstractIntegrationTest {
                   -- locking on a hot counter would mean constant conflicts on
                   -- the one row every submission touches.
                   and t.table_name not in ('order_number_sequence', 'credit_invoice_sequence',
-                                           'dispute_number_sequence',
+                                           'credit_invoice_note_sequence', 'dispute_number_sequence',
                                            'settlement_number_sequence')
                   and exists (
                       select 1 from information_schema.columns c
@@ -166,6 +166,14 @@ class MigrationIT extends AbstractIntegrationTest {
                         "credit_transaction",
                         "credit_limit_history",
                         "credit_payment",
+                        "credit_due_extension",
+                        "credit_payment_reversal",
+                        // Which invoices a reminder named (the unique key makes an automatic one once a day), and the
+                        // record that a store's daily digest was looked at: facts about what was sent, never edited.
+                        "credit_reminder_invoice",
+                        "credit_digest_log",
+                        // A credit note or write-off is never edited or deleted (B7, B8, D-175).
+                        "credit_invoice_note",
                         // Delivery's evidence trail. A courier's event, a driver's
                         // position and a booking attempt are records of what
                         // happened; editing one would rewrite the journey.
@@ -173,6 +181,14 @@ class MigrationIT extends AbstractIntegrationTest {
                         "delivery_provider_attempt",
                         "delivery_event",
                         "delivery_location",
+                        // The one-to-one boundary between a request and the order
+                        // it became. Written once, at the moment the order is
+                        // created, and never again: an updated_at here would mean
+                        // a request could be re-pointed at a different order, and
+                        // uk_intent_order_link_intent exists precisely so it
+                        // cannot. Which request produced which order is a fact
+                        // about the past.
+                        "intent_order_link",
                         // Realtime's projection and its handshake tickets. Both are
                         // written once and read by cursor; a row that changed after
                         // the fact would change what a client already replayed.
@@ -189,15 +205,24 @@ class MigrationIT extends AbstractIntegrationTest {
                         // that could be edited would be a metric that could be
                         // rewritten after the fact.
                         "analytics_event",
+                        // A page of a wallet bill (D-113): written once with the bill, removed with it
+                        // (ON DELETE CASCADE), never edited. A different file would be a different page.
+                        "wallet_entry_invoice_page",
                         // A correction to a payout is a record of what was agreed.
                         // Editing one would rewrite what a supplier was paid.
                         "settlement_adjustment",
                         // Reference data that is added or removed, never edited.
                         "canonical_product_alias",
-                        // Pure join tables.
+                        // Pure join tables and links.
                         "role_permission",
                         "restaurant_user_outlet",
                         "supplier_user_store",
+                        // A subscription's excluded dates are immutable entries in
+                        // the schedule, not independently updated entities.
+                        "subscription_skip_date",
+                        "delivery_ledger",
+                        "delivery_provider_stats",
+                        "delivery_provider_metrics",
                         // Owned by ShedLock; its columns are fixed by the library.
                         "shedlock");
     }

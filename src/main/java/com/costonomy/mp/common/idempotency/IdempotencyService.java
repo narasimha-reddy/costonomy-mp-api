@@ -3,7 +3,8 @@ package com.costonomy.mp.common.idempotency;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -28,6 +29,7 @@ import java.util.function.Supplier;
  *       <ul>
  *         <li>{@code COMPLETED}, hash matches → replay the stored response.</li>
  *         <li>{@code IN_PROGRESS} → {@code IDEMPOTENT_REQUEST_IN_PROGRESS}; retry later.</li>
+ *         <li>{@code FAILED} → {@code IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED}; use a new key.</li>
  *         <li>hash differs → {@code IDEMPOTENCY_KEY_REUSE}.</li>
  *       </ul></li>
  *   <li><b>The winner runs the operation</b>, then stores the response, or
@@ -41,11 +43,25 @@ import java.util.function.Supplier;
  * scheduled job — so no idempotency key relates them.
  */
 @Service
-@RequiredArgsConstructor
 public class IdempotencyService {
 
     private final IdempotencyStore store;
     private final ObjectMapper objectMapper;
+    /**
+     * A copy of the app mapper used ONLY to hash. Map entries and bean properties are written in sorted order, so the
+     * hash of one logical request is the same whichever map implementation or JVM built it ({@code Map.of} iterates in
+     * an order salted per JVM: a retry after a restart, or on another instance, would otherwise read as a different
+     * request and be refused as a key reuse). The stored responses still use {@link #objectMapper}.
+     */
+    private final ObjectMapper canonicalMapper;
+
+    public IdempotencyService(IdempotencyStore store, ObjectMapper objectMapper) {
+        this.store = store;
+        this.objectMapper = objectMapper;
+        this.canonicalMapper = objectMapper.copy()
+                .enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
+                .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+    }
 
     @Value("${costonomy.mp.idempotency.retention:24h}")
     private Duration retention;
@@ -77,7 +93,14 @@ public class IdempotencyService {
             store.complete(actorId, operation, idempotencyKey, result);
             return result;
         } catch (RuntimeException ex) {
-            store.fail(actorId, operation, idempotencyKey);
+            if (ex instanceof BusinessException refusal && refusal.code() == ErrorCode.WITHDRAWALS_PAUSED) {
+                // Refused before anything was done, for a reason that will pass: a FAILED key would answer the
+                // app's retry with "the previous attempt failed" for as long as it kept the key, which a client
+                // keeps for a server error, and the pause would outlast itself.
+                store.release(actorId, operation, idempotencyKey);
+            } else {
+                store.fail(actorId, operation, idempotencyKey);
+            }
             throw ex;
         }
     }
@@ -92,9 +115,9 @@ public class IdempotencyService {
         return switch (record.getState()) {
             case COMPLETED -> deserialize(record, responseType);
             case IN_PROGRESS -> throw new BusinessException(ErrorCode.IDEMPOTENT_REQUEST_IN_PROGRESS);
-            case FAILED -> throw new BusinessException(
-                    ErrorCode.IDEMPOTENT_REQUEST_IN_PROGRESS,
-                    "The previous attempt failed. Please retry.");
+            // Definitive: this key will never run again, so the client must use a NEW key. Not "in progress":
+            // a client keeps its key on that code and would loop on it for the whole retention.
+            case FAILED -> throw new BusinessException(ErrorCode.IDEMPOTENT_PREVIOUS_ATTEMPT_FAILED);
         };
     }
 
@@ -116,11 +139,13 @@ public class IdempotencyService {
      *
      * <p>Computed from our deserialised DTO rather than the client's raw bytes,
      * so cosmetic differences in the client's JSON (key order, whitespace) do not
-     * read as a different payload.
+     * read as a different payload. Map entries and properties are sorted (see
+     * {@link #canonicalMapper}); numbers are the caller's to normalise (the money
+     * payloads write the amount as scaled plain text).
      */
     String hash(Object payload) {
         try {
-            String canonical = payload == null ? "" : objectMapper.writeValueAsString(payload);
+            String canonical = payload == null ? "" : canonicalMapper.writeValueAsString(payload);
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             return HexFormat.of().formatHex(digest.digest(canonical.getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException ex) {

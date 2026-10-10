@@ -56,7 +56,9 @@ public class DiscoveryDirectory {
              */
             boolean openNow,
             /** {@code HH:mm} the store next opens, for the "opens at" label. */
-            String opensAt) {
+            String opensAt,
+            /** Restaurants may order here without sending a request first. D-094. */
+            boolean directOrdersEnabled) {
     }
 
     public Optional<OutletInfo> outlet(Long outletId) {
@@ -83,7 +85,7 @@ public class DiscoveryDirectory {
                        s.latitude, s.longitude, s.city,
                        s.response_sla_seconds, s.preparation_minutes,
                        d.max_delivery_radius_km, d.serviceable_pincodes_json,
-                       s.operating_hours_json
+                       s.operating_hours_json, s.direct_orders_enabled
                   from supplier_store s
                   join supplier_organization o on o.id = s.supplier_organization_id
                   left join supplier_delivery_policy d on d.supplier_store_id = s.id
@@ -101,7 +103,8 @@ public class DiscoveryDirectory {
                             rs.getInt(9), rs.getInt(10),
                             rs.getBigDecimal(11), parsePincodes(rs.getString(12)),
                             hours.isOpenAt(ZonedDateTime.now(OperatingHours.ZONE)),
-                            hours.opensAt().toString()));
+                            hours.opensAt().toString(),
+                            rs.getBoolean(14)));
                 },
                 storeIds.toArray());
         return result;

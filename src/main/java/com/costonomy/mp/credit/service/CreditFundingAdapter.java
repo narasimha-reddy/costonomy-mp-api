@@ -37,10 +37,16 @@ public class CreditFundingAdapter implements OrderFundingPort {
     private final CreditLedgerService ledger;
     private final CreditAgreementService agreements;
     private final CreditReservationRepository reservations;
+    private final CreditCancellationService cancellation;
 
     @Override
     public String paymentMethod() {
         return "CREDIT";
+    }
+
+    @Override
+    public boolean canFund(Long outletId, Long supplierStoreId) {
+        return agreements.fundingAgreement(outletId, supplierStoreId) != null;
     }
 
     @Override
@@ -86,6 +92,21 @@ public class CreditFundingAdapter implements OrderFundingPort {
                 .orElse(false);
     }
 
+    /**
+     * ON_CREDIT while the supplier's credit covers it (reserved or drawn); RELEASED,
+     * FAILED or EXPIRED when it does not; PENDING while the request is open. Money
+     * never passes through Mandi on credit, so "authorised" was never true of it.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public java.util.Optional<String> paymentState(Long supplierOrderId) {
+        return reservations.findBySupplierOrderId(supplierOrderId).map(reservation -> switch (reservation.getStatus()) {
+            case RESERVED, UTILIZED -> "ON_CREDIT";
+            case REQUESTED -> "PENDING";
+            case RELEASED, EXPIRED, FAILED -> reservation.getStatus().name();
+        });
+    }
+
     @Override
     @Transactional
     public void onOrderAccepted(Long supplierOrderId, BigDecimal acceptedAmount) {
@@ -97,6 +118,29 @@ public class CreditFundingAdapter implements OrderFundingPort {
     @Override
     @Transactional
     public void onOrderUnfulfilled(Long supplierOrderId, String reason) {
+        // A hold that was never drawn is given back; an order already drawn (D-091) owes nothing for goods that will
+        // not arrive, so a system credit note takes the debt off, in this same transaction (B7, D-176).
         ledger.release(supplierOrderId, reason);
+        cancellation.onCancelledAfterDraw(supplierOrderId, reason);
+    }
+
+    /** Credit draws the accepted value at acceptance; at ready it comes down to the final payable (D-128). */
+    @Override
+    @Transactional
+    public Reduction onOrderDispatched(Long supplierOrderId, BigDecimal finalPayable, BigDecimal reductionAmount) {
+        return toReduction(ledger.reduceDrawnTo(supplierOrderId, finalPayable, reductionAmount,
+                "Order weighed lighter than ordered: invoice reduced"));
+    }
+
+    @Override
+    @Transactional
+    public Reduction reduceAfterDispatch(Long supplierOrderId, BigDecimal amount, BigDecimal newFinalPayable,
+                                         String key, Long actorId, String reason) {
+        return toReduction(ledger.reduceDrawnTo(supplierOrderId, newFinalPayable, amount, reason));
+    }
+
+    private static Reduction toReduction(CreditInvoiceService.Reduction r) {
+        return r == null ? Reduction.applied(null)
+                : Reduction.applied("credit_invoice:" + r.invoiceId(), r.settledOutside());
     }
 }

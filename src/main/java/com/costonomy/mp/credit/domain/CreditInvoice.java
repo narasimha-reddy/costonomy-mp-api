@@ -56,6 +56,13 @@ public class CreditInvoice extends BaseEntity {
     @Column(name = "paid_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal paidAmount = BigDecimal.ZERO;
 
+    /**
+     * What credit notes and write-offs took off the invoice (B7, B8, D-175): not paid, so never counted as collected,
+     * but no longer owed.
+     */
+    @Column(name = "credited_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal creditedAmount = BigDecimal.ZERO;
+
     @Column(name = "issued_at", nullable = false)
     private Instant issuedAt;
 
@@ -72,7 +79,25 @@ public class CreditInvoice extends BaseEntity {
     @Column(name = "settled_at")
     private Instant settledAt;
 
+    /** What is still owed: the amount less what was paid and what was credited or written off (D-175). The one definition. */
     public BigDecimal outstanding() {
-        return amount.subtract(paidAmount);
+        return amount.subtract(paidAmount).subtract(creditedAmount);
+    }
+
+    /** Paid or taken off: the part of the invoice that is no longer owed. */
+    public BigDecimal reduced() {
+        return paidAmount.add(creditedAmount);
+    }
+
+    /**
+     * How much more of this invoice can be reported as paid: what is outstanding less what is already claimed and
+     * waiting for the supplier, never below zero, and zero once settled (D-157). The claim endpoint and every read
+     * use this one rule.
+     */
+    public BigDecimal reportable(BigDecimal openClaims) {
+        if (status.isSettled()) {
+            return BigDecimal.ZERO;
+        }
+        return outstanding().subtract(openClaims == null ? BigDecimal.ZERO : openClaims).max(BigDecimal.ZERO);
     }
 }

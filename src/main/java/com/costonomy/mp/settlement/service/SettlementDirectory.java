@@ -42,16 +42,24 @@ public class SettlementDirectory {
      * has checked it in: that is the last moment a shortfall can surface, and
      * paying a supplier before anyone has counted the goods would mean clawing it
      * back through an adjustment in the common case rather than the rare one.
+     *
+     * <p><b>PREPAID only (D-147).</b> Credit is funded and collected by the
+     * supplier: Costonomy took no money for it, so it owes the supplier no payout
+     * and earns no commission on it. An allow-list rather than "not CREDIT", so a
+     * funding method added later stays out of settlement until someone decides,
+     * deliberately, how it is paid out.
      */
     public List<SettleableOrder> settleableOrders(Instant from, Instant to) {
         List<SettleableOrder> orders = new ArrayList<>();
         jdbc.query("""
                 select so.id, so.supplier_store_id, ss.supplier_organization_id,
-                       so.accepted_amount, so.delivery_fee, so.updated_at
+                       coalesce(so.final_payable_amount, so.accepted_amount - coalesce(so.doorstep_refund_amount, 0) - coalesce(so.weight_adjustment_amount, 0)),
+                       so.delivery_fee, so.updated_at
                   from supplier_order so
                   join supplier_store ss on ss.id = so.supplier_store_id
              left join commission_calculation c on c.supplier_order_id = so.id
                  where so.status = 'COMPLETED'
+                   and so.payment_method = 'PREPAID'
                    and so.updated_at >= ? and so.updated_at < ?
                    and c.id is null
                  order by so.id
@@ -74,18 +82,97 @@ public class SettlementDirectory {
      * the first sign that a capture failed silently or a refund went unaccounted.
      */
     public BigDecimal capturedFor(List<Long> orderIds) {
+        return collectedFor(orderIds);
+    }
+
+    /**
+     * What the buyers actually paid for these orders, counted the way each order was funded:
+     * card orders from the payment table (captured minus refunded), wallet orders from the
+     * wallet ledger (debits minus credits), credit orders from the invoice. Counting only
+     * the payment table would call every wallet and credit order a mismatch.
+     */
+    public BigDecimal collectedFor(List<Long> orderIds) {
         if (orderIds.isEmpty()) {
             return BigDecimal.ZERO;
         }
-        String placeholders = String.join(",", java.util.Collections.nCopies(orderIds.size(), "?"));
-        var captured = jdbc.queryForObject("""
-                select coalesce(sum(captured_amount - refunded_amount), 0)
-                  from payment where supplier_order_id in (%s)
-                """.formatted(placeholders), BigDecimal.class, orderIds.toArray());
-        return captured == null ? BigDecimal.ZERO : captured;
+        String in = String.join(",", java.util.Collections.nCopies(orderIds.size(), "?"));
+        Object[] args = orderIds.toArray();
+        BigDecimal card = sum("""
+                select sum(p.captured_amount - p.refunded_amount)
+                  from payment p join supplier_order so on so.id = p.supplier_order_id
+                 where so.payment_method = 'PREPAID' and so.id in (%s)
+                """.formatted(in), args);
+        BigDecimal wallet = sum("""
+                select sum(case when t.direction = 'DEBIT' then t.amount else -t.amount end)
+                  from wallet_transaction t join supplier_order so on so.id = t.supplier_order_id
+                 where so.payment_method = 'WALLET' and so.id in (%s)
+                """.formatted(in), args);
+        BigDecimal credit = sum("""
+                select sum(i.amount)
+                  from credit_invoice i join supplier_order so on so.id = i.supplier_order_id
+                 where so.payment_method = 'CREDIT' and so.id in (%s)
+                """.formatted(in), args);
+        return card.add(wallet).add(credit);
     }
 
-    /** Stores with unsettled completed orders. */
+    /**
+     * Refunds already taken out of this settlement as REFUND debit lines (D-104). The restaurant got
+     * that money back and the payout is lower by exactly it, so collected is expected to be lower
+     * than gross by the same amount; anything beyond it is unaccounted.
+     */
+    public BigDecimal refundsDeductedFrom(Long settlementId) {
+        var total = jdbc.queryForObject("""
+                select sum(amount) from settlement_adjustment
+                 where settlement_id = ? and direction = 'DEBIT' and reason_code = 'REFUND'
+                """, BigDecimal.class, settlementId);
+        return total == null ? BigDecimal.ZERO : total;
+    }
+
+    private BigDecimal sum(String sql, Object[] args) {
+        var value = jdbc.queryForObject(sql, BigDecimal.class, args);
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    /**
+     * One order as settlement sees it, in whatever state it is, with its status.
+     * For a refund decided before the order is settled (D-104).
+     */
+    public record OrderFigures(SettleableOrder order, String status) {
+    }
+
+    public java.util.Optional<OrderFigures> orderFigures(Long supplierOrderId) {
+        var rows = jdbc.query("""
+                select so.id, so.supplier_store_id, ss.supplier_organization_id,
+                       coalesce(so.final_payable_amount, so.accepted_amount), so.delivery_fee, so.updated_at, so.status
+                  from supplier_order so
+                  join supplier_store ss on ss.id = so.supplier_store_id
+                 where so.id = ?
+                """,
+                (rs, row) -> new OrderFigures(new SettleableOrder(rs.getLong(1), rs.getLong(2),
+                        rs.getLong(3),
+                        rs.getBigDecimal(4) == null ? BigDecimal.ZERO : rs.getBigDecimal(4),
+                        rs.getBigDecimal(5), rs.getTimestamp(6).toInstant()), rs.getString(7)),
+                supplierOrderId);
+        return rows.stream().findFirst();
+    }
+
+    /**
+     * Refund requests on this settlement's orders that nobody has decided yet —
+     * asked for, or declined by the supplier and waiting for operations (D-104).
+     * While there are any, the payout they would come out of cannot be approved.
+     */
+    public List<String> undecidedRefunds(Long settlementId) {
+        return jdbc.queryForList("""
+                select concat(so.order_number, ' (request ', dr.id, ', ', dr.status, ')')
+                  from dispute_refund dr
+                  join commission_calculation c on c.supplier_order_id = dr.supplier_order_id
+                  join supplier_order so on so.id = dr.supplier_order_id
+                 where c.settlement_id = ? and dr.status in ('REQUESTED', 'DECLINED')
+                 order by dr.id
+                """, String.class, settlementId);
+    }
+
+    /** Stores with unsettled completed PREPAID orders (credit is never settled, D-147). */
     public List<Long> storesWithSettleableOrders(Instant from, Instant to) {
         List<Long> stores = new ArrayList<>();
         jdbc.query("""
@@ -93,6 +180,7 @@ public class SettlementDirectory {
                   from supplier_order so
              left join commission_calculation c on c.supplier_order_id = so.id
                  where so.status = 'COMPLETED'
+                   and so.payment_method = 'PREPAID'
                    and so.updated_at >= ? and so.updated_at < ?
                    and c.id is null
                 """,
@@ -101,5 +189,29 @@ public class SettlementDirectory {
                 },
                 java.sql.Timestamp.from(from), java.sql.Timestamp.from(to));
         return stores;
+    }
+
+    /** What left restaurants' wallets as credit repayments in the window (D-152), by the debit's own time. */
+    public BigDecimal walletCreditRepaymentDebits(Instant from, Instant to) {
+        return jdbc.queryForObject("""
+                select coalesce(sum(amount), 0) from wallet_transaction
+                 where kind = 'CREDIT_REPAYMENT' and direction = 'DEBIT'
+                   and created_at >= ? and created_at < ?
+                """, BigDecimal.class, java.sql.Timestamp.from(from), java.sql.Timestamp.from(to));
+    }
+
+    /**
+     * What Mandi owes suppliers for those repayments (D-156): the payouts behind wallet debits in the window.
+     * Windowed by the wallet debit's time, not the payout's, so the two sums cannot differ by a clock edge.
+     */
+    public BigDecimal creditRepaymentPayoutsForDebits(Instant from, Instant to) {
+        return jdbc.queryForObject("""
+                select coalesce(sum(p.amount), 0)
+                  from credit_repayment_payout p
+                  join credit_repayment r on r.id = p.credit_repayment_id
+                  join wallet_transaction t on t.id = r.wallet_transaction_id
+                 where t.kind = 'CREDIT_REPAYMENT' and t.direction = 'DEBIT'
+                   and t.created_at >= ? and t.created_at < ?
+                """, BigDecimal.class, java.sql.Timestamp.from(from), java.sql.Timestamp.from(to));
     }
 }

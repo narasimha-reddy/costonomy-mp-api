@@ -44,7 +44,16 @@ public class ProcurementDirectory {
             BigDecimal latitude,
             BigDecimal longitude,
             boolean openNow,
-            String opensAt) {
+            String opensAt,
+            /**
+             * This store takes orders without being asked first.
+             *
+             * <p>The request round trip is how we find out whether the goods are
+             * there; a store holding stock has already answered that.
+             */
+            boolean directOrdersEnabled,
+            BigDecimal minOrderValue,
+            BigDecimal freeDeliveryThreshold) {
     }
 
     public Map<Long, StoreInfo> stores(List<Long> storeIds) {
@@ -57,9 +66,11 @@ public class ProcurementDirectory {
         jdbc.query("""
                 select s.id, s.name, o.display_name, s.status, o.lifecycle_status,
                        s.response_sla_seconds, s.latitude, s.longitude,
-                       s.operating_hours_json
+                       s.operating_hours_json, s.direct_orders_enabled,
+                       d.min_order_value, d.free_delivery_threshold
                   from supplier_store s
                   join supplier_organization o on o.id = s.supplier_organization_id
+                  left join supplier_delivery_policy d on d.supplier_store_id = s.id
                  where s.id in (%s)
                 """.formatted(placeholders),
                 // A statement block, not an expression: Map.put returns a value,
@@ -74,7 +85,9 @@ public class ProcurementDirectory {
                             "ACTIVE".equals(rs.getString(4)) && "ACTIVE".equals(rs.getString(5))
                                     && open,
                             rs.getInt(6), rs.getBigDecimal(7), rs.getBigDecimal(8),
-                            open, hours.opensAt().toString()));
+                            open, hours.opensAt().toString(), rs.getBoolean(10),
+                            rs.getBigDecimal(11) != null ? rs.getBigDecimal(11) : BigDecimal.ZERO,
+                            rs.getBigDecimal(12)));
                 },
                 storeIds.toArray());
         return result;
@@ -110,6 +123,33 @@ public class ProcurementDirectory {
                         rs.getString(5),
                         rs.getBigDecimal(6), rs.getBigDecimal(7)),
                 outletId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * The earliest unsettled due date of the order's credit invoices, or null (not on credit, or none open). Plain
+     * JDBC on purpose: it only words a notification, and a read that goes through the credit module's transactional
+     * service would mark the releasing transaction rollback-only if it threw, even when the caller catches it.
+     */
+    public java.time.LocalDate creditDueDateOf(Long supplierOrderId) {
+        var dates = jdbc.queryForList("""
+                select min(due_date) from credit_invoice
+                 where supplier_order_id = ? and status not in ('PAID', 'WRITTEN_OFF')
+                """, java.sql.Date.class, supplierOrderId);
+        return dates.isEmpty() || dates.get(0) == null ? null : dates.get(0).toLocalDate();
+    }
+
+    /** A published rating of an order: stars and comment. */
+    public record OrderRating(int overall, String comment) {
+    }
+
+    /** The order's rating when the restaurant left one and moderation has not hidden it; null otherwise. */
+    public OrderRating publishedRatingOf(Long supplierOrderId) {
+        var rows = jdbc.query("""
+                select overall_rating, comment from rating
+                 where supplier_order_id = ? and moderation_status = 'PUBLISHED'
+                """,
+                (rs, i) -> new OrderRating(rs.getInt(1), rs.getString(2)), supplierOrderId);
         return rows.isEmpty() ? null : rows.get(0);
     }
 

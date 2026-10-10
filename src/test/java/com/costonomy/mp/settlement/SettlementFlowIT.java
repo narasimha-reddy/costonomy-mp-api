@@ -7,6 +7,7 @@ import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
 import com.costonomy.mp.support.TestCheckout;
+import com.costonomy.mp.support.TestOrder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,11 +50,13 @@ class SettlementFlowIT extends AbstractIntegrationTest {
 
     private ApiClient api;
     private TestCheckout checkout;
+    private TestOrder orders;
 
     @BeforeEach
     void setUp() {
         api = new ApiClient(mvc, json);
         checkout = new TestCheckout(paymentProvider, api);
+        orders = new TestOrder(mvc, json, api);
     }
 
     private record Buyer(String token, long outletId) {
@@ -96,7 +99,8 @@ class SettlementFlowIT extends AbstractIntegrationTest {
         String token = api.loginFresh();
         JsonNode created = api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", "ABC Foods Pvt Ltd", "displayName", "ABC Foods",
-                "firstStore", Map.of("name", "ABC store", "addressLine1", "Road No 36",
+                "contactName", "Ops Desk", "contactPhone", "+919876500000",
+                "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", "name", "ABC store", "addressLine1", "Road No 36",
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
         long supplierId = created.get("id").asLong();
@@ -141,28 +145,26 @@ class SettlementFlowIT extends AbstractIntegrationTest {
                 "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
                 Long.class, skuId);
 
-        long procurementId = api.post(buyer.token(),
-                "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                Map.of("supplierOfferId", offerId, "quantity", quantity)).at("/data/id").asLong();
-        api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                Map.of("acceptPriceChanges", false));
+        // Through the request. D-091 removed the cart, and with it the order
+        // acceptance this fixture used to perform -- the supplier commits when
+        // they answer, and the order is theirs to work on from the moment it is
+        // paid for.
+        //
+        // SUPPLIER_DELIVERY because this store carries its own, which is what
+        // lets the seller report the dispatch below. Under COSTONOMY_DELIVERY
+        // that is a courier's to report and the supplier is refused (§23A.38) --
+        // a rule the order's mode now decides rather than the store's policy.
+        var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                skuId, quantity, quantity, "SUPPLIER_DELIVERY", null, null);
+        checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
 
-        String body = mvc.perform(MockMvcRequestBuilders
-                        .post("/api/v1/procurements/" + procurementId + "/submit")
-                        .header("Authorization", "Bearer " + buyer.token())
-                        .header("Idempotency-Key", UUID.randomUUID().toString())
-                        .contentType(MediaType.APPLICATION_JSON))
-                .andReturn().getResponse().getContentAsString();
-        JsonNode submitted = json.readTree(body);
-        checkout.payAll(buyer.token(), submitted);
-
-        long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
-        supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/accept");
-        // The capture is what reconciliation checks the settlement against.
-        paymentJobs.capturePending();
+        long orderId = placed.orderId();
 
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/preparing");
         supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/ready");
+        // The capture is what reconciliation checks the settlement against, and
+        // since D-103 it follows "ready" rather than the payment.
+        paymentJobs.capturePending();
 
         long deliveryId = json.readTree(mvc.perform(MockMvcRequestBuilders
                         .post("/api/v1/supplier-orders/" + orderId + "/delivery")
@@ -202,8 +204,14 @@ class SettlementFlowIT extends AbstractIntegrationTest {
                     (scope_type, scope_id, rate_percent, config_version, description,
                      effective_from, status, created_at, updated_at, version)
                 values ('SUPPLIER', ?, ?, 1, 'Negotiated for this test',
-                        now(6), 'ACTIVE', now(6), now(6), 0)
+                        now(6) - interval 1 minute, 'ACTIVE', now(6), now(6), 0)
                 """, supplierId, new BigDecimal(ratePercent));
+        // A minute back, not now(6): that is the database's clock, and the
+        // calculation reads the application's. Where the two differ — MySQL in a
+        // Docker VM runs about 0.2s ahead of the host on macOS — a rate stamped
+        // "now" was not yet effective when settlement ran a moment later, and the
+        // negotiated supplier was charged the default rate. Still set before the
+        // run, which is all the test means.
     }
 
     /** Generate over a window wide enough to include everything this test made. */
@@ -255,38 +263,23 @@ class SettlementFlowIT extends AbstractIntegrationTest {
                     Map.of("canonicalProductId", productId, "skuCode", "P-" + productId,
                             "name", "Paneer", "packSize", 1, "packUnit", "KG",
                             "sellingPrice", "400", "gstRate", "0")).at("/data/id").asLong();
-            long offerId = jdbc.queryForObject(
-                    "select id from supplier_offer where supplier_sku_id = ? and status = 'ACTIVE'",
-                    Long.class, skuId);
-            long procurementId = api.post(buyer.token(),
-                    "/api/v1/outlets/" + buyer.outletId() + "/cart/items",
-                    Map.of("supplierOfferId", offerId, "quantity", 10)).at("/data/id").asLong();
-            api.post(buyer.token(), "/api/v1/procurements/" + procurementId + "/validate",
-                    Map.of("acceptPriceChanges", false));
-            JsonNode submitted = json.readTree(mvc.perform(MockMvcRequestBuilders
-                            .post("/api/v1/procurements/" + procurementId + "/submit")
-                            .header("Authorization", "Bearer " + buyer.token())
-                            .header("Idempotency-Key", UUID.randomUUID().toString())
-                            .contentType(MediaType.APPLICATION_JSON))
-                    .andReturn().getResponse().getContentAsString());
-            checkout.payAll(buyer.token(), submitted);
+            // Ten asked for, six offered. D-091 moved the partial to the request:
+            // the supplier says what they can supply, the restaurant orders that,
+            // and the order is created for six rather than being an order for ten
+            // that was later cut down. The commission base is the same either
+            // way, which is what this asserts -- only the route changed.
+            var placed = orders.place(buyer.token(), buyer.outletId(), seller.token(),
+                    skuId, 10, 6, "SUPPLIER_DELIVERY", null, null);
+            checkout.pay(buyer.token(), placed.paymentId(), placed.providerOrderId());
 
-            long orderId = submitted.at("/data/supplierOrders/0/id").asLong();
+            long orderId = placed.orderId();
             long itemId = jdbc.queryForObject(
                     "select id from supplier_order_item where supplier_order_id = ?",
                     Long.class, orderId);
-
-            mvc.perform(MockMvcRequestBuilders
-                    .post("/api/v1/supplier-orders/" + orderId + "/partial-accept")
-                    .header("Authorization", "Bearer " + seller.token())
-                    .header("Idempotency-Key", UUID.randomUUID().toString())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content(json.writeValueAsString(Map.of("items", List.of(Map.of(
-                            "supplierOrderItemId", itemId, "acceptedQuantity", 6))))));
-            paymentJobs.capturePending();
-
             supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/preparing");
             supplierPost(seller, "/api/v1/supplier-orders/" + orderId + "/ready");
+            // Taken at "ready" since D-103.
+            paymentJobs.capturePending();
             long deliveryId = json.readTree(mvc.perform(MockMvcRequestBuilders
                             .post("/api/v1/supplier-orders/" + orderId + "/delivery")
                             .header("Authorization", "Bearer " + seller.token())
@@ -328,6 +321,61 @@ class SettlementFlowIT extends AbstractIntegrationTest {
             var settlement = settlementFor(order.seller());
             assertThat(settlement.get("orderCount").asInt()).isEqualTo(1);
             assertThat(settlement.get("grossAmount").asDouble()).isEqualTo(4000.00);
+        }
+    }
+
+    // ── Credit orders ────────────────────────────────────────────────────
+
+    /**
+     * Credit is supplier-funded and supplier-collected: Costonomy took no money for
+     * it, so it has nothing to pay out and no commission to take. The order is made
+     * through the ordinary fixture and then marked as the credit funding adapter
+     * marks one (supplier_order.payment_method = 'CREDIT'); what is under test is
+     * which orders settlement picks up, not how a credit order is placed (that is
+     * CreditFlowIT's).
+     */
+    @Nested
+    @DisplayName("credit orders")
+    class CreditOrders {
+
+        @Test
+        @DisplayName("a completed credit order is never settled or charged commission")
+        void creditOrderIsNeverSettled() throws Exception {
+            var prepaid = completedOrder(10, "400");
+            var credit = completedOrder(5, "400");
+            // Same store, same period, same status: only the funding differs.
+            jdbc.update("update supplier_order set supplier_store_id = ?, "
+                    + "payment_method = 'CREDIT' where id = ?",
+                    prepaid.seller().storeId(), credit.orderId());
+
+            generate();
+
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from commission_calculation where supplier_order_id = ?",
+                    Integer.class, credit.orderId())).isZero();
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from commission_calculation where supplier_order_id = ?",
+                    Integer.class, prepaid.orderId())).isEqualTo(1);
+            var settlement = settlementFor(prepaid.seller());
+            assertThat(settlement.get("orderCount").asInt()).isEqualTo(1);
+            assertThat(settlement.get("grossAmount").asDouble()).isEqualTo(4000.00);
+        }
+
+        @Test
+        @DisplayName("a store with only credit orders gets no settlement at all")
+        void storeWithOnlyCreditOrdersGetsNoSettlement() throws Exception {
+            var credit = completedOrder(5, "400");
+            jdbc.update("update supplier_order set payment_method = 'CREDIT' where id = ?",
+                    credit.orderId());
+
+            generate();
+
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from settlement where supplier_store_id = ?",
+                    Integer.class, credit.seller().storeId())).isZero();
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from commission_calculation where supplier_order_id = ?",
+                    Integer.class, credit.orderId())).isZero();
         }
     }
 
@@ -606,6 +654,75 @@ class SettlementFlowIT extends AbstractIntegrationTest {
             var audit = api.get(finance,
                     "/api/v1/admin/audit?action=SETTLEMENT_RECONCILIATION_MISMATCH").at("/data");
             assertThat(audit).isNotEmpty();
+        }
+
+        @Test
+        @DisplayName("an order that does not reconcile cannot be approved without an acknowledgement")
+        void approvalRefusedOnMismatch() throws Exception {
+            var order = completedOrder(10, "400");
+            generate();
+            String finance = operator("OPS_FINANCE");
+            long settlementId = settlementFor(order.seller()).get("id").asLong();
+
+            // No reconcile call first: approval checks for itself rather than trusting the last sweep.
+            jdbc.update("update payment set refunded_amount = 500.00 where supplier_order_id = ?",
+                    order.orderId());
+
+            int refused = api.postStatus(finance,
+                    "/api/v1/admin/settlements/" + settlementId + "/approve", Map.of("note", "ok"));
+
+            assertThat(refused).isEqualTo(409);
+            assertThat(jdbc.queryForObject("select status from settlement where id = ?",
+                    String.class, settlementId)).isEqualTo("CALCULATED");
+        }
+
+        @Test
+        @DisplayName("a mismatch can be approved with a written acknowledgement, and it is audited")
+        void approvalWithAcknowledgement() throws Exception {
+            var order = completedOrder(10, "400");
+            generate();
+            String finance = operator("OPS_FINANCE");
+            long settlementId = settlementFor(order.seller()).get("id").asLong();
+            jdbc.update("update payment set refunded_amount = 500.00 where supplier_order_id = ?",
+                    order.orderId());
+
+            var approved = api.post(finance, "/api/v1/admin/settlements/" + settlementId + "/approve",
+                    Map.of("note", "ok", "acknowledgeMismatchNote", "Refund booked offline, ticket 4411"))
+                    .at("/data");
+
+            assertThat(approved.get("status").asText()).isEqualTo("APPROVED");
+            var actions = new java.util.ArrayList<String>();
+            api.get(finance, "/api/v1/admin/audit?entityType=SETTLEMENT&entityId=" + settlementId)
+                    .at("/data").forEach(e -> actions.add(e.get("action").asText()));
+            assertThat(actions).contains("SETTLEMENT_APPROVED_WITH_MISMATCH", "SETTLEMENT_APPROVED");
+        }
+
+        @Test
+        @DisplayName("a wallet-paid order reconciles against the wallet ledger, not the payment table")
+        void walletOrderReconciles() throws Exception {
+            var order = completedOrder(10, "400");
+            generate();
+            String finance = operator("OPS_FINANCE");
+            long settlementId = settlementFor(order.seller()).get("id").asLong();
+
+            // Re-describe the order as wallet-funded: a 4000.00 debit and no payment row counted.
+            jdbc.update("insert ignore into wallet (outlet_id, balance) select outlet_id, 0 from supplier_order where id = ?",
+                    order.orderId());
+            Long walletId = jdbc.queryForObject("""
+                    select w.id from wallet w join supplier_order so on so.outlet_id = w.outlet_id
+                     where so.id = ?""", Long.class, order.orderId());
+            jdbc.update("update supplier_order set payment_method = 'WALLET' where id = ?", order.orderId());
+            jdbc.update("""
+                    insert into wallet_transaction (wallet_id, supplier_order_id, direction, amount,
+                                                    balance_after, reason, kind)
+                    values (?, ?, 'DEBIT', 4000.00, 0, 'test', 'ORDER_PAYMENT')
+                    """, walletId, order.orderId());
+
+            var result = api.post(finance,
+                    "/api/v1/admin/settlements/" + settlementId + "/reconcile", Map.of()).at("/data");
+
+            assertThat(result.get("matched").asBoolean()).isTrue();
+            assertThat(result.get("capturedGross").asDouble()).isEqualTo(4000.00);
         }
 
         @Test

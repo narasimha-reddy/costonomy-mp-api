@@ -1,13 +1,25 @@
 package com.costonomy.mp.credit.web;
 
 import com.costonomy.mp.common.api.ApiResponse;
+import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.common.error.ErrorCode;
+import com.costonomy.mp.credit.domain.CreditClaimStatus;
 import com.costonomy.mp.credit.service.CreditAgreementService;
+import com.costonomy.mp.credit.service.CreditClaimService;
+import com.costonomy.mp.credit.service.CreditReadService;
+import com.costonomy.mp.credit.service.CreditSupplierReadService;
+import com.costonomy.mp.credit.domain.CreditAgreementStatus;
+import com.costonomy.mp.credit.domain.CreditPaymentSource;
+import com.costonomy.mp.credit.service.CreditSupplierPaymentService;
 import com.costonomy.mp.credit.service.CreditRepaymentService;
+import com.costonomy.mp.credit.service.CreditWalletRepaymentService;
 import com.costonomy.mp.credit.web.dto.CreditDtos;
 import com.costonomy.mp.identity.security.ActorContext;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import io.swagger.v3.oas.annotations.Parameter;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
@@ -28,6 +40,11 @@ public class CreditController {
 
     private final CreditAgreementService agreements;
     private final CreditRepaymentService repayments;
+    private final CreditWalletRepaymentService walletRepayments;
+    private final CreditSupplierPaymentService supplierPayments;
+    private final CreditReadService reads;
+    private final CreditClaimService claims;
+    private final CreditSupplierReadService supplierReads;
 
     // ── Restaurant ───────────────────────────────────────────────────────
 
@@ -46,8 +63,65 @@ public class CreditController {
     @PostMapping("/credit/agreements/{id}/accept")
     @Operation(summary = "Accept terms the supplier changed",
             description = "APPROVED → ACTIVE. Credit on terms nobody agreed to is not credit.")
-    public ApiResponse<CreditDtos.AgreementResponse> accept(@PathVariable Long id) {
-        return ApiResponse.ok(agreements.accept(ActorContext.requireUserId(), id));
+    public ApiResponse<CreditDtos.AgreementResponse> accept(
+            @PathVariable Long id, @RequestBody(required = false) CreditDtos.AcceptRequest body) {
+        return ApiResponse.ok(agreements.accept(ActorContext.requireUserId(), id,
+                body == null ? null : body.termsVersion()));
+    }
+
+    @PostMapping("/credit/agreements/{id}/wallet-repayments")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Repay credit from the wallet",
+            description = """
+                    Takes the amount from the outlet's wallet and settles invoices of this agreement with it:
+                    the ones in `invoiceIds`, or the open ones oldest due date first. Needs `CREDIT_REPAY` on
+                    the outlet and an `Idempotency-Key`. Allowed whatever the status of the line.
+
+                    Refused with `CREDIT_OVERPAYMENT` (details: `outstanding`) when the amount is more than is
+                    owed, and with `WALLET_INSUFFICIENT_BALANCE` (details: `shortBy`) when the wallet cannot
+                    cover it; in both cases nothing moves. Off (403) until the supplier payout exists.
+                    """)
+    public ApiResponse<CreditDtos.WalletRepaymentResponse> repayFromWallet(
+            @PathVariable Long id,
+            @Valid @RequestBody CreditDtos.WalletRepaymentRequest body,
+            @Parameter(description = "Client-generated key, required for this operation, 1 to 100 characters")
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+
+        // Checked by hand: a @Size on a header parameter surfaces as a 500 on this stack, not the validation error.
+        if (idempotencyKey.isBlank() || idempotencyKey.length() > 100) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "The Idempotency-Key must be 1 to 100 characters.");
+        }
+        return ApiResponse.ok(walletRepayments.repay(
+                ActorContext.requireUserId(), id, body.amount(), body.invoiceIds(), idempotencyKey));
+    }
+
+    @PostMapping("/credit/invoices/{id}/claims")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Say you paid a supplier directly",
+            description = """
+                    "I paid": the restaurant reports a payment made straight to the supplier (bank transfer, UPI,
+                    cash, cheque or card). It is only a statement and changes nothing (not the invoice, not the
+                    credit line, not an overdue mark) until the supplier confirms it. `reference` is required
+                    unless `method` is CASH; `paidOn` is an India calendar day, not in the future and not before the
+                    invoice was issued. Needs `CREDIT_REPAY` on the outlet and an `Idempotency-Key`.
+
+                    Refused with `CREDIT_OVERPAYMENT` (details: `outstanding`, what can still be claimed: what is
+                    owed less the invoice's other open claims) and nothing is created.
+                    """)
+    public ApiResponse<CreditDtos.ClaimResponse> claim(
+            @PathVariable Long id,
+            @Valid @RequestBody CreditDtos.ClaimRequest body,
+            @Parameter(description = "Client-generated key, required for this operation, 1 to 100 characters")
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        requireKey(idempotencyKey);
+        return ApiResponse.ok(claims.submit(ActorContext.requireUserId(), id, body, idempotencyKey));
+    }
+
+    @PostMapping("/credit/claims/{id}/withdraw")
+    @Operation(summary = "Take back a claim the supplier has not answered",
+            description = "Only while SUBMITTED; otherwise 409 `CREDIT_CLAIM_STATE`. Needs `CREDIT_REPAY` on the outlet.")
+    public ApiResponse<CreditDtos.ClaimResponse> withdrawClaim(@PathVariable Long id) {
+        return ApiResponse.ok(claims.withdraw(ActorContext.requireUserId(), id));
     }
 
     @GetMapping("/outlets/{outletId}/credit/summary")
@@ -67,12 +141,89 @@ public class CreditController {
         return ApiResponse.ok(agreements.forOutlet(ActorContext.requireUserId(), outletId));
     }
 
+    @GetMapping("/outlets/{outletId}/credit/attention")
+    @Operation(summary = "Whether the Home Credit tile needs attention",
+            description = """
+                    `{overdue, dueSoon}` and nothing else: Home shows a dot, never a balance. `overdue` is any
+                    invoice of this outlet marked overdue; `dueSoon` is any open invoice due within the next
+                    three days (India time, grace-period invoices included) that is not already overdue.
+                    Needs `CREDIT_VIEW` on the outlet; another outlet's id is a 404.
+                    """)
+    public ApiResponse<CreditDtos.AttentionResponse> attention(@PathVariable Long outletId) {
+        return ApiResponse.ok(reads.attention(ActorContext.requireUserId(), outletId));
+    }
+
     // ── Supplier ─────────────────────────────────────────────────────────
 
     @GetMapping("/supplier-stores/{storeId}/credit/agreements")
     @Operation(summary = "Credit a store has extended, and requests waiting on it")
     public ApiResponse<List<CreditDtos.AgreementResponse>> forStore(@PathVariable Long storeId) {
         return ApiResponse.ok(agreements.forStore(ActorContext.requireUserId(), storeId));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/credit/receivables")
+    @Operation(summary = "What the store is owed: the Receivables home",
+            description = """
+                    Totals worked out on the server as of today in India: `totalReceivable` (every open invoice's
+                    outstanding), split into `overdue` (past grace, whether or not the hourly sweep has marked it),
+                    `inGrace` and the rest; `dueToday`; `dueThisWeek` (not yet due, due today through the next six
+                    days); `collectedThisMonth` (payments received in the India calendar month, any source). `exposure`
+                    is across ACTIVE lines: `extended` (limits), `drawn`, `availableToLend`. `counts` and
+                    `pendingActions` (only kinds with a count above zero) say what needs doing; render exactly those.
+                    Needs `CREDIT_VIEW` or `CREDIT_REQUEST_VIEW` on the store; anyone else gets a 404.
+                    """)
+    public ApiResponse<CreditDtos.ReceivablesResponse> receivables(@PathVariable Long storeId) {
+        return ApiResponse.ok(supplierReads.receivables(ActorContext.requireUserId(), storeId));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/credit/receivables/restaurants")
+    @Operation(summary = "The Receivables restaurant list",
+            description = """
+                    One row per credit line that is live (ACTIVE or SUSPENDED) or still owes: `owed`, `overdue`,
+                    next due date and amount, the state of the worst open invoice, claims waiting, limit and
+                    utilization. `sort`: `overdue` (default, most overdue first), `owed` (most first) or `nextDue`
+                    (earliest first); ties by agreement id so paging is stable. `status` filters by line status, `q`
+                    matches outlet or restaurant name. `page` from 0, `size` default 20, at most 100. Same access as
+                    `/receivables`.
+                    """)
+    public ApiResponse<CreditDtos.PageOf<CreditDtos.ReceivableRestaurantResponse>> receivableRestaurants(
+            @PathVariable Long storeId,
+            @RequestParam(required = false) String sort,
+            @RequestParam(required = false) CreditAgreementStatus status,
+            @RequestParam(required = false) String q,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(supplierReads.restaurants(ActorContext.requireUserId(), storeId, sort, status, q, page, size));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/credit/ageing")
+    @Operation(summary = "Receivables by how late they are",
+            description = """
+                    Four buckets of open outstanding by days past the due date in India time: `CURRENT` (not yet due
+                    or due today), `D1_7`, `D8_30`, `D30_PLUS`. Invoices inside their grace period sit in `D1_7`. Each
+                    has `amount`, `invoiceCount`, `restaurantCount` and up to five `topRestaurants`. The amounts add up
+                    to `total`, which is `/receivables`' `totalReceivable`. Same access as `/receivables`.
+                    """)
+    public ApiResponse<CreditDtos.AgeingResponse> ageing(@PathVariable Long storeId) {
+        return ApiResponse.ok(supplierReads.ageing(ActorContext.requireUserId(), storeId));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/credit/payments")
+    @Operation(summary = "The store's payment feed",
+            description = "Payments received against the store's credit invoices, newest first: date, restaurant, "
+                    + "invoice number, amount, source, method, reference. `from` and `to` are India calendar days "
+                    + "(YYYY-MM-DD, both inclusive, either optional), `source` is SUPPLIER_RECORDED, WALLET or "
+                    + "CLAIM_CONFIRMED. `page` from 0, `size` default 20, at most 100. Same access as `/receivables`.")
+    public ApiResponse<CreditDtos.PageOf<CreditDtos.PaymentFeedItem>> storePayments(
+            @PathVariable Long storeId,
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(
+                    iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate from,
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(
+                    iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate to,
+            @RequestParam(required = false) CreditPaymentSource source,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(supplierReads.storePayments(ActorContext.requireUserId(), storeId, from, to, source, page, size));
     }
 
     @PostMapping("/credit/agreements/{id}/approve")
@@ -121,6 +272,45 @@ public class CreditController {
         return ApiResponse.ok(agreements.reinstate(ActorContext.requireUserId(), id));
     }
 
+    @PostMapping("/credit/claims/{id}/confirm")
+    @Operation(summary = "Confirm a restaurant's \"I paid\" claim",
+            description = """
+                    The money reached the supplier, so it is recorded as a payment on the invoice (source
+                    CLAIM_CONFIRMED). Leave `amount` out to confirm what was claimed, capped at what is outstanding
+                    now; an explicit amount must be more than zero and at most both. Anything more is
+                    `CREDIT_OVERPAYMENT`. Only a SUBMITTED claim can be confirmed, else 409 `CREDIT_CLAIM_STATE`
+                    (also when the invoice is already settled). Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store
+                    and an `Idempotency-Key`; confirming twice records one payment.
+                    """)
+    public ApiResponse<CreditDtos.ClaimResponse> confirmClaim(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) CreditDtos.ConfirmClaimRequest body,
+            @Parameter(description = "Client-generated key, required for this operation, 1 to 100 characters")
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        requireKey(idempotencyKey);
+        return ApiResponse.ok(claims.confirm(ActorContext.requireUserId(), id,
+                body == null ? null : body.amount(), idempotencyKey));
+    }
+
+    @PostMapping("/credit/claims/{id}/reject")
+    @Operation(summary = "Say you could not confirm a restaurant's claim",
+            description = "Needs a reason of 3 to 500 characters. No money effect. Only while SUBMITTED, else 409 "
+                    + "`CREDIT_CLAIM_STATE`. Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store.")
+    public ApiResponse<CreditDtos.ClaimResponse> rejectClaim(
+            @PathVariable Long id, @Valid @RequestBody CreditDtos.RejectClaimRequest body) {
+        return ApiResponse.ok(claims.reject(ActorContext.requireUserId(), id, body.reason()));
+    }
+
+    @GetMapping("/supplier-stores/{storeId}/credit/claims")
+    @Operation(summary = "The store's inbox of \"I paid\" claims",
+            description = "Newest first, with the restaurant, outlet and invoice number; `?status=SUBMITTED` for what "
+                    + "is waiting on the supplier. Needs `CREDIT_VIEW` or `CREDIT_REQUEST_VIEW` on the store; "
+                    + "anyone else gets a 404.")
+    public ApiResponse<List<CreditDtos.ClaimResponse>> storeClaims(
+            @PathVariable Long storeId, @RequestParam(required = false) CreditClaimStatus status) {
+        return ApiResponse.ok(claims.forStore(ActorContext.requireUserId(), storeId, status));
+    }
+
     // ── Either side ──────────────────────────────────────────────────────
 
     @GetMapping("/credit/agreements/{id}")
@@ -142,13 +332,62 @@ public class CreditController {
         return ApiResponse.ok(agreements.invoicesFor(ActorContext.requireUserId(), id));
     }
 
+    @GetMapping("/credit/agreements/{id}/payments")
+    @Operation(summary = "Payments made on this credit line",
+            description = "Newest first, with the invoice number, amount, source, method and reference. `page` from 0, "
+                    + "`size` default 20, at most 100. Same access as the agreement's ledger: either side, else 404.")
+    public ApiResponse<CreditDtos.PageOf<CreditDtos.PaymentFeedItem>> agreementPayments(
+            @PathVariable Long id, @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(supplierReads.agreementPayments(ActorContext.requireUserId(), id, page, size));
+    }
+
+    @GetMapping("/credit/agreements/{id}/claims")
+    @Operation(summary = "The \"I paid\" claims on this credit line",
+            description = "Newest first, optionally `?status=`. Same access as the agreement's ledger.")
+    public ApiResponse<List<CreditDtos.ClaimResponse>> agreementClaims(
+            @PathVariable Long id, @RequestParam(required = false) CreditClaimStatus status) {
+        return ApiResponse.ok(claims.forAgreement(ActorContext.requireUserId(), id, status));
+    }
+
+    @GetMapping("/credit/invoices/{id}")
+    @Operation(summary = "One invoice with its payments",
+            description = """
+                    The invoice with `dueState` and `daysToDue` worked out here in India time, the supplier order's
+                    number, who it is from, and every payment against it newest first. A payment made from the
+                    wallet carries `walletEntryId`, the wallet ledger entry that paid it. `claims` lists the "I paid"
+                    claims on it, newest first. Either side may read it;
+                    anyone else gets a 404.
+                    """)
+    public ApiResponse<CreditDtos.InvoiceDetailResponse> invoice(@PathVariable Long id) {
+        return ApiResponse.ok(reads.invoice(ActorContext.requireUserId(), id));
+    }
+
+    @GetMapping("/credit/agreements/{id}/statement")
+    @Operation(summary = "A statement of what was owed on this credit line",
+            description = """
+                    Orders on credit, repayments, releases and adjustments between two India calendar days, both
+                    inclusive (`from`/`to` as YYYY-MM-DD, default the last 90 days), newest first. Each line has a
+                    signed `amount` and `owedAfter`; `openingOwed + sum(amount) = closingOwed`. Holds and other
+                    movements that change nothing owed are left out. More than 366 days, or `to` before `from`,
+                    is a validation error. Same access as the agreement's ledger.
+                    """)
+    public ApiResponse<CreditDtos.StatementResponse> statement(
+            @PathVariable Long id,
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(
+                    iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate from,
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(
+                    iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) java.time.LocalDate to) {
+        return ApiResponse.ok(reads.statement(ActorContext.requireUserId(), id, from, to));
+    }
+
     @PostMapping("/credit/invoices/{id}/payments")
     @Operation(summary = "Record a repayment",
             description = """
                     Recorded, not collected: the money moves directly between restaurant and
                     supplier and this reconciles it, reducing the outlet's utilization by the
                     same amount. Idempotent on `Idempotency-Key` — a repeated call must not
-                    reduce the debt twice.
+                    reduce the debt twice. Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; anyone else gets a 404.
                     """)
     public ApiResponse<CreditDtos.PaymentResponse> recordPayment(
             @PathVariable Long id,
@@ -157,5 +396,52 @@ public class CreditController {
 
         return ApiResponse.ok(repayments.record(
                 ActorContext.requireUserId(), id, body, idempotencyKey));
+    }
+
+    @PostMapping("/credit/agreements/{id}/payments/preview")
+    @Operation(summary = "What recording a payment would do",
+            description = """
+                    A pure read: nothing is written, no key is needed. Returns the allocations (oldest due date first,
+                    ties by invoice id; or only the chosen `invoiceIds`, in due-date order among them), each invoice's
+                    `statusAfter`, the line's position after (`due`, `overdue`, `available`, `status`), and
+                    `pendingClaims`: the restaurant's open "I paid" claims on the invoices that would be paid, which the
+                    supplier may prefer to confirm. More than the targeted invoices owe is `CREDIT_OVERPAYMENT`
+                    (details: `outstanding`). Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; others get 404.
+                    """)
+    public ApiResponse<CreditDtos.SupplierPaymentPreviewResponse> previewPayment(
+            @PathVariable Long id, @Valid @RequestBody CreditDtos.SupplierPaymentPreviewRequest body) {
+        return ApiResponse.ok(supplierPayments.preview(ActorContext.requireUserId(), id, body));
+    }
+
+    @PostMapping("/credit/agreements/{id}/payments")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Operation(summary = "Record a payment received for a credit line",
+            description = """
+                    Money the restaurant paid the supplier outside Mandi. One receipt, split over the open invoices
+                    oldest due date first (or the chosen `invoiceIds`), all in one transaction. `method` is CASH, UPI,
+                    BANK_TRANSFER, CHEQUE or CARD (never ADJUSTMENT); `reference` (4 to 64 characters, trimmed) is
+                    required for UPI, BANK_TRANSFER and CHEQUE. `paidOn` is an India calendar day, not in the future and
+                    not before the oldest targeted invoice was issued. Needs an `Idempotency-Key`; a repeat returns the
+                    first response. Allowed whatever the status of the line.
+
+                    Refused with `CREDIT_OVERPAYMENT` (details: `outstanding`) when more than is owed, and with 409
+                    `CREDIT_DUPLICATE_REFERENCE` (details: `receiptId`, `paidOn`, `amount`) when the same reference was
+                    recorded in this store in the last 90 days, unless `allowDuplicateReference` is true. In every
+                    refusal nothing moves. Needs `CREDIT_COLLECT` or `CREDIT_MODIFY` on the store; others get 404.
+                    """)
+    public ApiResponse<CreditDtos.SupplierPaymentResponse> recordReceipt(
+            @PathVariable Long id,
+            @Valid @RequestBody CreditDtos.SupplierPaymentRequest body,
+            @Parameter(description = "Client-generated key, required for this operation, 1 to 100 characters")
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        requireKey(idempotencyKey);
+        return ApiResponse.ok(supplierPayments.record(ActorContext.requireUserId(), id, body, idempotencyKey));
+    }
+
+    /** Checked by hand: a @Size on a header parameter surfaces as a 500 on this stack, not the validation error. */
+    private static void requireKey(String idempotencyKey) {
+        if (idempotencyKey.isBlank() || idempotencyKey.length() > 100) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "The Idempotency-Key must be 1 to 100 characters.");
+        }
     }
 }

@@ -38,9 +38,9 @@ import java.util.Set;
  * can only ever contain an order number.
  *
  * <p><b>Deliberately not {@code @Transactional}.</b> Like the realtime relay, this
- * runs inside the outbox drain's transaction. Each notification is written by
- * {@code NotificationStore} under {@code REQUIRES_NEW}, so a duplicate for one
- * recipient cannot roll back a batch of a hundred events — or the notifications of
+ * runs inside the outbox drain's transaction for the one event being published (D-194). Each notification is
+ * written by {@code NotificationStore} under {@code REQUIRES_NEW}, so a duplicate for one
+ * recipient cannot roll back that event's transaction (and make the outbox retry it) — or the notifications of
  * everyone else on this one.
  */
 @Service
@@ -56,8 +56,7 @@ public class NotificationRelay {
 
     @EventListener
     public void onDomainEvent(OutboxPublisher.DomainEventEnvelope envelope) {
-        var rules = NotificationRules.forEvent(envelope.eventType());
-        if (rules.isEmpty()) {
+        if (NotificationRules.forEvent(envelope.eventType()).isEmpty()) {
             // Most domain events are nobody's inbox item. A location update arrives
             // every few seconds and belongs on a map; pushing it would be the
             // fastest way to get notifications turned off entirely.
@@ -73,6 +72,9 @@ public class NotificationRelay {
         }
 
         var fields = flatten(payload);
+        // Wording that depends on how the event happened (D-109). Names the variant,
+        // never the text: the templates stay in NotificationRules.
+        var rules = NotificationRules.forEvent(envelope.eventType(), fields.get("notificationVariant"));
 
         for (NotificationRule rule : rules) {
             Long scopeId = scopeId(rule, payload);
@@ -80,9 +82,11 @@ public class NotificationRelay {
                 continue;
             }
 
-            var recipients = rule.audience() == NotificationRule.Audience.OUTLET
-                    ? audience.forOutlet(scopeId)
-                    : audience.forSupplierStore(scopeId);
+            var recipients = switch (rule.audience()) {
+                case OUTLET -> audience.forOutlet(scopeId);
+                case SUPPLIER_STORE -> audience.forSupplierStore(scopeId);
+                case SUPPLIER_STORE_CREDIT -> audience.forSupplierStoreWith(scopeId, "CREDIT_VIEW");
+            };
 
             // Deliberately not excluding the actor. An order rejected at 6am is the
             // shift manager's problem whether or not they placed it, and the person

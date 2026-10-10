@@ -66,30 +66,55 @@ public class SettlementReconciliationService {
     @Transactional
     public SettlementDtos.ReconciliationResponse reconcileInternal(Long settlementId,
                                                                    Long actorId) {
-        var settlement = settlements.findById(settlementId)
+        var settlement = settlements.lockById(settlementId)
                 .orElseThrow(() -> new NotFoundException("Settlement", settlementId));
 
         var orderIds = calculations.findBySettlementId(settlementId).stream()
                 .map(CommissionCalculation::getSupplierOrderId)
                 .toList();
 
-        BigDecimal captured = directory.capturedFor(orderIds);
-        BigDecimal difference = settlement.getGrossAmount().subtract(captured);
+        BigDecimal captured = directory.collectedFor(orderIds);
+        BigDecimal expected = settlement.getGrossAmount()
+                .subtract(directory.refundsDeductedFrom(settlementId));
+        BigDecimal difference = expected.subtract(captured);
         // compareTo, never equals: 4000.00 and 4000.0000 are the same money and
         // equals would call them a discrepancy.
         boolean matched = difference.compareTo(BigDecimal.ZERO) == 0;
+
+        // D-156: the wallet money repaid as credit in this period, against what Mandi recorded as owed to
+        // suppliers for it. A difference is recorded like any other, never refused (D-055).
+        BigDecimal walletDebits = directory.walletCreditRepaymentDebits(
+                settlement.getPeriodStart(), settlement.getPeriodEnd());
+        BigDecimal repaymentPayouts = directory.creditRepaymentPayoutsForDebits(
+                settlement.getPeriodStart(), settlement.getPeriodEnd());
+        boolean repaymentsMatched = walletDebits.compareTo(repaymentPayouts) == 0;
 
         String note = matched
                 ? "Settlement gross matches captured payments."
                 : ("Settlement gross %s does not match captured %s — difference %s. "
                         + "Check for a failed capture or an unaccounted refund.")
                         .formatted(settlement.getGrossAmount(), captured, difference);
+        note += repaymentsMatched
+                ? " Wallet credit repayments match what is owed to suppliers."
+                : (" Wallet credit repayments %s do not match what is owed to suppliers %s — difference %s. "
+                        + "Check for a repayment without a payout.")
+                        .formatted(walletDebits, repaymentPayouts, walletDebits.subtract(repaymentPayouts));
+        if (note.length() > 500) {
+            note = note.substring(0, 500);
+        }
 
         settlement.setReconciledAt(Instant.now());
         settlement.setReconciledGross(captured);
         settlement.setReconciliationNote(note);
         settlements.save(settlement);
 
+        if (!repaymentsMatched) {
+            log.error("Settlement {} period: wallet credit repayments {} vs payouts owed {}",
+                    settlement.getSettlementNumber(), walletDebits, repaymentPayouts);
+            auditService.record(actorId, null, "SETTLEMENT_REPAYMENT_RECONCILIATION_MISMATCH",
+                    "SETTLEMENT", settlementId, walletDebits.toPlainString(),
+                    repaymentPayouts.toPlainString(), note, actorId == null ? "SYSTEM" : "ADMIN");
+        }
         if (!matched) {
             // Loud, because this is money. Doc 09 §11's whole point is that a
             // discrepancy is findable rather than absorbed.
@@ -102,6 +127,6 @@ public class SettlementReconciliationService {
 
         return new SettlementDtos.ReconciliationResponse(settlementId, matched,
                 settlement.getGrossAmount(), captured, difference, note,
-                settlement.getReconciledAt());
+                settlement.getReconciledAt(), repaymentsMatched, walletDebits, repaymentPayouts);
     }
 }

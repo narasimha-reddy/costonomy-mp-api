@@ -3,7 +3,9 @@ package com.costonomy.mp.delivery.web;
 import com.costonomy.mp.common.api.ApiResponse;
 import com.costonomy.mp.common.idempotency.IdempotencyService;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
+import com.costonomy.mp.delivery.provider.pidge.PidgeSandboxService;
 import com.costonomy.mp.delivery.service.DeliveryService;
+import com.costonomy.mp.delivery.service.OutletDeliveryRadarService;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
 import com.costonomy.mp.identity.security.ActorContext;
 import io.swagger.v3.oas.annotations.Operation;
@@ -30,6 +32,8 @@ public class DeliveryController {
 
     private final DeliveryService deliveries;
     private final IdempotencyService idempotency;
+    private final OutletDeliveryRadarService radarService;
+    private final PidgeSandboxService sandbox;
 
     @PostMapping("/supplier-orders/{orderId}/delivery")
     @Operation(
@@ -117,6 +121,51 @@ public class DeliveryController {
                 () -> deliveries.reassign(actorId, id, reason)));
     }
 
+    @PostMapping("/deliveries/{id}/switch-to-own")
+    @Operation(summary = "Deliver it yourself, because no delivery partner was found",
+            description = "Supplier only, once the offer has been made after the automatic retries. The same delivery "
+                    + "becomes the supplier's own; the delivery charge the buyer paid is unchanged (D-185).")
+    public ApiResponse<DeliveryDtos.DeliveryResponse> switchToOwn(
+            @PathVariable Long id,
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(idempotency.execute(actorId, "delivery.switchToOwn", idempotencyKey,
+                Map.of("deliveryId", id),
+                DeliveryDtos.DeliveryResponse.class,
+                () -> deliveries.switchToOwn(actorId, id)));
+    }
+
+    @PostMapping("/deliveries/{id}/sandbox/advance")
+    @Operation(summary = "Test only: move a sandbox rider to the next step",
+            description = "Supplier only, and only for a Pidge delivery while the Pidge sandbox is on (D-188); "
+                    + "anywhere else it does not exist (404). Applies Pidge's own dummy stage through the webhook's code path.")
+    public ApiResponse<DeliveryDtos.DeliveryResponse> sandboxAdvance(
+            @PathVariable Long id,
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(idempotency.execute(actorId, "delivery.sandboxAdvance", idempotencyKey,
+                Map.of("deliveryId", id),
+                DeliveryDtos.DeliveryResponse.class,
+                () -> sandbox.advance(actorId, id)));
+    }
+
+    @PostMapping("/deliveries/{id}/sandbox/move")
+    @Operation(summary = "Test only: put the sandbox rider at a point along the road",
+            description = "Supplier only, Pidge delivery, sandbox on (D-192); else 404. leg=approach|delivery, "
+                    + "fraction=0..1 (400 otherwise). Records one rider location fix now, status unchanged; "
+                    + "409 when the delivery is not in a trackable status.")
+    public ApiResponse<DeliveryDtos.DeliveryResponse> sandboxMove(
+            @PathVariable Long id,
+            @RequestParam(required = false) String leg,
+            @RequestParam(required = false) String fraction,
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(idempotency.execute(actorId, "delivery.sandboxMove", idempotencyKey,
+                Map.of("deliveryId", id, "leg", String.valueOf(leg), "fraction", String.valueOf(fraction)),
+                DeliveryDtos.DeliveryResponse.class,
+                () -> sandbox.move(actorId, id, leg, fraction)));
+    }
+
     // ── Supplier own delivery ────────────────────────────────────────────
 
     @PostMapping("/deliveries/{id}/dispatched")
@@ -133,5 +182,40 @@ public class DeliveryController {
     public ApiResponse<DeliveryDtos.DeliveryResponse> delivered(@PathVariable Long id) {
         return ApiResponse.ok(deliveries.supplierReports(
                 ActorContext.requireUserId(), id, DeliveryStatus.DELIVERED));
+    }
+
+    // ── Outlet Delivery Radar & Operational Situation ───────────────────
+
+    @GetMapping("/outlets/{outletId}/deliveries/radar")
+    @Operation(
+            summary = "Situational delivery radar for an outlet",
+            description = """
+                    Ranks active incoming deliveries by physical arrival urgency.
+                    Directly answers:
+                    - Which order is approaching the kitchen first?
+                    - Is the supplier on schedule or delayed?
+                    - Did the driver call / is there a problem?
+                    - Which orders need to be checked in, met at the dock, or escalated?
+                    """)
+    public ApiResponse<DeliveryDtos.OutletDeliveryRadarResponse> radar(
+            @PathVariable Long outletId,
+            @RequestParam(value = "action", required = false) DeliveryDtos.KitchenAction action,
+            @RequestParam(value = "stage", required = false) DeliveryDtos.ArrivalStage stage,
+            @RequestParam(value = "scheduleStatus", required = false) DeliveryDtos.ScheduleStatus scheduleStatus) {
+        return ApiResponse.ok(radarService.getRadar(
+                ActorContext.requireUserId(), outletId, action, stage, scheduleStatus));
+    }
+
+    @GetMapping("/outlets/{outletId}/deliveries")
+    @Operation(
+            summary = "Paginated list of deliveries for an outlet",
+            description = "Lists outlet deliveries with default 10 per page, newest first.")
+    public ApiResponse<DeliveryDtos.PagedResponse<DeliveryDtos.OutletDeliveryRadarItemResponse>> outletDeliveries(
+            @PathVariable Long outletId,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "10") int size,
+            @RequestParam(value = "status", required = false) String status) {
+        return ApiResponse.ok(radarService.listDeliveries(
+                ActorContext.requireUserId(), outletId, page, size, status));
     }
 }

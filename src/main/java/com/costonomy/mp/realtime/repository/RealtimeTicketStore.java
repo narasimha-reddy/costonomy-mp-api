@@ -60,6 +60,6 @@ public class RealtimeTicketStore {
     /** Housekeeping. Spent and expired tickets are of no further use to anyone. */
     @Transactional
     public long purgeExpired(Instant before) {
-        return tickets.deleteByExpiresAtBefore(before);
+        return tickets.deleteExpired(before);
     }
 }
