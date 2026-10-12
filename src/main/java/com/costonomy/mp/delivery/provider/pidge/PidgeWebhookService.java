@@ -91,9 +91,13 @@ public class PidgeWebhookService {
         if (state.riderName() != null) {
             eventService.recordDriver(delivery, state.riderName(), state.riderPhone(), null);
         }
-        if (state.latitude() != null && state.longitude() != null) {
-            eventService.recordLocation(delivery, state.latitude(), state.longitude(), null, null,
-                    state.locationAt() == null ? Instant.now() : state.locationAt());
+        boolean hasFix = state.latitude() != null && state.longitude() != null;
+        // One instant for both attempts below, so the same fix is one row (the dedupe is on recordedAt).
+        Instant fixAt = state.locationAt() == null ? Instant.now() : state.locationAt();
+        if (hasFix) {
+            // Before the stages: a fix that arrives with the last stage (delivered) is stored while the
+            // delivery is still trackable.
+            eventService.recordLocation(delivery, state.latitude(), state.longitude(), null, null, fixAt);
         }
 
         // Every stage Pidge reports, oldest first, so a delivery that moved several stages between two hits
@@ -104,6 +108,12 @@ public class PidgeWebhookService {
             String disposition = eventService.apply(delivery, event);
             log.info("Processed Pidge webhook event {} for delivery {}: disposition={}",
                     event.providerEventId(), delivery.getId(), disposition);
+        }
+        if (hasFix) {
+            // Again after the stages: the first fix of a stage that assigns the rider (out for pickup) arrives
+            // while the delivery is not yet trackable, and is only storable once the status has moved (D-191).
+            // A fix the first call already stored is skipped by the recordedAt dedupe.
+            eventService.recordLocation(delivery, state.latitude(), state.longitude(), null, null, fixAt);
         }
         return true;
     }

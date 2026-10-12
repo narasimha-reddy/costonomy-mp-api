@@ -146,6 +146,13 @@ class ProductionProviderGuardTest {
         env.setProperty("costonomy.mp.invoices.reader.outlet", "5");
         env.setProperty("costonomy.mp.invoices.cost-outlet-map", "1:5");
         env.setProperty("costonomy.mp.jwt.secret", "placeholder-secret-of-at-least-32-bytes-long");
+        realtimeOrigins(env);
+    }
+
+    /** What a deploy sets for the realtime socket (D-193): its real web origin, set through the variable. */
+    private static void realtimeOrigins(MockEnvironment env) {
+        env.setProperty("REALTIME_ALLOWED_ORIGINS", "https://app.costonomy.example");
+        env.setProperty("costonomy.mp.realtime.allowed-origins", "https://app.costonomy.example");
     }
 
     private static MockEnvironment production() {
@@ -318,5 +325,65 @@ class ProductionProviderGuardTest {
 
         env.setProperty("costonomy.mp.pidge.webhook-secret", "placeholder-not-a-secret");
         assertThatCode(() -> ProductionProviderGuard.check(env)).doesNotThrowAnyException();
+    }
+
+    private MockEnvironment prodReady() {
+        var env = new MockEnvironment();
+        env.setActiveProfiles("prod");
+        env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+        env.setProperty("costonomy.mp.providers.otp", "MSG91");
+        env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        realInvoices(env);
+        return env;
+    }
+
+    @Test
+    @DisplayName("D-193: production refuses to start when REALTIME_ALLOWED_ORIGINS is not set (the localhost default would apply)")
+    void productionNeedsRealtimeOrigins() {
+        var env = prodReady();
+        env.setProperty("REALTIME_ALLOWED_ORIGINS", "");
+        // The property as application.properties resolves it when the variable is unset: the local default.
+        env.setProperty("costonomy.mp.realtime.allowed-origins", "http://localhost:7071,http://localhost:7074");
+
+        assertThatThrownBy(() -> ProductionProviderGuard.check(env))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("REALTIME_ALLOWED_ORIGINS");
+    }
+
+    @Test
+    @DisplayName("D-193: production refuses to start when the variable is unset even if the property carries a non-local value")
+    void productionNeedsTheVariableItself() {
+        var env = prodReady();
+        env.setProperty("REALTIME_ALLOWED_ORIGINS", "  ");
+
+        assertThatThrownBy(() -> ProductionProviderGuard.check(env))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("REALTIME_ALLOWED_ORIGINS");
+    }
+
+    @Test
+    @DisplayName("D-193: production refuses localhost and 127.0.0.1 among the realtime origins, even when the variable is set")
+    void productionRefusesLocalRealtimeOrigins() {
+        for (String bad : new String[]{"https://app.costonomy.example,http://localhost:8081",
+                "http://127.0.0.1:7074", "https://LOCALHOST:3000"}) {
+            var env = prodReady();
+            env.setProperty("REALTIME_ALLOWED_ORIGINS", bad);
+            env.setProperty("costonomy.mp.realtime.allowed-origins", bad);
+
+            assertThatThrownBy(() -> ProductionProviderGuard.check(env)).describedAs(bad)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("realtime.allowed-origins");
+        }
+    }
+
+    @Test
+    @DisplayName("D-193: production starts with real origins, and a local profile keeps the localhost default")
+    void realtimeOriginsOtherwiseFine() {
+        assertThatCode(() -> ProductionProviderGuard.check(prodReady())).doesNotThrowAnyException();
+
+        var local = new MockEnvironment();
+        local.setActiveProfiles("local");
+        local.setProperty("costonomy.mp.realtime.allowed-origins", "http://localhost:7071");
+        assertThatCode(() -> ProductionProviderGuard.check(local)).doesNotThrowAnyException();
     }
 }

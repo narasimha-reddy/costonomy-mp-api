@@ -31,6 +31,14 @@ public class TrustDirectory {
             DeliveryMode deliveryMode) {
     }
 
+    /** The restaurant an outlet belongs to, for the wording of a notification; null when unknown. */
+    public String restaurantNameOfOutlet(Long outletId) {
+        var names = jdbc.queryForList("""
+                select r.name from outlet o join restaurant r on r.id = o.restaurant_id where o.id = ?
+                """, String.class, outletId);
+        return names.isEmpty() ? null : names.get(0);
+    }
+
     public OrderInfo order(Long supplierOrderId) {
         return order(supplierOrderId, false);
     }

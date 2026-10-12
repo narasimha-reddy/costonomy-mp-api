@@ -184,6 +184,51 @@ class SupplierOrderLifecycleIT extends AbstractIntegrationTest {
         }
     }
 
+    @Nested
+    @DisplayName("what the events and lists say about how the goods travel (flow review 6)")
+    class Mode {
+
+        @Test
+        @DisplayName("the Ready event names the delivery mode as its notification variant, for each mode, and no other event does")
+        void readyEventCarriesTheMode() throws Exception {
+            for (String mode : List.of("PICKUP", "COSTONOMY_DELIVERY", "SUPPLIER_DELIVERY")) {
+                var placed = place(20, mode);
+                pay(placed);
+                keyed(placed.seller().token(), orderPath(placed) + "/preparing", Map.of());
+                keyed(placed.seller().token(), orderPath(placed) + "/ready", Map.of());
+
+                var ready = payloadOf(placed, "SupplierOrderReady");
+                assertThat(ready.get("notificationVariant").asText()).describedAs(mode).isEqualTo(mode);
+                assertThat(ready.get("deliveryMode").asText()).isEqualTo(mode);
+                assertThat(payloadOf(placed, "SupplierOrderPreparing").has("notificationVariant"))
+                        .describedAs("only Ready is worded by mode").isFalse();
+            }
+        }
+
+        @Test
+        @DisplayName("the supplier's active list says how each order travels, so the app knows who sends it out")
+        void activeListCarriesTheMode() throws Exception {
+            for (String mode : List.of("PICKUP", "COSTONOMY_DELIVERY", "SUPPLIER_DELIVERY")) {
+                var placed = place(20, mode);
+                pay(placed);
+                keyed(placed.seller().token(), orderPath(placed) + "/preparing", Map.of());
+                keyed(placed.seller().token(), orderPath(placed) + "/ready", Map.of());
+
+                var active = api.get(placed.seller().token(),
+                        "/api/v1/supplier-stores/" + placed.seller().storeId() + "/orders/active").at("/data");
+
+                assertThat(active).hasSize(1);
+                assertThat(active.get(0).get("deliveryMode").asText()).describedAs(mode).isEqualTo(mode);
+            }
+        }
+
+        private JsonNode payloadOf(Placed placed, String eventType) throws Exception {
+            return json.readTree(jdbc.queryForObject("""
+                    select payload from outbox_event where aggregate_type = 'SUPPLIER_ORDER' and aggregate_id = ?
+                       and event_type = ?""", String.class, placed.order().orderId(), eventType));
+        }
+    }
+
     // ── Backing out ──────────────────────────────────────────────────────
 
     @Nested

@@ -44,6 +44,7 @@ class IntentFlowIT extends AbstractIntegrationTest {
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private MockPaymentProvider paymentProvider;
+    @Autowired private com.costonomy.mp.notification.NotificationRelayAccess notifications;
     @Autowired private com.costonomy.mp.intent.service.IntentExpiryJob expiryJob;
 
     private ApiClient api;
@@ -121,6 +122,14 @@ class IntentFlowIT extends AbstractIntegrationTest {
                     "select acceptance_deadline from supplier_order where id = ?",
                     java.sql.Timestamp.class, orderId)).isNull();
 
+            // The supplier is told once, when the money is secured, and a card order is not yet "paid":
+            // it is held and collected when the supplier marks it ready (D-103). Flow review 6.
+            var told = confirmedNotifications(open);
+            assertThat(told).hasSize(1);
+            assertThat(told.get(0)).contains("Paradise").contains(statusOfNumber(orderId))
+                    .contains("secured").contains("collected when you mark it ready")
+                    .doesNotContainIgnoringCase("paid").doesNotContainIgnoringCase("credit");
+
             // The order arrives already accepted, line by line.
             var line = jdbc.queryForMap(
                     "select requested_quantity, accepted_quantity, status "
@@ -143,6 +152,37 @@ class IntentFlowIT extends AbstractIntegrationTest {
             var finished = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
             assertThat(finished.at("/data/status").asText()).isEqualTo("ORDERED");
             assertThat(finished.at("/data/supplierOrderId").asLong()).isEqualTo(orderId);
+        }
+
+        @Test
+        @DisplayName("the new-request event carries the restaurant and the outlet name, so the supplier is told who is asking")
+        void sentEventNamesWhoIsAsking() throws Exception {
+            var open = sendRequest(5);
+
+            var payload = json.readTree(jdbc.queryForObject("""
+                    select payload from outbox_event where aggregate_type = 'INTENT' and aggregate_id = ?
+                       and event_type = 'IntentSent'""", String.class, open.intentId()));
+
+            assertThat(payload.get("restaurantName").asText()).isEqualTo("Paradise");
+            assertThat(payload.get("outletName").asText()).isEqualTo("Banjara Hills");
+        }
+
+        @Test
+        @DisplayName("an outlet named like its restaurant is sent without the outlet name, so the text has no repeated bracket")
+        void outletNameSameAsRestaurantIsLeftOut() throws Exception {
+            var buyer = newBuyer();
+            jdbc.update("update outlet set name = 'Paradise' where id = ?", buyer.outletId());
+            var seller = newSeller("Metro");
+            var draft = addItem(buyer, listSku(seller, "paneer", "410"), 5);
+            long intentId = draft.at("/data/id").asLong();
+            api.post(buyer.token(), "/api/v1/intents/" + intentId + "/send", Map.of());
+
+            var payload = json.readTree(jdbc.queryForObject("""
+                    select payload from outbox_event where aggregate_type = 'INTENT' and aggregate_id = ?
+                       and event_type = 'IntentSent'""", String.class, intentId));
+
+            assertThat(payload.get("restaurantName").asText()).isEqualTo("Paradise");
+            assertThat(payload.has("outletName")).isFalse();
         }
 
         @Test
@@ -1579,6 +1619,27 @@ class IntentFlowIT extends AbstractIntegrationTest {
                 payment.get("providerOrderId").asText());
         api.post(token, "/api/v1/payments/" + payment.get("paymentId").asLong() + "/confirm",
                 Map.of("providerPaymentId", completed.providerPaymentId()));
+    }
+
+    /** Every order-confirmed text this request's supplier ends up with, after its events are fanned out. */
+    private List<String> confirmedNotifications(OpenRequest open) {
+        var events = jdbc.queryForList("""
+                select event_id, event_type, aggregate_type, aggregate_id, payload from outbox_event
+                 where event_type in ('IntentOrdered', 'SupplierOrderConfirmed')
+                   and json_extract(payload, '$.outletId') = ? order by id""", open.buyer().outletId());
+        for (var e : events) {
+            notifications.publish(new com.costonomy.mp.common.outbox.OutboxPublisher.DomainEventEnvelope(
+                    (String) e.get("event_id"), (String) e.get("event_type"), (String) e.get("aggregate_type"),
+                    ((Number) e.get("aggregate_id")).longValue(), 1, e.get("payload").toString(), null, null,
+                    java.time.Instant.now()));
+        }
+        return jdbc.queryForList("""
+                select body from notification where user_id = ? and title = 'Order confirmed'""",
+                String.class, open.seller().userId());
+    }
+
+    private String statusOfNumber(long orderId) {
+        return jdbc.queryForObject("select order_number from supplier_order where id = ?", String.class, orderId);
     }
 
     // ── Observations ─────────────────────────────────────────────────────

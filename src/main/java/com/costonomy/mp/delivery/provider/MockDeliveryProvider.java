@@ -44,6 +44,8 @@ public class MockDeliveryProvider implements DeliveryProvider {
     private final Map<String, Quote> quotes = new ConcurrentHashMap<>();
     /** Providers told to misbehave on their next call, by code. */
     private final Map<String, Failure> armed = new ConcurrentHashMap<>();
+    /** How many times book() was called per supplier order, so a test can prove a retry did not book twice. */
+    private final Map<Long, java.util.concurrent.atomic.AtomicInteger> bookCalls = new ConcurrentHashMap<>();
 
     public MockDeliveryProvider(String code, BigDecimal baseFee, BigDecimal perKm,
                                 int minutesPerKm, double maxRadiusKm) {
@@ -76,6 +78,12 @@ public class MockDeliveryProvider implements DeliveryProvider {
      */
     public void arm(Failure failure) {
         armed.put(code, failure);
+    }
+
+    /** Test and simulation only: the number of booking calls this provider has received for the order. */
+    public int bookCalls(long supplierOrderId) {
+        var calls = bookCalls.get(supplierOrderId);
+        return calls == null ? 0 : calls.get();
     }
 
     public void disarm() {
@@ -117,6 +125,10 @@ public class MockDeliveryProvider implements DeliveryProvider {
 
     @Override
     public Booking book(BookingRequest request) {
+        if (request.supplierOrderId() != null) {
+            bookCalls.computeIfAbsent(request.supplierOrderId(), k -> new java.util.concurrent.atomic.AtomicInteger())
+                    .incrementAndGet();
+        }
         if (armed.get(code) == Failure.BOOKING_FAILS) {
             armed.remove(code);
             throw new DeliveryProviderException(code, "No riders available", true);

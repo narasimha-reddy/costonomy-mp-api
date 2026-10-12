@@ -21,7 +21,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Test-only (D-189): moves Pidge sandbox deliveries along on their own, so a tester can watch the whole flow without
+ * Test-only (D-196): moves Pidge sandbox deliveries along on their own, so a tester can watch the whole flow without
  * tapping "next step". Does nothing unless the sandbox is on and {@code sandbox-auto-advance} is set, so production,
  * where the sandbox is off, never runs it.
  *

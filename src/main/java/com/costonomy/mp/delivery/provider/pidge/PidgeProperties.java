@@ -50,7 +50,7 @@ public class PidgeProperties {
     private boolean sandbox = false;
 
     /**
-     * Test-only (D-189): with the sandbox on, move each Pidge delivery to its next stage once it has sat in one
+     * Test-only (D-196): with the sandbox on, move each Pidge delivery to its next stage once it has sat in one
      * status this long. Null, zero or negative is off.
      */
     private Duration sandboxAutoAdvance;

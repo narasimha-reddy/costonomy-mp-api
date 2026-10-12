@@ -71,14 +71,43 @@ public record NotificationRule(
      * gets pushed to a lock screen and mirrored to a watch. Interpolating the
      * whole payload would make that a matter of hoping no producer ever adds the
      * wrong field.
+     *
+     * <p>Two small forms keep a sentence readable when a field is missing, which pre-deploy rows and a failed lookup
+     * both produce: {@code [ text {field}]} appears only when its fields are present, and {@code {field|fallback}}
+     * falls back to the given words.
      */
     public String render(Map<String, String> fields) {
-        String rendered = body;
+        // Optional parts, [ like this {field}]: kept only when every field named inside is present and not blank,
+        // otherwise dropped whole, so a missing outlet name leaves no "()" and a missing order number no gap.
+        String rendered = OPTIONAL.matcher(body).replaceAll(m ->
+                java.util.regex.Matcher.quoteReplacement(allPresent(m.group(1), fields) ? m.group(1) : ""));
+        // A fallback for a missing name, {field|fallback}, so a sentence never starts with nothing.
+        rendered = FALLBACK.matcher(rendered).replaceAll(m -> {
+            String value = fields.get(m.group(1));
+            return java.util.regex.Matcher.quoteReplacement(
+                    value == null || value.isBlank() ? m.group(2) : value);
+        });
         for (var field : fields.entrySet()) {
             rendered = rendered.replace("{" + field.getKey() + "}", field.getValue());
         }
         // Any placeholder the payload did not supply is dropped rather than left
         // as literal braces in front of a user.
         return rendered.replaceAll("\\{[a-zA-Z0-9_]+}", "").replaceAll("\\s{2,}", " ").trim();
+    }
+
+    private static final java.util.regex.Pattern OPTIONAL = java.util.regex.Pattern.compile("\\[([^\\[\\]]*)]");
+    private static final java.util.regex.Pattern FALLBACK =
+            java.util.regex.Pattern.compile("\\{([a-zA-Z0-9_]+)\\|([^}]*)}");
+    private static final java.util.regex.Pattern PLACEHOLDER = java.util.regex.Pattern.compile("\\{([a-zA-Z0-9_]+)}");
+
+    private static boolean allPresent(String part, Map<String, String> fields) {
+        var names = PLACEHOLDER.matcher(part);
+        while (names.find()) {
+            String value = fields.get(names.group(1));
+            if (value == null || value.isBlank()) {
+                return false;
+            }
+        }
+        return true;
     }
 }

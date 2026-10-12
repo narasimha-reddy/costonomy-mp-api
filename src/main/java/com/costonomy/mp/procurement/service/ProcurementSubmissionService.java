@@ -69,8 +69,7 @@ public class ProcurementSubmissionService {
     public List<ProcurementDtos.SupplierOrderResponse> ordersForOutlet(Long actorId, Long outletId) {
         accessControl.requireScoped(actorId, Permissions.ORDER_VIEW,
                 ScopeType.OUTLET, outletId, "Outlet");
-        return supplierOrders.findByOutletIdOrderByCreatedAtDesc(outletId).stream()
-                .map(mapper::toResponse).toList();
+        return mapper.toResponses(supplierOrders.findByOutletIdOrderByCreatedAtDesc(outletId));
     }
 
     @Transactional(readOnly = true)

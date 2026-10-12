@@ -22,7 +22,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-/** D-189: when the sandbox auto-advance job moves a delivery, judged on a clock the test controls. */
+/** D-196: when the sandbox auto-advance job moves a delivery, judged on a clock the test controls. */
 class PidgeSandboxAutoAdvanceJobTest {
 
     private final DeliveryRepository deliveries = mock(DeliveryRepository.class);

@@ -419,11 +419,25 @@ public class PidgeApiClient {
      * Fetch order status and tracking URL from Pidge.
      */
     public DeliveryProvider.ProviderDelivery getStatus(String providerDeliveryId) {
+        return toProviderDelivery(providerDeliveryId, getOrderState(providerDeliveryId));
+    }
+
+    /** What the poller reads from a parsed order state. The rider position is not part of it; see {@code location()}. */
+    static DeliveryProvider.ProviderDelivery toProviderDelivery(String providerDeliveryId, PidgeOrderState state) {
+        return new DeliveryProvider.ProviderDelivery(
+                providerDeliveryId, state.status(), state.riderName(), state.riderPhone(), null,
+                null, null, null, null, state.events());
+    }
+
+    /**
+     * Fetch the order from Pidge and return everything parsed from it, including the rider position, which
+     * {@link #getStatus} cannot carry. With no token or no usable answer this is a PENDING state with nothing in it.
+     */
+    PidgeOrderState getOrderState(String providerDeliveryId) {
         checkRateLimit();
 
         if (properties.getApiToken() == null || properties.getApiToken().isBlank()) {
-            return new DeliveryProvider.ProviderDelivery(providerDeliveryId,
-                    DeliveryProvider.ProviderDeliveryStatus.PENDING, null, null, null, null, null, null, null, List.of());
+            return emptyState();
         }
 
         var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/order/" + providerDeliveryId;
@@ -434,18 +448,19 @@ public class PidgeApiClient {
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 var body = response.getBody();
                 var data = body.path("data");
-                var state = PidgeOrderState.parse(providerDeliveryId, data);
-                return new DeliveryProvider.ProviderDelivery(
-                        providerDeliveryId, state.status(), state.riderName(), state.riderPhone(), null,
-                        null, null, null, null, state.events());
+                return PidgeOrderState.parse(providerDeliveryId, data);
             }
-            return new DeliveryProvider.ProviderDelivery(providerDeliveryId,
-                    DeliveryProvider.ProviderDeliveryStatus.PENDING, null, null, null, null, null, null, null, List.of());
+            return emptyState();
 
         } catch (Exception ex) {
             log.warn("Pidge getStatus failed for {}: {}", providerDeliveryId, ex.getMessage());
             throw new DeliveryProviderException("PIDGE", "Could not fetch Pidge status: " + ex.getMessage(), true);
         }
+    }
+
+    private static PidgeOrderState emptyState() {
+        return new PidgeOrderState(DeliveryProvider.ProviderDeliveryStatus.PENDING,
+                null, null, null, null, null, List.of());
     }
 
     /**

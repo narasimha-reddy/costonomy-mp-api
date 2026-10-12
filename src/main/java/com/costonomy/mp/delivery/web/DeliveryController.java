@@ -149,6 +149,23 @@ public class DeliveryController {
                 () -> sandbox.advance(actorId, id)));
     }
 
+    @PostMapping("/deliveries/{id}/sandbox/move")
+    @Operation(summary = "Test only: put the sandbox rider at a point along the road",
+            description = "Supplier only, Pidge delivery, sandbox on (D-192); else 404. leg=approach|delivery, "
+                    + "fraction=0..1 (400 otherwise). Records one rider location fix now, status unchanged; "
+                    + "409 when the delivery is not in a trackable status.")
+    public ApiResponse<DeliveryDtos.DeliveryResponse> sandboxMove(
+            @PathVariable Long id,
+            @RequestParam(required = false) String leg,
+            @RequestParam(required = false) String fraction,
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(idempotency.execute(actorId, "delivery.sandboxMove", idempotencyKey,
+                Map.of("deliveryId", id, "leg", String.valueOf(leg), "fraction", String.valueOf(fraction)),
+                DeliveryDtos.DeliveryResponse.class,
+                () -> sandbox.move(actorId, id, leg, fraction)));
+    }
+
     // ── Supplier own delivery ────────────────────────────────────────────
 
     @PostMapping("/deliveries/{id}/dispatched")
