@@ -1,5 +1,8 @@
 package com.costonomy.mp.procurement.service;
 
+import com.costonomy.mp.access.service.RoleResolver;
+import com.costonomy.security.access.AccessClient;
+import com.costonomy.security.access.AccessSnapshot;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -23,6 +26,8 @@ import java.util.*;
 public class ProcurementDirectory {
 
     private final JdbcTemplate jdbc;
+    private final AccessClient access;
+    private final RoleResolver roles;
 
     /**
      * @param tradeable store ACTIVE, organisation ACTIVE <em>and</em> the store
@@ -179,24 +184,10 @@ public class ProcurementDirectory {
      * holding a Store Manager grant — so the strongest role is what the policy sees.
      */
     public String primaryRoleOf(Long userId, Long outletId) {
-        var roles = jdbc.queryForList("""
-                select r.code
-                  from user_role ur
-                  join role r on r.id = ur.role_id
-                 where ur.user_id = ?
-                   and ur.status = 'ACTIVE'
-                   and (
-                        (ur.scope_type = 'OUTLET' and ur.scope_id = ?)
-                     or (ur.scope_type = 'RESTAURANT'
-                         and ur.scope_id = (select restaurant_id from outlet where id = ?))
-                   )
-                """, String.class, userId, outletId, outletId);
-
-        List<String> precedence = List.of(
-                "REST_OWNER", "REST_ADMIN", "REST_PURCHASE_MANAGER", "REST_STORE_MANAGER",
-                "REST_FINANCE_STAFF", "REST_RECEIVING_STAFF", "REST_PROCUREMENT_STAFF");
-
-        return precedence.stream().filter(roles::contains).findFirst()
-                .orElse(roles.isEmpty() ? null : roles.get(0));
+        // Common's access lists what the user may do at the outlet, not which roles gave it (RoleResolver).
+        return access.get(userId, null).filter(AccessSnapshot::usable)
+                .flatMap(snapshot -> snapshot.outlet(outletId))
+                .map(outlet -> roles.strongest("RESTAURANT", outlet.permissions(), outlet.roleLevels()))
+                .orElse(null);
     }
 }

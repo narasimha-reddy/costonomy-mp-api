@@ -28,11 +28,7 @@ public class ProductionProviderGuard {
 
     /** Providers that must never be the mock where money and identity are real. */
     static final List<String> GUARDED = List.of(
-            "costonomy.mp.providers.payment", "costonomy.mp.providers.otp",
-            "costonomy.mp.providers.payout");
-
-    /** Signing keys that were once defaults in application.properties. */
-    static final Set<String> LEAKED_JWT_SECRETS = Set.of("SWt/kWYyraXKIm3nlqnJSL9vSqmPLkCT7GdZyKa4jDU=");
+            "costonomy.mp.providers.payment", "costonomy.mp.providers.payout");
 
     private final Environment environment;
 
@@ -146,15 +142,16 @@ public class ProductionProviderGuard {
                         + "REALTIME_ALLOWED_ORIGINS to the deployed origins only.");
             }
         }
-        // The signing key that used to be the property's default is in the repository history, so it
-        // is known to everyone with read access. Under production it is refused, as is a short or
-        // missing one (JwtService also refuses short keys, but this names the cause).
-        String jwtSecret = environment.getProperty("costonomy.mp.jwt.secret", "");
-        if (jwtSecret.isBlank() || jwtSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8).length < 32
-                || LEAKED_JWT_SECRETS.contains(jwtSecret.trim())) {
-            throw new IllegalStateException("costonomy.mp.jwt.secret is missing, shorter than 32 bytes, or a "
-                    + "value that was committed to the repository, under a production profile. Set JWT_SECRET "
-                    + "to a freshly generated 32+ byte secret.");
+        // Sign-in is costonomy-common-api's. Without its client secret Marketplace cannot look up anyone's
+        // access, and without the webhook secret it would refuse common's change notifications.
+        for (String property : List.of("costonomy.security.common-api.client-secret", "costonomy.security.webhook.secret")) {
+            if (blank(environment.getProperty(property))) {
+                throw new IllegalStateException(property + " is not set under a production profile.");
+            }
+        }
+        if (environment.getProperty("costonomy.security.common-api.base-url", "").contains("localhost")) {
+            throw new IllegalStateException("costonomy.security.common-api.base-url points at localhost under a "
+                    + "production profile.");
         }
     }
 

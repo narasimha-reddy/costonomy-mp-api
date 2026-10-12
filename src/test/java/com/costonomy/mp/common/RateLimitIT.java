@@ -31,8 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
-        "costonomy.mp.ratelimit.otp-request=3",
-        "costonomy.mp.ratelimit.otp-verify=3",
+        "costonomy.mp.ratelimit.webhook=3",
         "costonomy.mp.ratelimit.auth=50",
         "costonomy.mp.ratelimit.search=4"
 })
@@ -52,12 +51,12 @@ class RateLimitIT extends AbstractIntegrationTest {
         limiter.reset();
     }
 
-    private MvcResult requestOtp(String phone, String forwardedFor) throws Exception {
-        return mvc.perform(MockMvcRequestBuilders.post("/api/v1/auth/otp/request")
+    /** A provider callback: limited per address, as there is no user (sign-in itself is costonomy-common-api's). */
+    private MvcResult callWebhook(String forwardedFor) throws Exception {
+        return mvc.perform(MockMvcRequestBuilders.post("/api/v1/webhooks/razorpay")
                         .header("X-Forwarded-For", forwardedFor)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(
-                                Map.of("phone", phone, "purpose", "LOGIN"))))
+                        .content("{}"))
                 .andReturn();
     }
 
@@ -69,12 +68,12 @@ class RateLimitIT extends AbstractIntegrationTest {
         @DisplayName("the limit is enforced and the refusal is a 429")
         void tooManyRequestsIsRefused() throws Exception {
             for (int i = 0; i < 3; i++) {
-                assertThat(requestOtp(ApiClient.freshPhone(), "203.0.113.10")
+                assertThat(callWebhook("203.0.113.10")
                         .getResponse().getStatus())
-                        .describedAs("request %d", i + 1).isEqualTo(200);
+                        .describedAs("request %d", i + 1).isNotEqualTo(429);
             }
 
-            var refused = requestOtp(ApiClient.freshPhone(), "203.0.113.10").getResponse();
+            var refused = callWebhook("203.0.113.10").getResponse();
 
             // Doc 04 §22's HTTP guidance: 429 throttled.
             assertThat(refused.getStatus()).isEqualTo(429);
@@ -85,10 +84,10 @@ class RateLimitIT extends AbstractIntegrationTest {
         @DisplayName("a refusal says when to come back")
         void retryAfterIsSet() throws Exception {
             for (int i = 0; i < 3; i++) {
-                requestOtp(ApiClient.freshPhone(), "203.0.113.20");
+                callWebhook("203.0.113.20");
             }
 
-            var refused = requestOtp(ApiClient.freshPhone(), "203.0.113.20").getResponse();
+            var refused = callWebhook("203.0.113.20").getResponse();
 
             // A client with no Retry-After can only guess, and a client that
             // guesses wrong retries immediately and makes it worse.
@@ -99,7 +98,7 @@ class RateLimitIT extends AbstractIntegrationTest {
         @Test
         @DisplayName("remaining allowance is reported before it runs out")
         void remainingHeaderCountsDown() throws Exception {
-            var first = requestOtp(ApiClient.freshPhone(), "203.0.113.30").getResponse();
+            var first = callWebhook("203.0.113.30").getResponse();
 
             assertThat(first.getHeader("X-RateLimit-Limit")).isEqualTo("3");
             assertThat(first.getHeader("X-RateLimit-Remaining")).isEqualTo("2");
@@ -109,35 +108,32 @@ class RateLimitIT extends AbstractIntegrationTest {
         @DisplayName("one caller's limit does not affect another's")
         void limitsArePerCaller() throws Exception {
             for (int i = 0; i < 3; i++) {
-                requestOtp(ApiClient.freshPhone(), "203.0.113.40");
+                callWebhook("203.0.113.40");
             }
-            assertThat(requestOtp(ApiClient.freshPhone(), "203.0.113.40")
+            assertThat(callWebhook("203.0.113.40")
                     .getResponse().getStatus()).isEqualTo(429);
 
-            // A shared bucket would mean one script locking every restaurant out
-            // of signing in.
-            assertThat(requestOtp(ApiClient.freshPhone(), "203.0.113.41")
-                    .getResponse().getStatus()).isEqualTo(200);
+            // A shared bucket would mean one noisy caller locking everyone out.
+            assertThat(callWebhook("203.0.113.41")
+                    .getResponse().getStatus()).isNotEqualTo(429);
         }
 
         @Test
         @DisplayName("endpoints are limited separately")
         void policiesAreIndependent() throws Exception {
             for (int i = 0; i < 3; i++) {
-                requestOtp(ApiClient.freshPhone(), "203.0.113.50");
+                callWebhook("203.0.113.50");
             }
-            assertThat(requestOtp(ApiClient.freshPhone(), "203.0.113.50")
+            assertThat(callWebhook("203.0.113.50")
                     .getResponse().getStatus()).isEqualTo(429);
 
-            // OTP verification has its own budget: exhausting the request endpoint
-            // must not lock out someone who already has a code in their hand.
+            // The auth endpoints have their own budget: exhausting the webhook one
+            // must not lock the same address out of them.
             int verifyStatus = mvc.perform(MockMvcRequestBuilders
-                            .post("/api/v1/auth/otp/verify")
+                            .post("/api/v1/auth/devices")
                             .header("X-Forwarded-For", "203.0.113.50")
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(json.writeValueAsString(Map.of(
-                                    "phone", ApiClient.freshPhone(),
-                                    "otp", "123456", "purpose", "LOGIN"))))
+                            .content("{}"))
                     .andReturn().getResponse().getStatus();
 
             assertThat(verifyStatus).isNotEqualTo(429);

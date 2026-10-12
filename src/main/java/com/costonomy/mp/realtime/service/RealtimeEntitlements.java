@@ -1,10 +1,10 @@
 package com.costonomy.mp.realtime.service;
 
 import com.costonomy.mp.realtime.domain.RealtimeChannel;
+import com.costonomy.security.access.AccessClient;
+import com.costonomy.security.access.AccessSnapshot;
 import lombok.RequiredArgsConstructor;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -33,40 +33,22 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class RealtimeEntitlements {
 
-    private final JdbcTemplate jdbc;
+    private final AccessClient access;
 
-    @Transactional(readOnly = true)
+    /** The outlets and stores the user can open in the marketplace, from their costonomy-common-api access. */
     public Set<RealtimeChannel> channelsFor(Long userId) {
         Set<RealtimeChannel> channels = new LinkedHashSet<>();
-
-        // Outlets: granted directly, or through the restaurant that owns them.
-        jdbc.query("""
-                select distinct o.id
-                  from outlet o
-                  join user_role ur on ur.status = 'ACTIVE'
-                   and ((ur.scope_type = 'OUTLET' and ur.scope_id = o.id)
-                     or (ur.scope_type = 'RESTAURANT' and ur.scope_id = o.restaurant_id))
-                 where ur.user_id = ?
-                """,
-                rs -> {
-                    channels.add(RealtimeChannel.outlet(rs.getLong(1)));
-                },
-                userId);
-
-        // Stores: granted directly, or through the supplier organisation.
-        jdbc.query("""
-                select distinct s.id
-                  from supplier_store s
-                  join user_role ur on ur.status = 'ACTIVE'
-                   and ((ur.scope_type = 'SUPPLIER_STORE' and ur.scope_id = s.id)
-                     or (ur.scope_type = 'SUPPLIER' and ur.scope_id = s.supplier_organization_id))
-                 where ur.user_id = ?
-                """,
-                rs -> {
-                    channels.add(RealtimeChannel.supplierStore(rs.getLong(1)));
-                },
-                userId);
-
+        AccessSnapshot snapshot = access.get(userId, null).filter(AccessSnapshot::usable).orElse(null);
+        if (snapshot == null || snapshot.orgs() == null) {
+            return channels;
+        }
+        for (AccessSnapshot.Org org : snapshot.orgs()) {
+            for (AccessSnapshot.Outlet outlet : org.outlets()) {
+                channels.add("SUPPLIER".equals(org.orgType())
+                        ? RealtimeChannel.supplierStore(outlet.outletId())
+                        : RealtimeChannel.outlet(outlet.outletId()));
+            }
+        }
         return channels;
     }
 

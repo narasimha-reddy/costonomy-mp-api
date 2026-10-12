@@ -31,13 +31,6 @@ import java.util.List;
 @Slf4j
 public class RateLimitPolicies {
 
-    /** OTP is the one a script actually attacks: six digits, and a phone is public. */
-    @Value("${costonomy.mp.ratelimit.otp-request:20}")
-    private int otpRequestLimit;
-
-    @Value("${costonomy.mp.ratelimit.otp-verify:30}")
-    private int otpVerifyLimit;
-
     @Value("${costonomy.mp.ratelimit.auth:60}")
     private int authLimit;
 
@@ -108,16 +101,11 @@ public class RateLimitPolicies {
     }
 
     private List<Rule> build() {
-        var hour = Duration.ofHours(1);
         var tenMinutes = Duration.ofMinutes(10);
         var minute = Duration.ofMinutes(1);
 
         var built = List.of(
                 // Pre-authentication, so keyed by IP — there is no user yet.
-                new Rule(HttpMethod.POST, "/api/v1/auth/otp/request",
-                        new RateLimitPolicy("otp-request", otpRequestLimit, hour, KeyBy.IP)),
-                new Rule(HttpMethod.POST, "/api/v1/auth/otp/verify",
-                        new RateLimitPolicy("otp-verify", otpVerifyLimit, tenMinutes, KeyBy.IP)),
                 new Rule(HttpMethod.POST, "/api/v1/auth/",
                         new RateLimitPolicy("auth", authLimit, tenMinutes, KeyBy.IP)),
 

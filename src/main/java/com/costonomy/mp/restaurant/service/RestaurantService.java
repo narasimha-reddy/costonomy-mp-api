@@ -4,24 +4,22 @@ import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.Roles;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
-import com.costonomy.mp.access.service.RoleGrantService;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.restaurant.domain.Outlet;
 import com.costonomy.mp.restaurant.domain.Restaurant;
-import com.costonomy.mp.restaurant.domain.RestaurantUser;
 import com.costonomy.mp.restaurant.repository.OutletRepository;
 import com.costonomy.mp.restaurant.repository.RestaurantRepository;
-import com.costonomy.mp.restaurant.repository.RestaurantUserRepository;
-import com.costonomy.mp.identity.service.UserDirectoryService;
+import com.costonomy.mp.identity.common.CommonDirectory;
+import com.costonomy.mp.identity.common.CommonSync;
+import com.costonomy.security.client.CommonApiClient;
 import com.costonomy.mp.restaurant.web.dto.RestaurantDtos;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
 import java.util.List;
 
 /**
@@ -37,49 +35,42 @@ public class RestaurantService {
 
     private final RestaurantRepository restaurantRepository;
     private final OutletRepository outletRepository;
-    private final RestaurantUserRepository membershipRepository;
-    private final UserDirectoryService userDirectory;
     private final AccessControlService accessControl;
-    private final RoleGrantService roleGrants;
+    private final CommonDirectory directory;
+    private final CommonSync commonSync;
+    private final CommonApiClient common;
     private final AuditService auditService;
 
     /**
      * Create a restaurant, and make the creator its owner.
      *
-     * <p>The owner grant is not optional bookkeeping — without it the creator
-     * could not read back the restaurant they just created, because every
-     * subsequent call is authorized against {@code user_role}. Creating the
-     * organisation and granting the first role have to be one transaction, or a
-     * partial failure leaves an orphan nobody can administer.
+     * <p>The business is created in costonomy-common-api, enrolled in the marketplace; common makes the creator its
+     * owner (REST_OWNER). Marketplace then copies it under the same id and keeps its own fields (GSTIN).
      */
     @Transactional
     public RestaurantDtos.RestaurantResponse create(
             Long actorId, RestaurantDtos.CreateRestaurantRequest request) {
 
-        var restaurant = new Restaurant();
-        restaurant.setName(request.name());
+        long restaurantId = directory.createOrg(actorId, new CommonDirectory.Business("RESTAURANT",
+                request.name(), request.legalName(), request.gstin(), null, null, null));
+        commonSync.syncOrg(restaurantId);
+        commonSync.accessChanged(actorId);
+
+        var restaurant = restaurantRepository.findById(restaurantId)
+                .orElseThrow(() -> new NotFoundException("Restaurant", restaurantId));
         restaurant.setLegalName(request.legalName());
         restaurant.setGstin(request.gstin());
         restaurant.setCreatedBy(actorId);
         restaurantRepository.save(restaurant);
 
-        var membership = new RestaurantUser();
-        membership.setRestaurantId(restaurant.getId());
-        membership.setUserId(actorId);
-        membership.setStatus("ACTIVE");
-        membership.setJoinedAt(Instant.now());
-        membershipRepository.save(membership);
-
-        roleGrants.grant(actorId, Roles.REST_OWNER, ScopeType.RESTAURANT, restaurant.getId(), actorId);
-
         auditService.record(actorId, Roles.REST_OWNER, "RESTAURANT_CREATED", "RESTAURANT",
-                restaurant.getId(), null, "ACTIVE", null, "API");
+                restaurantId, null, "ACTIVE", null, "API");
 
         if (request.firstOutlet() != null) {
-            createOutlet(actorId, restaurant.getId(), request.firstOutlet());
+            createOutlet(actorId, restaurantId, request.firstOutlet());
         }
 
-        return get(actorId, restaurant.getId());
+        return get(actorId, restaurantId);
     }
 
     @Transactional(readOnly = true)
@@ -133,8 +124,16 @@ public class RestaurantService {
             throw new NotFoundException("Restaurant", restaurantId);
         }
 
-        var outlet = new Outlet();
-        outlet.setRestaurantId(restaurantId);
+        long outletId = directory.createOutlet(actorId, restaurantId, "RESTAURANT", new CommonDirectory.Place(
+                request.name(), request.addressLine1(), request.addressLine2(), request.landmark(), request.city(),
+                request.state(), request.pincode(), request.latitude(), request.longitude(), request.googlePlaceId(),
+                request.formattedAddress(), request.contactName(), request.contactPhone()));
+        commonSync.syncOutlet(outletId);
+        commonSync.accessChanged(actorId);
+
+        // Common keeps the shared address fields; the marketplace-only ones (and the state as typed) stay here.
+        var outlet = outletRepository.findById(outletId)
+                .orElseThrow(() -> new NotFoundException("Outlet", outletId));
         apply(outlet, request);
         outletRepository.save(outlet);
 
@@ -201,16 +200,10 @@ public class RestaurantService {
     }
 
     /**
-     * Add a member to an outlet and grant them a role there.
+     * Give someone a restaurant role at an outlet.
      *
-     * <p>Membership and role are written together. Granting a role without the
-     * membership row would leave someone with permissions who does not appear in
-     * "who belongs to this restaurant"; creating the membership without the role
-     * would leave an invited user who can see nothing and cannot be told why.
-     *
-     * <p>The invitee need not have an account yet — a phone number is enough
-     * ({@link UserDirectoryService#findOrInviteByPhone}). The placeholder user is
-     * unverified until they complete an OTP themselves.
+     * <p>The invitation is made in costonomy-common-api, which owns membership: someone with an account gets the
+     * role straight away, a new number when it first signs in to the app.
      */
     @Transactional
     public RestaurantDtos.OutletUserResponse addOutletUser(
@@ -224,20 +217,24 @@ public class RestaurantService {
         // Only restaurant-side roles can be granted here. Without this check an
         // outlet admin could grant SUP_OWNER or an internal operations role and
         // quietly escalate straight out of their own tenant.
-        if (!request.roleCode().startsWith("REST_")) {
+        if (!request.roleCode().startsWith("REST_") || Roles.REST_OWNER.equals(request.roleCode())) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "That role can't be granted on an outlet.");
         }
 
-        var user = userDirectory.findOrInviteByPhone(request.phone(), request.country(), request.name());
-
-        ensureMembership(restaurantId, user.getId(), actorId);
-        roleGrants.grant(user.getId(), request.roleCode(), ScopeType.OUTLET, outletId, actorId);
+        var invited = directory.invite(actorId, restaurantId, request.phone(), request.country(), request.name(),
+                request.roleCode(), outletId);
+        if (invited.userId() != null) {
+            commonSync.ensureUser(invited.userId());
+            commonSync.accessChanged(invited.userId());
+        }
 
         return new RestaurantDtos.OutletUserResponse(
-                user.getId(), user.getPhone(), user.getName(), "ACTIVE",
+                invited.userId(), invited.phone(), invited.name(),
+                invited.userId() == null ? "INVITED" : "ACTIVE",
                 List.of(request.roleCode()),
-                List.copyOf(accessControl.permissionsAt(user.getId(), ScopeType.OUTLET, outletId)));
+                invited.userId() == null ? List.of()
+                        : List.copyOf(accessControl.permissionsAt(invited.userId(), ScopeType.OUTLET, outletId)));
     }
 
     /** Who can act on this outlet, and with what. */
@@ -247,22 +244,10 @@ public class RestaurantService {
                 ScopeType.OUTLET, outletId, "Outlet");
 
         Long restaurantId = restaurantIdOf(outletId);
-        var members = membershipRepository.findByRestaurantIdAndStatus(restaurantId, "ACTIVE");
-        var users = userDirectory.byIds(members.stream().map(RestaurantUser::getUserId).toList());
-
-        return members.stream()
-                .map(member -> {
-                    var user = users.get(member.getUserId());
-                    var permissions = accessControl.permissionsAt(
-                            member.getUserId(), ScopeType.OUTLET, outletId);
-                    return new RestaurantDtos.OutletUserResponse(
-                            member.getUserId(),
-                            user == null ? null : user.getPhone(),
-                            user == null ? null : user.getName(),
-                            member.getStatus(),
-                            List.of(),
-                            List.copyOf(permissions));
-                })
+        return common.members(restaurantId, outletId, null, null).stream()
+                .map(member -> new RestaurantDtos.OutletUserResponse(
+                        member.userId(), member.phone(), member.name(), "ACTIVE", List.of(),
+                        List.copyOf(accessControl.permissionsAt(member.userId(), ScopeType.OUTLET, outletId))))
                 // A restaurant-level member with no permissions on *this* outlet is
                 // not a member of this outlet for any practical purpose.
                 .filter(response -> !response.permissions().isEmpty())
@@ -273,27 +258,6 @@ public class RestaurantService {
         return outletRepository.findById(outletId)
                 .map(Outlet::getRestaurantId)
                 .orElseThrow(() -> new NotFoundException("Outlet", outletId));
-    }
-
-    void ensureMembership(Long restaurantId, Long userId, Long invitedBy) {
-        membershipRepository.findByRestaurantIdAndUserId(restaurantId, userId)
-                .ifPresentOrElse(existing -> {
-                    if (!"ACTIVE".equals(existing.getStatus())) {
-                        existing.setStatus("ACTIVE");
-                        existing.setJoinedAt(Instant.now());
-                        existing.setRemovedAt(null);
-                        membershipRepository.save(existing);
-                    }
-                }, () -> {
-                    var membership = new RestaurantUser();
-                    membership.setRestaurantId(restaurantId);
-                    membership.setUserId(userId);
-                    membership.setStatus("ACTIVE");
-                    membership.setInvitedBy(invitedBy);
-                    membership.setInvitedAt(Instant.now());
-                    membership.setJoinedAt(Instant.now());
-                    membershipRepository.save(membership);
-                });
     }
 
     private static void apply(Outlet outlet, RestaurantDtos.CreateOutletRequest request) {

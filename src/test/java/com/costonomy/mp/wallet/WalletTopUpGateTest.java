@@ -3,7 +3,6 @@ package com.costonomy.mp.wallet;
 import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
-import com.costonomy.mp.identity.security.AuthenticatedActor;
 import com.costonomy.mp.wallet.domain.Wallet;
 import com.costonomy.mp.wallet.service.WalletService;
 import com.costonomy.mp.wallet.web.WalletController;
@@ -12,7 +11,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import com.costonomy.security.CostonomyPrincipal;
+import com.costonomy.security.web.CostonomyAuthentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -46,8 +46,10 @@ class WalletTopUpGateTest {
 
     @BeforeEach
     void signIn() {
-        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
-                new AuthenticatedActor(1L, "+919876500004"), null, List.of()));
+        SecurityContextHolder.getContext().setAuthentication(new CostonomyAuthentication(
+                new CostonomyPrincipal(CostonomyPrincipal.Type.USER, 1L, "sid-1", "mp-mobile", "MARKETPLACE",
+                        java.util.Set.of("otp"), null, null),
+                null, java.util.Set.of(), null, null, List.of()));
     }
 
     @AfterEach

@@ -3,7 +3,7 @@ package com.costonomy.mp.common.config;
 import com.costonomy.mp.common.api.ApiResponse;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.web.RequestContext;
-import com.costonomy.mp.identity.security.JwtAuthenticationFilter;
+import com.costonomy.security.web.CostonomySecurityConfigurer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
@@ -13,11 +13,9 @@ import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
-import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -53,20 +51,15 @@ import java.util.List;
 public class SecurityConfig {
 
     private final ObjectMapper objectMapper;
-    private final JwtAuthenticationFilter jwtAuthenticationFilter;
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http, CostonomySecurityConfigurer costonomy) throws Exception {
         http
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
-                // Stateless bearer tokens: there is no session cookie for an
-                // attacker's forged form post to ride on.
-                .csrf(csrf -> csrf.disable())
-                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                // Sign-in is costonomy-common-api's (mp-mobile: phone + code). The starter verifies its tokens,
+                // resolves MARKETPLACE access and receives common's webhooks; it is stateless with CSRF off.
+                .with(costonomy, c -> { })
                 .authorizeHttpRequests(auth -> auth
-                        // Pre-authentication: requesting and verifying an OTP,
-                        // and exchanging a refresh token.
-                        .requestMatchers("/api/v1/auth/otp/**", "/api/v1/auth/refresh").permitAll()
                         // Provider callbacks authenticate by signature, not by a
                         // bearer token — the provider has no user session. The
                         // handler verifies the signature before doing anything
@@ -94,10 +87,7 @@ public class SecurityConfig {
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint(authenticationEntryPoint())
-                        .accessDeniedHandler(accessDeniedHandler()))
-                // Establishes identity before the authorisation rules above are
-                // evaluated. It never rejects — see JwtAuthenticationFilter.
-                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+                        .accessDeniedHandler(accessDeniedHandler()));
 
         return http.build();
     }

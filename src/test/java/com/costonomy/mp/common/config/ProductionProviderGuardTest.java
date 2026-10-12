@@ -7,7 +7,7 @@ import org.springframework.mock.env.MockEnvironment;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** D-101: a production profile must not come up on a mock payment or OTP provider. */
+/** D-101: a production profile must not come up on a mock payment provider. */
 class ProductionProviderGuardTest {
 
     @Test
@@ -15,7 +15,6 @@ class ProductionProviderGuardTest {
     void productionOnMockIsRefused() {
         var env = new MockEnvironment();
         env.setActiveProfiles("prod");
-        env.setProperty("costonomy.mp.providers.otp", "MSG91");
         // payment not set: the MOCK default is exactly the forgotten-setting case.
         assertThatThrownBy(() -> ProductionProviderGuard.check(env))
                 .isInstanceOf(IllegalStateException.class)
@@ -28,7 +27,6 @@ class ProductionProviderGuardTest {
         var prod = new MockEnvironment();
         prod.setActiveProfiles("production");
         prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-        prod.setProperty("costonomy.mp.providers.otp", "MSG91");
         prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
         realInvoices(prod);
         assertThatCode(() -> ProductionProviderGuard.check(prod)).doesNotThrowAnyException();
@@ -44,7 +42,6 @@ class ProductionProviderGuardTest {
         var prod = new MockEnvironment();
         prod.setActiveProfiles("prod");
         prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-        prod.setProperty("costonomy.mp.providers.otp", "MSG91");
         prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
         realInvoices(prod);
         prod.setProperty("costonomy.mp.wallet.withdraw-precheck", "false");
@@ -70,7 +67,6 @@ class ProductionProviderGuardTest {
             var prod = new MockEnvironment();
             prod.setActiveProfiles("prod");
             prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-            prod.setProperty("costonomy.mp.providers.otp", "MSG91");
             prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
             realInvoices(prod);
             prod.setProperty("costonomy.mp.wallet.withdraw-precheck", value);
@@ -83,7 +79,6 @@ class ProductionProviderGuardTest {
             var prod = new MockEnvironment();
             prod.setActiveProfiles("production");
             prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-            prod.setProperty("costonomy.mp.providers.otp", "MSG91");
             prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
             realInvoices(prod);
             prod.setProperty("costonomy.mp.wallet.withdraw-precheck", value);
@@ -92,7 +87,6 @@ class ProductionProviderGuardTest {
         var unset = new MockEnvironment();
         unset.setActiveProfiles("prod");
         unset.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-        unset.setProperty("costonomy.mp.providers.otp", "MSG91");
         unset.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
         realInvoices(unset);
         assertThatCode(() -> ProductionProviderGuard.check(unset)).doesNotThrowAnyException();
@@ -103,7 +97,6 @@ class ProductionProviderGuardTest {
         var env = new MockEnvironment();
         env.setActiveProfiles("prod");
         env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-        env.setProperty("costonomy.mp.providers.otp", "MSG91");
         // payout not set: the MOCK default is exactly the forgotten-setting case.
         assertThatThrownBy(() -> ProductionProviderGuard.check(env))
                 .isInstanceOf(IllegalStateException.class)
@@ -116,7 +109,6 @@ class ProductionProviderGuardTest {
         var env = new MockEnvironment();
         env.setActiveProfiles("production");
         env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-        env.setProperty("costonomy.mp.providers.otp", "MSG91");
         env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
         realInvoices(env);
         env.setProperty("costonomy.mp.quickscan.enabled", "true");
@@ -145,7 +137,9 @@ class ProductionProviderGuardTest {
         env.setProperty("costonomy.mp.invoices.reader.user-id", "6");
         env.setProperty("costonomy.mp.invoices.reader.outlet", "5");
         env.setProperty("costonomy.mp.invoices.cost-outlet-map", "1:5");
-        env.setProperty("costonomy.mp.jwt.secret", "placeholder-secret-of-at-least-32-bytes-long");
+        env.setProperty("costonomy.security.common-api.client-secret", "placeholder-not-a-secret");
+        env.setProperty("costonomy.security.webhook.secret", "placeholder-not-a-secret");
+        env.setProperty("costonomy.security.common-api.base-url", "https://api.costonomy.example/costonomy-common-api");
         realtimeOrigins(env);
     }
 
@@ -159,7 +153,6 @@ class ProductionProviderGuardTest {
         var env = new MockEnvironment();
         env.setActiveProfiles("prod");
         env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-        env.setProperty("costonomy.mp.providers.otp", "MSG91");
         env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
         return env;
     }
@@ -290,22 +283,26 @@ class ProductionProviderGuardTest {
     }
 
     @Test
-    @DisplayName("a production profile with no JWT secret, a short one, or the one that was committed is refused")
-    void productionJwtSecretMustBeReal() {
-        for (String bad : new String[] {"", "short",
-                "SWt/kWYyraXKIm3nlqnJSL9vSqmPLkCT7GdZyKa4jDU="}) {
+    @DisplayName("a production profile without costonomy-common-api's client or webhook secret, or pointed at localhost, is refused")
+    void productionNeedsCommonApi() {
+        for (String property : new String[] {"costonomy.security.common-api.client-secret",
+                "costonomy.security.webhook.secret"}) {
             var env = new MockEnvironment();
             env.setActiveProfiles("prod");
             env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-            env.setProperty("costonomy.mp.providers.otp", "MSG91");
             env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
             realInvoices(env);
-            env.setProperty("costonomy.mp.jwt.secret", bad);
+            env.setProperty(property, "");
 
             assertThatThrownBy(() -> ProductionProviderGuard.check(env))
                     .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("jwt.secret");
+                    .hasMessageContaining(property);
         }
+        var env = prodReady();
+        env.setProperty("costonomy.security.common-api.base-url", "http://localhost:8091/costonomy-common-api");
+        assertThatThrownBy(() -> ProductionProviderGuard.check(env))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("localhost");
     }
 
     @Test
@@ -314,7 +311,6 @@ class ProductionProviderGuardTest {
         var env = new MockEnvironment();
         env.setActiveProfiles("prod");
         env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-        env.setProperty("costonomy.mp.providers.otp", "MSG91");
         env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
         realInvoices(env);
         env.setProperty("costonomy.mp.providers.delivery", "PIDGE");
@@ -331,7 +327,6 @@ class ProductionProviderGuardTest {
         var env = new MockEnvironment();
         env.setActiveProfiles("prod");
         env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-        env.setProperty("costonomy.mp.providers.otp", "MSG91");
         env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
         realInvoices(env);
         return env;

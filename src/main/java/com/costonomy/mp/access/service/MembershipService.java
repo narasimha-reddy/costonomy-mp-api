@@ -1,17 +1,15 @@
 package com.costonomy.mp.access.service;
 
 import com.costonomy.mp.access.domain.ScopeType;
-import com.costonomy.mp.access.repository.UserRoleRepository;
+import com.costonomy.security.access.AccessClient;
+import com.costonomy.security.access.AccessSnapshot;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -33,18 +31,10 @@ import java.util.TreeSet;
 @RequiredArgsConstructor
 public class MembershipService {
 
-    private final UserRoleRepository userRoleRepository;
-    private final RoleCodeCache roleCodeCache;
-    private final RolePermissionCatalog catalog;
+    private final AccessClient access;
     private final JdbcTemplate jdbc;
+    private final RoleResolver roles;
 
-    /**
-     * One entry per scope the user holds a role in.
-     *
-     * @param scopeType   RESTAURANT, OUTLET, SUPPLIER, SUPPLIER_STORE or PLATFORM
-     * @param roles       role codes held at this scope
-     * @param permissions everything those roles grant here
-     */
     public record Membership(
             ScopeType scopeType,
             Long scopeId,
@@ -56,49 +46,45 @@ public class MembershipService {
             List<String> permissions) {
     }
 
+    /**
+     * The scopes the user acts in, from costonomy-common-api's MARKETPLACE access: a business-wide member gets the
+     * restaurant or supplier entry, an outlet-level member one entry per outlet or store, an internal operator the
+     * platform entry. Names come from MP's copies (CommonSync keeps them current).
+     */
     @Transactional(readOnly = true)
     public List<Membership> membershipsOf(Long userId) {
-        var grants = userRoleRepository.findByUserIdAndStatus(userId, "ACTIVE");
-        if (grants.isEmpty()) {
+        AccessSnapshot snapshot = access.get(userId, null).filter(AccessSnapshot::usable).orElse(null);
+        if (snapshot == null) {
             return List.of();
         }
-
-        // LinkedHashMap so a user with several grants at one scope gets one entry,
-        // and the order stays stable between calls — the client renders an outlet
-        // switcher from this and a shuffling list is a bad switcher.
-        Map<String, List<String>> rolesByScope = new LinkedHashMap<>();
-        Map<String, ScopeKey> keys = new LinkedHashMap<>();
-
-        for (var grant : grants) {
-            String key = grant.getScopeType() + ":" + grant.getScopeId();
-            String roleCode = roleCodeCache.codeOf(grant.getRoleId());
-            if (roleCode == null) {
+        List<Membership> memberships = new ArrayList<>();
+        for (AccessSnapshot.Org org : snapshot.orgs() == null ? List.<AccessSnapshot.Org>of() : snapshot.orgs()) {
+            boolean supplier = "SUPPLIER".equals(org.orgType());
+            if ("BUSINESS".equals(org.accessLevel())) {
+                ScopeType type = supplier ? ScopeType.SUPPLIER : ScopeType.RESTAURANT;
+                var named = nameOf(type, org.orgId());
+                // TreeSet: clients render and diff these, so a stable order avoids spurious "changed" signals.
+                memberships.add(new Membership(type, org.orgId(), named.name(), named.parentId(), named.parentName(),
+                        roles.fromNames(org.orgType(), org.roles()),
+                        List.copyOf(new TreeSet<>(org.permissions() == null ? Set.of() : org.permissions()))));
                 continue;
             }
-            keys.putIfAbsent(key, new ScopeKey(grant.getScopeType(), grant.getScopeId()));
-            rolesByScope.computeIfAbsent(key, k -> new ArrayList<>()).add(roleCode);
+            ScopeType type = supplier ? ScopeType.SUPPLIER_STORE : ScopeType.OUTLET;
+            for (AccessSnapshot.Outlet outlet : org.outlets()) {
+                var named = nameOf(type, outlet.outletId());
+                String role = roles.strongest(org.orgType(), outlet.permissions(), outlet.roleLevels());
+                memberships.add(new Membership(type, outlet.outletId(), named.name(), named.parentId(),
+                        named.parentName(), role == null ? List.of() : List.of(role),
+                        List.copyOf(new TreeSet<>(outlet.permissions() == null ? Set.of() : outlet.permissions()))));
+            }
         }
-
-        List<Membership> memberships = new ArrayList<>();
-        keys.forEach((key, scope) -> {
-            List<String> roles = rolesByScope.getOrDefault(key, List.of());
-
-            // TreeSet: permissions are rendered and diffed by clients, so a
-            // deterministic order avoids spurious "changed" signals.
-            Set<String> permissions = new TreeSet<>();
-            roles.forEach(role -> permissions.addAll(catalog.permissionsForRole(role)));
-
-            var named = nameOf(scope.type(), scope.id());
-            memberships.add(new Membership(
-                    scope.type(), scope.id(), named.name(),
-                    named.parentId(), named.parentName(),
-                    List.copyOf(new TreeSet<>(roles)), List.copyOf(permissions)));
-        });
-
+        if (!snapshot.platformPermissions().isEmpty()) {
+            var platformRoles = snapshot.platform() == null || snapshot.platform().roles() == null
+                    ? List.<String>of() : snapshot.platform().roles();
+            memberships.add(new Membership(ScopeType.PLATFORM, null, "Costonomy Marketplace", null, null,
+                    List.copyOf(new TreeSet<>(platformRoles)), List.copyOf(new TreeSet<>(snapshot.platformPermissions()))));
+        }
         return memberships;
-    }
-
-    private record ScopeKey(ScopeType type, Long id) {
     }
 
     private record NamedScope(String name, Long parentId, String parentName) {

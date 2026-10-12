@@ -10,7 +10,7 @@ import java.security.Principal;
  * is live, and doc 03 §16 requires the server to check them against the current
  * state. Services resolve authorisation from the database using this actor's id.
  */
-public record AuthenticatedActor(Long userId, String phone) implements Principal {
+public record AuthenticatedActor(Long userId) implements Principal {
 
     @Override
     public String getName() {

@@ -3,6 +3,7 @@ package com.costonomy.mp.support;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.condition.EnabledIf;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -35,6 +36,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * suite, so the pipeline asserts Docker is present before running `mvn verify`.
  */
 @SpringBootTest
+@Import(LocalCommon.class)
 @ActiveProfiles("test")
 @Testcontainers
 @Tag("integration")
@@ -101,5 +103,19 @@ public abstract class AbstractIntegrationTest {
         // gets caught before a deploy does.
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
         registry.add("spring.flyway.enabled", () -> "true");
+        commonProperties(registry);
+    }
+
+    /**
+     * costonomy-common-api: tokens are signed with {@link TestKeys} and verified against the JWKS a WireMock
+     * stand-in serves; access and directory lookups are answered in-process by {@link LocalCommon}.
+     */
+    public static void commonProperties(DynamicPropertyRegistry registry) {
+        registry.add("costonomy.security.issuer", () -> TestKeys.ISSUER);
+        registry.add("costonomy.security.jwks-uri", () -> CommonStandIn.baseUrl() + "/.well-known/jwks.json");
+        registry.add("costonomy.security.common-api.base-url", CommonStandIn::baseUrl);
+        registry.add("costonomy.security.common-api.client-id", () -> "svc-mp");
+        registry.add("costonomy.security.common-api.client-secret", () -> "test-secret");
+        registry.add("costonomy.security.webhook.secret", () -> "test-webhook-secret");
     }
 }

@@ -1,16 +1,15 @@
 package com.costonomy.mp.access.service;
 
 import com.costonomy.mp.access.domain.ScopeType;
-import com.costonomy.mp.access.domain.UserRole;
-import com.costonomy.mp.access.repository.UserRoleRepository;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
+import com.costonomy.security.access.AccessClient;
+import com.costonomy.security.access.AccessSnapshot;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -43,33 +42,35 @@ import java.util.Set;
 @Slf4j
 public class AccessControlService {
 
-    private static final String ACTIVE = "ACTIVE";
-
-    private final UserRoleRepository userRoleRepository;
-    private final RoleCodeCache roleCodeCache;
-    private final RolePermissionCatalog catalog;
-    private final ScopeResolver scopeResolver;
+    private final AccessClient access;
 
     /**
-     * Every permission {@code userId} holds at {@code (scopeType, scopeId)},
-     * including those inherited from a parent scope or a platform grant.
+     * What {@code userId} may do at this scope, from costonomy-common-api's MARKETPLACE access (cached briefly by
+     * the starter, refreshed on access webhooks). Restaurants and supplier organisations are common orgs, outlets
+     * and supplier stores are common outlets, under the same ids:
+     * <ul>
+     *   <li>RESTAURANT / SUPPLIER: the org-level grants only (an outlet grant never reaches the whole org);</li>
+     *   <li>OUTLET / SUPPLIER_STORE: the outlet's permissions, which include the org-level grants (inheritance as
+     *       before);</li>
+     *   <li>platform (internal operator) permissions apply at every scope, as PLATFORM grants did.</li>
+     * </ul>
      */
-    @Transactional(readOnly = true)
     public Set<String> permissionsAt(Long userId, ScopeType scopeType, Long scopeId) {
         if (userId == null || scopeType == null) {
             return Set.of();
         }
-
-        Set<ScopeResolver.ScopeRef> satisfying = satisfyingScopes(scopeType, scopeId);
-
-        Set<String> permissions = new HashSet<>();
-        for (UserRole grant : userRoleRepository.findByUserIdAndStatus(userId, ACTIVE)) {
-            if (!matches(grant, satisfying)) {
-                continue;
-            }
-            String roleCode = roleCodeCache.codeOf(grant.getRoleId());
-            if (roleCode != null) {
-                permissions.addAll(catalog.permissionsForRole(roleCode));
+        AccessSnapshot snapshot = access.get(userId, null).filter(AccessSnapshot::usable).orElse(null);
+        if (snapshot == null) {
+            return Set.of();
+        }
+        Set<String> permissions = new HashSet<>(snapshot.platformPermissions());
+        if (scopeId != null) {
+            switch (scopeType) {
+                case RESTAURANT, SUPPLIER -> snapshot.org(scopeId)
+                        .ifPresent(o -> permissions.addAll(o.permissions() == null ? Set.of() : o.permissions()));
+                case OUTLET, SUPPLIER_STORE -> snapshot.outlet(scopeId)
+                        .ifPresent(o -> permissions.addAll(o.permissions() == null ? Set.of() : o.permissions()));
+                default -> { }
             }
         }
         return permissions;
@@ -136,37 +137,4 @@ public class AccessControlService {
     }
 
     /** Every scope a user holds any grant in. Backs {@code /auth/me} memberships. */
-    @Transactional(readOnly = true)
-    public List<UserRole> activeGrants(Long userId) {
-        return userRoleRepository.findByUserIdAndStatus(userId, ACTIVE);
-    }
-
-    // ── internals ────────────────────────────────────────────────────────
-
-    /**
-     * The concrete scopes whose grants satisfy a check at {@code (type, id)}.
-     *
-     * <p>Combines the type hierarchy ({@link ScopeType#satisfyingScopes()}) with
-     * the actual parent id — a grant on {@code RESTAURANT} only helps if it is on
-     * <em>this outlet's</em> restaurant.
-     */
-    private Set<ScopeResolver.ScopeRef> satisfyingScopes(ScopeType scopeType, Long scopeId) {
-        Set<ScopeResolver.ScopeRef> scopes = new HashSet<>();
-        scopes.add(new ScopeResolver.ScopeRef(scopeType, scopeId));
-        // PLATFORM grants have a null id and are checked by type alone.
-        scopes.add(new ScopeResolver.ScopeRef(ScopeType.PLATFORM, null));
-
-        scopeResolver.parentOf(scopeType, scopeId).ifPresent(scopes::add);
-        return scopes;
-    }
-
-    private boolean matches(UserRole grant, Set<ScopeResolver.ScopeRef> satisfying) {
-        if (grant.getScopeType() == ScopeType.PLATFORM) {
-            // Internal operators. Safe to accept at any scope because no internal
-            // role holds a tenant permission — see ScopeType.PLATFORM.
-            return true;
-        }
-        return satisfying.contains(
-                new ScopeResolver.ScopeRef(grant.getScopeType(), grant.getScopeId()));
-    }
 }

@@ -1,5 +1,6 @@
 package com.costonomy.mp.notification.service;
 
+import com.costonomy.security.client.CommonApiClient;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -26,64 +27,42 @@ import java.util.List;
 public class NotificationAudience {
 
     private final JdbcTemplate jdbc;
+    private final CommonApiClient common;
 
-    /** Everyone who can act for this outlet. */
+    /** Everyone who can act for this outlet: its team in costonomy-common-api, business-wide members included. */
     @Transactional(readOnly = true)
     public List<Long> forOutlet(Long outletId) {
-        List<Long> users = new ArrayList<>();
-        jdbc.query("""
-                select distinct ur.user_id
-                  from user_role ur
-                  join outlet o on ((ur.scope_type = 'OUTLET' and ur.scope_id = o.id)
-                                 or (ur.scope_type = 'RESTAURANT' and ur.scope_id = o.restaurant_id))
-                 where o.id = ? and ur.status = 'ACTIVE'
-                """,
-                rs -> {
-                    users.add(rs.getLong(1));
-                },
-                outletId);
-        return users;
+        return members(orgOf("select restaurant_id from outlet where id = ?", outletId), outletId, null);
     }
 
     /** Everyone who can act for this supplier store. */
     @Transactional(readOnly = true)
     public List<Long> forSupplierStore(Long supplierStoreId) {
-        List<Long> users = new ArrayList<>();
-        jdbc.query("""
-                select distinct ur.user_id
-                  from user_role ur
-                  join supplier_store s on ((ur.scope_type = 'SUPPLIER_STORE' and ur.scope_id = s.id)
-                        or (ur.scope_type = 'SUPPLIER' and ur.scope_id = s.supplier_organization_id))
-                 where s.id = ? and ur.status = 'ACTIVE'
-                """,
-                rs -> {
-                    users.add(rs.getLong(1));
-                },
-                supplierStoreId);
-        return users;
+        return members(orgOf("select supplier_organization_id from supplier_store where id = ?", supplierStoreId),
+                supplierStoreId, null);
     }
 
     /**
-     * Everyone who can act for this supplier store AND holds {@code permission} through the role of that grant (D-173):
-     * a salesperson who may not see credit is not sent the credit digest.
+     * Everyone who can act for this supplier store AND holds {@code permission} there (D-173): a salesperson who may
+     * not see credit is not sent the credit digest.
      */
     @Transactional(readOnly = true)
     public List<Long> forSupplierStoreWith(Long supplierStoreId, String permission) {
-        List<Long> users = new ArrayList<>();
-        jdbc.query("""
-                select distinct ur.user_id
-                  from user_role ur
-                  join supplier_store s on ((ur.scope_type = 'SUPPLIER_STORE' and ur.scope_id = s.id)
-                        or (ur.scope_type = 'SUPPLIER' and ur.scope_id = s.supplier_organization_id))
-                  join role_permission rp on rp.role_id = ur.role_id
-                  join permission p on p.id = rp.permission_id
-                 where s.id = ? and ur.status = 'ACTIVE' and p.code = ?
-                """,
-                rs -> {
-                    users.add(rs.getLong(1));
-                },
+        return members(orgOf("select supplier_organization_id from supplier_store where id = ?", supplierStoreId),
                 supplierStoreId, permission);
-        return users;
+    }
+
+    private Long orgOf(String sql, Long id) {
+        List<Long> ids = jdbc.queryForList(sql, Long.class, id);
+        return ids.isEmpty() ? null : ids.get(0);
+    }
+
+    private List<Long> members(Long orgId, Long outletId, String permission) {
+        if (orgId == null) {
+            return List.of();
+        }
+        return common.members(orgId, outletId, permission, null).stream()
+                .map(CommonApiClient.CommonMember::userId).distinct().toList();
     }
 
     /** A user's active push tokens, newest first. */

@@ -4,13 +4,13 @@ import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.Roles;
 import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
-import com.costonomy.mp.access.service.RoleGrantService;
 import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.common.outbox.OutboxService;
-import com.costonomy.mp.identity.service.UserDirectoryService;
+import com.costonomy.mp.identity.common.CommonDirectory;
+import com.costonomy.mp.identity.common.CommonSync;
 import com.costonomy.mp.supplier.domain.*;
 import com.costonomy.mp.supplier.repository.*;
 import com.costonomy.mp.supplier.web.dto.SupplierDtos;
@@ -42,53 +42,60 @@ public class SupplierService {
     private final SupplierOrganizationRepository organizations;
     private final SupplierStoreRepository stores;
     private final SupplierVerificationRepository verifications;
-    private final SupplierUserRepository memberships;
-    private final UserDirectoryService userDirectory;
     private final AccessControlService accessControl;
-    private final RoleGrantService roleGrants;
+    private final CommonDirectory directory;
+    private final CommonSync commonSync;
     private final AuditService auditService;
     private final OutboxService outbox;
     private final ObjectMapper json;
 
-    /** Register a supplier. The caller becomes its owner, for the same reason a restaurant creator does. */
+    /**
+     * Register a supplier. The caller becomes its owner, for the same reason a restaurant creator does.
+     *
+     * <p>The business is created in costonomy-common-api (a SUPPLIER org enrolled in the marketplace, the caller its
+     * SUP_OWNER) and copied here under the same id; verification and lifecycle stay Marketplace's.
+     */
     @Transactional
     public SupplierDtos.SupplierResponse create(Long actorId, SupplierDtos.CreateSupplierRequest request) {
-        var organization = new SupplierOrganization();
+        String gstin = blankToNull(request.gstin());
+        // uk_supplier_org_gstin. One GSTIN is one supplier — otherwise the
+        // same business could register twice and split its performance history.
+        if (gstin != null && organizations.findByGstin(gstin).isPresent()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "A supplier with that GSTIN is already registered.");
+        }
+
+        long supplierId = directory.createOrg(actorId, new CommonDirectory.Business("SUPPLIER",
+                request.displayName(), request.legalName(), gstin, request.contactName(), request.contactPhone(),
+                request.contactEmail()));
+        commonSync.syncOrg(supplierId);
+        commonSync.accessChanged(actorId);
+
+        var organization = organizations.findById(supplierId)
+                .orElseThrow(() -> new NotFoundException("Supplier", supplierId));
         organization.setLegalName(request.legalName());
         organization.setDisplayName(request.displayName());
-        organization.setGstin(blankToNull(request.gstin()));
+        organization.setGstin(gstin);
         organization.setContactName(request.contactName());
         organization.setContactPhone(request.contactPhone());
         organization.setContactEmail(request.contactEmail());
         organization.setLifecycleStatus(SupplierLifecycleStatus.REGISTERED);
         organization.setCreatedBy(actorId);
-
         try {
             organizations.saveAndFlush(organization);
         } catch (DataIntegrityViolationException ex) {
-            // uk_supplier_org_gstin. One GSTIN is one supplier — otherwise the
-            // same business could register twice and split its performance history.
             throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                     "A supplier with that GSTIN is already registered.");
         }
 
-        var membership = new SupplierUser();
-        membership.setSupplierOrganizationId(organization.getId());
-        membership.setUserId(actorId);
-        membership.setStatus("ACTIVE");
-        membership.setJoinedAt(Instant.now());
-        memberships.save(membership);
-
-        roleGrants.grant(actorId, Roles.SUP_OWNER, ScopeType.SUPPLIER, organization.getId(), actorId);
-
         auditService.record(actorId, Roles.SUP_OWNER, "SUPPLIER_REGISTERED", "SUPPLIER",
-                organization.getId(), null, SupplierLifecycleStatus.REGISTERED.name(), null, "API");
+                supplierId, null, SupplierLifecycleStatus.REGISTERED.name(), null, "API");
 
         if (request.firstStore() != null) {
-            createStore(actorId, organization.getId(), request.firstStore());
+            createStore(actorId, supplierId, request.firstStore());
         }
 
-        return get(actorId, organization.getId());
+        return get(actorId, supplierId);
     }
 
     @Transactional(readOnly = true)
@@ -149,8 +156,15 @@ public class SupplierService {
             throw new NotFoundException("Supplier", supplierId);
         }
 
-        var store = new SupplierStore();
-        store.setSupplierOrganizationId(supplierId);
+        long storeId = directory.createOutlet(actorId, supplierId, "SUPPLIER", new CommonDirectory.Place(
+                request.name(), request.addressLine1(), request.addressLine2(), null, request.city(), request.state(),
+                request.pincode(), request.latitude(), request.longitude(), null, null, request.contactName(),
+                request.contactPhone()));
+        commonSync.syncOutlet(storeId);
+        commonSync.accessChanged(actorId);
+
+        var store = stores.findById(storeId)
+                .orElseThrow(() -> new NotFoundException("SupplierStore", storeId));
         store.setName(request.name());
         store.setAddressLine1(request.addressLine1());
         store.setAddressLine2(request.addressLine2());
@@ -417,13 +431,18 @@ public class SupplierService {
             }
         }
 
-        var user = userDirectory.findOrInviteByPhone(request.phone(), request.country(), request.name());
-        ensureMembership(supplierId, user.getId(), actorId);
-        roleGrants.grant(user.getId(), request.roleCode(), scopeType, scopeId, actorId);
+        var invited = directory.invite(actorId, supplierId, request.phone(), request.country(), request.name(),
+                request.roleCode(), scopeType == ScopeType.SUPPLIER_STORE ? scopeId : null);
+        if (invited.userId() != null) {
+            commonSync.ensureUser(invited.userId());
+            commonSync.accessChanged(invited.userId());
+        }
 
         return new SupplierDtos.SupplierUserResponse(
-                user.getId(), user.getPhone(), user.getName(), "ACTIVE",
-                List.copyOf(accessControl.permissionsAt(user.getId(), scopeType, scopeId)));
+                invited.userId(), invited.phone(), invited.name(),
+                invited.userId() == null ? "INVITED" : "ACTIVE",
+                invited.userId() == null ? List.of()
+                        : List.copyOf(accessControl.permissionsAt(invited.userId(), scopeType, scopeId)));
     }
 
     // ── internals ────────────────────────────────────────────────────────
@@ -450,27 +469,6 @@ public class SupplierService {
         organization.setLifecycleStatus(target);
         auditService.record(actorId, null, "SUPPLIER_LIFECYCLE_CHANGED", "SUPPLIER",
                 organization.getId(), current.name(), target.name(), null, "API");
-    }
-
-    private void ensureMembership(Long supplierId, Long userId, Long invitedBy) {
-        memberships.findBySupplierOrganizationIdAndUserId(supplierId, userId)
-                .ifPresentOrElse(existing -> {
-                    if (!"ACTIVE".equals(existing.getStatus())) {
-                        existing.setStatus("ACTIVE");
-                        existing.setJoinedAt(Instant.now());
-                        existing.setRemovedAt(null);
-                        memberships.save(existing);
-                    }
-                }, () -> {
-                    var membership = new SupplierUser();
-                    membership.setSupplierOrganizationId(supplierId);
-                    membership.setUserId(userId);
-                    membership.setStatus("ACTIVE");
-                    membership.setInvitedBy(invitedBy);
-                    membership.setInvitedAt(Instant.now());
-                    membership.setJoinedAt(Instant.now());
-                    memberships.save(membership);
-                });
     }
 
     private String writeJson(Object value) {

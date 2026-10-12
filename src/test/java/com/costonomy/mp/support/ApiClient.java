@@ -21,7 +21,6 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 public final class ApiClient {
 
     private static final AtomicInteger PHONE_SEQ = new AtomicInteger(50_000);
-    private static final String MOCK_CODE = "123456";
 
     private final MockMvc mvc;
     private final ObjectMapper json;
@@ -36,20 +35,12 @@ public final class ApiClient {
         return "98760" + String.format("%05d", PHONE_SEQ.incrementAndGet());
     }
 
-    /** Register or sign in, returning an access token. */
-    public String login(String phone) throws Exception {
-        mvc.perform(MockMvcRequestBuilders.post("/api/v1/auth/otp/request")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(Map.of("phone", phone, "purpose", "LOGIN"))))
-                .andReturn();
-
-        String body = mvc.perform(MockMvcRequestBuilders.post("/api/v1/auth/otp/verify")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(json.writeValueAsString(
-                                Map.of("phone", phone, "otp", MOCK_CODE, "purpose", "LOGIN"))))
-                .andReturn().getResponse().getContentAsString();
-
-        return json.readTree(body).at("/data/accessToken").asText();
+    /**
+     * Register or sign in, returning an access token. Sign-in is costonomy-common-api's (phone + code in mp-mobile);
+     * the tests' stand-in for common creates the account on first use and signs the token ({@link LocalCommon}).
+     */
+    public String login(String phone) {
+        return LocalCommon.signIn(phone);
     }
 
     public String loginFresh() throws Exception {
