@@ -77,10 +77,19 @@ class CreditTransactionIdsIT extends AbstractIntegrationTest {
         var setup = p.single("500.00");
         p.s.topUp(setup.buyer(), "5000.00");
         var line = setup.line(0);
+        // Wallet entry ids and repayment ids both count up from 1, so on a fresh database they can be equal and a
+        // wrong id (the repayment's) would pass. Push the wallet entries far away from the repayments.
+        long far = 1000 + Math.max(
+                jdbc.queryForObject("select coalesce(max(id), 0) from wallet_transaction", Long.class),
+                jdbc.queryForObject("select coalesce(max(id), 0) from credit_repayment", Long.class));
+        jdbc.execute("alter table wallet_transaction auto_increment = " + far);
 
         var reply = p.create(setup.buyer(), p.allItems(setup), "WALLET");
         assertThat(reply.status()).describedAs(reply.body().toString()).isEqualTo(201);
         long entry = walletEntry(setup);
+        long repaymentId = jdbc.queryForObject("select id from credit_repayment where credit_payment_attempt_id = ?",
+                Long.class, reply.data().get("attemptId").asLong());
+        assertThat(entry).describedAs("the wallet entry id must differ from the repayment id").isNotEqualTo(repaymentId);
         long attemptId = reply.data().get("attemptId").asLong();
 
         assertThat(reply.data().get("walletEntryId").asLong()).isEqualTo(entry);
