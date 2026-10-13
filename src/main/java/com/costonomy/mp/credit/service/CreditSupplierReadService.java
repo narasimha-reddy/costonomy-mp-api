@@ -78,6 +78,7 @@ public class CreditSupplierReadService {
     private final CreditAgreementRepository agreements;
     private final CreditInvoiceRepository invoices;
     private final CreditPaymentRepository payments;
+    private final com.costonomy.mp.credit.repository.CreditRepaymentRepository repayments;
     private final CreditPaymentReversalRepository reversals;
     private final CreditPaymentClaimRepository claims;
     private final CreditAgreementService agreementService;
@@ -378,6 +379,14 @@ public class CreditSupplierReadService {
         var writtenOff = invoices.findAllById(rows.stream().map(CreditPayment::getCreditInvoiceId).distinct().toList())
                 .stream().filter(i -> i.getStatus() == CreditInvoiceStatus.WRITTEN_OFF).map(CreditInvoice::getId)
                 .collect(Collectors.toSet());
+        var walletEntries = new java.util.HashMap<Long, Long>();
+        var repaymentIds = rows.stream().filter(p -> p.getSource() == CreditPaymentSource.WALLET)
+                .map(CreditPayment::getCreditRepaymentId).filter(java.util.Objects::nonNull).distinct().toList();
+        for (var repayment : repayments.findAllById(repaymentIds)) {
+            if (repayment.getWalletTransactionId() != null) {
+                walletEntries.put(repayment.getId(), repayment.getWalletTransactionId());
+            }
+        }
         LocalDate today = LocalDate.now(clock);
         var items = rows.stream().map(p -> {
             var line = lineById.get(p.getCreditAgreementId());
@@ -393,9 +402,22 @@ public class CreditSupplierReadService {
                     LocalDate.ofInstant(p.getPaidAt(), clock.getZone()), line.getId(), line.getOutletId(),
                     outlet == null ? null : outlet.outletName(), outlet == null ? null : outlet.restaurantName(),
                     p.getCreditInvoiceId(), invoiceNumbers.get(p.getCreditInvoiceId()), m(p.getAmount()),
-                    p.getSource(), p.getMethod(), p.getReference(), receiptId, reversible, until, reversed);
+                    p.getSource(), p.getMethod(), p.getReference(), receiptId, reversible, until, reversed,
+                    transactionId(p, walletEntries));
         }).toList();
         return new CreditDtos.PageOf<>(items, page, size, total, hasNext);
+    }
+
+    /** ONLINE: the Razorpay payment id; WALLET: the number the restaurant sees; anything else null. */
+    private static String transactionId(CreditPayment p, java.util.Map<Long, Long> walletEntries) {
+        if (p.getSource() == CreditPaymentSource.ONLINE) {
+            return p.getReference();
+        }
+        if (p.getSource() == CreditPaymentSource.WALLET && p.getCreditRepaymentId() != null) {
+            Long entry = walletEntries.get(p.getCreditRepaymentId());
+            return entry == null ? null : String.valueOf(entry);
+        }
+        return null;
     }
 
     // ── internals ────────────────────────────────────────────────────────

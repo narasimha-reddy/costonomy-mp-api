@@ -256,6 +256,11 @@ final class CreditPaySupport {
 
     // ── the supplier's levers on an invoice ──────────────────────────────
 
+    /** The status of a supplier-recorded payment of {@code amount} on the setup's first invoice. */
+    int recordedPaymentStatus(Setup setup, String amount) throws Exception {
+        return s.recordPayment(setup.line(0).seller(), setup.inv(0).id(), amount).status();
+    }
+
     Reply supplierReceipt(Inv inv, String amount) throws Exception {
         return s.recordPayment(inv.line().seller(), inv.id(), amount);
     }

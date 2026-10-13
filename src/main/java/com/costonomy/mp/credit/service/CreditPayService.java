@@ -90,6 +90,7 @@ public class CreditPayService {
     private final CreditPaymentAttemptInvoiceRepository attemptInvoices;
     private final CreditPaymentRefundRepository refunds;
     private final CreditInvoiceRepository invoices;
+    private final com.costonomy.mp.credit.repository.CreditRepaymentRepository repayments;
     private final CreditAgreementRepository agreements;
     private final CreditInvoiceService invoiceService;
     private final CreditRepaymentApplier applier;
@@ -126,7 +127,9 @@ public class CreditPayService {
                             CreditExposureStore exposure, CreditDirectory directory, WalletService wallet,
                             PaymentProvider provider, AccessControlService accessControl,
                             IdempotencyService idempotency, AuditService audit,
-                            PlatformTransactionManager transactionManager) {
+                            PlatformTransactionManager transactionManager,
+                            com.costonomy.mp.credit.repository.CreditRepaymentRepository repayments) {
+        this.repayments = repayments;
         this.attempts = attempts;
         this.attemptInvoices = attemptInvoices;
         this.refunds = refunds;
@@ -712,6 +715,15 @@ public class CreditPayService {
                 && attempt.getStatus() == CreditPaymentAttemptStatus.CREATED;
         String paidWith = attempt.getChannel() == CreditPayChannel.WALLET
                 ? "WALLET" : attempt.getRazorpayPaymentId() == null ? null : CreditPaySettlement.mapMethod(attempt.getPaymentMethod());
+        // The wallet ledger entry of a settled WALLET attempt: the one the restaurant sees on the invoice and the wallet.
+        Long walletEntryId = null;
+        if (attempt.getChannel() == CreditPayChannel.WALLET && attempt.getStatus() == CreditPaymentAttemptStatus.PAID) {
+            walletEntryId = rows.stream().filter(r -> r.getOutcome() == CreditPayInvoiceOutcome.PAID
+                            && r.getCreditRepaymentId() != null)
+                    .map(CreditPaymentAttemptInvoice::getCreditRepaymentId).distinct().sorted()
+                    .map(id -> repayments.findById(id).map(r -> r.getWalletTransactionId()).orElse(null))
+                    .filter(java.util.Objects::nonNull).findFirst().orElse(null);
+        }
         return new CreditPayDtos.AttemptResponse(attempt.getId(), attempt.getOutletId(), attempt.getStatus(),
                 attempt.getMethod(), paidWith, attempt.getPaymentDetail(), attempt.getInvoiceCount(),
                 attempt.getAmount(), attempt.getFeeAmount(), attempt.getTotalCharged(), attempt.getCurrency(),
@@ -719,7 +731,7 @@ public class CreditPayService {
                 includeKey && open ? provider.createAuthorizationPublicKey() : null, reopened,
                 refundAmount, refundState, attempt.getCreatedAt(), attempt.getPaidAt(),
                 open && attempt.getCreatedAt() != null ? attempt.getCreatedAt().plus(expireAfter) : null,
-                walletBalanceAfter, suppliers, invoiceRows);
+                walletBalanceAfter, suppliers, invoiceRows, walletEntryId);
     }
 
     // ── Small things ─────────────────────────────────────────────────────

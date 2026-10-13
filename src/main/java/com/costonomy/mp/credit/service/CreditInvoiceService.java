@@ -567,7 +567,16 @@ public class CreditInvoiceService {
                 invoice.getIssuedAt(), invoice.getSettledAt(),
                 CreditDueState.of(invoice.getStatus(), invoice.getDueDate(), invoice.getOverdueAfter(), today),
                 CreditDueState.daysToDue(invoice.getStatus(), invoice.getDueDate(), today),
-                invoice.reportable(openClaims), invoice.getCreditedAmount());
+                invoice.reportable(openClaims), invoice.getCreditedAmount(),
+                orderNumberOf(invoice.getSupplierOrderId()));
+    }
+
+    private String orderNumberOf(Long supplierOrderId) {
+        if (supplierOrderId == null) {
+            return null;
+        }
+        var order = directory.order(supplierOrderId);
+        return order == null ? null : order.orderNumber();
     }
 
     /** Today in India, the day every due state is measured against. */

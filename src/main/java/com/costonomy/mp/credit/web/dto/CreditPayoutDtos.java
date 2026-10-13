@@ -40,7 +40,9 @@ public final class CreditPayoutDtos {
             Instant createdAt,
             List<PayoutInvoice> invoices,
             String source,
-            String paymentMethod) {
+            String paymentMethod,
+            /** ONLINE: the Razorpay payment id behind the repayment. WALLET: the wallet ledger entry id. Else null. */
+            String transactionId) {
     }
 
     /** The store's position, whatever filter or page the list is on. */

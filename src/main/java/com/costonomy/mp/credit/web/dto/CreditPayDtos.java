@@ -178,6 +178,8 @@ public final class CreditPayDtos {
             Instant expiresAt,
             BigDecimal walletBalanceAfter,
             List<AttemptSupplier> suppliers,
-            List<AttemptInvoice> invoices) {
+            List<AttemptInvoice> invoices,
+            /** The wallet ledger entry that paid it: only for a WALLET attempt that is settled; else null. */
+            Long walletEntryId) {
     }
 }
