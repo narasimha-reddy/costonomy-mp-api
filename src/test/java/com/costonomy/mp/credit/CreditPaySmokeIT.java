@@ -139,7 +139,9 @@ class CreditPaySmokeIT extends AbstractIntegrationTest {
         assertThat(w.status()).isEqualTo(201);
         assertThat(w.data().get("status").asText()).isEqualTo("PAID");
         assertThat(w.data().get("walletBalanceAfter").decimalValue()).isEqualByComparingTo("7000");
-        assertThat(jdbc.queryForObject("select count(*) from wallet_transaction where kind = 'CREDIT_REPAYMENT'", Integer.class)).isEqualTo(2);
+        // This attempt's own wallet debits (the table is shared with every IT that ran before in the same database).
+        assertThat(jdbc.queryForObject("select count(*) from credit_repayment where credit_payment_attempt_id = ? "
+                + "and wallet_transaction_id is not null", Integer.class, w.data().get("attemptId").asLong())).isEqualTo(2);
         var got = call("GET", t, base + "payments/" + w.data().get("attemptId").asLong(), null, null);
         assertThat(got.data().get("status").asText()).isEqualTo("PAID");
     }
