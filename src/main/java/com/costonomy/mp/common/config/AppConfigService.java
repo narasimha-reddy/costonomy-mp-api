@@ -21,9 +21,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * what lets a settlement or a recommendation months later be reconstructed with
  * the values that applied at the time (doc 09 §11).
  *
- * <p>Cached in an immutable snapshot swapped atomically, same as
- * {@code RolePermissionCatalog}: a reader sees the old map or the new one, never
- * a half-built one. {@link #refresh()} is called by the operations config
+ * <p>Cached in an immutable snapshot swapped atomically: a reader sees the old map
+ * or the new one, never a half-built one. {@link #refresh()} is called by the operations config
  * endpoint when it lands in Phase 14; until then the snapshot loads once.
  */
 @Service

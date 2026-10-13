@@ -23,7 +23,8 @@ public interface CommonDirectory {
     }
 
     /** Who was invited. {@code userId} is null until the invitee has an account (they join at their first sign-in). */
-    record Invited(Long userId, String phone, String name, String status) {
+    /** {@code roleName}: the granted role's name in common. */
+    record Invited(Long userId, String phone, String name, String status, String roleName) {
     }
 
     /** Creates the business, enrolled in MARKETPLACE; the caller becomes its owner. Returns the org id. */
@@ -33,8 +34,9 @@ public interface CommonDirectory {
     long createOutlet(long actorId, long orgId, String orgType, Place place);
 
     /**
-     * Gives {@code phone} the Marketplace role {@code roleCode} at the business ({@code outletId} null) or at one
-     * outlet or store.
+     * Gives {@code phone} the business's role {@code roleId} in costonomy-common-api (a built-in role or one of its
+     * own; D-75) at the business ({@code outletId} null) or at one outlet or store. Common refuses a role of another
+     * business, Owner from anyone but an owner, and a role with permissions the actor doesn't hold.
      */
-    Invited invite(long actorId, long orgId, String phone, String country, String name, String roleCode, Long outletId);
+    Invited invite(long actorId, long orgId, String phone, String country, String name, long roleId, Long outletId);
 }

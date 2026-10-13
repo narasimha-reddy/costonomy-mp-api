@@ -181,7 +181,7 @@ class CreditReversalIT extends AbstractIntegrationTest {
         long orgId = e.count("select supplier_organization_id from supplier_store where id = ?", line.seller().storeId());
         String phone = ApiClient.freshPhone();
         s.api.post(line.seller().token(), "/api/v1/suppliers/" + orgId + "/users",
-                Map.of("phone", phone, "roleCode", roleCode, "storeId", line.seller().storeId()));
+                Map.of("phone", phone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, roleCode), "storeId", line.seller().storeId()));
         return s.api.login(phone);
     }
 

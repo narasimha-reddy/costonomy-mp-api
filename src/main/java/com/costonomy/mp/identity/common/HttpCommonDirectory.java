@@ -1,6 +1,5 @@
 package com.costonomy.mp.identity.common;
 
-import com.costonomy.mp.access.service.RolePermissionCatalog;
 import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
@@ -38,7 +37,6 @@ public class HttpCommonDirectory implements CommonDirectory {
 
     private final CommonHttp http;
     private final CommonApiClient common;
-    private final RolePermissionCatalog catalog;
     private final ObjectMapper json;
 
     @Override
@@ -77,19 +75,13 @@ public class HttpCommonDirectory implements CommonDirectory {
     }
 
     @Override
-    public Invited invite(long actorId, long orgId, String phone, String country, String name, String roleCode,
+    public Invited invite(long actorId, long orgId, String phone, String country, String name, long roleId,
                           Long outletId) {
         String target = PhoneNumbers.normalize(phone, country);
         String scopeType = outletId == null ? "ORG" : "OUTLET";
-        long mpRole = roleId(APP, orgId, roleCode);
-        // Common's own role decides what they can do in common itself (see the business, invite people); a
-        // Marketplace admin who may manage the team gets common's admin role at the same scope.
-        boolean managesTeam = catalog.permissionsForRole(roleCode).stream()
-                .anyMatch(Set.of(Permissions.OUTLET_USER_MANAGE, Permissions.SUPPLIER_USER_MANAGE)::contains);
-        String commonRole = managesTeam ? (outletId == null ? "ORG_ADMIN" : "OUTLET_MANAGER") : "MEMBER";
-        List<Map<String, Object>> grants = new ArrayList<>();
-        grants.add(grant(roleId("COMMON", orgId, commonRole), scopeType, outletId == null ? null : outletId));
-        grants.add(grant(mpRole, scopeType, outletId == null ? null : outletId));
+        // One role per scope (D-75): it carries Marketplace's permissions and common's own (team, business).
+        String roleName = roleName(orgId, roleId);
+        List<Map<String, Object>> grants = List.of(grant(roleId, scopeType, outletId));
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("target", target);
@@ -104,10 +96,10 @@ public class HttpCommonDirectory implements CommonDirectory {
         String digits = lastDigits(target);
         for (CommonApiClient.CommonMember m : common.members(orgId, outletId, null, null)) {
             if (m.phone() != null && lastDigits(m.phone()).equals(digits)) {
-                return new Invited(m.userId(), target, m.name(), "ACTIVE");
+                return new Invited(m.userId(), target, m.name(), "ACTIVE", roleName);
             }
         }
-        return new Invited(null, target, name, text(invitation, "status", "INVITED"));
+        return new Invited(null, target, name, text(invitation, "status", "INVITED"), roleName);
     }
 
     private static Map<String, Object> grant(long roleId, String scopeType, Long scopeId) {
@@ -118,13 +110,14 @@ public class HttpCommonDirectory implements CommonDirectory {
         return g;
     }
 
-    private long roleId(String app, long orgId, String code) {
-        for (JsonNode r : send("GET", "/v1/roles?app=" + app + "&orgId=" + orgId, null).path("items")) {
-            if (code.equals(r.path("code").asText())) {
-                return r.path("id").asLong();
+    /** The role's name among the business's roles; an id that isn't one of them is refused. */
+    private String roleName(long orgId, long roleId) {
+        for (JsonNode r : send("GET", "/v1/orgs/" + orgId + "/roles", null).path("items")) {
+            if (r.path("id").asLong() == roleId) {
+                return r.path("name").asText();
             }
         }
-        throw new BusinessException(ErrorCode.VALIDATION_ERROR, "Unknown role: " + code);
+        throw new BusinessException(ErrorCode.VALIDATION_ERROR, "Choose one of this business's roles");
     }
 
     /** Common's ISO code (IN-TG) for a state given by code or name; null when it isn't recognised. */

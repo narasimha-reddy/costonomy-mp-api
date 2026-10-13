@@ -1,8 +1,5 @@
 package com.costonomy.mp.procurement.service;
 
-import com.costonomy.mp.access.service.RoleResolver;
-import com.costonomy.security.access.AccessClient;
-import com.costonomy.security.access.AccessSnapshot;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -26,8 +23,6 @@ import java.util.*;
 public class ProcurementDirectory {
 
     private final JdbcTemplate jdbc;
-    private final AccessClient access;
-    private final RoleResolver roles;
 
     /**
      * @param tradeable store ACTIVE, organisation ACTIVE <em>and</em> the store
@@ -173,21 +168,5 @@ public class ProcurementDirectory {
                 select distinct category_id from canonical_product
                  where id in (%s) and category_id is not null
                 """.formatted(placeholders), Long.class, productIds.toArray());
-    }
-
-    /**
-     * The requester's role at this outlet, for approval policies keyed on role.
-     *
-     * <p>A user can hold several roles; the highest-privilege one is returned,
-     * ordered by the hierarchy the seed defines. A policy saying "orders raised by
-     * Procurement Staff need approval" must not be dodged by that person also
-     * holding a Store Manager grant — so the strongest role is what the policy sees.
-     */
-    public String primaryRoleOf(Long userId, Long outletId) {
-        // Common's access lists what the user may do at the outlet, not which roles gave it (RoleResolver).
-        return access.get(userId, null).filter(AccessSnapshot::usable)
-                .flatMap(snapshot -> snapshot.outlet(outletId))
-                .map(outlet -> roles.strongest("RESTAURANT", outlet.permissions(), outlet.roleLevels()))
-                .orElse(null);
     }
 }

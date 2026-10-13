@@ -5,6 +5,7 @@ import com.costonomy.mp.supplier.domain.VerificationStatus;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
@@ -217,7 +218,8 @@ public final class SupplierDtos {
     public record AddSupplierUserRequest(
             @NotBlank(message = "Enter the mobile number") String phone,
             String country,
-            @NotBlank(message = "Choose a role") String roleCode,
+            /** One of the business's roles in costonomy-common-api (built-in or its own; D-75). */
+            @NotNull(message = "Choose a role") Long roleId,
             @Size(max = 150) String name,
             /** Null grants at organisation scope, reaching every store. */
             Long storeId) {

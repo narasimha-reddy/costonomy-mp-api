@@ -33,7 +33,6 @@ public class MembershipService {
 
     private final AccessClient access;
     private final JdbcTemplate jdbc;
-    private final RoleResolver roles;
 
     public record Membership(
             ScopeType scopeType,
@@ -42,6 +41,7 @@ public class MembershipService {
             /** The parent scope's id, so the client can group outlets by restaurant. */
             Long parentScopeId,
             String parentScopeName,
+            /** The name of the member's role here in costonomy-common-api (one per scope, D-75). */
             List<String> roles,
             List<String> permissions) {
     }
@@ -65,16 +65,15 @@ public class MembershipService {
                 var named = nameOf(type, org.orgId());
                 // TreeSet: clients render and diff these, so a stable order avoids spurious "changed" signals.
                 memberships.add(new Membership(type, org.orgId(), named.name(), named.parentId(), named.parentName(),
-                        roles.fromNames(org.orgType(), org.roles()),
+                        roleNames(org.role()),
                         List.copyOf(new TreeSet<>(org.permissions() == null ? Set.of() : org.permissions()))));
                 continue;
             }
             ScopeType type = supplier ? ScopeType.SUPPLIER_STORE : ScopeType.OUTLET;
             for (AccessSnapshot.Outlet outlet : org.outlets()) {
                 var named = nameOf(type, outlet.outletId());
-                String role = roles.strongest(org.orgType(), outlet.permissions(), outlet.roleLevels());
                 memberships.add(new Membership(type, outlet.outletId(), named.name(), named.parentId(),
-                        named.parentName(), role == null ? List.of() : List.of(role),
+                        named.parentName(), roleNames(outlet.role() != null ? outlet.role() : org.role()),
                         List.copyOf(new TreeSet<>(outlet.permissions() == null ? Set.of() : outlet.permissions()))));
             }
         }
@@ -85,6 +84,10 @@ public class MembershipService {
                     List.copyOf(new TreeSet<>(platformRoles)), List.copyOf(new TreeSet<>(snapshot.platformPermissions()))));
         }
         return memberships;
+    }
+
+    private static List<String> roleNames(AccessSnapshot.Role role) {
+        return role == null || role.name() == null ? List.of() : List.of(role.name());
     }
 
     private record NamedScope(String name, Long parentId, String parentName) {

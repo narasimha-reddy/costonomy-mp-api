@@ -33,7 +33,7 @@ final class CreditLifecycleSupport {
                 line.seller().storeId());
         String phone = ApiClient.freshPhone();
         e.s.api.post(line.seller().token(), "/api/v1/suppliers/" + orgId + "/users",
-                Map.of("phone", phone, "roleCode", roleCode, "storeId", line.seller().storeId()));
+                Map.of("phone", phone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, roleCode), "storeId", line.seller().storeId()));
         return e.s.api.login(phone);
     }
 

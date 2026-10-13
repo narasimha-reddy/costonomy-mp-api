@@ -214,16 +214,10 @@ public class RestaurantService {
 
         Long restaurantId = restaurantIdOf(outletId);
 
-        // Only restaurant-side roles can be granted here. Without this check an
-        // outlet admin could grant SUP_OWNER or an internal operations role and
-        // quietly escalate straight out of their own tenant.
-        if (!request.roleCode().startsWith("REST_") || Roles.REST_OWNER.equals(request.roleCode())) {
-            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "That role can't be granted on an outlet.");
-        }
-
+        // Which roles may be granted is costonomy-common-api's call (D-75): only this business's roles, Owner
+        // only business-wide and only by an owner, and nothing beyond what the actor holds.
         var invited = directory.invite(actorId, restaurantId, request.phone(), request.country(), request.name(),
-                request.roleCode(), outletId);
+                request.roleId(), outletId);
         if (invited.userId() != null) {
             commonSync.ensureUser(invited.userId());
             commonSync.accessChanged(invited.userId());
@@ -232,7 +226,7 @@ public class RestaurantService {
         return new RestaurantDtos.OutletUserResponse(
                 invited.userId(), invited.phone(), invited.name(),
                 invited.userId() == null ? "INVITED" : "ACTIVE",
-                List.of(request.roleCode()),
+                invited.roleName() == null ? List.of() : List.of(invited.roleName()),
                 invited.userId() == null ? List.of()
                         : List.copyOf(accessControl.permissionsAt(invited.userId(), ScopeType.OUTLET, outletId)));
     }
@@ -285,9 +279,5 @@ public class RestaurantService {
                 outlet.getLatitude(), outlet.getLongitude(),
                 outlet.getContactName(), outlet.getContactPhone(),
                 outlet.getDeliveryInstructions(), outlet.getStatus());
-    }
-
-    static BusinessException invalidRole(String roleCode) {
-        return new BusinessException(ErrorCode.VALIDATION_ERROR, "Unknown role: " + roleCode);
     }
 }

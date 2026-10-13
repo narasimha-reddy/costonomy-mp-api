@@ -2,6 +2,7 @@ package com.costonomy.mp.restaurant.web.dto;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
@@ -92,7 +93,8 @@ public final class RestaurantDtos {
     public record AddOutletUserRequest(
             @NotBlank(message = "Enter the mobile number") String phone,
             String country,
-            @NotBlank(message = "Choose a role") String roleCode,
+            /** One of the business's roles in costonomy-common-api (built-in or its own; D-75). */
+            @NotNull(message = "Choose a role") Long roleId,
             @Size(max = 150) String name) {
     }
 

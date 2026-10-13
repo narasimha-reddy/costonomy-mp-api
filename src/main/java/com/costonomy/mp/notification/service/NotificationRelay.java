@@ -1,5 +1,6 @@
 package com.costonomy.mp.notification.service;
 
+import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.common.outbox.OutboxPublisher;
 import com.costonomy.mp.notification.domain.*;
 import com.costonomy.mp.notification.repository.NotificationDeliveryRepository;
@@ -85,7 +86,7 @@ public class NotificationRelay {
             var recipients = switch (rule.audience()) {
                 case OUTLET -> audience.forOutlet(scopeId);
                 case SUPPLIER_STORE -> audience.forSupplierStore(scopeId);
-                case SUPPLIER_STORE_CREDIT -> audience.forSupplierStoreWith(scopeId, "CREDIT_VIEW");
+                case SUPPLIER_STORE_CREDIT -> audience.forSupplierStoreWith(scopeId, Permissions.CREDIT_VIEW);
             };
 
             // Deliberately not excluding the actor. An order rejected at 6am is the

@@ -1,5 +1,6 @@
 package com.costonomy.mp.support;
 
+import com.costonomy.mp.access.domain.PermissionCodes;
 import com.costonomy.mp.identity.common.CommonDirectory;
 import com.costonomy.mp.identity.common.MarketplaceCatalogPublisher;
 import com.costonomy.mp.identity.service.PhoneNumbers;
@@ -33,7 +34,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>Before the move to common, Marketplace held sign-in, businesses and grants itself, and the tests set up access
  * by writing {@code user_role} rows. The fake keeps that working: it answers common's access lookups from
- * {@code user_role} + {@code role_permission} on every call (so a grant written or revoked mid-test applies to the
+ * {@code user_role} + {@code role_permission} on every call, in common's shape (D-75: a role per scope, permissions
+ * mapped to {@code <module>.<action>} by {@link PermissionCodes}) (so a grant written or revoked mid-test applies to the
  * next request, as common's change notifications make it do in production), and its writes (a new business, outlet
  * or member) land in the same tables.
  *
@@ -166,7 +168,6 @@ public class LocalCommon {
             final String orgType;
             final List<String> businessRoles = new ArrayList<>();
             final Map<Long, List<String>> outletRoles = new LinkedHashMap<>();
-            final List<String> roleNames = new ArrayList<>();
 
             OrgAccess(long orgId, String orgType) {
                 this.orgId = orgId;
@@ -192,7 +193,6 @@ public class LocalCommon {
                     case "RESTAURANT", "SUPPLIER" -> {
                         OrgAccess o = orgs.computeIfAbsent(g.scopeId(), id -> new OrgAccess(id, g.scopeType()));
                         o.businessRoles.add(g.role());
-                        o.roleNames.add(MarketplaceCatalogPublisher.publishedName(g.role(), g.roleName()));
                     }
                     case "OUTLET", "SUPPLIER_STORE" -> {
                         boolean store = "SUPPLIER_STORE".equals(g.scopeType());
@@ -221,10 +221,13 @@ public class LocalCommon {
                 for (Long outletId : outletIds) {
                     List<String> roles = new ArrayList<>(o.businessRoles);
                     roles.addAll(o.outletRoles.getOrDefault(outletId, List.of()));
-                    outlets.add(new AccessSnapshot.Outlet(outletId, "ACTIVE", permissions(roles), Set.of(), levels(roles)));
+                    List<String> own = o.outletRoles.getOrDefault(outletId, List.of());
+                    AccessSnapshot.Role shown = roleRef(!own.isEmpty() ? own.get(0) : o.businessRoles.get(0));
+                    outlets.add(new AccessSnapshot.Outlet(outletId, "ACTIVE", shown, permissions(roles), false,
+                            levels(roles).stream().min(Integer::compare).orElse(3), null, true));
                 }
                 out.add(new AccessSnapshot.Org(o.orgId, o.orgType, "ACTIVE", business ? "BUSINESS" : "OUTLET", null,
-                        o.roleNames, orgPermissions, Set.of(), outlets));
+                        business ? roleRef(o.businessRoles.get(0)) : null, orgPermissions, outlets));
             }
             return new AccessSnapshot(userId, status.get(0), true, "MARKETPLACE",
                     new AccessSnapshot.Platform(platformRoles, platformPermissions), out, null, VERSION.incrementAndGet());
@@ -234,9 +237,25 @@ public class LocalCommon {
             if (roles.isEmpty()) {
                 return Set.of();
             }
-            return new TreeSet<>(jdbc.queryForList("SELECT DISTINCT p.code FROM role_permission rp "
+            Set<String> codes = new TreeSet<>();
+            jdbc.queryForList("SELECT DISTINCT p.code FROM role_permission rp "
                     + "JOIN role r ON r.id = rp.role_id JOIN permission p ON p.id = rp.permission_id WHERE r.code IN ("
-                    + String.join(",", roles.stream().map(r -> "?").toList()) + ")", String.class, roles.toArray()));
+                    + String.join(",", roles.stream().map(r -> "?").toList()) + ")", String.class, roles.toArray())
+                    .forEach(c -> {
+                        String code = PermissionCodes.of(c);
+                        if (code != null) {
+                            codes.add(code);
+                        }
+                    });
+            return codes;
+        }
+
+        /** A seeded role as common shows it: Owner and Admin are the built-in templates, the rest the business's own. */
+        private AccessSnapshot.Role roleRef(String code) {
+            Map<String, Object> r = jdbc.queryForMap("SELECT id, name FROM role WHERE code = ?", code);
+            String template = code.endsWith("_OWNER") ? "OWNER" : code.endsWith("_ADMIN") ? "ADMIN" : null;
+            return new AccessSnapshot.Role(((Number) r.get("id")).longValue(),
+                    MarketplaceCatalogPublisher.publishedName(code, (String) r.get("name")), template);
         }
 
         private Set<Integer> levels(List<String> roles) {
@@ -301,7 +320,7 @@ public class LocalCommon {
             }, id).stream().findFirst();
         }
 
-        List<CommonApiClient.CommonMember> members(long orgId, Long outletId, String permission, Integer roleLevel) {
+        List<CommonApiClient.CommonMember> members(long orgId, Long outletId, String permission, Integer audience) {
             boolean supplier = isSupplier(orgId);
             List<Long> outlets = outletsOf(orgId, supplier);
             Map<Long, List<String>> rolesByUser = new LinkedHashMap<>();
@@ -326,7 +345,7 @@ public class LocalCommon {
                     return;
                 }
                 Set<Integer> levels = levels(roles);
-                if (roleLevel != null && levels.stream().noneMatch(l -> l <= roleLevel)) {
+                if (audience != null && levels.stream().noneMatch(l -> l <= audience)) {
                     return;
                 }
                 user(userId).ifPresent(u -> members.add(new CommonApiClient.CommonMember(userId, u.name(),
@@ -365,8 +384,17 @@ public class LocalCommon {
             }
 
             @Override
-            public Invited invite(long actorId, long orgId, String phone, String country, String name, String roleCode,
+            public Invited invite(long actorId, long orgId, String phone, String country, String name, long roleId,
                                   Long outletId) {
+                // Common refuses a role of the other side or Owner at an outlet; the fake does too.
+                String roleCode = jdbc.queryForList("SELECT code FROM role WHERE id = ?", String.class, roleId)
+                        .stream().findFirst().orElseThrow(() -> new com.costonomy.mp.common.error.BusinessException(
+                                com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR, "Unknown role " + roleId));
+                boolean wrongSide = isSupplier(orgId) ? !roleCode.startsWith("SUP_") : !roleCode.startsWith("REST_");
+                if (wrongSide || (outletId != null && roleCode.endsWith("_OWNER"))) {
+                    throw new com.costonomy.mp.common.error.BusinessException(
+                            com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR, "Choose one of this business's roles");
+                }
                 String normalized = PhoneNumbers.normalize(phone, country);
                 long userId = userIdFor(normalized, name);
                 boolean supplier = isSupplier(orgId);
@@ -376,7 +404,7 @@ public class LocalCommon {
                     grant(userId, roleCode, supplier ? "SUPPLIER_STORE" : "OUTLET", outletId);
                 }
                 String current = jdbc.queryForObject("SELECT name FROM users WHERE id = ?", String.class, userId);
-                return new Invited(userId, normalized, current, "ACTIVE");
+                return new Invited(userId, normalized, current, "ACTIVE", roleRef(roleCode).name());
             }
         }
 

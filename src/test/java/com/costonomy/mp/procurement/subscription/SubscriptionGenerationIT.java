@@ -444,7 +444,7 @@ class SubscriptionGenerationIT extends AbstractIntegrationTest {
             long subId = subscribe(w, "10", "DAILY", "WALLET");
             String viewerPhone = ApiClient.freshPhone();
             api.post(w.buyer(), "/api/v1/outlets/" + w.outletId() + "/users", Map.of(
-                    "phone", viewerPhone, "roleCode", "REST_RECEIVING_STAFF", "name", "Receiver"));
+                    "phone", viewerPhone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "REST_RECEIVING_STAFF"), "name", "Receiver"));
             String viewer = api.login(viewerPhone);
 
             assertThat(api.getStatus(viewer, "/api/v1/subscriptions/" + subId)).isEqualTo(200);

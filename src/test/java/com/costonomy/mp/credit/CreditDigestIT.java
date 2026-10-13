@@ -1,6 +1,5 @@
 package com.costonomy.mp.credit;
 
-import com.costonomy.mp.access.service.RolePermissionCatalog;
 import com.costonomy.mp.credit.CreditWalletSupport.Line;
 import com.costonomy.mp.credit.service.CreditDigestService;
 import com.costonomy.mp.support.ApiClient;
@@ -28,7 +27,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class CreditDigestIT extends CreditClockedIT {
 
     @Autowired CreditDigestService digest;
-    @Autowired RolePermissionCatalog catalog;
 
     private void at(int hour, int minute) {
         setNow(nowIst().toLocalDate().atTime(hour, minute));
@@ -247,7 +245,6 @@ class CreditDigestIT extends CreditClockedIT {
                 code);
         jdbc.update("insert into role_permission (role_id, permission_id, created_at) "
                 + "select r.id, p.id, now(6) from role r join permission p on p.code = 'STORE_VIEW' where r.code = ?", code);
-        catalog.refresh();
         jdbc.update("""
                 insert into user_role (user_id, role_id, scope_type, scope_id, status, granted_at, created_at,
                                        updated_at, version)

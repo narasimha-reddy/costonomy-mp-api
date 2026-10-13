@@ -22,7 +22,7 @@ import java.util.Optional;
  * guardrail 4 makes a client-asserted state transition inadmissible.
  *
  * <p>Conditions are JSON because the axes are open-ended — order value, supplier,
- * category, outlet, payment method, requester role, and combinations (doc 28) —
+ * category, outlet, payment method, who is asking, and combinations (doc 28) —
  * and a column per axis would need a migration for each new one. Every condition
  * present must match; an empty condition set matches everything, which is how a
  * blanket "all orders need approval" rule is written.
@@ -67,7 +67,7 @@ public class ApprovalPolicyEvaluator {
      * holds up.
      */
     @Transactional(readOnly = true)
-    public Decision evaluate(Procurement procurement, Long restaurantId, String requesterRole,
+    public Decision evaluate(Procurement procurement, Long restaurantId, boolean requesterCanApprove,
                              List<Long> supplierStoreIds, List<Long> categoryIds) {
 
         var policies = jdbc.query("""
@@ -86,7 +86,7 @@ public class ApprovalPolicyEvaluator {
                 restaurantId, procurement.getOutletId());
 
         for (PolicyRow policy : policies) {
-            Optional<String> reason = matches(policy, procurement, requesterRole,
+            Optional<String> reason = matches(policy, procurement, requesterCanApprove,
                     supplierStoreIds, categoryIds);
             if (reason.isPresent()) {
                 return new Decision(true, policy.id(), policy.version(), policy.name(),
@@ -105,7 +105,7 @@ public class ApprovalPolicyEvaluator {
      * from the condition that actually fired.
      */
     private Optional<String> matches(PolicyRow policy, Procurement procurement,
-                                     String requesterRole, List<Long> supplierStoreIds,
+                                     boolean requesterCanApprove, List<Long> supplierStoreIds,
                                      List<Long> categoryIds) {
         JsonNode conditions;
         try {
@@ -136,12 +136,15 @@ public class ApprovalPolicyEvaluator {
             reasons.add("payment method is " + procurement.getPaymentMethod());
         }
 
-        if (conditions.hasNonNull("requesterRoles")) {
-            var roles = toStrings(conditions.get("requesterRoles"));
-            if (requesterRole == null || !roles.contains(requesterRole)) {
+        // Who is asking (D-75): people hold one role per outlet in costonomy-common-api, often one the business
+        // made itself, so a policy no longer names roles. It applies to requesters who cannot approve orders
+        // themselves (no procurement.approve at the outlet). Policies written with the older "requesterRoles" list
+        // are read the same way: those lists named the staff roles, which never held the approval.
+        if (conditions.path("requesterWithoutApproval").asBoolean(false) || conditions.hasNonNull("requesterRoles")) {
+            if (requesterCanApprove) {
                 return Optional.empty();
             }
-            reasons.add("requested by " + requesterRole);
+            reasons.add("requested by someone who can't approve orders");
         }
 
         if (conditions.hasNonNull("supplierStoreIds")) {

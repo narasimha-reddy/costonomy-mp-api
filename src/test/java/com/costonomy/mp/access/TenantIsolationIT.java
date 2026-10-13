@@ -155,7 +155,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             String staffPhone = ApiClient.freshPhone();
             api.post(owner, "/api/v1/outlets/" + outletOne + "/users", Map.of(
                     "phone", staffPhone,
-                    "roleCode", "REST_STORE_MANAGER",
+                    "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "REST_STORE_MANAGER"),
                     "name", "Ravi"));
 
             String staff = api.login(staffPhone);
@@ -183,7 +183,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             for (String role : new String[] {"SUP_OWNER", "OPS_ADMIN", "OPS_MARKETPLACE"}) {
                 assertThat(api.postStatus(owner, "/api/v1/outlets/" + outletId + "/users", Map.of(
                         "phone", ApiClient.freshPhone(),
-                        "roleCode", role)))
+                        "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, role))))
                         .describedAs("granting %s on an outlet", role)
                         .isEqualTo(400);
             }
@@ -251,7 +251,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             String salesPhone = ApiClient.freshPhone();
             api.post(owner, "/api/v1/suppliers/" + supplierId + "/users", Map.of(
                     "phone", salesPhone,
-                    "roleCode", "SUP_SALESPERSON",
+                    "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "SUP_SALESPERSON"),
                     "storeId", storeOne));
 
             String sales = api.login(salesPhone);
@@ -275,7 +275,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             // or B could grant one of their staff access to A's store.
             assertThat(api.postStatus(supplierB, "/api/v1/suppliers/" + supplierBId + "/users", Map.of(
                     "phone", ApiClient.freshPhone(),
-                    "roleCode", "SUP_SALESPERSON",
+                    "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "SUP_SALESPERSON"),
                     "storeId", storeA)))
                     .isEqualTo(404);
         }
@@ -377,9 +377,10 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             JsonNode membership = memberships.get(0);
             assertThat(membership.get("scopeType").asText()).isEqualTo("RESTAURANT");
             assertThat(membership.get("scopeName").asText()).isEqualTo("Paradise");
-            assertThat(membership.get("roles").get(0).asText()).isEqualTo("REST_OWNER");
+            // The role's name in costonomy-common-api (one role per scope, D-75).
+            assertThat(membership.get("roles").get(0).asText()).isEqualTo("Owner");
             // Resolved server-side so the client never computes what a role means.
-            assertThat(membership.get("permissions").toString()).contains("PROCUREMENT_SUBMIT");
+            assertThat(membership.get("permissions").toString()).contains("procurement.submit");
         }
 
         @Test
@@ -407,7 +408,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
 
             String staffPhone = ApiClient.freshPhone();
             api.post(owner, "/api/v1/outlets/" + outletId + "/users", Map.of(
-                    "phone", staffPhone, "roleCode", "REST_PROCUREMENT_STAFF"));
+                    "phone", staffPhone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "REST_PROCUREMENT_STAFF")));
 
             JsonNode membership = api.get(api.login(staffPhone), "/api/v1/auth/me")
                     .at("/data/memberships").get(0);
@@ -427,7 +428,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
 
             String staffPhone = ApiClient.freshPhone();
             api.post(owner, "/api/v1/outlets/" + outletId + "/users", Map.of(
-                    "phone", staffPhone, "roleCode", "REST_STORE_MANAGER"));
+                    "phone", staffPhone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "REST_STORE_MANAGER")));
 
             String staff = api.login(staffPhone);
             assertThat(api.getStatus(staff, "/api/v1/outlets/" + outletId)).isEqualTo(200);

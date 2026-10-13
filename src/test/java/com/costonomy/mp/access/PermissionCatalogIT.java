@@ -1,8 +1,8 @@
 package com.costonomy.mp.access;
 
+import com.costonomy.mp.access.domain.PermissionCodes;
 import com.costonomy.mp.access.domain.Permissions;
 import com.costonomy.mp.access.domain.Roles;
-import com.costonomy.mp.access.service.RolePermissionCatalog;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -17,7 +17,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Keeps the Java constants and the seeded catalogue in step.
+ * Keeps the Java constants, the seeded catalogue and the codes common grants (D-75) in step.
  *
  * <p>{@code Permissions} and {@code Roles} are string constants, and a permission
  * check against a code that does not exist silently denies — which fails safe,
@@ -27,24 +27,34 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PermissionCatalogIT extends AbstractIntegrationTest {
 
     @Autowired private JdbcTemplate jdbc;
-    @Autowired private RolePermissionCatalog catalog;
 
-    @Test
-    @DisplayName("every Permissions constant exists in the database")
-    void permissionConstantsExist() {
-        var seeded = jdbc.queryForList("select code from permission", String.class);
-        assertThat(constantsOf(Permissions.class))
-                .describedAs("a constant with no seeded permission would deny silently forever")
-                .isSubsetOf(seeded);
+    /** A seeded role's permissions, in the seeded codes. */
+    private List<String> seededPermissionsOf(String roleCode) {
+        return jdbc.queryForList("select p.code from role_permission rp join role r on r.id = rp.role_id "
+                + "join permission p on p.id = rp.permission_id where r.code = ?", String.class, roleCode);
     }
 
     @Test
-    @DisplayName("every seeded permission has a Java constant")
+    @DisplayName("every Permissions constant is the code a seeded permission is published as")
+    void permissionConstantsExist() {
+        var seeded = jdbc.queryForList("select code from permission", String.class);
+        var published = seeded.stream().map(PermissionCodes::of).toList();
+        assertThat(constantsOf(Permissions.class))
+                .describedAs("a constant no seeded permission maps to would deny silently forever")
+                .isSubsetOf(published);
+    }
+
+    @Test
+    @DisplayName("every seeded permission maps to a <module>.<action> code that has a Java constant")
     void seededPermissionsHaveConstants() {
         // The other direction: a permission nobody can reference from code is
-        // dead weight, and usually means a constant was forgotten.
+        // dead weight, and usually means a constant or a mapping was forgotten.
         var seeded = jdbc.queryForList("select code from permission", String.class);
-        assertThat(seeded).isSubsetOf(constantsOf(Permissions.class));
+        for (String code : seeded) {
+            assertThat(PermissionCodes.of(code)).describedAs("%s has no access-model code", code)
+                    .isNotNull().matches("[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*");
+        }
+        assertThat(seeded.stream().map(PermissionCodes::of).toList()).isSubsetOf(constantsOf(Permissions.class));
     }
 
     @Test
@@ -60,7 +70,7 @@ class PermissionCatalogIT extends AbstractIntegrationTest {
         // A role that grants nothing is a role someone will assign and then spend
         // an afternoon wondering why it does nothing.
         for (String roleCode : constantsOf(Roles.class)) {
-            assertThat(catalog.permissionsForRole(roleCode))
+            assertThat(seededPermissionsOf(roleCode))
                     .describedAs("%s grants nothing", roleCode)
                     .isNotEmpty();
         }
@@ -81,7 +91,7 @@ class PermissionCatalogIT extends AbstractIntegrationTest {
             if (!roleCode.startsWith("REST_")) {
                 continue;
             }
-            assertThat(catalog.permissionsForRole(roleCode))
+            assertThat(seededPermissionsOf(roleCode))
                     .describedAs("%s must hold no supplier or internal permission", roleCode)
                     .doesNotContainAnyElementsOf(supplierOnly)
                     .doesNotContainAnyElementsOf(internalOnly);
@@ -100,7 +110,7 @@ class PermissionCatalogIT extends AbstractIntegrationTest {
             if (!roleCode.startsWith("SUP_")) {
                 continue;
             }
-            assertThat(catalog.permissionsForRole(roleCode))
+            assertThat(seededPermissionsOf(roleCode))
                     .describedAs("%s must hold no restaurant or internal permission", roleCode)
                     .doesNotContainAnyElementsOf(restaurantOnly)
                     .doesNotContainAnyElementsOf(internalOnly);
@@ -120,7 +130,7 @@ class PermissionCatalogIT extends AbstractIntegrationTest {
             if (!roleCode.startsWith("OPS_")) {
                 continue;
             }
-            assertThat(catalog.permissionsForRole(roleCode))
+            assertThat(seededPermissionsOf(roleCode))
                     .describedAs("%s must not be able to act as a restaurant or supplier", roleCode)
                     .doesNotContainAnyElementsOf(tenantOnly);
         }

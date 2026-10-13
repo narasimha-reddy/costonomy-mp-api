@@ -411,13 +411,6 @@ public class SupplierService {
         accessControl.requireScoped(actorId, Permissions.SUPPLIER_USER_MANAGE,
                 ScopeType.SUPPLIER, supplierId, "Supplier");
 
-        // Supplier-side roles only. Without this an admin could grant themselves
-        // an internal operations role and escalate out of their own tenant.
-        if (!request.roleCode().startsWith("SUP_")) {
-            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
-                    "That role can't be granted on a supplier.");
-        }
-
         ScopeType scopeType = request.storeId() == null ? ScopeType.SUPPLIER : ScopeType.SUPPLIER_STORE;
         Long scopeId = request.storeId() == null ? supplierId : request.storeId();
 
@@ -432,7 +425,7 @@ public class SupplierService {
         }
 
         var invited = directory.invite(actorId, supplierId, request.phone(), request.country(), request.name(),
-                request.roleCode(), scopeType == ScopeType.SUPPLIER_STORE ? scopeId : null);
+                request.roleId(), scopeType == ScopeType.SUPPLIER_STORE ? scopeId : null);
         if (invited.userId() != null) {
             commonSync.ensureUser(invited.userId());
             commonSync.accessChanged(invited.userId());

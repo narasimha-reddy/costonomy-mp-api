@@ -436,9 +436,10 @@ public class ProcurementService {
         var storeIds = items.stream().map(ProcurementItem::getSupplierStoreId).distinct().toList();
         var categoryIds = directory.categoryIdsOfProducts(
                 items.stream().map(ProcurementItem::getCanonicalProductId).distinct().toList());
-        String requesterRole = directory.primaryRoleOf(actorId, procurement.getOutletId());
+        boolean requesterCanApprove = accessControl.has(actorId, Permissions.PROCUREMENT_APPROVE, ScopeType.OUTLET,
+                procurement.getOutletId());
 
-        return approvalPolicy.evaluate(procurement, restaurantId, requesterRole, storeIds, categoryIds);
+        return approvalPolicy.evaluate(procurement, restaurantId, requesterCanApprove, storeIds, categoryIds);
     }
 
     private void applyApproval(Procurement procurement, ApprovalPolicyEvaluator.Decision decision,

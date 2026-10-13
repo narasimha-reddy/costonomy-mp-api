@@ -30,7 +30,6 @@ class CreditPermissionsIT extends AbstractIntegrationTest {
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
-    @Autowired private com.costonomy.mp.access.service.RolePermissionCatalog catalog;
 
     private CreditEdgeSupport e;
     private CreditWalletSupport s;
@@ -53,7 +52,6 @@ class CreditPermissionsIT extends AbstractIntegrationTest {
         jdbc.update("insert into role_permission (role_id, permission_id, created_at) "
                 + "select r.id, p.id, now(6) from role r join permission p on p.code = 'CREDIT_VIEW' where r.code = ?",
                 code);
-        catalog.refresh(); // the role to permission map is cached once per JVM
         jdbc.update("""
                 insert into user_role (user_id, role_id, scope_type, scope_id, status, granted_at, created_at,
                                        updated_at, version)
@@ -109,7 +107,7 @@ class CreditPermissionsIT extends AbstractIntegrationTest {
         s.topUp(line.buyer(), "20000.00");
         String staffPhone = ApiClient.freshPhone();
         s.api.post(line.buyer().token(), "/api/v1/outlets/" + line.buyer().outletId() + "/users",
-                Map.of("phone", staffPhone, "roleCode", "REST_FINANCE_STAFF"));
+                Map.of("phone", staffPhone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "REST_FINANCE_STAFF")));
         String staff = s.api.login(staffPhone);
 
         var first = s.repay(staff, line.agreementId(), UUID.randomUUID().toString(),
@@ -139,7 +137,7 @@ class CreditPermissionsIT extends AbstractIntegrationTest {
                 line.seller().storeId());
         String phone = ApiClient.freshPhone();
         s.api.post(line.seller().token(), "/api/v1/suppliers/" + orgId + "/users",
-                Map.of("phone", phone, "roleCode", roleCode, "storeId", line.seller().storeId()));
+                Map.of("phone", phone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, roleCode), "storeId", line.seller().storeId()));
         return s.api.login(phone);
     }
 
@@ -237,20 +235,25 @@ class CreditPermissionsIT extends AbstractIntegrationTest {
         assertThat(status(line.agreementId())).isEqualTo("SUSPENDED");
     }
 
+    /** What a seeded role holds (Marketplace's own codes; common's templates take the Staff share from these). */
+    private List<String> seeded(String roleCode) {
+        return jdbc.queryForList("select p.code from role_permission rp join role r on r.id = rp.role_id "
+                + "join permission p on p.id = rp.permission_id where r.code = ?", String.class, roleCode);
+    }
+
     @Test
     @DisplayName("PM05/PM06: V80 grants CREDIT_COLLECT to four roles and CREDIT_WRITE_OFF to owner and admin only")
     void v57Grants() {
-        catalog.refresh();
         for (String role : List.of("SUP_OWNER", "SUP_ADMIN", "SUP_FINANCE_STAFF", "SUP_STORE_MANAGER")) {
-            assertThat(catalog.permissionsForRole(role)).describedAs(role).contains("CREDIT_COLLECT");
+            assertThat(seeded(role)).describedAs(role).contains("CREDIT_COLLECT");
         }
         for (String role : List.of("SUP_SALESPERSON", "SUP_OPERATIONS_STAFF")) {
-            assertThat(catalog.permissionsForRole(role)).describedAs(role).doesNotContain("CREDIT_COLLECT");
+            assertThat(seeded(role)).describedAs(role).doesNotContain("CREDIT_COLLECT");
         }
-        assertThat(catalog.permissionsForRole("SUP_OWNER")).contains("CREDIT_WRITE_OFF");
-        assertThat(catalog.permissionsForRole("SUP_ADMIN")).contains("CREDIT_WRITE_OFF");
+        assertThat(seeded("SUP_OWNER")).contains("CREDIT_WRITE_OFF");
+        assertThat(seeded("SUP_ADMIN")).contains("CREDIT_WRITE_OFF");
         for (String role : List.of("SUP_FINANCE_STAFF", "SUP_STORE_MANAGER", "SUP_SALESPERSON")) {
-            assertThat(catalog.permissionsForRole(role)).describedAs(role).doesNotContain("CREDIT_WRITE_OFF");
+            assertThat(seeded(role)).describedAs(role).doesNotContain("CREDIT_WRITE_OFF");
         }
     }
 }
