@@ -1,187 +1,301 @@
 # Architecture Sequence Diagrams: Delivery & Logistics Module
 
-This document details the exact runtime request/response sequence diagrams for all endpoints in the **Delivery & Logistics** module.
+This document details the exact runtime request/response sequence diagrams for all flows in the **Delivery & Logistics** module, reflecting the current production implementation (including multi-carrier waterfall, persistent assignment sweeps, and D-197 food delivery).
 
 ---
 
-## 1. `POST /api/v1/supplier-orders/{orderId}/delivery`
-**Description**: Initiates a 3PL delivery dispatch request (e.g., Pidge, Borzo) or self-delivery booking for a supplier order.
+## 1. Automated Dispatch & Multi-Carrier Waterfall Quoting/Booking
+**Trigger**: A warehouse or kitchen event (`SupplierOrderReady`) is published via the transactional outbox relay, or an authorized actor calls `POST /api/v1/supplier-orders/{orderId}/delivery`.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Supplier as Supplier Client
-    participant DC as DeliveryController
+    participant OB as Transactional Outbox Relay
+    participant DDL as DeliveryDispatchListener
     participant DS as DeliveryService
-    participant DP as DeliveryProvider (Pidge/Borzo)
-    participant DB as PostgreSQL (deliveries, delivery_provider_attempts)
-    participant EXT as External Carrier API
+    participant QS as DeliveryQuotingService
+    participant Gate as ColdChainCarrierGate
+    participant BS as DeliveryBookingService
+    participant WF as DeliveryWaterfallService
+    participant DP as 3PL Carrier (Pidge / Delhivery / Porter)
+    participant DB as PostgreSQL (deliveries, quotes, attempts, ledger)
 
-    Supplier->>DC: POST /api/v1/supplier-orders/{orderId}/delivery (vehicleType, notes)
-    DC->>DS: requestDelivery(orderId, requestDto, principal)
-    DS->>DB: SELECT * FROM supplier_order WHERE id = orderId
-    DS->>DB: Check existing active delivery
-    alt Active delivery already exists
-        DS-->>DC: 409 Conflict (Delivery already in progress)
-        DC-->>Supplier: Error response
-    else Valid for booking
-        DS->>DB: INSERT INTO delivery (status=PENDING, vehicle_type, pickup_addr, drop_addr)
-        DS->>DP: createDeliveryOrder(quoteId, pickup, drop, contactInfo)
-        DP->>EXT: POST /orders (Carrier API)
-        alt Carrier Booking Success
-            EXT-->>DP: 200 OK (carrier_trip_id, tracking_url)
-            DP-->>DS: DeliveryBookingResult(tripId, trackingUrl)
-            DS->>DB: UPDATE delivery SET status = DRIVER_ASSIGNED, tracking_url = ...
-            DS->>DB: INSERT INTO delivery_event (kind=BOOKED)
-            DS-->>DC: DeliveryResponseDto
-            DC-->>Supplier: 201 Created (Delivery Details)
-        else Carrier Booking Failure (Waterfall Fallback)
-            EXT-->>DP: 4xx/5xx / Timeout
-            DP-->>DS: CarrierFailureException
-            DS->>DB: Record attempt failure in delivery_provider_attempt
-            DS->>DS: triggerCarrierWaterfall(nextCarrier)
-            DS-->>DC: 202 Accepted (Queued for alternative carrier)
-            DC-->>Supplier: 202 Accepted
+    OB->>DDL: SupplierOrderReady Event
+    DDL->>DS: autoDispatch(supplierOrderId) [REQUIRES_NEW]
+    DS->>DB: SELECT * FROM delivery WHERE supplier_order_id = ?
+    alt Delivery Already Exists
+        DS-->>DDL: Return existing delivery (Idempotency guarantee)
+    else New Consignment
+        DS->>DB: INSERT INTO delivery (status=DELIVERY_REQUESTED, vehicle_type, addresses)
+        alt DeliveryMode == SUPPLIER_OWN
+            DS->>DB: UPDATE delivery SET status=DRIVER_ASSIGNED, fee=orderFee
+            DS-->>DDL: Handled by supplier's own fleet
+        else DeliveryMode == COSTONOMY
+            DS->>QS: gather(delivery, orderValue, weight, requiredEta, excludedProviders)
+            QS->>Gate: Filter carriers verified for temperature control (if coldChain)
+            QS->>DP: Parallel Carrier Quote Requests
+            DP-->>QS: Fare, ETA, Serviceability
+            QS->>DB: INSERT INTO delivery_quote (all answers, including declines)
+            QS->>QS: DeliverySelection.select(lowest cost meeting ETA)
+            QS-->>DS: Outcome(selectedQuote, allQuotes)
+
+            DS->>BS: book(delivery, excludedProviders, "BOOKING")
+            BS->>DP: adapter.book(BookingRequest)
+            DP-->>BS: BookingResponse (providerDeliveryId, trackingUrl, fare)
+            BS->>DB: UPDATE delivery SET status=PROVIDER_SELECTED, provider_delivery_id=?, assignment_deadline=?
+            BS->>DB: INSERT INTO delivery_provider_attempt (status=BOOKED)
+            BS->>DB: INSERT INTO delivery_ledger (entry_type=BOOKED, amount=fare)
+            BS->>WF: EventListener onDeliveryBooked -> schedule one-shot assignment timer (Bike: 3m, Truck: 12m)
+            DS-->>DDL: Delivery Booked
         end
     end
 ```
 
 ---
 
-## 2. `GET /api/v1/deliveries/{id}` & `GET /api/v1/deliveries/{id}/events`
-**Description**: Fetches live tracking status, driver location, and audit timeline for a delivery.
+## 2. Assignment SLA Enforcement: In-Memory Timer & Persistent Database Sweep
+**Trigger**: Carrier fails to assign a driver within the SLA timeout window (3m for two-wheelers, 12m for trucks/three-wheelers). Handled via both an in-memory timer and a 30-second persistent database sweep ([`DeliveryAssignmentSweepJob`](file:///Users/rac/Documents/costonomy_projects/marketplace_be/costonomy-mp-api/src/main/java/com/costonomy/mp/delivery/service/DeliveryAssignmentSweepJob.java)) to ensure resilience against server restarts.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client as Restaurant / Supplier Client
-    participant DC as DeliveryController
+    participant Timer as In-Memory TaskScheduler / DB Sweep Job
+    participant WF as DeliveryWaterfallService
     participant DS as DeliveryService
-    participant DES as DeliveryEventService
+    participant QS as DeliveryQuotingService
+    participant BS as DeliveryBookingService
+    participant OldCarrier as Failed 3PL Carrier
+    participant NextCarrier as Next Best 3PL Carrier
     participant DB as PostgreSQL
 
-    Client->>DC: GET /api/v1/deliveries/{id}
-    DC->>DS: getDelivery(id, principal)
-    DS->>DB: SELECT * FROM delivery WHERE id = id
-    DS-->>DC: DeliveryDetailDto (status, driverName, eta, trackingUrl)
-    DC-->>Client: 200 OK
+    alt Path A: In-Memory Timer Fires
+        Timer->>WF: onDeliveryBooked timer expires (assignmentDeadline)
+    else Path B: Persistent DB Sweep (Every 30s via ShedLock)
+        Timer->>WF: findByStatusAndAssignmentDeadlineBefore(PROVIDER_SELECTED, NOW())
+    end
 
-    Client->>DC: GET /api/v1/deliveries/{id}/events
-    DC->>DES: getEventsForDelivery(id)
-    DES->>DB: SELECT * FROM delivery_event WHERE delivery_id = id ORDER BY created_at ASC
-    DES-->>DC: List of DeliveryEventDto
-    DC-->>Client: 200 OK
+    WF->>DB: SELECT * FROM delivery WHERE id = ? FOR UPDATE
+    WF->>WF: Verify status is still PROVIDER_SELECTED & deadline elapsed
+    WF->>DS: reassign(null, deliveryId, "Unassigned driver timeout (waterfall cascade)")
+    
+    DS->>OldCarrier: Stand down / cancel previous consignment
+    DS->>DB: Record attempt outcome=CANCELLED in delivery_provider_attempt
+    
+    DS->>QS: usableQuotes(deliveryId, excludedProviders=[OldCarrier])
+    alt Usable Quote Exists from Initial Waterfall
+        DS->>BS: book(delivery, excludedProviders, "REASSIGNMENT")
+    else Quotes Expired or None Left
+        DS->>QS: gather(delivery, exclude OldCarrier)
+        DS->>BS: book(delivery, excludedProviders, "REASSIGNMENT")
+    end
+
+    BS->>NextCarrier: Book consignment
+    NextCarrier-->>BS: 200 OK (new providerDeliveryId)
+    BS->>DB: UPDATE delivery SET attempt_count = attempt_count + 1, provider_delivery_id = ?
+    Note over BS,DB: Single Delivery Identity! Delivery ID never changes.
 ```
 
 ---
 
-## 3. `POST /api/v1/deliveries/{id}/dispatched` & `POST /api/v1/deliveries/{id}/delivered`
-**Description**: Lifecycle status transitions triggered by driver or supplier when goods leave the dock or are delivered.
+## 3. Real-Time Telemetry & Monotonic Webhook Ingestion
+**Trigger**: Incoming webhook from carrier (e.g., Pidge, Borzo) with driver updates, pickup, in-transit telemetry, or delivery confirmation.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as Supplier / Driver
-    participant DC as DeliveryController
-    participant DS as DeliveryService
-    participant ORS as OrderReleaseService
-    participant PJ as PaymentJobs
-    participant DB as PostgreSQL
-
-    User->>DC: POST /api/v1/deliveries/{id}/dispatched
-    DC->>DS: markDispatched(id, principal)
-    DS->>DB: UPDATE delivery SET status = OUT_FOR_DELIVERY
-    DS->>ORS: onOrderDispatched(orderId)
-    ORS->>DB: UPDATE supplier_order SET status = OUT_FOR_DELIVERY
-    Note over ORS,PJ: Capture payment hold upon dispatch
-    ORS->>PJ: triggerDeferredCapture(orderId)
-    DS-->>DC: Updated DeliveryDto
-    DC-->>User: 200 OK
-
-    User->>DC: POST /api/v1/deliveries/{id}/delivered
-    DC->>DS: markDelivered(id, principal)
-    DS->>DB: UPDATE delivery SET status = DELIVERED, delivered_at = NOW()
-    DS->>DB: UPDATE supplier_order SET status = DELIVERED
-    DS-->>DC: Updated DeliveryDto
-    DC-->>User: 200 OK
-```
-
----
-
-## 4. `POST /api/v1/webhooks/delivery/pidge`
-**Description**: Ingests live tracking updates and status webhooks from Pidge carrier with HMAC signature verification.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Pidge as Pidge Logistics Webhook
+    participant Carrier as Carrier Webhook (Pidge / Borzo)
     participant DWC as DeliveryWebhookController
-    participant PWS as PidgeWebhookService
-    participant DS as DeliveryService
-    participant DB as PostgreSQL
+    participant DES as DeliveryEventService
+    participant DOB as DeliveryOrderBridge
+    participant DB as PostgreSQL (delivery, delivery_event, delivery_location)
+    participant WS as WebSocket Broker (Restaurant & Supplier)
 
-    Pidge->>DWC: POST /api/v1/webhooks/delivery/pidge (Headers: X-Pidge-Signature)
-    DWC->>PWS: processWebhook(payload, signature)
-    PWS->>PWS: verifyHmacSha256(payload, signature, secret)
-    alt Invalid Signature
-        PWS-->>DWC: InvalidSignatureException
-        DWC-->>Pidge: 401 Unauthorized
-    else Valid Signature
-        DWC-->>Pidge: 200 OK (Quick ACK)
-        PWS->>DS: applyProviderStatusUpdate(tripId, pidgeStatus, driverInfo, location)
-        DS->>DB: UPDATE delivery SET status = mappedStatus, driver_name = ..., driver_phone = ...
-        DS->>DB: INSERT INTO delivery_event (kind=STATUS_UPDATE, details=...)
+    Carrier->>DWC: POST /api/v1/webhooks/delivery/{provider} (Signature Headers)
+    DWC->>DWC: Verify HMAC-SHA256 signature
+    DWC->>DES: apply(delivery, providerEvent)
+    
+    DES->>DB: INSERT INTO delivery_event (provider_event_id, occurred_at)
+    alt Duplicate provider_event_id (Unique Constraint Violation)
+        DES-->>DWC: Return DUPLICATE (Replay Protection -> HTTP 200)
+    else New Event
+        DES->>DES: Check Monotonicity: Is event moving backwards in status rank?
+        alt Backwards Event (e.g. DRIVER_ASSIGNED after PICKED_UP)
+            DES->>DB: UPDATE delivery_event SET disposition = 'OUT_OF_ORDER'
+            DES-->>DWC: Return OUT_OF_ORDER (Safely stored, UI not regressed)
+        else Valid Progress Transition
+            DES->>DB: UPDATE delivery SET status = newStatus, driver details
+            alt Event Contains Driver Lat/Lng Location
+                DES->>DB: INSERT INTO delivery_location (latitude, longitude, bearing)
+            end
+            
+            opt Status == PICKED_UP
+                DES->>DOB: onDeliveryStatus(delivery, PICKED_UP)
+                DOB->>DB: UPDATE supplier_order SET status = 'OUT_FOR_DELIVERY'
+            end
+            
+            opt Status == DELIVERED
+                DES->>DOB: onDeliveryStatus(delivery, DELIVERED)
+                DOB->>DB: UPDATE supplier_order SET status = 'DELIVERED'
+            end
+            
+            DES->>WS: Broadcast live tracking update to mobile apps
+            DES-->>DWC: Return APPLIED (HTTP 200)
+        end
     end
 ```
 
 ---
 
-## 5. `GET /api/v1/outlets/{outletId}/deliveries/radar`
-**Description**: Real-time kitchen radar endpoint ranking incoming deliveries by arrival urgency and identifying late deliveries.
+## 4. Automatic Driver Stand-Down & Reassignment
+**Trigger**: Driver cancels after assignment (`DRIVER_CANCELLED`) or pickup fails (`PICKUP_FAILED`). Handled event-driven via [`DeliveryReassignListener`](file:///Users/rac/Documents/costonomy_projects/marketplace_be/costonomy-mp-api/src/main/java/com/costonomy/mp/delivery/service/DeliveryReassignListener.java).
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Kitchen as Restaurant Kitchen Dashboard
+    participant Carrier as Carrier Webhook
+    participant DES as DeliveryEventService
+    participant EventPub as ApplicationEventPublisher
+    participant DRL as DeliveryReassignListener
+    participant DS as DeliveryService
+    participant BS as DeliveryBookingService
+    participant DB as PostgreSQL
+
+    Carrier->>DES: Webhook: Driver Cancelled / Pickup Failed
+    DES->>DB: UPDATE delivery SET status = DRIVER_CANCELLED / PICKUP_FAILED
+    DES->>EventPub: publishEvent(DeliveryProviderStoodDownEvent)
+    
+    Note over DRL: Asynchronous execution after transaction commit
+    EventPub->>DRL: onProviderStoodDown(event)
+    DRL->>DS: reassignAfterProviderFailure(deliveryId, reason)
+    DS->>DB: SELECT * FROM delivery WHERE id = ? FOR UPDATE
+    DS->>Carrier: Stand down / release failed carrier
+    DS->>BS: book(delivery, excludedProviders=[FailedCarrier], "AUTO_REASSIGN")
+    BS->>DB: Record new attempt & update delivery row
+```
+
+---
+
+## 5. "No Partner Found" 30-Minute Recovery & Switch to Supplier Own (D-185)
+**Trigger**: All carriers fail quoting or decline booking.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant DS as DeliveryService
+    participant RetryJob as DeliveryRetryJobs (Runs every 5 mins)
+    participant Supplier as Supplier App
+    participant DB as PostgreSQL
+
+    DS->>DB: UPDATE delivery SET status=QUOTE_FAILED, no_partner_since=NOW()
+    DS->>Supplier: Push Notification: "No delivery partner found. You can deliver it yourself."
+
+    loop For 30 Minutes
+        RetryJob->>DS: retryNoPartner(deliveryId)
+        DS->>DS: Attempt quoteAndBook() against all carriers
+        opt Partner Found
+            DS->>DB: UPDATE delivery SET status=PROVIDER_SELECTED
+            Note over DS: Resumes normal 3PL fulfillment
+        end
+    end
+
+    alt Supplier Accepts Self-Delivery Option
+        Supplier->>DS: POST /api/v1/deliveries/{id}/switch-to-own
+        DS->>DB: UPDATE delivery SET mode = 'SUPPLIER_OWN', status = 'DRIVER_ASSIGNED'
+        DS->>DB: UPDATE supplier_order SET delivery_mode = 'SUPPLIER_DELIVERY'
+        Note over DS: Buyer fee is strictly preserved (No silent repricing, §23A.16)
+    end
+```
+
+---
+
+## 6. Supplier Own Delivery Milestone Reporting
+**Trigger**: Supplier reports milestone on an order where `DeliveryMode == SUPPLIER_OWN`. Guardrail §23A.38 forbids suppliers from calling this endpoint for `COSTONOMY` deliveries.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Supplier as Supplier App
+    participant DC as DeliveryController
+    participant DS as DeliveryService
+    participant DOB as DeliveryOrderBridge
+    participant DB as PostgreSQL
+
+    Supplier->>DC: POST /api/v1/deliveries/{id}/supplier-status (target: PICKED_UP or DELIVERED)
+    DC->>DS: supplierReports(actorId, deliveryId, target)
+    DS->>DB: SELECT * FROM delivery WHERE id = ?
+    alt delivery.mode != SUPPLIER_OWN
+        DS-->>DC: 403 Forbidden ("A delivery partner is carrying this order, progress comes from them")
+    else delivery.mode == SUPPLIER_OWN
+        DS->>DB: UPDATE delivery SET status = target, timestamp = NOW()
+        DS->>DOB: onDeliveryStatus(delivery, target)
+        DOB->>DB: UPDATE supplier_order SET status = (PICKED_UP ? 'OUT_FOR_DELIVERY' : 'DELIVERED')
+        DS-->>DC: DeliveryResponseDto
+        DC-->>Supplier: 200 OK
+    end
+```
+
+---
+
+## 7. Kitchen Radar Urgency Classification
+**Endpoint**: `GET /api/v1/outlets/{outletId}/deliveries/radar`
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Kitchen as Restaurant Kitchen App
     participant DC as DeliveryController
     participant ODR as OutletDeliveryRadarService
-    participant DB as PostgreSQL (deliveries, supplier_order)
+    participant DB as PostgreSQL
 
     Kitchen->>DC: GET /api/v1/outlets/{outletId}/deliveries/radar
-    DC->>ODR: buildRadar(outletId, principal)
-    ODR->>DB: SELECT * FROM delivery d JOIN supplier_order o ON d.order_id = o.id WHERE o.outlet_id = outletId AND d.status NOT IN ('DELIVERED', 'CANCELLED')
-    ODR->>ODR: Compute minutesOverdue, ScheduleStatus (ON_SCHEDULE / RUNNING_LATE / CRITICALLY_DELAYED)
-    ODR->>ODR: Classify KitchenAction (AT_DOOR, MEET_DRIVER, CALL_DRIVER, ESCALATE)
-    ODR->>ODR: Aggregate RadarSummaryResponse (atDoorCount, delayedCount, activeCount)
-    ODR-->>DC: RadarResponseDto
+    DC->>ODR: buildRadar(outletId, actorId)
+    ODR->>DB: SELECT * FROM delivery d JOIN supplier_order o ON d.supplier_order_id = o.id WHERE o.outlet_id = ? AND d.status NOT IN ('DELIVERED', 'CANCELLED')
+    loop For Each Active Delivery
+        ODR->>ODR: Check location freshness (isStale = age > 60s)
+        ODR->>ODR: Calculate minutesOverdue against estimatedArrivalAt
+        ODR->>ODR: Categorize ScheduleStatus (ON_SCHEDULE / RUNNING_LATE / CRITICALLY_DELAYED)
+        ODR->>ODR: Assign KitchenAction (AT_DOOR / MEET_DRIVER / CALL_DRIVER / ESCALATE)
+    end
+    ODR-->>DC: RadarSummaryResponse (summaryCounts, activeItems)
     DC-->>Kitchen: 200 OK
 ```
 
 ---
 
-## 6. `GET /api/v1/admin/deliveries/late` & `POST /api/v1/admin/deliveries/{id}/force-waterfall`
-**Description**: Operations console monitoring for late deliveries and manual carrier escalation trigger.
+## 8. Food Delivery (B2C) Parallel Flow (D-197)
+**Endpoints**: `POST /food-deliveries`, `GET /api/v1/public/food-deliveries/{trackingToken}`, and 4-digit handover OTP.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Ops as Operations Admin
-    participant ADC as AdminDeliveryController
-    participant ADS as AdminDeliveryService
-    participant DS as DeliveryService
-    participant DB as PostgreSQL
+    actor Restaurant as Restaurant POS / App
+    actor Customer as End Customer (Browser)
+    participant FDC as FoodDeliveryController
+    participant FDS as FoodDeliveryService
+    participant DP as 3PL Carrier (Pidge / Borzo)
+    participant DB as PostgreSQL (food_delivery tables)
 
-    Ops->>ADC: GET /api/v1/admin/deliveries/late?page=0&size=20
-    ADC->>ADS: findLateDeliveries(pageable)
-    ADS->>DB: SELECT * FROM delivery WHERE estimated_arrival_at < NOW() AND status IN ('PENDING', 'DRIVER_ASSIGNED', 'OUT_FOR_DELIVERY') ORDER BY (NOW() - estimated_arrival_at) DESC
-    ADS-->>ADC: PagedResponse of LateDeliveryDto
-    ADC-->>Ops: 200 OK
+    Restaurant->>FDC: POST /api/v1/food-deliveries (dropContact, maxMinutes, Idempotency-Key)
+    FDC->>FDS: createFoodDelivery(...)
+    FDS->>DB: Verify wallet balance & place fee hold
+    FDS->>DP: Book fastest eligible courier with supports_food_delivery=true
+    DP-->>FDS: Booking confirmed + tracking URL
+    FDS->>DB: INSERT INTO food_delivery (tracking_token=random32, otp_hash=hash(otp))
+    FDS-->>Restaurant: 201 Created (foodDeliveryId, trackingToken)
 
-    Ops->>ADC: POST /api/v1/admin/deliveries/{id}/force-waterfall (reason)
-    ADC->>DS: forceCarrierWaterfall(deliveryId, reason)
-    DS->>DB: UPDATE delivery SET carrier_attempt_count = carrier_attempt_count + 1
-    DS->>DS: cancelCurrentCarrierAttempt()
-    DS->>DS: dispatchToNextWaterfallCarrier()
-    DS-->>ADC: WaterfallTriggeredResult
-    ADC-->>Ops: 200 OK
+    Customer->>FDC: GET /api/v1/public/food-deliveries/{trackingToken} (No Auth Required)
+    FDC->>FDS: getPublicTracking(token)
+    FDS->>DB: SELECT status, eta, rider_name, lat, lng FROM food_delivery WHERE tracking_token = ?
+    Note over FDS: Zero Leakage: Returns rider first name & location only. No fees, phone numbers, or provider names.
+    FDS-->>Customer: 200 OK (Sanitized Public Tracking Data)
+
+    DP->>FDC: Courier delivers meal & provides 4-digit customer OTP
+    FDC->>FDS: verifyHandoverOtp(id, otp)
+    FDS->>DB: Match hash(otp) with stored hash
+    alt Valid OTP
+        FDS->>DB: UPDATE food_delivery SET status = 'DELIVERED'
+        FDS->>DB: Deduct fee from restaurant wallet
+    else 5 Consecutive Invalid Attempts
+        FDS->>DB: Lock handover & notify restaurant
+    end
 ```
