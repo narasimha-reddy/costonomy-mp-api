@@ -581,8 +581,32 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
                     Integer.class, order.orderId())).isEqualTo(1);
         }
 
+        /** Waits for the automatic reassignment, which runs after the commit and off the request thread. */
+        private void awaitStatus(long deliveryId, String status) {
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(20))
+                    .pollInterval(java.time.Duration.ofMillis(200))
+                    .untilAsserted(() -> assertThat(jdbc.queryForObject(
+                            "select status from delivery where id = ?", String.class, deliveryId))
+                            .isEqualTo(status));
+        }
+
+        private void assertMovedToAnotherPartner(long deliveryId, long orderId) {
+            // Doc 06 §7: one logical delivery, throughout.
+            assertThat(jdbc.queryForObject(
+                    "select count(*) from delivery where supplier_order_id = ?",
+                    Integer.class, orderId)).isEqualTo(1);
+            // And it went to a different partner: handing it back to the one that just cancelled is not a reassignment.
+            var attempts = jdbc.queryForList(
+                    "select provider_code, attempt_type, outcome from delivery_provider_attempt "
+                            + "where delivery_id = ? order by attempt_number", deliveryId);
+            assertThat(attempts).hasSize(2);
+            assertThat(attempts.get(1).get("provider_code"))
+                    .isNotEqualTo(attempts.get(0).get("provider_code"));
+            assertThat(attempts.get(1)).containsEntry("attempt_type", "REASSIGNMENT");
+        }
+
         @Test
-        @DisplayName("a cancelled driver is replaced without a second delivery")
+        @DisplayName("a cancelled driver is replaced automatically, on the same delivery, by a different partner")
         void driverCancellationIsReassigned() throws Exception {
             var order = readyOrder();
             var operator = operator();
@@ -594,37 +618,69 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
             simulate(operator, deliveryId,
                     Map.of("status", "DRIVER_CANCELLED", "description", "Bike broke down"));
 
-            var cancelled = tenantView(order, deliveryId);
-            assertThat(cancelled.get("status").asText()).isEqualTo("DRIVER_CANCELLED");
-            // The driver is gone, so their details go with them — showing a name
-            // for a courier who is not coming is worse than showing none.
-            assertThat(cancelled.get("driverName").isNull()).isTrue();
+            // No reassign call: the delivery is handed on by itself.
+            awaitStatus(deliveryId, "PROVIDER_SELECTED");
 
-            String body = mvc.perform(MockMvcRequestBuilders
-                            .post("/api/v1/deliveries/" + deliveryId + "/reassign")
+            var view = tenantView(order, deliveryId);
+            assertThat(view.get("id").asLong()).isEqualTo(deliveryId);
+            // The cancelled rider's details went with them; showing a name for a courier who is not coming is worse
+            // than showing none.
+            assertThat(view.get("driverName").isNull()).isTrue();
+            assertMovedToAnotherPartner(deliveryId, order.orderId());
+        }
+
+        @Test
+        @DisplayName("a rider cancelling after reaching the pickup is replaced too")
+        void cancellationAtPickupIsReassigned() throws Exception {
+            var order = readyOrder();
+            var operator = operator();
+            long deliveryId = requestDelivery(order).get("id").asLong();
+
+            simulate(operator, deliveryId, Map.of("status", "DRIVER_ASSIGNED"));
+            simulate(operator, deliveryId, Map.of("status", "DRIVER_AT_PICKUP"));
+            simulate(operator, deliveryId, Map.of("status", "DRIVER_CANCELLED"));
+
+            awaitStatus(deliveryId, "PROVIDER_SELECTED");
+            assertMovedToAnotherPartner(deliveryId, order.orderId());
+        }
+
+        @Test
+        @DisplayName("a failed pickup is replaced automatically")
+        void failedPickupIsReassigned() throws Exception {
+            var order = readyOrder();
+            var operator = operator();
+            long deliveryId = requestDelivery(order).get("id").asLong();
+
+            simulate(operator, deliveryId, Map.of("status", "DRIVER_ASSIGNED"));
+            simulate(operator, deliveryId, Map.of("status", "PICKUP_FAILED"));
+
+            awaitStatus(deliveryId, "PROVIDER_SELECTED");
+            assertMovedToAnotherPartner(deliveryId, order.orderId());
+        }
+
+        @Test
+        @DisplayName("the restaurant cancelling the delivery does not book a new courier")
+        void ourOwnCancellationBooksNothing() throws Exception {
+            var order = readyOrder();
+            var operator = operator();
+            long deliveryId = requestDelivery(order).get("id").asLong();
+            simulate(operator, deliveryId, Map.of("status", "DRIVER_ASSIGNED"));
+
+            mvc.perform(MockMvcRequestBuilders
+                            .post("/api/v1/deliveries/" + deliveryId + "/cancel")
                             .header("Authorization", "Bearer " + order.buyer().token())
                             .header("Idempotency-Key", UUID.randomUUID().toString())
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"reason\":\"Driver cancelled\"}"))
-                    .andReturn().getResponse().getContentAsString();
-            var reassigned = json.readTree(body).at("/data");
+                            .content("{\"reason\":\"Customer changed their mind\"}"))
+                    .andReturn();
+            // Give an unwanted reassignment time to happen, then check it did not.
+            Thread.sleep(2500);
 
-            // Doc 06 §7: one logical delivery, throughout.
-            assertThat(reassigned.get("id").asLong()).isEqualTo(deliveryId);
-            assertThat(reassigned.get("status").asText()).isEqualTo("PROVIDER_SELECTED");
+            assertThat(jdbc.queryForObject("select status from delivery where id = ?", String.class, deliveryId))
+                    .isEqualTo("CANCELLED");
             assertThat(jdbc.queryForObject(
-                    "select count(*) from delivery where supplier_order_id = ?",
-                    Integer.class, order.orderId())).isEqualTo(1);
-
-            // And it went to a different partner — handing it back to the one that
-            // just cancelled is not a reassignment.
-            var attempts = jdbc.queryForList(
-                    "select provider_code, attempt_type, outcome from delivery_provider_attempt "
-                            + "where delivery_id = ? order by attempt_number", deliveryId);
-            assertThat(attempts).hasSize(2);
-            assertThat(attempts.get(1).get("provider_code"))
-                    .isNotEqualTo(attempts.get(0).get("provider_code"));
-            assertThat(attempts.get(1)).containsEntry("attempt_type", "REASSIGNMENT");
+                    "select count(*) from delivery_provider_attempt where delivery_id = ?",
+                    Integer.class, deliveryId)).as("no second courier was booked").isEqualTo(1);
         }
 
         @Test

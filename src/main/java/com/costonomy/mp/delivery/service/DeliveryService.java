@@ -431,6 +431,58 @@ public class DeliveryService {
         return toResponse(delivery, order == null ? null : order.orderNumber());
     }
 
+    /**
+     * Book the next courier after the provider, not us, let go of a consignment before pickup.
+     *
+     * <p>Called after the event that recorded it committed, and by the sweep for one that was missed. Its own
+     * transaction, because it runs when the original one is already finished. Locks the delivery and checks again:
+     * a manual reassign, the retry job or a second call may have got there first, in which case this does nothing.
+     * Never throws on "nobody else": the delivery then moves to {@code PROVIDER_UNAVAILABLE} and the no-partner retry
+     * (D-185) takes over.
+     *
+     * @param failedProviderDeliveryId the consignment that stood down; if the delivery has since moved to a different
+     *                                 one, this is stale and does nothing. Null skips that check (the sweep).
+     * @return true if another courier was booked
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean reassignAfterProviderFailure(Long deliveryId, String failedProviderDeliveryId, String reason) {
+        var delivery = deliveries.lockById(deliveryId).orElse(null);
+        if (delivery == null || delivery.getMode() != DeliveryMode.COSTONOMY) {
+            return false;
+        }
+        if (delivery.getStatus() != DeliveryStatus.DRIVER_CANCELLED
+                && delivery.getStatus() != DeliveryStatus.PICKUP_FAILED) {
+            return false;
+        }
+        if (failedProviderDeliveryId != null
+                && !failedProviderDeliveryId.equals(delivery.getProviderDeliveryId())) {
+            return false;
+        }
+        var order = directory.order(delivery.getSupplierOrderId());
+        // The supplier or restaurant may have cancelled the order itself: booking a courier for it would cost money.
+        if (order == null || !"READY_FOR_PICKUP".equals(order.status())) {
+            return false;
+        }
+
+        var tried = booking.triedProviders(deliveryId);
+        // Stand the old consignment down so it cannot also send a rider (two couriers at one door).
+        releaseCurrentProvider(delivery, reason == null ? "Courier stood down" : reason);
+
+        var usable = quoting.usableQuotes(deliveryId, tried, delivery.isRequiresColdChain());
+        if (usable.isEmpty()) {
+            quoteAndBook(delivery, order, null, tried, "REASSIGNMENT");
+        } else {
+            booking.book(delivery, tried, "REASSIGNMENT");
+        }
+
+        boolean booked = delivery.getStatus() == DeliveryStatus.PROVIDER_SELECTED;
+        auditService.record(null, null, "DELIVERY_REASSIGNED_AUTO", "DELIVERY", deliveryId,
+                null, delivery.getStatus().name(), reason, "SYSTEM");
+        timeline.record(delivery, "DeliveryReassigned", delivery.getStatus(),
+                booked ? "Finding another driver" : "No other driver is available yet");
+        return booked;
+    }
+
     // ── No partner found (D-185) ─────────────────────────────────────────
 
     private static boolean isNoPartner(Delivery delivery) {
