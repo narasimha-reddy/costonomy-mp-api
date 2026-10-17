@@ -497,6 +497,22 @@ public final class NotificationRules {
                 "Delivery partner on the way",
                 "A delivery partner is collecting your order.", "DELIVERY", "supplierOrderId"));
 
+        // The supplier is told when a partner is on the way to their door, so the order is at the counter when the
+        // rider arrives. Only for a partner delivery: DriverAssigned is also published when the supplier delivers
+        // themselves, and "a delivery partner is on the way" would be wrong to them. The producer names the variant
+        // only for a partner delivery (DeliveryTimeline); the rule above, with the restaurant alone, serves the rest.
+        // A replacement rider is a new DriverAssigned, so this also tells the supplier the new one is coming.
+        add(rules, new NotificationRule("DriverAssigned#COSTONOMY_DELIVERY", OUTLET, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Delivery partner on the way",
+                "A delivery partner is collecting your order.", "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DriverAssigned#COSTONOMY_DELIVERY", SUPPLIER_STORE, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Delivery partner on the way",
+                "A delivery partner is on the way to collect this order. Please have it ready.",
+                "DELIVERY", "supplierOrderId"));
+
         add(rules, new NotificationRule("DeliveryDelivered", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
                 "Delivered",
@@ -511,6 +527,14 @@ public final class NotificationRules {
                 List.of(IN_APP, PUSH),
                 "New delivery partner",
                 "Your delivery partner is being reassigned.", "DELIVERY", "supplierOrderId"));
+
+        // The supplier may have a packed order waiting for a rider who is no longer coming. Reassignment only exists
+        // for a partner delivery (a supplier's own delivery is refused), so no variant is needed.
+        add(rules, new NotificationRule("DeliveryReassigned", SUPPLIER_STORE, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Delivery partner changed",
+                "The delivery partner for this order changed. {description|A new one is being arranged.}",
+                "DELIVERY", "supplierOrderId"));
 
         // D-185: no partner after the automatic retries, and what the supplier then chose.
         add(rules, new NotificationRule("DeliveryOwnDeliveryOffered", SUPPLIER_STORE, DELIVERY, true,

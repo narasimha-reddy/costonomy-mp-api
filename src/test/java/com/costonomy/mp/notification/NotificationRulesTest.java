@@ -368,4 +368,66 @@ class NotificationRulesTest {
             assertThat(NotificationChannel.SMS.isOutbound()).isTrue();
         }
     }
+
+    @Nested
+    @DisplayName("supplier told about the delivery partner")
+    class SupplierDeliveryNotices {
+
+        private List<NotificationRule.Audience> audiences(String event, String variant) {
+            return NotificationRules.forEvent(event, variant).stream().map(NotificationRule::audience).toList();
+        }
+
+        @Test
+        @DisplayName("on a partner delivery a rider being assigned tells the restaurant and the supplier")
+        void riderAssignedTellsBothOnAPartnerDelivery() {
+            assertThat(audiences("DriverAssigned", "COSTONOMY_DELIVERY"))
+                    .containsExactlyInAnyOrder(NotificationRule.Audience.OUTLET,
+                            NotificationRule.Audience.SUPPLIER_STORE);
+
+            var supplier = NotificationRules.forEvent("DriverAssigned", "COSTONOMY_DELIVERY").stream()
+                    .filter(r -> r.audience() == NotificationRule.Audience.SUPPLIER_STORE).findFirst().orElseThrow();
+            assertThat(supplier.render(Map.of())).contains("on the way to collect this order", "have it ready");
+            assertThat(supplier.targetIdField()).as("opens the order, not the delivery").isEqualTo("supplierOrderId");
+            assertThat(supplier.channels()).isNotEmpty();
+        }
+
+        @Test
+        @DisplayName("the restaurant's wording on a partner delivery is exactly what it was")
+        void restaurantWordingUnchanged() {
+            var before = NotificationRules.forEvent("DriverAssigned").get(0);
+            var restaurant = NotificationRules.forEvent("DriverAssigned", "COSTONOMY_DELIVERY").stream()
+                    .filter(r -> r.audience() == NotificationRule.Audience.OUTLET).findFirst().orElseThrow();
+
+            assertThat(restaurant.title()).isEqualTo(before.title());
+            assertThat(restaurant.body()).isEqualTo(before.body());
+            assertThat(restaurant.critical()).isEqualTo(before.critical());
+            assertThat(restaurant.channels()).isEqualTo(before.channels());
+        }
+
+        @Test
+        @DisplayName("a supplier delivering it themselves is not told that a delivery partner is coming")
+        void ownDeliverySupplierIsNotTold() {
+            // The producer names no variant for their own delivery, so the event's plain rule applies.
+            assertThat(audiences("DriverAssigned", null)).containsExactly(NotificationRule.Audience.OUTLET);
+            assertThat(audiences("DriverAssigned", "")).containsExactly(NotificationRule.Audience.OUTLET);
+            assertThat(audiences("DriverAssigned", "SUPPLIER_OWN")).containsExactly(NotificationRule.Audience.OUTLET);
+        }
+
+        @Test
+        @DisplayName("a replaced delivery partner tells the supplier too, with the reason when there is one")
+        void replacementTellsTheSupplier() {
+            assertThat(audiences("DeliveryReassigned", null))
+                    .containsExactlyInAnyOrder(NotificationRule.Audience.OUTLET,
+                            NotificationRule.Audience.SUPPLIER_STORE);
+            // The same on a partner delivery, which is the only kind that can be reassigned.
+            assertThat(audiences("DeliveryReassigned", "COSTONOMY_DELIVERY"))
+                    .contains(NotificationRule.Audience.SUPPLIER_STORE);
+
+            var supplier = NotificationRules.forEvent("DeliveryReassigned").stream()
+                    .filter(r -> r.audience() == NotificationRule.Audience.SUPPLIER_STORE).findFirst().orElseThrow();
+            assertThat(supplier.render(Map.of("description", "Finding another driver")))
+                    .contains("changed").contains("Finding another driver");
+            assertThat(supplier.render(Map.of())).contains("A new one is being arranged.").doesNotContain("{");
+        }
+    }
 }
