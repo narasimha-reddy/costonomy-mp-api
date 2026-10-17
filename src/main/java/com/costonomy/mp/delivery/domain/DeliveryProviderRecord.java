@@ -35,6 +35,10 @@ public class DeliveryProviderRecord extends BaseEntity {
     @Column(name = "supports_proof", nullable = false)
     private Boolean supportsProof = false;
 
+    /** Whether this provider may be asked to carry cooked food to a restaurant's customer (V88, D-197). */
+    @Column(name = "supports_food_delivery", nullable = false)
+    private Boolean supportsFoodDelivery = false;
+
     /** Tie-break only; cost and ETA decide first (doc 06 §4). */
     @Column(name = "priority", nullable = false)
     private Integer priority = 100;

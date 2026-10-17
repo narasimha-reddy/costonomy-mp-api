@@ -41,6 +41,11 @@ public class PidgeWebhookService {
     private final ObjectMapper objectMapper;
     private final AuditService auditService;
 
+    /** Other owners of provider events, e.g. food delivery (D-197). Optional so tests can build this without them. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private java.util.List<com.costonomy.mp.delivery.provider.UnclaimedDeliveryEventHandler> unclaimedHandlers =
+            java.util.List.of();
+
     /**
      * Verify HMAC-SHA256 signature and process Pidge callback event.
      */
@@ -82,6 +87,11 @@ public class PidgeWebhookService {
                 PidgeDeliveryProvider.CODE, deliveryId).orElse(null);
 
         if (delivery == null) {
+            for (var handler : unclaimedHandlers) {
+                if (handler.handle(PidgeDeliveryProvider.CODE, deliveryId, root)) {
+                    return true;
+                }
+            }
             log.info("Received Pidge webhook for unknown or unlinked delivery {}", deliveryId);
             return true; // Acknowledge to prevent provider retries
         }

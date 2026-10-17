@@ -181,6 +181,11 @@ class MigrationIT extends AbstractIntegrationTest {
                         "delivery_provider_attempt",
                         "delivery_event",
                         "delivery_location",
+                        // Food delivery (V88, D-197): the same four append-only facts, beside the supplier ones.
+                        "food_delivery_quote",
+                        "food_delivery_attempt",
+                        "food_delivery_event",
+                        "food_delivery_location",
                         // The one-to-one boundary between a request and the order
                         // it became. Written once, at the moment the order is
                         // created, and never again: an updated_at here would mean
