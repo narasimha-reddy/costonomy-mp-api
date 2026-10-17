@@ -38,6 +38,8 @@ Mobile client lives in `costonomy-mp-mobile` (sibling repo).
 4. `docs/specs/04-api-specification.md` — REST contracts
 5. `docs/DECISIONS.md` — decisions the specs don't settle, and the **open** ones
 
+Agent workflow, guardrails and which large files not to read whole: `docs/ai/README.md`.
+
 Where the specs disagree, `docs/DECISIONS.md` D-001 says which wins:
 the numbered `00`–`10` docs and PRD v2.2 are authoritative;
 `Mandi_Engineering_PRD_v1.0.md` is background only.
@@ -185,10 +187,18 @@ delivery/       provider-agnostic delivery, tracking and reassignment
   domain/       Delivery, DeliveryStatus, DeliveryMode, DeliverySelection,
                 DeliveryQuote, DeliveryProviderAttempt, DeliveryEvent,
                 DeliveryLocation
-  provider/     DeliveryProvider port + two configured mocks
+  provider/     DeliveryProvider port + two configured mocks,
+                UnclaimedDeliveryEventHandler (a second owner for provider events)
   service/      DeliveryService, DeliveryQuotingService, DeliveryBookingService,
                 DeliveryEventService, DeliveryOrderBridge, DeliveryTimeline,
-                DeliverySimulationService, DeliveryJobs
+                DeliverySimulationService, DeliveryJobs,
+                DeliveryAssignmentSweepJob (a booking with no driver, and a
+                delivery the provider let go of, found from the database),
+                DeliveryReassignListener (books the next courier after a stand-down)
+fooddelivery/   restaurant to customer delivery (D-197, doc 06 §16). IN PROGRESS:
+                domain and repositories only; no service, API or tracking yet
+  domain/       FoodDelivery, FoodDeliveryStatus, FoodDeliveryQuote,
+                FoodDeliveryAttempt, FoodDeliveryEvent, FoodDeliveryLocation
 credit/         supplier-funded credit: requests, agreements, ledger, invoices
   domain/       CreditAgreement, CreditRequest, CreditReservation, CreditInvoice,
                 CreditPayment, CreditTransaction, CreditLimitHistory,

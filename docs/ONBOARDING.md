@@ -259,6 +259,17 @@ evidence in the answer.
 Phases 1 and 3–17 of `docs/specs/00-README.md` §8 are complete, and the mobile
 app is built across both roles.
 
+### In progress: food delivery, restaurant to customer (D-197)
+
+A restaurant hands cooked food to a Costonomy courier for its own customer. Spec: `docs/specs/06-delivery.md` §16, whose
+status banner says what is built. **Built:** the V88 schema, the `fooddelivery` domain and repositories, the optional
+`reference` on provider requests, and the hook that lets food own provider events. **Not built:** quoting and booking, the
+fee debit and refund, the restaurant API, the public tracking link, the handover code, customer notifications.
+**Waiting on product:** the fee model (a `maxFee` held up front, only couriers at or below it eligible, the difference
+refunded). Also shipped alongside it for the supplier flow: automatic reassignment when a provider lets go of a
+consignment, a sweep for bookings that lose their in-memory timer, and supplier notifications for a rider assigned or
+replaced. This section's date below is older than these.
+
 ### Latest: Razorpay payments (D-098 … D-104)
 
 Stacked PRs. **Three migrations**: `V41` (`refund.attempts`), `V42` (refunds to

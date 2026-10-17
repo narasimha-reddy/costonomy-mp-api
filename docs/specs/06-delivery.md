@@ -97,9 +97,20 @@ Select another provider.
 
 Reassign without creating a second logical delivery.
 
+Automatic (D-197 addendum). When the provider, not Mandi, lets go of a consignment before pickup, the delivery is handed
+to the next courier without anyone pressing reassign:
+- the rider cancelling (`DRIVER_CANCELLED`), a failed pickup (`PICKUP_FAILED`), or the provider cancelling the whole
+  order before pickup (read as `DRIVER_CANCELLED`, not as terminal `CANCELLED`, because that courier will not carry it);
+- the old consignment is cancelled at the provider so two couriers cannot arrive, and couriers already tried are skipped;
+- it happens only if the order is still `READY_FOR_PICKUP` and the delivery is a Costonomy delivery;
+- a cancellation Mandi made itself (supplier or restaurant cancelling) books nothing, and nothing is booked after pickup;
+- if no other courier can take it, the delivery moves to `PROVIDER_UNAVAILABLE` and the no-partner retry applies;
+- a sweep finds any delivery still sitting in these states, so a crash between recording and booking cannot strand it.
+Switch: `costonomy.mp.delivery.auto-reassign.enabled`.
+
 ### Pickup failure
 
-Record failure reason and retry according to policy.
+Record failure reason and retry according to policy. Handled as driver cancellation above.
 
 ### Delivery failure
 
@@ -219,10 +230,15 @@ Order parcel weight and volume are aggregated automatically from line items (`re
 - Ingestion is idempotent: Out-of-order and duplicate provider events are safely ignored.
 - Real-time tracking URLs (`tracking_url`) are persisted and forwarded to notification outbox for WhatsApp/SMS sharing.
 
-### Event-Driven Waterfall Fallback
-- Strict SLA: 3-minute assignment deadline enforced upon carrier booking (`assignment_deadline`).
+### Event-Driven Waterfall Fallback & Assignment Sweeps
+- Strict SLA: 3-minute assignment deadline for two-wheelers (`TWO_WHEELER`), 12-minute assignment deadline for three-wheelers and trucks (`THREE_WHEELER`, `FOUR_WHEELER_TRUCK`), recorded in `assignment_deadline`.
+- Resilient Enforcement: Scheduled one-shot timers (`DeliveryWaterfallService.onDeliveryBooked`) are backed by a persistent database sweep job (`DeliveryAssignmentSweepJob`, ShedLock `delivery-assignment-sweep` running every 30s) so node restarts never strand unassigned consignments.
 - Event-Driven Reassignment: When a deadline expires or carrier signals unserviceability, `DeliveryWaterfallService` cascades consignment to the next best carrier without polling loops.
-- Stale Carrier Exclusion: The failed carrier is excluded from the re-quote candidate pool to prevent loops.
+- Automatic Driver Stand-Down Reassignment: When a driver cancels (`DRIVER_CANCELLED`) or pickup fails (`PICKUP_FAILED`), `DeliveryEventService` publishes a `DeliveryProviderStoodDownEvent`. `DeliveryReassignListener` automatically stands down the previous provider and immediately books the next best carrier without manual intervention.
+- Stale Carrier Exclusion: Couriers already attempted for the delivery are excluded from candidate re-quoting to prevent endless fallback loops.
+- Durable timeout: the deadline is also read from the database every 30 seconds (`DeliveryAssignmentSweepJob`, after a
+  30 second grace), so a restart that loses the in-memory timer cannot leave a booking without a driver. Switch:
+  `costonomy.mp.delivery.assignment-sweep.enabled`.
 
 ## 15. Central Delivery Ledger
 
@@ -232,3 +248,65 @@ Append-only financial audit table `delivery_ledger` tracks:
 - Auditable by operations via `GET /api/v1/admin/deliveries/{id}/ledger` (`DELIVERY_INSPECT` permission).
 - Manual waterfall override via `POST /api/v1/admin/deliveries/{id}/force-waterfall` (`DELIVERY_OPERATE` permission).
 
+## 16. Food delivery (restaurant to customer)
+
+> **Status: in progress. Designed in full; only the foundation is built.**
+> Built and tested: the schema (V88), the domain and repositories (`fooddelivery`), the provider `reference` field,
+> the provider-event hook, and the food-capable provider filter.
+> **Not built:** quoting and booking, the fee debit and refund, the waterfall and retry for food, webhook and polling
+> for food consignments, the restaurant API, the public tracking endpoint, the handover code, and customer
+> notifications. Everything below under "Public tracking", "Handover" and "API" is the design, not a behaviour.
+> The fee model (a `maxFee` held up front) is awaiting product's decision.
+
+D-197. A restaurant can hand cooked food to a Costonomy courier and have it delivered to its own customer. This is
+a separate flow from §2–§15, which carry raw material from a supplier to a restaurant; it shares their couriers, not
+their data.
+
+### Scope
+- **Created by** the restaurant's own system (POS or website) through the API, or by outlet staff in the Mandi app.
+  Mandi has no customer ordering flow; the customer appears only as a drop-off contact.
+- **Fee** is paid by the restaurant from its wallet. **No cash on delivery**: the courier carries food, not money.
+- **Not in scope**: customer accounts, menus, food orders, payments from the customer.
+
+### Model
+One `food_delivery` per request, for its whole life (the §7 rule applies unchanged: a failed courier appends an
+attempt and an event, never a second row). Tables `food_delivery`, `_quote`, `_attempt`, `_event`, `_location`
+mirror §5's. The supplier `delivery` tables are not changed.
+
+### Providers and fallback
+Only providers with `delivery_provider.supports_food_delivery = 1` are asked. No single provider is required: the
+quote is gathered from all eligible ones, the best meeting the ETA ceiling is booked, and if none takes it within the
+3-minute assignment deadline (§14) the waterfall moves to the next, excluding the one that failed. If every eligible
+provider fails the delivery ends `PROVIDER_UNAVAILABLE`, the fee is not taken, and the restaurant is told at once.
+
+### When no courier will take it
+Food does not wait the way raw material does. If every eligible provider refuses or times out, the delivery is
+retried against all of them for **5 minutes** (not the 30 minutes and "deliver it yourself" offer of §7, which suit
+a supplier's pallet and not a hot meal). If nobody has taken it by then it ends `FAILED` with `failure_code =
+NO_COURIER`, the fee hold is refunded in full, and the restaurant is notified so it can call the customer or book
+another way. A timed-out booking is found by a database sweep on `assignment_deadline`, not by an in-memory timer, so
+a restart cannot strand it.
+
+### Food rules
+- Vehicle is `TWO_WHEELER` unless the weight says otherwise; cold-chain does not apply.
+- `max_delivery_minutes` bounds the quote: a provider whose ETA exceeds it is not eligible.
+- Cancelling before pickup refunds the fee; after pickup it does not.
+
+### Status
+`REQUESTED → QUOTED → PROVIDER_SELECTED → DRIVER_ASSIGNED → AT_PICKUP → PICKED_UP → OUT_FOR_DELIVERY → ARRIVED →
+DELIVERED`, with `QUOTE_FAILED`, `PROVIDER_UNAVAILABLE`, `CANCELLED`, `FAILED`, `RETURNED`. Only the courier's
+events move a delivery (as §2 for Costonomy delivery).
+
+### Public tracking
+`GET /api/v1/public/food-deliveries/{trackingToken}` needs no login. The token is 32 random characters, expires 24
+hours after delivery, and the endpoint is rate-limited. It returns status, ETA, rider first name and position, and
+the restaurant outlet name. It never returns the fee, the provider, or the customer's phone number, and it never
+accepts a numeric id.
+
+### Handover
+A 4-digit code is sent to the customer; the rider enters it at handover. Only its hash is stored, and after 5 wrong
+tries it is locked and the restaurant is told.
+
+### API (restaurant)
+`POST /food-deliveries/quote`, `POST /food-deliveries` (requires `Idempotency-Key`), `GET /food-deliveries/{id}`,
+`GET /food-deliveries` (outlet-scoped), `POST /food-deliveries/{id}/cancel`.
