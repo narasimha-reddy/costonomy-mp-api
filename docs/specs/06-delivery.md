@@ -250,19 +250,17 @@ Append-only financial audit table `delivery_ledger` tracks:
 
 ## 16. Food delivery (restaurant to customer)
 
-> **Status: in progress. Designed in full; only the foundation is built.**
-> Built and tested: the schema (V88), the domain and repositories (`fooddelivery`), the provider `reference` field,
-> the provider-event hook, and the food-capable provider filter.
-> **Not built:** quoting and booking, the fee debit and refund, the waterfall and retry for food, webhook and polling
-> for food consignments, the restaurant API, the public tracking endpoint, the handover code, and customer
-> notifications. Everything below under "Public tracking", "Handover" and "API" is the design, not a behaviour.
-> The fee model (a `maxFee` held up front) is awaiting product's decision.
-> Courier choice for food (`FoodCourierSelector`, reliability ranking and circuit breaker, §17) is built and tested; the
-> booking service that calls it is not.
-
-D-197. A restaurant can hand cooked food to a Costonomy courier and have it delivered to its own customer. This is
-a separate flow from §2–§15, which carry raw material from a supplier to a restaurant; it shares their couriers, not
-their data.
+> **Status: in progress. The booking side is built; the courier-event side and the API are not.**
+> **Built and tested:** schema (V88, V91), domain and repositories, creating a delivery (validation, idempotency), quoting
+> every food-capable courier, holding the fee, booking with fallback in the order of §17, the 5-minute retry window and
+> ending `FAILED` (NO_COURIER) with a full refund, cancelling before pickup with a full refund, settling the unused part
+> of the hold after pickup, and handing a booking that never got a rider (or whose rider let go) to the next courier.
+> **Not built:** ingesting courier events (webhook and polling for food consignments, which is what moves a delivery
+> past `PROVIDER_SELECTED` and calls settle and the stand-down rebook), the restaurant API, the public tracking
+> endpoint, the handover code, and restaurant and customer notifications. Everything under "Public tracking",
+> "Handover" and "API" is the design, not a behaviour.
+> **Assumption pending product:** the fee model below (a maximum held up front) is the recommended design and is built
+> behind a few wallet methods; if product chooses another it is a contained change.
 
 ### Scope
 - **Created by** the restaurant's own system (POS or website) through the API, or by outlet staff in the Mandi app.
@@ -292,6 +290,12 @@ a restart cannot strand it.
 ### Food rules
 - Vehicle is `TWO_WHEELER` unless the weight says otherwise; cold-chain does not apply.
 - `max_delivery_minutes` bounds the quote: a provider whose ETA exceeds it is not eligible.
+- The fee: the restaurant agrees a maximum (or defaults to 1.5 x the cheapest courier, rounded up to a rupee). That
+  amount is **held from its wallet before any courier is asked**, and only couriers quoting at or below it are asked. It
+  stays held until pickup, so a dearer replacement courier needs no second debit; at pickup the unused part (maximum less
+  the courier's price) is returned. Cancelling before pickup, or no courier within the retry window, returns all of it.
+  Every refund is idempotent on its wallet reference. A request whose maximum is below the cheapest courier, or whose
+  wallet cannot hold it, is refused with the reason and nothing is created or debited.
 - Cancelling before pickup refunds the fee; after pickup it does not.
 
 ### Status

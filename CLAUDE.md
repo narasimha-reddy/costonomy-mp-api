@@ -198,10 +198,14 @@ delivery/       provider-agnostic delivery, tracking and reassignment
                 ProviderReliabilityService + ProviderReliability / ReliabilityRanking
                 (domain): courier score, circuit breaker and the order to ask in
 fooddelivery/   restaurant to customer delivery (D-197, doc 06 §16). IN PROGRESS:
-                domain and repositories only; no service, API or tracking yet
+                booking is built; courier-event ingestion, API and tracking are not
   domain/       FoodDelivery, FoodDeliveryStatus, FoodDeliveryQuote,
                 FoodDeliveryAttempt, FoodDeliveryEvent, FoodDeliveryLocation
-  service/      FoodCourierSelector (which courier to ask, and what to record)
+  service/      FoodCourierSelector (which courier to ask, and what to record),
+                FoodDeliveryBookingService (create, fee hold, book with fallback, retry
+                window, cancel, settle, rebook), FoodDeliveryQuotingService,
+                FoodDeliveryTimeline, FoodDeliveryJobs (retry + assignment sweep),
+                FoodDeliveryProperties
 credit/         supplier-funded credit: requests, agreements, ledger, invoices
   domain/       CreditAgreement, CreditRequest, CreditReservation, CreditInvoice,
                 CreditPayment, CreditTransaction, CreditLimitHistory,
