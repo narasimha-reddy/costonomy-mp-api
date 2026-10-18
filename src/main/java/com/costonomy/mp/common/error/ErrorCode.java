@@ -170,6 +170,17 @@ public enum ErrorCode {
     CREDIT_REFUND_OPS_ONLY(HttpStatus.CONFLICT,
             "This refund was paid from the restaurant's wallet, so Mandi will settle it."),
 
+    // ── Paying credit online or from the wallet (D-199) ──────────────────
+    /** An invoice in a credit payment was settled or changed since the app read it (D-199). details.changedInvoiceIds. */
+    CREDIT_PAY_SELECTION_CHANGED(HttpStatus.CONFLICT,
+            "Some of these invoices have changed. Check the list and try again."),
+    /** The supplier store cannot be paid through Mandi now (D-199). details.supplierStoreIds, supplierNames. */
+    CREDIT_PAY_SUPPLIER_UNAVAILABLE(HttpStatus.UNPROCESSABLE_ENTITY,
+            "Pay this supplier directly. Online payment isn't available for them."),
+    /** Captured or not is not known yet; money is safe and is applied when it clears (D-199). Not a failure. */
+    CREDIT_PAY_PROCESSING(HttpStatus.CONFLICT,
+            "Your payment is still being confirmed. Your invoices will be settled as soon as it clears."),
+
     // ── Credit rules hardening (D-160) ───────────────────────────────────
     /** The restaurant accepted a terms version that is no longer the agreement's current one. Nothing changed. */
     CREDIT_TERMS_CHANGED(HttpStatus.CONFLICT,

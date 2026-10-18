@@ -151,7 +151,7 @@ public class CreditReadService {
                 .map(p -> new CreditDtos.InvoicePaymentResponse(p.getId(), p.getAmount(), p.getSource(),
                         p.getMethod(), p.getReference(), p.getPaidAt(),
                         p.getCreditRepaymentId() == null ? null : walletEntries.get(p.getCreditRepaymentId()),
-                        reversedAt.get(p.getId())))
+                        reversedAt.get(p.getId()), transactionIdOf(p, walletEntries)))
                 .toList();
 
         return new CreditDtos.InvoiceDetailResponse(
@@ -188,6 +188,17 @@ public class CreditReadService {
     }
 
     /** credit_repayment id to the wallet ledger entry that funded it (only repayments that have one). */
+    private static String transactionIdOf(CreditPayment p, Map<Long, Long> walletEntries) {
+        if (p.getSource() == com.costonomy.mp.credit.domain.CreditPaymentSource.ONLINE) {
+            return p.getReference();
+        }
+        if (p.getSource() == com.costonomy.mp.credit.domain.CreditPaymentSource.WALLET && p.getCreditRepaymentId() != null) {
+            Long entry = walletEntries.get(p.getCreditRepaymentId());
+            return entry == null ? null : String.valueOf(entry);
+        }
+        return null;
+    }
+
     private Map<Long, Long> walletEntryIds(List<CreditPayment> rows) {
         var ids = rows.stream().map(CreditPayment::getCreditRepaymentId).filter(java.util.Objects::nonNull)
                 .distinct().toList();

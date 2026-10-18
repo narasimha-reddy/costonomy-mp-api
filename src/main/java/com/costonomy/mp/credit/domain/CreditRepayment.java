@@ -52,6 +52,10 @@ public class CreditRepayment extends BaseEntity {
     @Column(name = "provider_payment_id", length = 80)
     private String providerPaymentId;
 
+    /** The online or wallet credit payment attempt that made this repayment (D-199); null for the older paths. */
+    @Column(name = "credit_payment_attempt_id")
+    private Long creditPaymentAttemptId;
+
     @Enumerated(EnumType.STRING)
     @JdbcTypeCode(SqlTypes.VARCHAR)
     @Column(name = "status", nullable = false, length = 16)

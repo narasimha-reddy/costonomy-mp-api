@@ -62,6 +62,9 @@ public class CreditAgreementService {
     @org.springframework.beans.factory.annotation.Value("${costonomy.mp.credit.wallet-repay.enabled:false}")
     private boolean walletRepayEnabled;
 
+    @org.springframework.beans.factory.annotation.Value("${costonomy.mp.credit.online-pay.enabled:false}")
+    private boolean onlinePayEnabled;
+
     // ── The restaurant's side ────────────────────────────────────────────
 
     /** Ask a supplier store for credit at an outlet. Doc 04 §13. */
@@ -553,7 +556,8 @@ public class CreditAgreementService {
                 responses.stream().map(CreditDtos.AgreementResponse::openClaimsAmount)
                         .reduce(BigDecimal.ZERO, BigDecimal::add),
                 responses.stream().map(CreditDtos.AgreementResponse::reportableAmount)
-                        .reduce(BigDecimal.ZERO, BigDecimal::add));
+                        .reduce(BigDecimal.ZERO, BigDecimal::add),
+                onlinePayEnabled);
     }
 
     @Transactional(readOnly = true)

@@ -28,7 +28,7 @@ import java.util.stream.Collectors;
 
 /**
  * Refunds due to restaurants after a cancelled order (B7, D-177): what a cancelled order's invoice had already been
- * paid. The supplier settles an OFF_PLATFORM one directly and marks it refunded here; a WALLET one is Mandi's to put
+ * paid. The supplier settles an OFF_PLATFORM one directly and marks it refunded here; a WALLET or ONLINE one is Mandi's to put
  * right and the supplier cannot clear it. Marking is idempotent: a second mark answers the same and changes nothing.
  */
 @Service
@@ -74,9 +74,12 @@ public class CreditRefundDueService {
             // A retry after a lost response: already in the state asked for, so answer and change nothing.
             return respond(List.of(row)).get(0);
         }
-        if (row.getChannel() == CreditRefundDue.Channel.WALLET) {
+        if (row.getChannel() == CreditRefundDue.Channel.WALLET || row.getChannel() == CreditRefundDue.Channel.ONLINE) {
+            // Mandi holds this money (wallet, or captured by Razorpay for the supplier's payout): not the supplier's to clear.
+            String via = row.getChannel() == CreditRefundDue.Channel.WALLET
+                    ? "was paid from the restaurant's Mandi wallet" : "was paid online through Mandi";
             throw new BusinessException(ErrorCode.CREDIT_REFUND_OPS_ONLY,
-                    "This ₹%s was paid from the restaurant's Mandi wallet, so Mandi will refund it.".formatted(Rupees.of(row.getAmount())));
+                    "This ₹%s %s, so Mandi will refund it.".formatted(Rupees.of(row.getAmount()), via));
         }
         row.setStatus(CreditRefundDue.Status.REFUNDED);
         row.setRefundedAt(Instant.now());

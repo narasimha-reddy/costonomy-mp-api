@@ -114,4 +114,21 @@ public interface CreditInvoiceRepository extends JpaRepository<CreditInvoice, Lo
      */
     boolean existsByOutletIdAndStatusInAndDueDateLessThanEqual(Long outletId, List<CreditInvoiceStatus> statuses,
                                                               LocalDate latestDue);
+
+    /**
+     * The given invoices of one outlet, any status, ascending id, held until the transaction ends. One that is not the
+     * outlet's is simply absent. Taken after the attempt (and wallet) lock and before any agreement (D-199).
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select i from CreditInvoice i where i.outletId = :outletId and i.id in :ids order by i.id")
+    List<CreditInvoice> lockByOutletAndIds(@Param("outletId") Long outletId, @Param("ids") List<Long> ids);
+
+    /** As {@link #lockByOutletAndIds}, without the lock: for reads and the quote. */
+    @Query("select i from CreditInvoice i where i.outletId = :outletId and i.id in :ids order by i.id")
+    List<CreditInvoice> findByOutletAndIds(@Param("outletId") Long outletId, @Param("ids") List<Long> ids);
+
+    /** Open invoices of every agreement of an outlet (status not in {@code settled}), any agreement status, by id. */
+    @Query("select i from CreditInvoice i where i.outletId = :outletId and i.status not in :settled order by i.id")
+    List<CreditInvoice> findOpenOfOutlet(@Param("outletId") Long outletId,
+                                         @Param("settled") List<CreditInvoiceStatus> settled);
 }

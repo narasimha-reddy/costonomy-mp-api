@@ -10,6 +10,7 @@ import com.costonomy.mp.credit.domain.CreditInvoice;
 import com.costonomy.mp.credit.domain.CreditPayment;
 import com.costonomy.mp.credit.domain.CreditRepayment;
 import com.costonomy.mp.credit.domain.CreditRepaymentPayout;
+import com.costonomy.mp.credit.domain.CreditRepaymentSource;
 import com.costonomy.mp.credit.repository.CreditInvoiceRepository;
 import com.costonomy.mp.credit.repository.CreditPayoutReadRepository;
 import com.costonomy.mp.credit.repository.CreditRepaymentRepository;
@@ -52,6 +53,7 @@ public class CreditPayoutReadService {
     private final CreditPayoutReadRepository payouts;
     private final CreditRepaymentRepository repayments;
     private final CreditInvoiceRepository invoices;
+    private final com.costonomy.mp.credit.repository.CreditPaymentAttemptRepository attempts;
     private final CreditDirectory directory;
     private final JdbcTemplate jdbc;
     private final AccessControlService accessControl;
@@ -122,9 +124,22 @@ public class CreditPayoutReadService {
                             invoice == null ? null : invoice.getInvoiceNumber(), money(payment.getAmount())));
         }
 
+        // How an online repayment was paid: the method its payments carry (one repayment, one method).
+        Map<Long, String> methodByRepayment = new HashMap<>();
+        for (CreditPayment payment : payments) {
+            methodByRepayment.putIfAbsent(payment.getCreditRepaymentId(), payment.getMethod());
+        }
+
         Map<Long, SettlementRef> settlements = settlements(rows.stream()
                 .map(CreditRepaymentPayout::getSettlementId).filter(java.util.Objects::nonNull).distinct().toList());
         Map<Long, CreditDirectory.OutletInfo> outlets = new HashMap<>();
+        // The Razorpay payment id of the attempt behind each online repayment.
+        Map<Long, String> attemptPaymentIds = new HashMap<>();
+        var attemptIds = repaymentById.values().stream().filter(r -> r.getSource() == CreditRepaymentSource.ONLINE)
+                .map(CreditRepayment::getCreditPaymentAttemptId).filter(java.util.Objects::nonNull).distinct().toList();
+        for (var attempt : attempts.findAllById(attemptIds)) {
+            attemptPaymentIds.put(attempt.getId(), attempt.getRazorpayPaymentId());
+        }
 
         var result = new ArrayList<CreditPayoutDtos.PayoutResponse>();
         for (CreditRepaymentPayout payout : rows) {
@@ -150,9 +165,29 @@ public class CreditPayoutReadService {
                     settlement == null ? null : settlement.date(),
                     payout.getAppliedAt(),
                     payout.getCreatedAt(),
-                    invoicesByRepayment.getOrDefault(payout.getCreditRepaymentId(), List.of())));
+                    invoicesByRepayment.getOrDefault(payout.getCreditRepaymentId(), List.of()),
+                    repayment == null ? null : repayment.getSource().name(),
+                    repayment != null && repayment.getSource() == CreditRepaymentSource.ONLINE
+                            ? methodByRepayment.get(payout.getCreditRepaymentId()) : null,
+                    transactionId(repayment, attemptPaymentIds)));
         }
         return result;
+    }
+
+    /** ONLINE: the Razorpay payment id; WALLET: the wallet ledger entry id as text; anything else null. */
+    private static String transactionId(CreditRepayment repayment, Map<Long, String> attemptPaymentIds) {
+        if (repayment == null) {
+            return null;
+        }
+        if (repayment.getSource() == CreditRepaymentSource.WALLET) {
+            return repayment.getWalletTransactionId() == null ? null : String.valueOf(repayment.getWalletTransactionId());
+        }
+        if (repayment.getSource() == CreditRepaymentSource.ONLINE) {
+            String id = repayment.getCreditPaymentAttemptId() == null ? null
+                    : attemptPaymentIds.get(repayment.getCreditPaymentAttemptId());
+            return id != null ? id : repayment.getReference();
+        }
+        return null;
     }
 
     private record SettlementRef(String number, LocalDate date) {
