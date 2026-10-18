@@ -55,6 +55,7 @@ public class DeliveryService {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final PidgeProperties pidgeProperties;
+    private final DeliveryRecoveryService recoveryService;
 
     /** Doc 06 §8: past this, a position is shown as stale rather than as current. */
     @Value("${costonomy.mp.delivery.auto-retry.window:PT30M}")
@@ -431,6 +432,58 @@ public class DeliveryService {
         return toResponse(delivery, order == null ? null : order.orderNumber());
     }
 
+    /**
+     * Book the next courier after the provider, not us, let go of a consignment before pickup.
+     *
+     * <p>Called after the event that recorded it committed, and by the sweep for one that was missed. Its own
+     * transaction, because it runs when the original one is already finished. Locks the delivery and checks again:
+     * a manual reassign, the retry job or a second call may have got there first, in which case this does nothing.
+     * Never throws on "nobody else": the delivery then moves to {@code PROVIDER_UNAVAILABLE} and the no-partner retry
+     * (D-185) takes over.
+     *
+     * @param failedProviderDeliveryId the consignment that stood down; if the delivery has since moved to a different
+     *                                 one, this is stale and does nothing. Null skips that check (the sweep).
+     * @return true if another courier was booked
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean reassignAfterProviderFailure(Long deliveryId, String failedProviderDeliveryId, String reason) {
+        var delivery = deliveries.lockById(deliveryId).orElse(null);
+        if (delivery == null || delivery.getMode() != DeliveryMode.COSTONOMY) {
+            return false;
+        }
+        if (delivery.getStatus() != DeliveryStatus.DRIVER_CANCELLED
+                && delivery.getStatus() != DeliveryStatus.PICKUP_FAILED) {
+            return false;
+        }
+        if (failedProviderDeliveryId != null
+                && !failedProviderDeliveryId.equals(delivery.getProviderDeliveryId())) {
+            return false;
+        }
+        var order = directory.order(delivery.getSupplierOrderId());
+        // The supplier or restaurant may have cancelled the order itself: booking a courier for it would cost money.
+        if (order == null || !"READY_FOR_PICKUP".equals(order.status())) {
+            return false;
+        }
+
+        var tried = booking.triedProviders(deliveryId);
+        // Stand the old consignment down so it cannot also send a rider (two couriers at one door).
+        releaseCurrentProvider(delivery, reason == null ? "Courier stood down" : reason);
+
+        var usable = quoting.usableQuotes(deliveryId, tried, delivery.isRequiresColdChain());
+        if (usable.isEmpty()) {
+            quoteAndBook(delivery, order, null, tried, "REASSIGNMENT");
+        } else {
+            booking.book(delivery, tried, "REASSIGNMENT");
+        }
+
+        boolean booked = delivery.getStatus() == DeliveryStatus.PROVIDER_SELECTED;
+        auditService.record(null, null, "DELIVERY_REASSIGNED_AUTO", "DELIVERY", deliveryId,
+                null, delivery.getStatus().name(), reason, "SYSTEM");
+        timeline.record(delivery, "DeliveryReassigned", delivery.getStatus(),
+                booked ? "Finding another driver" : "No other driver is available yet");
+        return booked;
+    }
+
     // ── No partner found (D-185) ─────────────────────────────────────────
 
     private static boolean isNoPartner(Delivery delivery) {
@@ -507,7 +560,7 @@ public class DeliveryService {
         }
 
         var pickup = directory.pickupFor(delivery.getSupplierStoreId());
-        releaseCurrentProvider(delivery, "Supplier is delivering");
+        releaseCurrentProvider(delivery, "Supplier is delivering", "SWITCHED_TO_OWN");
         delivery.setMode(DeliveryMode.SUPPLIER_OWN);
         delivery.setFee(order.deliveryFee() == null ? BigDecimal.ZERO : order.deliveryFee());
         delivery.setStatus(DeliveryStatus.DRIVER_ASSIGNED);
@@ -540,7 +593,7 @@ public class DeliveryService {
                     "This delivery can't be cancelled once the goods have been picked up.");
         }
 
-        releaseCurrentProvider(delivery, reason);
+        releaseCurrentProvider(delivery, reason, "CUSTOMER_CANCEL");
 
         delivery.setStatus(DeliveryStatus.CANCELLED);
         delivery.setCancelledAt(Instant.now());
@@ -557,6 +610,15 @@ public class DeliveryService {
 
     /** Tell the current courier to stand down, and close their attempt. */
     private void releaseCurrentProvider(Delivery delivery, String reason) {
+        releaseCurrentProvider(delivery, reason, null);
+    }
+
+    /**
+     * @param cause why the attempt ends (D-201 addendum), or null to work it out from the delivery: no rider yet and
+     *              past the deadline is an assignment timeout, anything else released by us is an ops reassignment.
+     *              A cause the provider's own event already recorded is kept.
+     */
+    private void releaseCurrentProvider(Delivery delivery, String reason, String cause) {
         if (delivery.getProviderDeliveryId() == null) {
             return;
         }
@@ -567,10 +629,12 @@ public class DeliveryService {
             } catch (DeliveryProviderException ex) {
                 // Their problem, not ours to fail on. A courier we cannot reach is
                 // still a courier we are no longer using, and blocking the
-                // reassignment would strand the consignment.
+                // reassignment would strand the consignment. Durable task is recorded for retry.
                 log.warn("Could not cancel {} delivery {}: {}",
                         delivery.getProviderCode(), delivery.getProviderDeliveryId(),
                         ex.getMessage());
+                recoveryService.scheduleCancellation("SUPPLIER", delivery.getId(),
+                        delivery.getProviderCode(), delivery.getProviderDeliveryId(), reason);
             }
         }
 
@@ -580,6 +644,9 @@ public class DeliveryService {
                         attempt.setOutcome("CANCELLED");
                         attempt.setFailureReason(reason);
                         attempt.setEndedAt(Instant.now());
+                        if (attempt.getEndedCause() == null) {
+                            attempt.setEndedCause(cause != null ? cause : inferEndCause(delivery));
+                        }
                         attempts.save(attempt);
                     }
                 });
@@ -587,6 +654,17 @@ public class DeliveryService {
         delivery.setDriverName(null);
         delivery.setDriverPhone(null);
         delivery.setDriverVehicle(null);
+    }
+
+    private static String inferEndCause(Delivery delivery) {
+        return switch (delivery.getStatus()) {
+            case DRIVER_CANCELLED -> "RIDER_CANCELLED";
+            case PICKUP_FAILED -> "PICKUP_FAILED";
+            case PROVIDER_SELECTED -> delivery.getAssignmentDeadline() != null
+                    && !delivery.getAssignmentDeadline().isAfter(Instant.now())
+                    ? "ASSIGNMENT_TIMEOUT" : "OPS_REASSIGN";
+            default -> "OPS_REASSIGN";
+        };
     }
 
     // ── Supplier own delivery ────────────────────────────────────────────
@@ -745,6 +823,7 @@ public class DeliveryService {
             stale = age > locationStaleAfter.getSeconds();
         }
 
+        boolean sandboxControls = PidgeSandboxStages.applies(pidgeProperties, delivery);
         return new DeliveryDtos.DeliveryResponse(
                 delivery.getId(), delivery.getSupplierOrderId(), orderNumber,
                 delivery.getMode(), delivery.getStatus(), delivery.getFee(),
@@ -763,7 +842,9 @@ public class DeliveryService {
                         ? delivery.getNoPartnerSince().plus(retryWindow) : null,
                 isNoPartner(delivery) ? delivery.getNoPartnerSince() : null,
                 isNoPartner(delivery) && delivery.getOwnDeliveryOfferedAt() != null,
-                PidgeSandboxStages.applies(pidgeProperties, delivery),
+                sandboxControls,
+                sandboxControls && pidgeProperties.isSandboxAutoAdvanceActive()
+                        ? (int) pidgeProperties.getSandboxAutoAdvance().toSeconds() : null,
                 latLng(delivery.getPickupLatitude(), delivery.getPickupLongitude()),
                 latLng(delivery.getDropLatitude(), delivery.getDropLongitude()));
     }

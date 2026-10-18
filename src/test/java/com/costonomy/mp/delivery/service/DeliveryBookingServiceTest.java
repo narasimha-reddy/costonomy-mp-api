@@ -59,10 +59,17 @@ class DeliveryBookingServiceTest {
     @Mock
     private DeliveryProvider providerAdapter;
 
+    @Mock
+    private DeliveryRecoveryService recoveryService;
+
+    @Mock
+    private org.springframework.transaction.PlatformTransactionManager txManager;
+
     private DeliveryBookingService service;
 
     @BeforeEach
     void setUp() {
+        org.mockito.Mockito.lenient().when(txManager.getTransaction(any())).thenReturn(new org.springframework.transaction.support.SimpleTransactionStatus());
         service = new DeliveryBookingService(
                 deliveries,
                 attempts,
@@ -72,7 +79,9 @@ class DeliveryBookingServiceTest {
                 auditService,
                 ledger,
                 eventPublisher,
-                directory
+                directory,
+                recoveryService,
+                txManager
         );
         lenient().when(attempts.save(any(DeliveryProviderAttempt.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));

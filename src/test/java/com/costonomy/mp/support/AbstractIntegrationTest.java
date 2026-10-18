@@ -56,26 +56,50 @@ public abstract class AbstractIntegrationTest {
         }
     }
 
-    static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0.36")
-            .withDatabaseName("costonomy_mp")
-            .withUsername("mp")
-            .withPassword("mp")
-            // Match the production collation exactly. A test database on a
-            // different collation silently accepts DDL and comparison behaviour
-            // that production would reject.
-            .withCommand(
-                    "--character-set-server=utf8mb4",
-                    "--collation-server=utf8mb4_0900_ai_ci",
-                    // Every distinct test configuration (a @MockBean, a @TestPropertySource) caches its own
-                    // Spring context in the run, each with its own connection pool, all against this one
-                    // container. MySQL's default of 151 is exhausted a few dozen contexts in, and the classes
-                    // that happen to run last fail to start with "Too many connections": a capacity limit of
-                    // the test database, not a defect in the code under test.
-                    "--max-connections=1000",
-                    // UTC, matching hibernate.jdbc.time_zone. A container on a
-                    // different zone would make timestamp assertions pass locally
-                    // and fail elsewhere.
-                    "--default-time-zone=+00:00");
+    /**
+     * Whether the test database trades durability for speed. On by default; {@code -Dit.mysql.fast=false} restores
+     * MySQL's defaults. A test database is thrown away at the end of the run, so a crash-safe commit buys nothing and costs
+     * an fsync on every commit of a suite that commits thousands of times: the data directory lives in memory, the
+     * redo log is not flushed per commit, and there is no doublewrite buffer or binary log.
+     *
+     * <p>Deliberately <b>not</b> turned off: the Performance Schema ({@code CreditRaceConditionsIT} reads
+     * {@code performance_schema.data_locks}), and nothing that changes locking, isolation or SQL behaviour. It is still
+     * MySQL 8.0.36 on the production collation and time zone, which is what doc 10 section 8 asks for.
+     */
+    static final boolean FAST_DB = !"false".equalsIgnoreCase(System.getProperty("it.mysql.fast"));
+
+    static final MySQLContainer<?> MYSQL = newContainer();
+
+    private static MySQLContainer<?> newContainer() {
+        var container = new MySQLContainer<>("mysql:8.0.36")
+                .withDatabaseName("costonomy_mp")
+                .withUsername("mp")
+                .withPassword("mp");
+        var command = new java.util.ArrayList<>(java.util.List.of(
+                // Match the production collation exactly. A test database on a
+                // different collation silently accepts DDL and comparison behaviour
+                // that production would reject.
+                "--character-set-server=utf8mb4",
+                "--collation-server=utf8mb4_0900_ai_ci",
+                // Every distinct test configuration (a @MockBean, a @TestPropertySource) caches its own
+                // Spring context in the run, each with its own connection pool, all against this one
+                // container. MySQL's default of 151 is exhausted a few dozen contexts in, and the classes
+                // that happen to run last fail to start with "Too many connections": a capacity limit of
+                // the test database, not a defect in the code under test.
+                "--max-connections=1000",
+                // UTC, matching hibernate.jdbc.time_zone. A container on a
+                // different zone would make timestamp assertions pass locally
+                // and fail elsewhere.
+                "--default-time-zone=+00:00"));
+        if (FAST_DB) {
+            container.withTmpFs(java.util.Map.of("/var/lib/mysql", "rw,size=1g"));
+            command.addAll(java.util.List.of(
+                    "--innodb-flush-log-at-trx-commit=0",
+                    "--innodb-doublewrite=0",
+                    "--skip-log-bin"));
+        }
+        return container.withCommand(command.toArray(new String[0]));
+    }
 
     static {
         // Started once per JVM and deliberately never stopped: Testcontainers'

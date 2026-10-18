@@ -110,4 +110,55 @@ class PidgeBookingPayloadTest {
         assertThat(PidgeApiClient.indianMobile("5876543210")).isNull();
         assertThat(PidgeApiClient.indianMobile("")).isNull();
     }
+
+    /** A food delivery (D-201): no supplier order, our own reference instead. */
+    private DeliveryProvider.BookingRequest foodBooking(String reference) {
+        return new DeliveryProvider.BookingRequest(
+                null, "q-9",
+                "Indiranagar, Bengaluru", new BigDecimal("12.9716"), new BigDecimal("77.5946"),
+                "Outlet Desk", "9876500000",
+                "Koramangala, Bengaluru", new BigDecimal("12.9352"), new BigDecimal("77.6245"),
+                "Asha", "9876511111",
+                "mp-food-delivery-7-1",
+                BigDecimal.valueOf(2.5), BigDecimal.valueOf(0.01), VehicleType.TWO_WHEELER,
+                new DeliveryProvider.Locality("Bengaluru", "Karnataka", "560038"),
+                new DeliveryProvider.Locality("Bengaluru", "Karnataka", "560034"),
+                new BigDecimal("640.00"), reference);
+    }
+
+    @Test
+    @DisplayName("a food delivery is booked under our reference, not an invented supplier order id")
+    void foodDeliveryUsesReference() {
+        server.expect(requestTo(ORDER_URL)).andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$.trips[0].source_order_id").value("FD-7"))
+                .andExpect(jsonPath("$.trips[0].packages[0].label").value("Order FD-7"))
+                .andRespond(withSuccess("{\"data\": {\"FD-7\": \"pidge-7\"}}", MediaType.APPLICATION_JSON));
+
+        var booked = client.createOrder(foodBooking("FD-7"));
+
+        assertThat(booked.providerDeliveryId()).isEqualTo("pidge-7");
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("a supplier booking is still named SO-<id> with no reference")
+    void supplierBookingUnchanged() {
+        server.expect(requestTo(ORDER_URL)).andExpect(method(HttpMethod.POST))
+                .andExpect(jsonPath("$.trips[0].source_order_id").value("SO-101"))
+                .andExpect(jsonPath("$.trips[0].packages[0].label").value("Order #101"))
+                .andRespond(withSuccess("{\"data\": {\"SO-101\": \"pidge-1\"}}", MediaType.APPLICATION_JSON));
+
+        client.createOrder(booking("9876500000", "9876511111", BigDecimal.TEN));
+        server.verify();
+    }
+
+    @Test
+    @DisplayName("a booking with neither a supplier order nor a reference is refused before any call")
+    void neitherIdNorReferenceRefused() {
+        assertThatThrownBy(() -> client.createOrder(foodBooking(null)))
+                .isInstanceOf(DeliveryProviderException.class).hasMessageContaining("supplier order or reference");
+        assertThatThrownBy(() -> client.createOrder(foodBooking("  ")))
+                .isInstanceOf(DeliveryProviderException.class).hasMessageContaining("supplier order or reference");
+        server.verify();
+    }
 }

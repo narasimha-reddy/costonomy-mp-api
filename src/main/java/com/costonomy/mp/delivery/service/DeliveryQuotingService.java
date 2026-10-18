@@ -58,7 +58,6 @@ public class DeliveryQuotingService {
      *                              reassignment must not hand it back to the one
      *                              that just cancelled (doc 06 §7)
      */
-    @Transactional
     public Outcome gather(Delivery delivery, BigDecimal orderValue, BigDecimal weightGrams,
                           Integer requiredEtaMinutes, List<String> excludedProviderCodes) {
 
@@ -128,11 +127,14 @@ public class DeliveryQuotingService {
                     weightKg, delivery.getVolumeCbm(), askFor,
                     delivery.getPickupAddress(), delivery.getDropAddress());
 
+            long startedNs = System.nanoTime();
             try {
                 var answer = available.adapter().quote(request);
+                quote.setCallMs(elapsedMs(startedNs));
 
                 if (!answer.serviceable()) {
                     quote.setStatus("UNSERVICEABLE");
+                    quote.setErrorClass("UNSERVICEABLE");
                     quote.setFailureReason(answer.declineReason());
                 } else {
                     quote.setStatus("QUOTED");
@@ -177,6 +179,9 @@ public class DeliveryQuotingService {
                 log.info("Quote from {} failed: {}", available.record().getCode(), ex.getMessage());
                 quote.setStatus("FAILED");
                 quote.setFailureReason(ex.getMessage());
+                quote.setCallMs(elapsedMs(startedNs));
+                quote.setErrorClass(ex.errorClass());
+                quote.setRetryable(ex.retryable());
             }
 
             quotes.save(quote);
@@ -200,6 +205,10 @@ public class DeliveryQuotingService {
         }
 
         return new Outcome(selected, recorded, !candidates.isEmpty());
+    }
+
+    private static int elapsedMs(long startedNs) {
+        return (int) Math.min(Integer.MAX_VALUE, (System.nanoTime() - startedNs) / 1_000_000L);
     }
 
     /**

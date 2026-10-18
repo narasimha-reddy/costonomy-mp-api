@@ -70,4 +70,35 @@ public class DeliveryProviderAttempt {
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
+
+    /** Why this attempt ended, as a code (V91, D-201 addendum). Null on rows from before, and while it is live. */
+    @Column(name = "ended_cause", length = 40)
+    private String endedCause;
+
+    @Column(name = "retryable")
+    private Boolean retryable;
+
+    @Column(name = "assigned_at")
+    private Instant assignedAt;
+
+    /** How long the provider's API took to answer the booking. */
+    @Column(name = "call_ms")
+    private Integer callMs;
+
+    /** 1 = first choice among the couriers considered for this attempt. */
+    @Column(name = "rank_position")
+    private Integer rankPosition;
+
+    @Column(name = "selection_reason", length = 32)
+    private String selectionReason;
+
+    @Column(name = "reliability_score", precision = 5, scale = 4)
+    private java.math.BigDecimal reliabilityScore;
+
+    @Column(name = "breaker_state", length = 16)
+    private String breakerState;
+
+    /** Every courier considered for this attempt and why each was ranked or skipped. JSON. */
+    @Column(name = "decision", columnDefinition = "json")
+    private String decision;
 }

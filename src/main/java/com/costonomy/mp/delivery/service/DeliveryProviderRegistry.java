@@ -40,7 +40,16 @@ public class DeliveryProviderRegistry {
     }
 
     public List<Available> enabled() {
-        return records.findByEnabledTrueOrderByPriorityAsc().stream()
+        return available(records.findByEnabledTrueOrderByPriorityAsc());
+    }
+
+    /** The enabled providers that may carry food (D-201), in tie-break order. */
+    public List<Available> enabledForFood() {
+        return available(records.findByEnabledTrueAndSupportsFoodDeliveryTrueOrderByPriorityAsc());
+    }
+
+    private List<Available> available(List<DeliveryProviderRecord> rows) {
+        return rows.stream()
                 .map(record -> {
                     var adapter = adapters.get(record.getCode());
                     if (adapter == null) {

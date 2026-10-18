@@ -252,6 +252,28 @@ class ShadowfaxApiClientContractTest {
     }
 
     @Test
+    @DisplayName("a food delivery is named by our reference; a supplier order is still SO-<id>")
+    @SuppressWarnings("unchecked")
+    void orderPayloadNamesTheConsignment() {
+        var drop = new DeliveryProvider.Locality("Hyderabad", "Telangana", "500081");
+        var supplier = client.orderPayload(validHydBooking());
+        var supplierSku = ((java.util.List<java.util.Map<String, Object>>) supplier.get("product_details")).get(0);
+        assertThat(supplierSku.get("sku_id")).isEqualTo("SO-101");
+        assertThat(supplierSku.get("sku_name")).isEqualTo("Consignment SO-101");
+
+        var base = hydBooking(101L, new BigDecimal("12.5"), new BigDecimal("640.00"), drop, "+919876511111");
+        var food = new DeliveryProvider.BookingRequest(null, base.providerQuoteId(), base.pickupAddress(),
+                base.pickupLatitude(), base.pickupLongitude(), base.pickupContactName(), base.pickupContactPhone(),
+                base.dropAddress(), base.dropLatitude(), base.dropLongitude(), base.dropContactName(),
+                base.dropContactPhone(), base.idempotencyKey(), base.weightKg(), base.volumeCbm(),
+                base.vehicleType(), base.pickupLocality(), base.dropLocality(), base.goodsValue(), "FD-7");
+        var foodSku = ((java.util.List<java.util.Map<String, Object>>) client.orderPayload(food)
+                .get("product_details")).get(0);
+        assertThat(foodSku.get("sku_id")).isEqualTo("FD-7");
+        assertThat(foodSku.get("sku_name")).isEqualTo("Consignment FD-7");
+    }
+
+    @Test
     @DisplayName("order payload rejects missing or invalid booking data by naming the field")
     void orderPayloadRejectsMissingData() {
         var hydDrop = new DeliveryProvider.Locality("Hyderabad", "Telangana", "500081");

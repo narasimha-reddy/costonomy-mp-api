@@ -30,15 +30,15 @@ jobs:
           docker info > /dev/null
           echo "Docker API: $(docker version --format '{{.Server.APIVersion}}')"
 
-      - name: Compile
-        run: mvn -B -ntp compile
-
-      - name: Unit tests
-        run: mvn -B -ntp test
-
-      # `verify` runs Failsafe: migrations against real MySQL 8, plus the
-      # integration and concurrency suites.
-      - name: Integration tests
+      # One `verify` compiles, runs the unit tests (Surefire), then the integration tests (Failsafe): migrations against
+      # real MySQL 8 plus the integration and concurrency suites. It stops at the first phase that fails, as the three
+      # separate steps did, and both phases still write their own reports (uploaded below). This used to be `mvn compile`,
+      # `mvn test` and `mvn verify`, and `verify` repeats the other two, so everything compiled three times and the unit
+      # tests ran twice.
+      #
+      # The integration tests run in two forked JVMs at once (it.forks in pom.xml), each with its own MySQL container. A
+      # standard runner has 4 vCPUs and 16 GB, which holds two comfortably. Raise it with -Dit.forks=N on a larger runner.
+      - name: Build, unit tests and integration tests
         run: mvn -B -ntp verify
 
       - name: Publish test report

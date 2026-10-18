@@ -82,6 +82,7 @@ public class SecurityConfig {
                         // A bill page from local storage: reachable only with a signed token that
                         // expires (D-113); the route checks the signature itself.
                         .requestMatchers(HttpMethod.GET, "/invoice-files/**").permitAll()
+                        .requestMatchers("/api/v1/public/**").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                         .requestMatchers("/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .anyRequest().authenticated())

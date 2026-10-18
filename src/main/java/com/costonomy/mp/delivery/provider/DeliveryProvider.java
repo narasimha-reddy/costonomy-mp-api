@@ -60,6 +60,21 @@ public interface DeliveryProvider {
         return true;
     }
 
+    /**
+     * Look up an order by our reference (e.g. FD-123 or SO-456) or idempotency key.
+     * Used for reconciling ambiguous outcomes after booking timeouts or network disconnects.
+     */
+    default java.util.Optional<ProviderDelivery> findByReference(String reference, String idempotencyKey) {
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * Whether this provider supports looking up orders by client reference or idempotency key.
+     */
+    default boolean supportsLookupByReference() {
+        return false;
+    }
+
     // ── our types, never theirs ──────────────────────────────────────────
 
     record QuoteRequest(
@@ -95,7 +110,23 @@ public interface DeliveryProvider {
              * not assumed.
              */
             String pickupAddress,
-            String dropAddress) {
+            String dropAddress,
+            /**
+             * Our reference for a consignment that has no supplier order, e.g. {@code FD-123} for a food delivery
+             * (D-201). Null for supplier deliveries, which are named by {@code supplierOrderId} as before.
+             */
+            String reference) {
+
+        /** The shape before {@code reference} existed. Every supplier-delivery caller uses this one. */
+        public QuoteRequest(Long supplierOrderId, BigDecimal pickupLatitude, BigDecimal pickupLongitude,
+                            BigDecimal dropLatitude, BigDecimal dropLongitude, BigDecimal orderValue,
+                            BigDecimal weightGrams, Integer requiredEtaMinutes, BigDecimal weightKg,
+                            BigDecimal volumeCbm, VehicleType vehicleType, String pickupAddress,
+                            String dropAddress) {
+            this(supplierOrderId, pickupLatitude, pickupLongitude, dropLatitude, dropLongitude, orderValue,
+                    weightGrams, requiredEtaMinutes, weightKg, volumeCbm, vehicleType, pickupAddress, dropAddress,
+                    null);
+        }
 
         public QuoteRequest(Long supplierOrderId, BigDecimal pickupLatitude, BigDecimal pickupLongitude,
                             BigDecimal dropLatitude, BigDecimal dropLongitude, BigDecimal orderValue,
@@ -190,7 +221,37 @@ public interface DeliveryProvider {
             Locality pickupLocality,
             Locality dropLocality,
             /** Accepted goods value incl. GST, excluding delivery: what a carrier asks for as declared value. */
-            BigDecimal goodsValue) {
+            BigDecimal goodsValue,
+            /**
+             * Our reference for a consignment that has no supplier order, e.g. {@code FD-123} for a food delivery
+             * (D-201). Null for supplier deliveries. Adapters use it where they would have used {@code "SO-" + id}.
+             */
+            String reference) {
+
+        /** The shape before {@code reference} existed. Every supplier-delivery caller uses this one. */
+        public BookingRequest(Long supplierOrderId, String providerQuoteId, String pickupAddress,
+                              BigDecimal pickupLatitude, BigDecimal pickupLongitude, String pickupContactName,
+                              String pickupContactPhone, String dropAddress, BigDecimal dropLatitude,
+                              BigDecimal dropLongitude, String dropContactName, String dropContactPhone,
+                              String idempotencyKey, BigDecimal weightKg, BigDecimal volumeCbm,
+                              VehicleType vehicleType, Locality pickupLocality, Locality dropLocality,
+                              BigDecimal goodsValue) {
+            this(supplierOrderId, providerQuoteId, pickupAddress, pickupLatitude, pickupLongitude,
+                    pickupContactName, pickupContactPhone, dropAddress, dropLatitude, dropLongitude,
+                    dropContactName, dropContactPhone, idempotencyKey, weightKg, volumeCbm, vehicleType,
+                    pickupLocality, dropLocality, goodsValue, null);
+        }
+
+        /**
+         * What the carrier is told this consignment is called: our reference when we have one, otherwise
+         * {@code SO-<supplier order id>} exactly as before. Null only when there is neither.
+         */
+        public String sourceRef() {
+            if (reference != null && !reference.isBlank()) {
+                return reference;
+            }
+            return supplierOrderId != null ? "SO-" + supplierOrderId : null;
+        }
 
         public BookingRequest(Long supplierOrderId, String providerQuoteId, String pickupAddress,
                               BigDecimal pickupLatitude, BigDecimal pickupLongitude, String pickupContactName,

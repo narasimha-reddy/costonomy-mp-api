@@ -11,4 +11,6 @@ public interface DeliveryProviderRepository extends JpaRepository<DeliveryProvid
     Optional<DeliveryProviderRecord> findByCode(String code);
 
     List<DeliveryProviderRecord> findByEnabledTrueOrderByPriorityAsc();
+
+    List<DeliveryProviderRecord> findByEnabledTrueAndSupportsFoodDeliveryTrueOrderByPriorityAsc();
 }

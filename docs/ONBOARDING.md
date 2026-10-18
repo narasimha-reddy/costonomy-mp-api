@@ -157,13 +157,26 @@ mvn -o -q compile
 
 ### Tests
 
-Run the integration test you are changing, not all of them. A full `mvn verify`
-is about five minutes; one class is about fifty seconds, of which forty is the
-MySQL container and the Spring context:
+Run the integration test you are changing, not all of them. A full clean `mvn verify`
+is about eleven minutes on an 8-core laptop (about 25 before D-199); one class is
+about thirty to fifty seconds, most of it the MySQL container and the Spring context:
 
 ```bash
 mvn -o verify -Dit.test=StorefrontIT
 ```
+
+How the integration suite is made fast (D-199), and how to turn each part off:
+
+| What | Default | Turn it off |
+|---|---|---|
+| Integration tests run in this many JVMs at once, each with its own MySQL container | 2 | `-Dit.forks=1` (serial), or `-Dit.forks=3` on 8+ cores |
+| The test MySQL keeps its data in memory and skips per-commit fsync | on | `-Dit.mysql.fast=false` |
+
+Test classes are never run concurrently inside one JVM: they share cached Spring contexts, a database and static test
+doubles. If the suite fails only with more than one fork, try `-Dit.forks=1` first and tell whoever owns the failing test.
+Known intermittent failures, not caused by the fork count: the `Clock` mock re-stubbing race in the credit tests
+(`ClassCast`, `UnfinishedStubbing` or `WrongTypeOfReturnValue` on `creditClock`), and `OutboxRelayOnCommitIT`'s "relayed
+promptly" timing test on a loaded machine.
 
 Run the whole suite before you open a PR, not between edits.
 
@@ -255,6 +268,17 @@ evidence in the answer.
 
 Phases 1 and 3–17 of `docs/specs/00-README.md` §8 are complete, and the mobile
 app is built across both roles.
+
+### In progress: food delivery, restaurant to customer (D-201)
+
+A restaurant hands cooked food to a Costonomy courier for its own customer. Spec: `docs/specs/06-delivery.md` §16, whose
+status banner says what is built. **Built:** the V90 schema, the `fooddelivery` domain and repositories, the optional
+`reference` on provider requests, and the hook that lets food own provider events. **Not built:** quoting and booking, the
+fee debit and refund, the restaurant API, the public tracking link, the handover code, customer notifications.
+**Waiting on product:** the fee model (a `maxFee` held up front, only couriers at or below it eligible, the difference
+refunded). Also shipped alongside it for the supplier flow: automatic reassignment when a provider lets go of a
+consignment, a sweep for bookings that lose their in-memory timer, and supplier notifications for a rider assigned or
+replaced. This section's date below is older than these.
 
 ### Latest: Razorpay payments (D-098 … D-104)
 

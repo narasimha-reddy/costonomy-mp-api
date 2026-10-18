@@ -17,8 +17,21 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
+import java.util.Optional;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.costonomy.mp.delivery.domain.Delivery;
+import com.costonomy.mp.delivery.provider.UnclaimedDeliveryEventHandler;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class PidgeWebhookServiceTest {
@@ -97,5 +110,68 @@ class PidgeWebhookServiceTest {
 
         properties.setWebhookSecret("");
         assertThat(service.verifySignature("{}", null)).isFalse();
+    }
+
+    // --- Events for consignments the supplier flow does not own (D-201) ---
+
+    private static final String ORDER = "{\"id\":\"p-77\",\"status\":\"PLACED\"}";
+
+    private JsonNode order() throws Exception {
+        return new ObjectMapper().readTree(ORDER);
+    }
+
+    private void handlers(UnclaimedDeliveryEventHandler... handlers) {
+        ReflectionTestUtils.setField(service, "unclaimedHandlers", java.util.List.of(handlers));
+    }
+
+    @Test
+    @DisplayName("an event for no supplier delivery is offered to the other handlers, and a claim ends it")
+    void unknownDeliveryIsOfferedToHandlers() throws Exception {
+        when(deliveries.findByProviderCodeAndProviderDeliveryId("PIDGE", "p-77")).thenReturn(Optional.empty());
+        var declines = mock(UnclaimedDeliveryEventHandler.class);
+        var claims = mock(UnclaimedDeliveryEventHandler.class);
+        var neverAsked = mock(UnclaimedDeliveryEventHandler.class);
+        when(declines.handle(eq("PIDGE"), eq("p-77"), any())).thenReturn(false);
+        when(claims.handle(eq("PIDGE"), eq("p-77"), any())).thenReturn(true);
+        handlers(declines, claims, neverAsked);
+
+        assertThat(service.process(order())).isTrue();
+
+        verify(declines).handle(eq("PIDGE"), eq("p-77"), any());
+        verify(claims).handle(eq("PIDGE"), eq("p-77"), any());
+        verifyNoInteractions(neverAsked);
+        verifyNoInteractions(eventService);
+    }
+
+    @Test
+    @DisplayName("an event nobody owns is still acknowledged, so the provider stops retrying")
+    void unclaimedEventIsStillAcknowledged() throws Exception {
+        when(deliveries.findByProviderCodeAndProviderDeliveryId("PIDGE", "p-77")).thenReturn(Optional.empty());
+        var declines = mock(UnclaimedDeliveryEventHandler.class);
+        when(declines.handle(any(), any(), any())).thenReturn(false);
+        handlers(declines);
+
+        assertThat(service.process(order())).isTrue();
+        verifyNoInteractions(eventService);
+    }
+
+    @Test
+    @DisplayName("a supplier delivery is handled as before and the other handlers are never consulted")
+    void supplierDeliveryNeverReachesOtherHandlers() throws Exception {
+        when(deliveries.findByProviderCodeAndProviderDeliveryId("PIDGE", "p-77"))
+                .thenReturn(Optional.of(new Delivery()));
+        var handler = mock(UnclaimedDeliveryEventHandler.class);
+        handlers(handler);
+
+        service.process(order());
+
+        verify(handler, never()).handle(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("with no other handlers registered, behaviour is exactly what it was")
+    void noHandlersIsUnchanged() throws Exception {
+        when(deliveries.findByProviderCodeAndProviderDeliveryId("PIDGE", "p-77")).thenReturn(Optional.empty());
+        assertThat(service.process(order())).isTrue();
     }
 }

@@ -4,6 +4,7 @@ import com.costonomy.mp.common.api.ApiResponse;
 import com.costonomy.mp.delivery.service.AdminDeliveryService;
 import com.costonomy.mp.delivery.service.DeliveryStatsAggregationService;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
+import com.costonomy.mp.fooddelivery.web.dto.FoodDeliveryDtos;
 import com.costonomy.mp.identity.security.ActorContext;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -62,6 +63,30 @@ public class AdminDeliveryController {
     public ApiResponse<List<DeliveryDtos.DeliveryLedgerResponse>> ledger(@PathVariable Long id) {
         Long actorId = ActorContext.requireUserId();
         return ApiResponse.ok(adminDeliveryService.getLedger(actorId, id));
+    }
+
+    @GetMapping("/{id}/inspect")
+    @Operation(summary = "Operator inspection view for a supplier delivery",
+               description = "Requires DELIVERY_INSPECT permission at PLATFORM scope.")
+    public ApiResponse<FoodDeliveryDtos.SupplierDeliveryInspectionResponse> inspectSupplierDelivery(@PathVariable Long id) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(adminDeliveryService.inspectSupplierDelivery(actorId, id));
+    }
+
+    @GetMapping("/food-deliveries/{id}/inspect")
+    @Operation(summary = "Operator inspection view for a food delivery",
+               description = "Requires DELIVERY_INSPECT permission at PLATFORM scope.")
+    public ApiResponse<FoodDeliveryDtos.FoodDeliveryInspectionResponse> inspectFoodDelivery(@PathVariable Long id) {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(adminDeliveryService.inspectFoodDelivery(actorId, id));
+    }
+
+    @GetMapping("/operational-alerts")
+    @Operation(summary = "Operational alerts for stuck deliveries and carrier health",
+               description = "Requires DELIVERY_INSPECT permission at PLATFORM scope.")
+    public ApiResponse<FoodDeliveryDtos.OperationalAlertsResponse> operationalAlerts() {
+        Long actorId = ActorContext.requireUserId();
+        return ApiResponse.ok(adminDeliveryService.getOperationalAlerts(actorId));
     }
 
     @PostMapping("/{id}/force-waterfall")

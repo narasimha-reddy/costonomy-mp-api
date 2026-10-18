@@ -64,5 +64,13 @@ public enum WalletEntryKind {
      * credit invoices; it never takes a bill. Unique per repayment (reference
      * {@code credit-repayment-{repaymentId}}).
      */
-    CREDIT_REPAYMENT
+    CREDIT_REPAYMENT,
+    /** The delivery fee held for a food delivery, debited when it is created (D-201). Reference {@code food-delivery-{id}}. */
+    FOOD_DELIVERY_FEE,
+    /**
+     * Part or all of a food delivery's held fee given back (D-201): the unused part once the courier is fixed, or the
+     * whole of it when the delivery is cancelled before pickup or no courier took it. Spendable, not withdrawable: like
+     * an order's return it has no card behind it.
+     */
+    FOOD_DELIVERY_REFUND
 }

@@ -45,6 +45,8 @@ public class DeliveryEventService {
     private final DeliveryTimeline timeline;
     private final DeliveryOrderBridge orders;
     private final AuditService auditService;
+    private final org.springframework.context.ApplicationEventPublisher publisher;
+    private final DeliveryProviderAttemptRepository attempts;
 
     /**
      * Apply one provider event.
@@ -57,6 +59,7 @@ public class DeliveryEventService {
         if (target == null) {
             return "IGNORED";
         }
+        target = providerStoodDown(delivery, target);
 
         var record = new DeliveryEvent();
         record.setDeliveryId(delivery.getId());
@@ -69,9 +72,13 @@ public class DeliveryEventService {
         record.setOccurredAt(event.occurredAt() == null ? Instant.now() : event.occurredAt());
 
         var current = delivery.getStatus();
-        boolean backwards = target.rank() < current.rank()
-                || (target == current && target != DeliveryStatus.IN_TRANSIT);
         boolean allowed = current.canTransitionTo(target);
+        // A rider cancelling or a pickup failing is newer news than the rider reaching the pickup, even though it ranks
+        // below it: the state machine allows it, and ignoring it left the delivery waiting for a rider who had gone.
+        boolean standDown = allowed && (target == DeliveryStatus.DRIVER_CANCELLED
+                || target == DeliveryStatus.PICKUP_FAILED);
+        boolean backwards = !standDown && (target.rank() < current.rank()
+                || (target == current && target != DeliveryStatus.IN_TRANSIT));
 
         record.setDisposition(backwards ? "OUT_OF_ORDER" : allowed ? "APPLIED" : "IGNORED");
 
@@ -190,6 +197,7 @@ public class DeliveryEventService {
             default -> { }
         }
         deliveries.save(delivery);
+        recordOnAttempt(delivery, target, event);
 
         // Publish, do not record. The ledger row for this event was already written
         // at the top of this method, carrying the provider's event id and its
@@ -202,8 +210,69 @@ public class DeliveryEventService {
         auditService.record(null, null, "DELIVERY_" + target.name(), "DELIVERY",
                 delivery.getId(), previous.name(), target.name(), event.description(), "PROVIDER");
 
+        if (target == DeliveryStatus.DRIVER_CANCELLED || target == DeliveryStatus.PICKUP_FAILED) {
+            // The provider let go of a consignment we still owe the restaurant. Nothing else would ever book the next
+            // courier: the deadline was cleared above and no job watches these statuses. Handled after commit.
+            publisher.publishEvent(new DeliveryProviderStoodDownEvent(
+                    delivery.getId(), delivery.getProviderDeliveryId(), event.description()));
+        }
+
         // The supplier order follows the consignment.
         orders.onDeliveryStatus(delivery, target);
+    }
+
+    /**
+     * A provider cancelling the whole consignment, before pickup, when we did not ask it to, means that courier will
+     * not carry it: the same as the rider cancelling, and recoverable. Read as terminal {@code CANCELLED} it ended the
+     * delivery with the goods still waiting and no other courier tried.
+     *
+     * <p>Our own cancellation sets {@code CANCELLED} on the delivery before the provider's echo arrives, so that echo
+     * is the same status and is stored as out of order, never read as a stand-down. Once the goods are picked up a
+     * provider cancellation is left as it was.
+     */
+    private static DeliveryStatus providerStoodDown(Delivery delivery, DeliveryStatus target) {
+        var current = delivery.getStatus();
+        // Already stood down and waiting for the next courier: the provider cancelling the order too (Pidge sends both)
+        // is the same news. Reading it as CANCELLED would end the delivery before the reassignment ran.
+        if (target == DeliveryStatus.CANCELLED
+                && (current == DeliveryStatus.DRIVER_CANCELLED || current == DeliveryStatus.PICKUP_FAILED)) {
+            return current;
+        }
+        if (target == DeliveryStatus.CANCELLED && !current.isTerminal()
+                && current.rank() < DeliveryStatus.PICKED_UP.rank()
+                && current != DeliveryStatus.DRIVER_CANCELLED && current != DeliveryStatus.PICKUP_FAILED) {
+            return DeliveryStatus.DRIVER_CANCELLED;
+        }
+        return target;
+    }
+
+    /**
+     * What the provider's news means for the attempt that is current (D-201 addendum): when its rider was assigned, and
+     * why it ended if it ended. {@code CANCELLED} from the provider (read as that courier standing down) is told apart
+     * from the rider cancelling by the provider's own status, which {@link #providerStoodDown} did not change.
+     */
+    private void recordOnAttempt(Delivery delivery, DeliveryStatus target, ProviderEvent event) {
+        String cause = switch (target) {
+            case DRIVER_CANCELLED -> event.status() == ProviderDeliveryStatus.CANCELLED
+                    ? "PROVIDER_CANCELLED" : "RIDER_CANCELLED";
+            case PICKUP_FAILED -> "PICKUP_FAILED";
+            case DELIVERY_FAILED -> "DELIVERY_FAILED";
+            case DELIVERED -> "COMPLETED";
+            default -> null;
+        };
+        if (cause == null && target != DeliveryStatus.DRIVER_ASSIGNED) {
+            return;
+        }
+        attempts.findFirstByDeliveryIdOrderByAttemptNumberDesc(delivery.getId()).ifPresent(attempt -> {
+            if (target == DeliveryStatus.DRIVER_ASSIGNED) {
+                if (attempt.getAssignedAt() == null) {
+                    attempt.setAssignedAt(Instant.now());
+                }
+            } else if (attempt.getEndedCause() == null) {
+                attempt.setEndedCause(cause);
+            }
+            attempts.save(attempt);
+        });
     }
 
     /** Provider vocabulary onto ours. The only place the two meet. */

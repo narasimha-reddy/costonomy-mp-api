@@ -3,6 +3,7 @@ package com.costonomy.mp.delivery.service;
 import com.costonomy.mp.common.outbox.OutboxService;
 import com.costonomy.mp.delivery.domain.Delivery;
 import com.costonomy.mp.delivery.domain.DeliveryEvent;
+import com.costonomy.mp.delivery.domain.DeliveryMode;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import com.costonomy.mp.delivery.repository.DeliveryEventRepository;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +24,9 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class DeliveryTimeline {
+
+    /** The notification variant of an event on a partner-carried delivery; the same word the order-ready rules use. */
+    static final String PARTNER_DELIVERY_VARIANT = "COSTONOMY_DELIVERY";
 
     private final DeliveryEventRepository events;
     private final OutboxService outbox;
@@ -59,6 +63,12 @@ public class DeliveryTimeline {
         // Without it nothing reaches the supplier's side (D-185).
         payload.put("supplierStoreId", delivery.getSupplierStoreId());
         payload.put("status", delivery.getStatus().name());
+        // Worded by who is carrying it (D-109). Only a partner delivery names a variant: a "delivery partner is on the
+        // way" means nothing to a supplier who is delivering it themselves, who therefore gets the event's plain
+        // rule, which tells the restaurant alone.
+        if (delivery.getMode() == DeliveryMode.COSTONOMY) {
+            payload.put("notificationVariant", PARTNER_DELIVERY_VARIANT);
+        }
         if (delivery.getEtaMinutes() != null) {
             payload.put("etaMinutes", delivery.getEtaMinutes());
         }

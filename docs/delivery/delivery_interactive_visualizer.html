@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Costonomy Delivery Module Visualizer</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    .transition-all-200 { transition: all 0.2s ease-in-out; }
+    .pulse-dot {
+      animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+  </style>
+</head>
+<body class="bg-transparent text-[var(--foreground)] antialiased p-4">
+  <div class="bg-[var(--card)] text-[var(--foreground)] border border-[var(--border)] rounded-2xl p-6 shadow-md max-w-5xl mx-auto space-y-6">
+    
+    <!-- Header -->
+    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-[var(--border)]">
+      <div>
+        <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 mb-2">
+          <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-dot"></span>
+          Interactive Product Simulator
+        </div>
+        <h1 class="text-xl font-bold tracking-tight text-[var(--foreground)]">Delivery Module Flow & Orchestration</h1>
+        <p class="text-xs text-[var(--muted-foreground)] mt-0.5">Explore how orders transition from kitchen readiness through multi-carrier waterfall to doorstep delivery.</p>
+      </div>
+
+      <!-- Mode Selector -->
+      <div class="flex items-center bg-[var(--background)] p-1 rounded-xl border border-[var(--border)]">
+        <button id="modeCostonomy" onclick="setMode('COSTONOMY')" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] shadow-xs transition-all-200">
+          Costonomy 3PL Mode
+        </button>
+        <button id="modeSupplier" onclick="setMode('SUPPLIER_OWN')" class="px-3.5 py-1.5 text-xs font-medium rounded-lg text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all-200">
+          Supplier Own Delivery
+        </button>
+      </div>
+    </div>
+
+    <!-- Mode Comparison Banner -->
+    <div id="modeDescription" class="p-3.5 rounded-xl border border-blue-500/20 bg-blue-500/5 text-xs text-[var(--foreground)] flex items-start gap-3">
+      <div class="p-1.5 rounded-lg bg-blue-500/20 text-blue-600 dark:text-blue-400 mt-0.5 font-bold">3PL</div>
+      <div>
+        <span class="font-semibold text-blue-600 dark:text-blue-400">Costonomy Orchestrated Delivery:</span>
+        <span class="text-[var(--muted-foreground)]"> Multi-carrier engine (Blowhorn, Delhivery, Pidge, Porter, etc.). Platform quotes upfront fee, automatically waterfalls through carriers, manages driver assignment SLA timers, and streams live telemetry to the restaurant.</span>
+      </div>
+    </div>
+
+    <!-- Stepper Pipeline -->
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Lifecycle State Machine</span>
+        <span id="currentStatusBadge" class="text-xs font-mono font-bold px-2.5 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400">
+          DELIVERY_REQUESTED
+        </span>
+      </div>
+
+      <div class="grid grid-cols-4 sm:grid-cols-7 gap-1.5 text-center" id="stateStepper">
+        <!-- Rendered via JS -->
+      </div>
+    </div>
+
+    <!-- Main Interactive Area: Two Columns -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+      
+      <!-- Left Column: Controls & Simulation (7 cols) -->
+      <div class="lg:col-span-7 space-y-4">
+        
+        <!-- Simulation Controls Card -->
+        <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)] space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-[var(--foreground)]">Simulation Actions</span>
+            <span class="text-xs text-[var(--muted-foreground)]">Step through the flow</span>
+          </div>
+
+          <div class="flex flex-wrap gap-2" id="actionButtons">
+            <!-- Dynamic Actions -->
+          </div>
+        </div>
+
+        <!-- Waterfall / Carrier Decision Engine -->
+        <div id="carrierWaterfallSection" class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)] space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-[var(--foreground)]">Multi-Carrier Waterfall Bidding (Doc 06 §4)</span>
+            <span id="waterfallTimerBadge" class="text-xs font-medium px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+              Assignment SLA: 3:00m
+            </span>
+          </div>
+
+          <!-- Carrier list table -->
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs">
+              <thead>
+                <tr class="border-b border-[var(--border)] text-[var(--muted-foreground)]">
+                  <th class="pb-2 font-medium">Provider</th>
+                  <th class="pb-2 font-medium">Internal Fare</th>
+                  <th class="pb-2 font-medium">ETA</th>
+                  <th class="pb-2 font-medium">Cold Chain</th>
+                  <th class="pb-2 font-medium">Outcome</th>
+                </tr>
+              </thead>
+              <tbody id="carrierRows" class="divide-y divide-[var(--border)]">
+                <!-- Injected via JS -->
+              </tbody>
+            </table>
+          </div>
+
+          <div class="p-2.5 rounded-lg bg-[var(--card)] border border-[var(--border)] text-xs text-[var(--muted-foreground)]">
+            <span class="font-medium text-[var(--foreground)]">Product Rule:</span> Carrier quotes are strictly internal. Restaurants only see the fixed platform fee (₹120) guaranteed at checkout. Selection rule = <em>Lowest price meeting ETA</em>.
+          </div>
+        </div>
+
+        <!-- Exception & Edge-Case Sandbox -->
+        <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)] space-y-3">
+          <span class="text-xs font-semibold text-[var(--foreground)]">Test Product Edge Cases & Recoveries</span>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <button onclick="triggerWaterfallTimeout()" class="p-2.5 rounded-lg border border-amber-500/30 hover:bg-amber-500/10 text-left transition-all-200">
+              <div class="text-xs font-semibold text-amber-600 dark:text-amber-400">Driver Timeout (3m)</div>
+              <div class="text-xs text-[var(--muted-foreground)] mt-0.5">Cascades Carrier A &rarr; Carrier B automatically</div>
+            </button>
+            <button onclick="triggerDriverCancel()" class="p-2.5 rounded-lg border border-rose-500/30 hover:bg-rose-500/10 text-left transition-all-200">
+              <div class="text-xs font-semibold text-rose-600 dark:text-rose-400">Driver Cancels</div>
+              <div class="text-xs text-[var(--muted-foreground)] mt-0.5">Reassigns courier while preserving Delivery ID</div>
+            </button>
+            <button onclick="triggerNoPartner()" class="p-2.5 rounded-lg border border-purple-500/30 hover:bg-purple-500/10 text-left transition-all-200">
+              <div class="text-xs font-semibold text-purple-600 dark:text-purple-400">No Partner Found</div>
+              <div class="text-xs text-[var(--muted-foreground)] mt-0.5">30m retry loop + offer Supplier Own fallback</div>
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Right Column: Buyer Experience & Live Tracking View (5 cols) -->
+      <div class="lg:col-span-5 space-y-4">
+        
+        <!-- Live Buyer View Mockup -->
+        <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)] space-y-3">
+          <div class="flex items-center justify-between pb-2 border-b border-[var(--border)]">
+            <span class="text-xs font-semibold text-[var(--foreground)]">Restaurant Mobile View</span>
+            <span id="liveTrackStatus" class="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Live GPS
+            </span>
+          </div>
+
+          <!-- Order Summary Card -->
+          <div class="p-3 rounded-lg bg-[var(--card)] border border-[var(--border)] space-y-1.5">
+            <div class="flex justify-between items-center text-xs">
+              <span class="text-[var(--muted-foreground)]">Order: <strong class="text-[var(--foreground)] font-mono">#ORD-9042</strong></span>
+              <span class="font-semibold text-emerald-600 dark:text-emerald-400" id="buyerFeeDisplay">Delivery: ₹120</span>
+            </div>
+            <div class="text-xs text-[var(--muted-foreground)] flex items-center justify-between">
+              <span>Consignment: <strong>14.5 kg (Bike)</strong></span>
+              <span class="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs font-medium" id="coldChainBadge">Ambient</span>
+            </div>
+          </div>
+
+          <!-- Driver & ETA Box -->
+          <div id="driverBox" class="p-3.5 rounded-xl bg-gradient-to-br from-emerald-500/10 to-teal-500/5 border border-emerald-500/20 space-y-2">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-xs text-[var(--muted-foreground)]">Estimated Arrival</div>
+                <div class="text-base font-bold text-emerald-600 dark:text-emerald-400" id="etaDisplay">22 mins</div>
+              </div>
+              <div class="text-right">
+                <div class="text-xs font-medium text-[var(--foreground)]" id="driverName">Ramesh Kumar</div>
+                <div class="text-xs text-[var(--muted-foreground)]" id="driverPhone">+91 98765 43210</div>
+              </div>
+            </div>
+            
+            <!-- Telemetry / Stale indicator -->
+            <div class="pt-2 border-t border-emerald-500/15 flex items-center justify-between text-xs text-[var(--muted-foreground)]">
+              <span id="telemetryStatus">GPS update received 4s ago</span>
+              <span class="font-mono text-xs">28.4595° N, 77.0266° E</span>
+            </div>
+          </div>
+
+          <!-- Real-Time Timeline Events -->
+          <div class="space-y-2 pt-2">
+            <span class="text-xs font-semibold text-[var(--foreground)]">Audit Timeline</span>
+            <div class="space-y-1.5 max-h-48 overflow-y-auto pr-1" id="timelineList">
+              <!-- Events appended via JS -->
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+
+  </div>
+
+  <script>
+    const COSTONOMY_STAGES = [
+      { id: 'DELIVERY_REQUESTED', label: 'Requested' },
+      { id: 'QUOTE_RECEIVED', label: 'Quoted' },
+      { id: 'PROVIDER_SELECTED', label: 'Assigned' },
+      { id: 'DRIVER_ASSIGNED', label: 'Driver en route' },
+      { id: 'PICKED_UP', label: 'Picked Up' },
+      { id: 'IN_TRANSIT', label: 'In Transit' },
+      { id: 'DELIVERED', label: 'Delivered' }
+    ];
+
+    const SUPPLIER_STAGES = [
+      { id: 'DELIVERY_REQUESTED', label: 'Ready' },
+      { id: 'DRIVER_ASSIGNED', label: 'Assigned' },
+      { id: 'PICKED_UP', label: 'Out for Delivery' },
+      { id: 'DELIVERED', label: 'Delivered' }
+    ];
+
+    let currentMode = 'COSTONOMY';
+    let currentStepIndex = 0;
+    let attemptCount = 1;
+    let events = [];
+    let activeProvider = 'Pidge';
+
+    const providersData = [
+      { code: 'PIDGE', name: 'Pidge', fare: '₹84', eta: '25m', coldChain: 'Verified', status: 'WINNER' },
+      { code: 'BORZO', name: 'Borzo', fare: '₹92', eta: '30m', coldChain: 'Verified', status: 'STANDBY' },
+      { code: 'DELHIVERY', name: 'Delhivery', fare: '₹110', eta: '45m', coldChain: 'Ambient only', status: 'EXCLUDED' },
+      { code: 'PORTER', name: 'Porter', fare: '₹135', eta: '20m', coldChain: 'Verified', status: 'STANDBY' }
+    ];
+
+    function setMode(mode) {
+      currentMode = mode;
+      currentStepIndex = 0;
+      attemptCount = 1;
+      events = [];
+      
+      const btnCost = document.getElementById('modeCostonomy');
+      const btnSupp = document.getElementById('modeSupplier');
+      const desc = document.getElementById('modeDescription');
+      const carrierSec = document.getElementById('carrierWaterfallSection');
+      const feeDisplay = document.getElementById('buyerFeeDisplay');
+      const liveTrack = document.getElementById('liveTrackStatus');
+
+      if (mode === 'COSTONOMY') {
+        btnCost.className = "px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] shadow-xs transition-all-200";
+        btnSupp.className = "px-3.5 py-1.5 text-xs font-medium rounded-lg text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all-200";
+        desc.innerHTML = `
+          <div class="p-1.5 rounded-lg bg-blue-500/20 text-blue-600 dark:text-blue-400 mt-0.5 font-bold">3PL</div>
+          <div>
+            <span class="font-semibold text-blue-600 dark:text-blue-400">Costonomy Orchestrated Delivery:</span>
+            <span class="text-[var(--muted-foreground)]"> Multi-carrier engine (Blowhorn, Delhivery, Pidge, Porter, etc.). Platform quotes upfront fee, automatically waterfalls through carriers, manages driver assignment SLA timers, and streams live telemetry to the restaurant.</span>
+          </div>`;
+        carrierSec.style.display = 'block';
+        feeDisplay.textContent = 'Delivery: ₹120';
+        liveTrack.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Live GPS';
+        addEvent('DELIVERY_REQUESTED', 'Automated dispatch initiated for #ORD-9042');
+      } else {
+        btnSupp.className = "px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] shadow-xs transition-all-200";
+        btnCost.className = "px-3.5 py-1.5 text-xs font-medium rounded-lg text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all-200";
+        desc.innerHTML = `
+          <div class="p-1.5 rounded-lg bg-amber-500/20 text-amber-600 dark:text-amber-400 mt-0.5 font-bold">OWN</div>
+          <div>
+            <span class="font-semibold text-amber-600 dark:text-amber-400">Supplier Own Delivery:</span>
+            <span class="text-[var(--muted-foreground)]"> Supplier fulfills using their own staff or fleet. No provider bidding, restaurant pays ₹0 delivery fee by default, and supplier manually updates status. No live GPS is fabricated (§23A.38).</span>
+          </div>`;
+        carrierSec.style.display = 'none';
+        feeDisplay.textContent = 'Delivery: ₹0 (Free)';
+        liveTrack.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span> Supplier Reported';
+        addEvent('DRIVER_ASSIGNED', 'Supplier assigned internal driver (Suresh)');
+        currentStepIndex = 1; // Straight to assigned
+      }
+
+      renderStepper();
+      renderActions();
+      renderCarriers();
+      updateDriverBox();
+    }
+
+    function getStages() {
+      return currentMode === 'COSTONOMY' ? COSTONOMY_STAGES : SUPPLIER_STAGES;
+    }
+
+    function renderStepper() {
+      const stages = getStages();
+      const container = document.getElementById('stateStepper');
+      const badge = document.getElementById('currentStatusBadge');
+      const currentStage = stages[currentStepIndex];
+
+      badge.textContent = currentStage.id;
+
+      container.innerHTML = stages.map((s, idx) => {
+        const isDone = idx < currentStepIndex;
+        const isCurrent = idx === currentStepIndex;
+        let bg = 'bg-[var(--background)] border-[var(--border)] text-[var(--muted-foreground)]';
+        
+        if (isCurrent) {
+          bg = 'bg-[var(--primary)] text-[var(--primary-foreground)] border-[var(--primary)] font-semibold shadow-xs';
+        } else if (isDone) {
+          bg = 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30';
+        }
+
+        return `
+          <div class="p-2 rounded-xl border ${bg} text-xs transition-all-200">
+            <div class="text-[11px] font-mono opacity-80">${idx + 1}</div>
+            <div class="truncate font-medium mt-0.5">${s.label}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderCarriers() {
+      const tbody = document.getElementById('carrierRows');
+      tbody.innerHTML = providersData.map(p => {
+        let badgeClass = 'bg-zinc-500/10 text-zinc-600 dark:text-zinc-400';
+        if (p.status === 'WINNER') badgeClass = 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold';
+        if (p.status === 'CASCADE') badgeClass = 'bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold';
+        if (p.status === 'FAILED') badgeClass = 'bg-rose-500/10 text-rose-600 dark:text-rose-400';
+
+        return `
+          <tr class="py-2">
+            <td class="py-2 font-medium text-[var(--foreground)]">${p.name}</td>
+            <td class="py-2">${p.fare}</td>
+            <td class="py-2">${p.eta}</td>
+            <td class="py-2">${p.coldChain}</td>
+            <td class="py-2"><span class="px-2 py-0.5 rounded text-xs ${badgeClass}">${p.status}</span></td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderActions() {
+      const container = document.getElementById('actionButtons');
+      const stages = getStages();
+
+      if (currentStepIndex >= stages.length - 1) {
+        container.innerHTML = `
+          <button onclick="resetFlow()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 transition-all-200">
+            Restart Cycle
+          </button>
+        `;
+        return;
+      }
+
+      const nextStage = stages[currentStepIndex + 1];
+      container.innerHTML = `
+        <button onclick="advanceStage()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 transition-all-200">
+          Advance to: ${nextStage.label} &rarr;
+        </button>
+      `;
+    }
+
+    function advanceStage() {
+      const stages = getStages();
+      if (currentStepIndex < stages.length - 1) {
+        currentStepIndex++;
+        const stage = stages[currentStepIndex];
+        
+        if (stage.id === 'QUOTE_RECEIVED') {
+          addEvent('QUOTE_RECEIVED', 'Gathered quotes from 4 carriers. Pidge selected (Lowest fare: ₹84)');
+        } else if (stage.id === 'PROVIDER_SELECTED') {
+          addEvent('PROVIDER_SELECTED', 'Booked Pidge (Attempt 1). Assignment SLA timer started.');
+        } else if (stage.id === 'DRIVER_ASSIGNED') {
+          addEvent('DRIVER_ASSIGNED', 'Pidge assigned courier Ramesh Kumar (+91 98765 43210)');
+        } else if (stage.id === 'PICKED_UP') {
+          addEvent('PICKED_UP', 'Consignment picked up from supplier warehouse. Order OUT_FOR_DELIVERY');
+        } else if (stage.id === 'IN_TRANSIT') {
+          addEvent('IN_TRANSIT', 'Driver is 1.8km away, en route to restaurant.');
+        } else if (stage.id === 'DELIVERED') {
+          addEvent('DELIVERED', 'OTP verified. Delivery successful. Order DELIVERED.');
+        }
+
+        renderStepper();
+        renderActions();
+        updateDriverBox();
+      }
+    }
+
+    function updateDriverBox() {
+      const stages = getStages();
+      const currentStage = stages[currentStepIndex];
+      const eta = document.getElementById('etaDisplay');
+      const driverName = document.getElementById('driverName');
+      const driverPhone = document.getElementById('driverPhone');
+      const telemetry = document.getElementById('telemetryStatus');
+
+      if (currentStage.id === 'DELIVERED') {
+        eta.textContent = 'Completed';
+        telemetry.textContent = 'Delivered at ' + new Date().toLocaleTimeString();
+      } else if (currentStage.id === 'IN_TRANSIT') {
+        eta.textContent = '12 mins';
+        telemetry.textContent = 'GPS update received 3s ago (Moving at 24 km/h)';
+      } else if (currentStage.id === 'PICKED_UP') {
+        eta.textContent = '18 mins';
+        telemetry.textContent = 'Left supplier facility';
+      } else if (currentStage.id === 'DRIVER_ASSIGNED') {
+        eta.textContent = '25 mins';
+        telemetry.textContent = 'Driver arriving at supplier in 5 mins';
+      } else {
+        eta.textContent = '--';
+        driverName.textContent = 'Matching driver...';
+        driverPhone.textContent = 'Provider bidding active';
+        telemetry.textContent = 'Awaiting courier assignment';
+      }
+    }
+
+    function triggerWaterfallTimeout() {
+      if (currentMode !== 'COSTONOMY') return;
+      attemptCount++;
+      providersData[0].status = 'TIMEOUT';
+      providersData[1].status = 'WINNER';
+      renderCarriers();
+      addEvent('DELIVERY_WATERFALL_TIMEOUT', `Assignment deadline expired with Pidge (>3m). Cascaded to Borzo (Attempt ${attemptCount}). Delivery ID preserved!`);
+      document.getElementById('driverName').textContent = 'Borzo Dispatch';
+      document.getElementById('driverPhone').textContent = 'Reassigning driver...';
+      renderStepper();
+    }
+
+    function triggerDriverCancel() {
+      attemptCount++;
+      addEvent('DELIVERY_DRIVER_CANCELLED', `Driver Ramesh cancelled booking. Waterfall auto-reassigned consignment to Borzo (Attempt ${attemptCount}).`);
+      updateDriverBox();
+    }
+
+    function triggerNoPartner() {
+      currentStepIndex = 1;
+      providersData.forEach(p => p.status = 'UNAVAILABLE');
+      renderCarriers();
+      addEvent('DELIVERY_PROVIDER_UNAVAILABLE', 'All providers declined booking. 30-min auto-retry window started. Pushed offer to Supplier: "Deliver Order Yourself".');
+      
+      const container = document.getElementById('actionButtons');
+      container.innerHTML = `
+        <button onclick="acceptSupplierFallback()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 text-white hover:opacity-90 transition-all-200">
+          Supplier: Accept & Deliver Myself &rarr;
+        </button>
+      `;
+    }
+
+    function acceptSupplierFallback() {
+      setMode('SUPPLIER_OWN');
+      addEvent('DELIVERY_SWITCHED_TO_OWN', 'Supplier accepted self-fulfillment. Fee ₹120 preserved with zero buyer repricing (D-185, §23A.16).');
+    }
+
+    function resetFlow() {
+      setMode(currentMode);
+    }
+
+    function addEvent(type, text) {
+      events.unshift({
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        type,
+        text
+      });
+      renderEvents();
+    }
+
+    function renderEvents() {
+      const container = document.getElementById('timelineList');
+      container.innerHTML = events.map(e => `
+        <div class="p-2 rounded-lg bg-[var(--card)] border border-[var(--border)] text-xs space-y-0.5">
+          <div class="flex items-center justify-between text-[11px] text-[var(--muted-foreground)]">
+            <span class="font-mono font-bold text-[var(--foreground)]">${e.type}</span>
+            <span>${e.time}</span>
+          </div>
+          <div class="text-[var(--foreground)]">${e.text}</div>
+        </div>
+      `).join('');
+    }
+
+    // Initialize
+    setMode('COSTONOMY');
+  </script>
+</body>
+</html>

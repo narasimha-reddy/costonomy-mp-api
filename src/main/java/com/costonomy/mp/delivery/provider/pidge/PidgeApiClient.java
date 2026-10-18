@@ -294,7 +294,7 @@ public class PidgeApiClient {
 
         // Validated before the call, by name: a booking built from guessed values creates a live
         // consignment nobody can reconcile (D-121).
-        requireRequest(request.supplierOrderId() != null, "supplier order");
+        requireRequest(request.sourceRef() != null, "supplier order or reference");
         requireRequest(notBlank(request.idempotencyKey()), "idempotency key");
         requireRequest(notBlank(request.providerQuoteId()), "quote id");
         requireRequest(request.weightKg() != null && request.weightKg().signum() > 0, "weight");
@@ -326,7 +326,7 @@ public class PidgeApiClient {
 
         var url = properties.getBaseUrl() + "/v1.0/store/channel/vendor/order";
         int weightGrams = request.weightKg().multiply(BigDecimal.valueOf(1000)).intValue();
-        String sourceOrderId = "SO-" + request.supplierOrderId();
+        String sourceOrderId = request.sourceRef();
 
         var payload = Map.of(
                 "channel", properties.getChannelName(),
@@ -366,7 +366,7 @@ public class PidgeApiClient {
                                 ),
                                 "packages", List.of(
                                         Map.of(
-                                                "label", "Order #" + request.supplierOrderId(),
+                                                "label", request.reference() != null ? "Order " + request.reference() : "Order #" + request.supplierOrderId(),
                                                 "quantity", 1,
                                                 "dead_weight", weightGrams,
                                                 "volumetric_weight", weightGrams

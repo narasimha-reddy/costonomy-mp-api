@@ -199,7 +199,7 @@ public class ShadowfaxApiClient {
     Map<String, Object> orderPayload(DeliveryProvider.BookingRequest request) {
         var pickup = requireLocality("pickup", request.pickupLocality());
         var drop = requireLocality("drop", request.dropLocality());
-        if (request.supplierOrderId() == null) {
+        if (request.sourceRef() == null) {
             throw invalid("supplierOrderId");
         }
         BigDecimal weightKg = positive("weightKg", request.weightKg());
@@ -225,8 +225,8 @@ public class ShadowfaxApiClient {
                 request.pickupAddress(), pickup, request.pickupLatitude(), request.pickupLongitude()));
 
         var product = new LinkedHashMap<String, Object>();
-        product.put("sku_id", "SO-" + request.supplierOrderId());
-        product.put("sku_name", "Consignment SO-" + request.supplierOrderId());
+        product.put("sku_id", request.sourceRef());
+        product.put("sku_name", "Consignment " + request.sourceRef());
         product.put("price", value);
         product.put("category", "groceries");
         payload.put("product_details", List.of(product));

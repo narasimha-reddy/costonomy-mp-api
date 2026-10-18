@@ -293,6 +293,14 @@ public enum ErrorCode {
     INVOICE_LOOKUP_NOT_AVAILABLE(HttpStatus.FORBIDDEN,
             "Supplier and SKU lists are not available for this outlet. You can still type a name."),
 
+    // ── A/B Testing & Experimentation ────────────────────────────────────
+    EXPERIMENT_NOT_FOUND(HttpStatus.NOT_FOUND,
+            "The requested experiment was not found."),
+    EXPERIMENT_ALREADY_EXISTS(HttpStatus.CONFLICT,
+            "An experiment with this key already exists."),
+    INVALID_EXPERIMENT_CONFIG(HttpStatus.UNPROCESSABLE_ENTITY,
+            "The experiment configuration or targeting rule is invalid."),
+
     // ── Unexpected (500) ─────────────────────────────────────────────────
     INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR,
             "Something went wrong on our side. Please try again."),

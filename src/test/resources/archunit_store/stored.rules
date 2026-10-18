@@ -1,0 +1,4 @@
+#
+#Mon Oct 12 07:52:16 IST 2026
+classes\ that\ reside\ in\ a\ package\ '..mp.*.repository..'\ should\ only\ be\ accessed\ from\ their\ own\ module=4b3489c3-9a65-4c67-a1cc-f6df9b3c7d92
+no\ classes\ that\ reside\ in\ a\ package\ '..mp.*.web..'\ should\ depend\ on\ classes\ that\ reside\ in\ a\ package\ '..mp.*.repository..'=65ca1536-fcfb-4ad5-893e-57f57a55d050

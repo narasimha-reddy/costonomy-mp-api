@@ -131,7 +131,7 @@ public class BorzoApiClient {
         }
 
         var payload = Map.of(
-                "matter", matterFor(request.supplierOrderId()),
+                "matter", matterFor(request.supplierOrderId(), request.reference()),
                 "vehicle_type_id", properties.getVehicleTypeId(),
                 "points", List.of(
                         point(request.pickupAddress(), request.pickupLatitude(), request.pickupLongitude(), null, null),
@@ -194,7 +194,7 @@ public class BorzoApiClient {
         // a stable tag we can use to recognise our own attempt on reconciliation,
         // even though it does not confirm server-side deduplication.
         var payload = Map.of(
-                "matter", matterFor(request.supplierOrderId()),
+                "matter", matterFor(request.supplierOrderId(), request.reference()),
                 "vehicle_type_id", properties.getVehicleTypeId(),
                 "payment_method", "balance",
                 "points", List.of(
@@ -442,7 +442,10 @@ public class BorzoApiClient {
         return map;
     }
 
-    private String matterFor(Long supplierOrderId) {
+    private String matterFor(Long supplierOrderId, String reference) {
+        if (supplierOrderId == null && reference != null && !reference.isBlank()) {
+            return "Mandi delivery " + reference;
+        }
         return supplierOrderId != null ? "Mandi order SO-" + supplierOrderId : "Mandi delivery quote";
     }
 

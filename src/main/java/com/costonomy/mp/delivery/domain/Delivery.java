@@ -179,6 +179,13 @@ public class Delivery extends BaseEntity {
     @Column(name = "own_delivery_offered_at")
     private Instant ownDeliveryOfferedAt;
 
+    /** Set when an ambiguous provider outcome or exhausted recovery requires operator intervention. */
+    @Column(name = "reconciliation_required", nullable = false)
+    private boolean reconciliationRequired;
+
+    @Column(name = "reconciliation_reason")
+    private String reconciliationReason;
+
     public void markNoPartner(Instant now) {
         if (noPartnerSince == null) {
             noPartnerSince = now;
