@@ -6728,3 +6728,27 @@ Common now grants one role per business or outlet across every app, with `<modul
 5. **Memberships** (`/auth/me`) list the common role's name. `RoleResolver`, `RolePermissionCatalog` and the unused `RoleCodeCache` are removed.
 
 The Marketplace app still sends `roleCode` and reads role codes; it moves to role ids and names in a follow-up.
+
+## D-197 — The migration to costonomy-common-api finished: old sign-in gone, config like the other services
+
+common's D-70 moved sign-in to costonomy-common-api; this removes what it left behind and puts Marketplace on
+the configuration every Costonomy service uses, so it can run in the shared Tomcat.
+
+1. **Old sign-in removed.** The OTP error codes, the `auth` rate limit (Marketplace has no sign-in POSTs; common limits
+   its own), the purge rules for `refresh_token` and `otp_verification`, and V89 drops both tables (never live).
+   `tools/seed-local.py` and the app's e2e tools sign in at common (`mp-mobile`, code 123456 in common's dev profile).
+2. **The bill reader (D-114) signs in at common.** The cost app (costonomy-api) no longer has `/auth/login`. The
+   reader's Costonomy user signs in at `{auth-base-url}/v1/auth/password/login` as client `core-web` (whose tokens
+   the cost app accepts) and refreshes at `/v1/auth/refresh`, keeping the rotated refresh token. `auth-base-url`
+   defaults to the common-api MP's security uses. The three cost-app calls are unchanged (D-115).
+3. **Configuration.** `application.properties` is production behaviour; `application-dev.properties` (profile `dev`)
+   replaces the git-ignored `application-local.properties`, and local values live in `.env.local` (template
+   `.env.example`). Env names follow the shared scheme: `MYSQL_HOST/PORT/USER/PASSWORD` shared, `MP_DB`, `COMMON_URL`,
+   `COMMON_JWKS_URI`, and MP's own `MP_CLIENT_SECRET` / `MP_WEBHOOK_SECRET` (not `COMMON_*`, which another service on
+   the same server would read too). No credential has a default. The profile comes from `SPRING_PROFILES_ACTIVE`
+   (`prod` on the servers, which turns on ProductionProviderGuard).
+4. **Shared Tomcat.** The guard no longer refuses a localhost common-api (it is called in the same Tomcat). Redis
+   health is off unless enabled (one instance needs no Redis). The app ignores Core's JVM-wide config folder
+   (`/opt/costonomy/mp-api-config/` instead), writes `logs/costonomy-mp-api.log`, logs its configuration at startup
+   with secrets masked, closes its S3 clients and the MySQL driver's thread on undeploy, and reports its build time
+   at `/actuator/info` for `deploy.sh`.

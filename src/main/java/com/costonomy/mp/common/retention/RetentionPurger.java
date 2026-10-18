@@ -39,10 +39,6 @@ public class RetentionPurger {
     private int outboxPublishedDays;
     @Value("${costonomy.mp.retention.delivery-location-days:30}")
     private int deliveryLocationDays;
-    @Value("${costonomy.mp.retention.refresh-token-days:30}")
-    private int refreshTokenDays;
-    @Value("${costonomy.mp.retention.otp-days:7}")
-    private int otpDays;
 
     public RetentionPurger(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
@@ -66,12 +62,6 @@ public class RetentionPurger {
         rules.add(new Rule("delivery_location",
                 "delete from delivery_location where recorded_at < ? limit ?",
                 now.minus(Duration.ofDays(deliveryLocationDays))));
-        rules.add(new Rule("refresh_token",
-                "delete from refresh_token where expires_at < ? limit ?",
-                now.minus(Duration.ofDays(refreshTokenDays))));
-        rules.add(new Rule("otp_verification",
-                "delete from otp_verification where expires_at < ? limit ?",
-                now.minus(Duration.ofDays(otpDays))));
         return rules;
     }
 

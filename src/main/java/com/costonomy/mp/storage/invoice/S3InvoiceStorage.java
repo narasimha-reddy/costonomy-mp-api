@@ -30,7 +30,7 @@ import java.util.Optional;
 @Component
 @ConditionalOnProperty(name = "costonomy.mp.invoices.storage.provider", havingValue = "S3")
 @Slf4j
-public class S3InvoiceStorage implements InvoiceStorage {
+public class S3InvoiceStorage implements InvoiceStorage, AutoCloseable {
 
     private final S3Client client;
     private final S3Presigner presigner;
@@ -110,5 +110,12 @@ public class S3InvoiceStorage implements InvoiceStorage {
     @Override
     public String name() {
         return "S3";
+    }
+
+    /** Spring calls this on shutdown or undeploy, so the SDK's connection pools and threads go with the app. */
+    @Override
+    public void close() {
+        presigner.close();
+        client.close();
     }
 }

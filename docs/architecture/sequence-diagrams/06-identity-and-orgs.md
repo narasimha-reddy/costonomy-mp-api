@@ -2,6 +2,11 @@
 
 This document details the exact runtime request/response sequence diagrams for all endpoints in **Identity/Auth**, **Restaurant Management**, and **Supplier Onboarding/Verification**.
 
+> **Section 1 is history.** Marketplace's own OTP sign-in and tokens were removed when sign-in moved to
+> costonomy-common-api (D-70 in common's DECISIONS; tables dropped in V89). Today the app signs in at common
+> (`/v1/auth/otp/send`, `/v1/auth/otp/verify`, client `mp-mobile`) and Marketplace keeps only `GET /api/v1/auth/me`;
+> see `docs/LOCAL_DEV_AUTH_AND_ORDERING_GUIDE.md` §1.
+
 ---
 
 ## 1. `POST /api/v1/auth/otp/request` & `POST /api/v1/auth/otp/verify`

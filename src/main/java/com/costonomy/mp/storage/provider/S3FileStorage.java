@@ -33,7 +33,7 @@ import java.net.URI;
 @Component
 @ConditionalOnProperty(name = "costonomy.mp.storage.provider", havingValue = "S3")
 @Slf4j
-public class S3FileStorage implements FileStorage {
+public class S3FileStorage implements FileStorage, AutoCloseable {
 
     private final S3Client client;
     private final String bucket;
@@ -85,5 +85,11 @@ public class S3FileStorage implements FileStorage {
     @Override
     public String name() {
         return "S3";
+    }
+
+    /** Spring calls this on shutdown or undeploy, so the SDK's connection pool and threads go with the app. */
+    @Override
+    public void close() {
+        client.close();
     }
 }

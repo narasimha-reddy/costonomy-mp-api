@@ -7,14 +7,14 @@ moves real money.
 ## 1. Keys
 
 Razorpay Dashboard, **Test Mode** on, then Settings → API Keys → Generate Test
-Key. Put them in your gitignored `src/main/resources/application-local.properties`,
-never in `application.properties` and never with a default value:
+Key. Put them in your git-ignored `.env.local` (on a server: setenv.sh), never in
+`application.properties` and never with a default value:
 
-```properties
-costonomy.mp.providers.payment=RAZORPAY
-costonomy.mp.razorpay.key-id=rzp_test_...
-costonomy.mp.razorpay.key-secret=...
-costonomy.mp.razorpay.webhook-secret=...
+```bash
+PAYMENT_PROVIDER=RAZORPAY
+RAZORPAY_KEY_ID=rzp_test_...
+RAZORPAY_KEY_SECRET=...
+RAZORPAY_WEBHOOK_SECRET=...
 ```
 
 The key id reaches the app through the payment intent — it is publishable by

@@ -15,3 +15,5 @@ application-local.properties
 .env
 var/uploads/
 var/invoices/
+.env.local
+.env.*.local

@@ -97,19 +97,19 @@ class CostApiSessionTest {
     }
 
     @Test
-    @DisplayName("login then extract: one sign-in with username, password and provider local; the token is sent as a bearer")
+    @DisplayName("login then extract: one sign-in at common with login, password and client core-web; the token goes to the cost app as a bearer")
     void loginAndExtract() throws Exception {
         var reader = new HttpInvoiceReader(session(), "77", "6", Duration.ofSeconds(5));
 
         var reading = reader.read(pages(), new ReadContext(1, 2)).reading();
 
         assertThat(reading.vendorName()).isEqualTo("KOSTA Delights");
-        var login = stub.seen("/auth/login");
+        var login = stub.seen("/v1/auth/password/login");
         assertThat(login).hasSize(1);
         assertThat(login.get(0).method()).isEqualTo("POST");
         assertThat(login.get(0).contentType()).startsWith("application/json");
-        assertThat(login.get(0).bodyText()).contains("\"username\":\"" + CostAppStub.USERNAME + "\"")
-                .contains("\"provider\":\"local\"");
+        assertThat(login.get(0).bodyText()).contains("\"login\":\"" + CostAppStub.USERNAME + "\"")
+                .contains("\"clientId\":\"core-web\"");
         var extract = stub.seen("/item-purchase/invoice/extract");
         assertThat(extract).hasSize(1);
         assertThat(extract.get(0).query()).isEqualTo("pageName=WalletBill&outlet=77&userId=6");
@@ -119,6 +119,19 @@ class CostApiSessionTest {
         reader.read(pages(), new ReadContext(1, 3));
         assertThat(stub.logins()).isEqualTo(1);
         assertThat(stub.refreshes()).isZero();
+    }
+
+    @Test
+    @DisplayName("sign-in and refresh go to common-api's address; the calls go to the cost app's")
+    void signInAtCommon() {
+        var session = new CostApiSession("https://cost.example.com/costonomy-api", "https://common.example.com/costonomy-common-api",
+                "core-web", "u", "p", () -> null, Duration.ofSeconds(1), clock);
+        assertThat(session.uri(CostApiSession.Call.LOGIN, java.util.Map.of()).toString())
+                .isEqualTo("https://common.example.com/costonomy-common-api/v1/auth/password/login");
+        assertThat(session.uri(CostApiSession.Call.REFRESH, java.util.Map.of()).toString())
+                .isEqualTo("https://common.example.com/costonomy-common-api/v1/auth/refresh");
+        assertThat(session.uri(CostApiSession.Call.SUPPLIER_LIST, java.util.Map.of()).toString())
+                .isEqualTo("https://cost.example.com/costonomy-api/supplier/list");
     }
 
     @Test
@@ -138,7 +151,7 @@ class CostApiSessionTest {
         assertThat(stub.logins()).isEqualTo(1);
         var calls = stub.seen("/supplier/list");
         assertThat(calls.get(2).authorization()).isNotEqualTo(first);
-        assertThat(stub.seen("/auth/refresh").get(0).bodyText()).contains("refreshToken");
+        assertThat(stub.seen("/v1/auth/refresh").get(0).bodyText()).contains("refreshToken").contains("\"clientId\":\"core-web\"");
     }
 
     @Test
@@ -316,7 +329,7 @@ class CostApiSessionTest {
         }
         // The enum is the whole list: exactly these five method and path pairs.
         assertThat(java.util.Arrays.stream(CostApiSession.Call.values()).map(c -> c.method() + " " + c.path()))
-                .containsExactly("POST /auth/login", "POST /auth/refresh", "POST /item-purchase/invoice/extract",
+                .containsExactly("POST /v1/auth/password/login", "POST /v1/auth/refresh", "POST /item-purchase/invoice/extract",
                         "GET /supplier/list", "GET /sku/list/expand");
         // No public way to send anything else: the only public request method takes a Call.
         assertThat(java.util.Arrays.stream(CostApiSession.class.getMethods())

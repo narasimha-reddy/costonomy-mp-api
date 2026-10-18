@@ -13,10 +13,10 @@ import java.util.List;
  * Which limit applies to which endpoint. Doc 09 §14.
  *
  * <p>The spec names seven things to limit: OTP request, OTP verification, login,
- * search, payment initiation, webhook endpoints and admin mutations. Each gets its
- * own policy rather than one global limit, because the right number differs by two
- * orders of magnitude between them — a provider's webhook burst and a script
- * guessing OTPs look identical to a single global counter.
+ * search, payment initiation, webhook endpoints and admin mutations. Sign-in (the
+ * first three) moved to costonomy-common-api, which limits it there; the rest each
+ * get their own policy rather than one global limit, because the right number
+ * differs by two orders of magnitude between them.
  *
  * <p><b>Every limit is configurable, and zero means off.</b> The test profile sets
  * them to zero so the suite is not throttled by its own fixtures, and one
@@ -30,9 +30,6 @@ import java.util.List;
 @Component
 @Slf4j
 public class RateLimitPolicies {
-
-    @Value("${costonomy.mp.ratelimit.auth:60}")
-    private int authLimit;
 
     @Value("${costonomy.mp.ratelimit.search:120}")
     private int searchLimit;
@@ -101,14 +98,9 @@ public class RateLimitPolicies {
     }
 
     private List<Rule> build() {
-        var tenMinutes = Duration.ofMinutes(10);
         var minute = Duration.ofMinutes(1);
 
         var built = List.of(
-                // Pre-authentication, so keyed by IP — there is no user yet.
-                new Rule(HttpMethod.POST, "/api/v1/auth/",
-                        new RateLimitPolicy("auth", authLimit, tenMinutes, KeyBy.IP)),
-
                 // Providers have no user either, and they burst on retry.
                 new Rule(HttpMethod.POST, "/api/v1/webhooks/",
                         new RateLimitPolicy("webhook", webhookLimit, minute, KeyBy.IP)),

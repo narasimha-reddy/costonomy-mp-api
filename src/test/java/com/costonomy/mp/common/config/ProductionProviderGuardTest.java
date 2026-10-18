@@ -92,15 +92,12 @@ class ProductionProviderGuardTest {
         assertThatCode(() -> ProductionProviderGuard.check(unset)).doesNotThrowAnyException();
     }
 
-    @DisplayName("production with the payout provider left at its MOCK default refuses to start")
-    void productionOnMockPayoutIsRefused() {
-        var env = new MockEnvironment();
-        env.setActiveProfiles("prod");
-        env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
-        // payout not set: the MOCK default is exactly the forgotten-setting case.
-        assertThatThrownBy(() -> ProductionProviderGuard.check(env))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("costonomy.mp.providers.payout");
+    @Test
+    @DisplayName("production may keep the MOCK payout provider: only QuickScan pays out, and it is refused there")
+    void productionOnMockPayoutIsAllowed() {
+        var env = prodReady();
+        env.setProperty("costonomy.mp.providers.payout", "MOCK");
+        ProductionProviderGuard.check(env);
     }
 
     @Test
@@ -298,11 +295,10 @@ class ProductionProviderGuardTest {
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining(property);
         }
+        // common-api in the same Tomcat is called on localhost, as costonomy-api does.
         var env = prodReady();
-        env.setProperty("costonomy.security.common-api.base-url", "http://localhost:8091/costonomy-common-api");
-        assertThatThrownBy(() -> ProductionProviderGuard.check(env))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("localhost");
+        env.setProperty("costonomy.security.common-api.base-url", "http://localhost:8080/costonomy-common-api");
+        ProductionProviderGuard.check(env);
     }
 
     @Test

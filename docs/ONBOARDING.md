@@ -57,40 +57,45 @@ Put that in your shell profile. You will forget otherwise.
 ### Prerequisites
 
 - JDK 17 (Temurin), Maven 3.9+
-- Docker — needed for the local database *and* for Testcontainers in the test suite
+- Docker: for the local stack (costonomy-common-api, which owns sign-in) and for Testcontainers in the test suite
 - Python 3 for the seed script
+- costonomy-api and costonomy-common-api checked out too: sign-in, businesses and outlets are common-api's (D-70 in
+  common's DECISIONS), and costonomy-api's `local/` folder runs the shared stack
 
-### Database
+### Settings
 
-MySQL 8 in Docker on port **13306** (not 3306 — the local profile expects 13306
-so it can coexist with anything already on the default port):
+Every Costonomy repo keeps its local settings the same way: a committed `.env.example` and your git-ignored
+`.env.local`. Fill in the lines marked `CHANGE ME` (the dev MySQL login and the dev `svc-mp` secrets; ask for them
+through the password manager):
 
 ```bash
-docker run -d --name jobs-mysql -p 13306:3306 \
-  -e MYSQL_ROOT_PASSWORD=root mysql:8.0
-
-docker exec jobs-mysql mysql -uroot -proot \
-  -e "CREATE DATABASE IF NOT EXISTS costonomy_mp \
-      CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
+cp .env.example .env.local
 ```
 
-If you also work on `costonomy-jobs`, you already have this container — Mandi
-shares it as a separate schema rather than running a second server.
+The database is `costonomy_mp` on the shared dev MySQL (the same server the other apps' dev databases are on); your IP
+must be allowed in its security group.
 
 ### Run it
 
+Everything, including this API, with one command from costonomy-api (set `MP_API_REPO` in its `.env.local`):
+
 ```bash
-mvn -o spring-boot:run -Dspring-boot.run.profiles=local
+cd ../costonomy-api && local/run.sh dev --build
 ```
 
-Flyway applies **V1–V36** on startup and the data survives restarts.
+Or just this API from source, with the stack running for common-api, which is the quicker loop while you work on it:
+
+```bash
+set -a; . ./.env.local; set +a
+mvn -o spring-boot:run                     # profile dev, from SPRING_PROFILES_ACTIVE in .env.local
+```
+
+Flyway applies the migrations on startup and the data survives restarts.
 
 - API: <http://localhost:7070/costonomy-mp-api>
 - Swagger: `/swagger-ui.html` · OpenAPI: `/api-docs`
-- Every OTP is `123456` locally — **but only if your gitignored
-  `application-local.properties` says so**: `costonomy.mp.otp.mock-code=123456`.
-  The committed config sets it for tests alone, so a fresh local file sends real
-  random codes and every sign-in fails with `OTP_INVALID`.
+- Sign in through common-api (`docs/LOCAL_DEV_AUTH_AND_ORDERING_GUIDE.md` §1): in its dev profile every code is
+  `123456` and no SMS is sent.
 - Every provider is a mock, unless you point payments at Razorpay's test mode —
   `docs/RAZORPAY.md`
 
@@ -138,15 +143,7 @@ you run from source and in no artifact. A recompile restarts the app in about
 five seconds instead of ten, and the process keeps its port — so a browser
 session survives the restart, which is most of the saving.
 
-It is **off by default**. Turn it on in your own gitignored
-`application-local.properties`:
-
-```properties
-spring.devtools.restart.enabled=true
-spring.devtools.livereload.enabled=false
-```
-
-Then pick changes up from a second terminal — devtools watches `target/classes`,
+The dev profile turns it on (`application-dev.properties`); it stays off everywhere else. Pick changes up from a second terminal — devtools watches `target/classes`,
 not the source tree:
 
 ```bash

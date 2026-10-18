@@ -11,9 +11,14 @@ exception is activation: a supplier goes live only after a platform admin review
 its verification, and there is no admin account on a fresh local database to do
 the reviewing. That single step is a direct UPDATE, and it is marked below.
 
+Sign-in is costonomy-common-api's (phone + code as the mp-mobile client); in its dev
+profile the code is always 123456. MySQL settings come from the environment, so load
+this repo's .env.local first.
+
 Usage:
-    python3 tools/seed-local.py                 # against localhost:7070
-    API=http://localhost:7070 python3 tools/seed-local.py
+    set -a; . ./.env.local; set +a
+    python3 tools/seed-local.py                 # MP on localhost:7070, common-api on localhost:8082
+    API=http://localhost:7070 COMMON=http://localhost:8082 python3 tools/seed-local.py
 """
 
 import json
@@ -26,12 +31,13 @@ import urllib.parse
 import urllib.request
 
 API = os.environ.get("API", "http://localhost:7070") + "/costonomy-mp-api/api/v1"
+COMMON = os.environ.get("COMMON", "http://localhost:8082") + "/costonomy-common-api"
 MYSQL_CONTAINER = os.environ.get("MYSQL_CONTAINER", "jobs-mysql")
 MYSQL_HOST = os.environ.get("MYSQL_HOST", "localhost")
 MYSQL_PORT = os.environ.get("MYSQL_PORT", "3306")
-MYSQL_USER = os.environ.get("MYSQL_USER", "appuser")
-MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "appuser")
-MYSQL_DB = os.environ.get("MYSQL_DATABASE", "costonomy_mp")
+MYSQL_USER = os.environ.get("MYSQL_USER", "")
+MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
+MYSQL_DB = os.environ.get("MP_DB", "costonomy_mp")
 OTP = os.environ.get("OTP", "123456")
 
 
@@ -83,23 +89,36 @@ def sql(statement):
     )
 
 
-def login(phone):
-    """Sign in, waiting out the resend cooldown rather than failing on it.
-
-    The cooldown is deliberately left real in the local profile, and re-running
-    this script inside a minute is the normal case, not the exceptional one.
-    """
+def common_call(path, body):
+    """costonomy-common-api answers the bare object, or {"error": {...}} with a 4xx."""
+    request = urllib.request.Request(COMMON + path, data=json.dumps(body).encode(), method="POST")
+    request.add_header("Content-Type", "application/json")
     try:
-        call("/auth/otp/request", {"phone": phone, "purpose": "LOGIN"})
+        with urllib.request.urlopen(request) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        payload = json.load(error)
+        raise ApiError(path, payload.get("error") or payload)
+
+
+def login(phone):
+    """Sign in at costonomy-common-api, waiting out a send cooldown rather than failing on it.
+
+    Re-running this script inside a minute is the normal case, not the exceptional one.
+    """
+    otp = {"channel": "SMS", "target": phone, "purpose": "LOGIN", "clientId": "mp-mobile"}
+    try:
+        issued = common_call("/v1/auth/otp/send", otp)
     except ApiError as error:
-        if error.code != "OTP_RESEND_TOO_SOON":
+        if error.code != "OTP_RATE_LIMITED":
             raise
         wait = int(error.details.get("retryAfterSeconds", 60)) + 1
         print(f"  waiting {wait}s for {phone}'s resend cooldown")
         time.sleep(wait)
-        call("/auth/otp/request", {"phone": phone, "purpose": "LOGIN"})
+        issued = common_call("/v1/auth/otp/send", otp)
 
-    session = call("/auth/otp/verify", {"phone": phone, "otp": OTP, "purpose": "LOGIN"})
+    session = common_call("/v1/auth/otp/verify",
+                          {"challengeId": issued["challengeId"], "code": OTP, "clientId": "mp-mobile"})
     return session["accessToken"]
 
 

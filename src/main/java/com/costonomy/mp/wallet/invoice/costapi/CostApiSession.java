@@ -25,10 +25,11 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 /**
- * Our service sign-in to the Costonomy cost app (D-114). The cost app issues short-lived access tokens
- * ({@code POST {base}/auth/login} with {@code {username, password, provider:"local"}} answers
- * {@code {accessToken, refreshToken, tokenType, expiresIn, user}}; {@code POST {base}/auth/refresh} with
- * {@code {refreshToken}} answers {@code {accessToken, tokenType, expiresIn}}: a new access token only).
+ * Our service sign-in to the Costonomy cost app (D-114). The reader is a Costonomy user, and since the cost app moved
+ * to costonomy-common-api it signs in there, not at the cost app: {@code POST {auth}/v1/auth/password/login} with
+ * {@code {login, password, clientId}} answers {@code {accessToken, refreshToken, tokenType, expiresIn, …}};
+ * {@code POST {auth}/v1/auth/refresh} with {@code {refreshToken, clientId}} answers a new access token and a new
+ * refresh token (common rotates them, so the old one must not be used again). The token then goes to the cost app.
  *
  * <ul>
  *   <li>Signs in lazily, on the first call that needs a token, and keeps the access token in memory with its
@@ -58,23 +59,27 @@ public class CostApiSession {
     static final Set<String> LOCAL_HOSTS = Set.of("localhost", "127.0.0.1", "[::1]", "::1");
 
     /**
-     * Every request this code can send to the cost app (D-115): a fixed method and path each. Sign-in and refresh
-     * are made by the session itself; the other three take the bearer token. Nothing here writes to the cost app
+     * Every request this code can send (D-115): a fixed method and path each. Sign-in and refresh go to
+     * costonomy-common-api and are made by the session itself; the other three go to the cost app with the bearer
+     * token. Nothing here writes to the cost app
      * except what EXTRACT does on its side (it reads the bill; it does not save a purchase).
      */
     public enum Call {
-        LOGIN("POST", "/auth/login"),
-        REFRESH("POST", "/auth/refresh"),
-        EXTRACT("POST", "/item-purchase/invoice/extract"),
-        SUPPLIER_LIST("GET", "/supplier/list"),
-        SKU_LIST("GET", "/sku/list/expand");
+        LOGIN("POST", "/v1/auth/password/login", true),
+        REFRESH("POST", "/v1/auth/refresh", true),
+        EXTRACT("POST", "/item-purchase/invoice/extract", false),
+        SUPPLIER_LIST("GET", "/supplier/list", false),
+        SKU_LIST("GET", "/sku/list/expand", false);
 
         private final String method;
         private final String path;
+        /** Sent to costonomy-common-api rather than the cost app. */
+        private final boolean signIn;
 
-        Call(String method, String path) {
+        Call(String method, String path, boolean signIn) {
             this.method = method;
             this.path = path;
+            this.signIn = signIn;
         }
 
         public String method() {
@@ -94,7 +99,12 @@ public class CostApiSession {
         }
     }
 
+    /** The client this sign-in belongs to in costonomy-common-api: one whose tokens the cost app accepts. */
+    public static final String DEFAULT_CLIENT_ID = "core-web";
+
     private final String baseUrl;
+    private final String authBaseUrl;
+    private final String clientId;
     private final String username;
     private final String password;
     private final Supplier<String> staticToken;
@@ -116,9 +126,22 @@ public class CostApiSession {
         }
     }
 
+    /** Signs in at the same host as the cost app (tests, where one stub plays both). */
     public CostApiSession(String baseUrl, String username, String password, Supplier<String> staticToken,
                           Duration authTimeout, Clock clock) {
+        this(baseUrl, baseUrl, DEFAULT_CLIENT_ID, username, password, staticToken, authTimeout, clock);
+    }
+
+    /**
+     * @param baseUrl     the cost app (costonomy-api)
+     * @param authBaseUrl costonomy-common-api, where the reader signs in
+     * @param clientId    the common-api client to sign in as (one whose tokens the cost app accepts)
+     */
+    public CostApiSession(String baseUrl, String authBaseUrl, String clientId, String username, String password,
+                          Supplier<String> staticToken, Duration authTimeout, Clock clock) {
         this.baseUrl = checkedBaseUrl(baseUrl);
+        this.authBaseUrl = checkedBaseUrl(authBaseUrl == null || authBaseUrl.isBlank() ? baseUrl : authBaseUrl);
+        this.clientId = clientId == null || clientId.isBlank() ? DEFAULT_CLIENT_ID : clientId.strip();
         this.username = username == null ? "" : username.strip();
         this.password = password == null ? "" : password;
         this.staticToken = staticToken == null ? () -> null : staticToken;
@@ -214,16 +237,20 @@ public class CostApiSession {
         throw new CostApiUnavailableException("The cost app refused the reader's sign-in.");
     }
 
-    /** The call's URL on the configured base, checked to be on the same scheme, host and port. */
-    URI uri(Call call, Map<String, String> query) {
+    /**
+     * The call's URL on its configured base (common-api for sign-in), checked to be on its scheme, host and port.
+     * Public only so tests in other packages can check where a call goes; it sends nothing.
+     */
+    public URI uri(Call call, Map<String, String> query) {
         var q = new StringBuilder();
         if (query != null) {
             for (var e : query.entrySet()) {
                 q.append(q.length() == 0 ? "?" : "&").append(enc(e.getKey())).append('=').append(enc(e.getValue()));
             }
         }
-        URI base = URI.create(baseUrl);
-        URI uri = URI.create(baseUrl + call.path() + q);
+        String root = call.signIn ? authBaseUrl : baseUrl;
+        URI base = URI.create(root);
+        URI uri = URI.create(root + call.path() + q);
         if (!base.getScheme().equalsIgnoreCase(uri.getScheme()) || !base.getHost().equalsIgnoreCase(uri.getHost())
                 || base.getPort() != uri.getPort()) {
             throw new IllegalArgumentException("Not the configured cost app.");
@@ -327,9 +354,9 @@ public class CostApiSession {
             throw new CostApiUnavailableException(loginProblem + " Signing in is tried again shortly.");
         }
         var body = new LinkedHashMap<String, String>();
-        body.put("username", username);
+        body.put("login", username);
         body.put("password", password);
-        body.put("provider", "local");
+        body.put("clientId", clientId);
         HttpResponse<byte[]> response;
         try {
             response = post(Call.LOGIN, body);
@@ -380,6 +407,7 @@ public class CostApiSession {
         try {
             var body = new LinkedHashMap<String, String>();
             body.put("refreshToken", current.refresh());
+            body.put("clientId", clientId);
             response = post(Call.REFRESH, body);
         } catch (IOException e) {
             throw new RefreshRefused();
@@ -400,7 +428,7 @@ public class CostApiSession {
         if (access == null) {
             throw new RefreshRefused();
         }
-        // The cost app's refresh answers an access token only; keep the refresh token we have unless it sends one.
+        // common rotates refresh tokens: use the new one from now on (keep ours only if none came back).
         String refresh = text(node, "refreshToken");
         Tokens t = refresh == null
                 ? new Tokens(access, expiry(node, access), current.refresh(), current.refreshExpiresAt())

@@ -48,15 +48,7 @@ public enum ErrorCode {
     RESOURCE_SCOPE_VIOLATION(HttpStatus.FORBIDDEN,
             "You don't have access to that."),
 
-    // ── OTP / auth flow (422, 429) ───────────────────────────────────────
-    OTP_INVALID(HttpStatus.UNPROCESSABLE_ENTITY,
-            "That code isn't correct."),
-    OTP_EXPIRED(HttpStatus.UNPROCESSABLE_ENTITY,
-            "That code has expired. Request a new one."),
-    OTP_ATTEMPTS_EXCEEDED(HttpStatus.TOO_MANY_REQUESTS,
-            "Too many incorrect attempts. Try again in a few minutes."),
-    OTP_RESEND_TOO_SOON(HttpStatus.TOO_MANY_REQUESTS,
-            "Please wait before requesting another code."),
+    // ── Rate limiting (429). Sign-in errors are costonomy-common-api's ─────
     RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS,
             "Too many requests. Please try again shortly."),
 

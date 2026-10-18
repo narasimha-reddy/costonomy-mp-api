@@ -51,6 +51,8 @@ class WalletInvoiceReaderLoginIT extends AbstractIntegrationTest {
         STUB.password("the-cost-app-now-wants-another-one");
         registry.add("costonomy.mp.invoices.reader.provider", () -> "HTTP");
         registry.add("costonomy.mp.invoices.reader.base-url", STUB::baseUrl);
+        // The stub also plays costonomy-common-api's sign-in (D-197)
+        registry.add("costonomy.mp.invoices.reader.auth-base-url", STUB::baseUrl);
         registry.add("costonomy.mp.invoices.reader.username", () -> CostAppStub.USERNAME);
         registry.add("costonomy.mp.invoices.reader.password", () -> CostAppStub.PASSWORD);
         registry.add("costonomy.mp.invoices.reader.outlet", () -> "5");

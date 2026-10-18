@@ -32,7 +32,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "costonomy.mp.ratelimit.webhook=3",
-        "costonomy.mp.ratelimit.auth=50",
         "costonomy.mp.ratelimit.search=4"
 })
 class RateLimitIT extends AbstractIntegrationTest {

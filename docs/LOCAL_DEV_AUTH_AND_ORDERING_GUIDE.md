@@ -4,54 +4,34 @@ This guide documents the local authentication flow (mock OTP) and the order plac
 
 ---
 
-## 1. Local Authentication & Mock OTP
+## 1. Local Authentication
 
 ### 1.1 Overview
-In local development (`spring.profiles.active=local`), SMS delivery is bypassed. Instead, the backend uses a mock OTP mechanism configured in `application-local.properties`:
+Sign-in is costonomy-common-api's (D-70 in common's DECISIONS): one Costonomy account across the marketplace and
+the other apps. Marketplace has no sign-in endpoints of its own; it accepts common's access tokens and copies users,
+restaurants and stores under common's ids. Locally, run both APIs with costonomy-api's `local/run.sh dev` (common-api
+on `http://localhost:8082`). In common's dev profile SMS is not sent and the code is always `123456`.
 
-```properties
-costonomy.mp.otp.mock-code=123456
-costonomy.mp.jwt.secret=local-dev-jwt-secret-key-must-be-at-least-32-bytes!
-```
+### 1.2 Authentication Flow (costonomy-common-api, client `mp-mobile`)
 
-### 1.2 Authentication Flow
+1. **Send a code**: `POST {common}/v1/auth/otp/send`
+   ```json
+   { "channel": "SMS", "target": "+919885051802", "purpose": "LOGIN", "clientId": "mp-mobile" }
+   ```
+   Answers `{ "challengeId": "…", "expiresInSeconds": 300, "resendAfterSeconds": 60 }`.
 
-1. **Request OTP**:
-   - **Endpoint**: `POST /api/v1/auth/otp/request`
-   - **Headers**: `Content-Type: application/json`
-   - **Body**:
-     ```json
-     {
-       "phone": "+919885051802",
-       "purpose": "LOGIN"
-     }
-     ```
-   - *Note*: Phone number can be with or without the `+91` prefix (normalized by `PhoneNumbers.java`). `purpose` is required (`LOGIN`, `REGISTRATION`, or `PASSWORD_RESET`).
-   - **Response**:
-     ```json
-     {
-       "data": {
-         "expiresAt": "2026-09-25T16:55:09Z",
-         "resendAfterSeconds": 60,
-         "maxAttempts": 5,
-         "maskedPhone": "+91******1802"
-       },
-       "error": null
-     }
-     ```
+2. **Verify it**: `POST {common}/v1/auth/otp/verify`
+   ```json
+   { "challengeId": "…", "code": "123456", "clientId": "mp-mobile" }
+   ```
+   Answers `accessToken` (a JWT common signs), `refreshToken`, `expiresIn` and the user. A number signing in for the
+   first time gets an account.
 
-2. **Verify OTP**:
-   - **Endpoint**: `POST /api/v1/auth/otp/verify`
-   - **Body**:
-     ```json
-     {
-       "phone": "+919885051802",
-       "otp": "123456",
-       "purpose": "LOGIN"
-     }
-     ```
-   - **Response**:
-     Returns `accessToken` (JWT), `refreshToken`, and user identity information.
+3. **Use it**: `Authorization: Bearer <accessToken>` on Marketplace's API. `GET /api/v1/auth/me` answers the user
+   and their memberships. Renew with `POST {common}/v1/auth/refresh` `{ "refreshToken": "…", "clientId": "mp-mobile" }`;
+   the refresh token rotates, so keep the new one.
+
+`tools/seed-local.py` does exactly this for its seeded suppliers.
 
 ---
 

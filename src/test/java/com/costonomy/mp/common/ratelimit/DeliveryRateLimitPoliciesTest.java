@@ -30,9 +30,6 @@ class DeliveryRateLimitPoliciesTest {
         policies = new RateLimitPolicies();
         // Inject production-like values via ReflectionTestUtils to simulate
         // what @Value would provide from application.properties.
-        ReflectionTestUtils.setField(policies, "otpRequestLimit", 20);
-        ReflectionTestUtils.setField(policies, "otpVerifyLimit", 30);
-        ReflectionTestUtils.setField(policies, "authLimit", 60);
         ReflectionTestUtils.setField(policies, "searchLimit", 120);
         ReflectionTestUtils.setField(policies, "paymentLimit", 60);
         ReflectionTestUtils.setField(policies, "webhookLimit", 600);

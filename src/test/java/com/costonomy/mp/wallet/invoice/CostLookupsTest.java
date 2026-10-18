@@ -86,7 +86,7 @@ class CostLookupsTest {
                 "Seafood"));
 
         for (var seen : stub.seen()) {
-            if (seen.path().startsWith("/auth/")) {
+            if (seen.path().startsWith("/v1/auth/")) {
                 assertThat(seen.method()).isEqualTo("POST");
                 continue;
             }
@@ -111,7 +111,7 @@ class CostLookupsTest {
             assertThat(call).describedAs(seen.method() + " " + seen.path()).isPresent();
             assertThat(call.get()).isIn(CostApiSession.Call.LOGIN, CostApiSession.Call.SUPPLIER_LIST,
                     CostApiSession.Call.SKU_LIST);
-            if (!seen.path().startsWith("/auth/")) {
+            if (!seen.path().startsWith("/v1/auth/")) {
                 assertThat(seen.query()).isEqualTo("outlet=88&userId=6&status=false");
             }
         }

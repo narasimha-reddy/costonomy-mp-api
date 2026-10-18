@@ -260,6 +260,15 @@
 						</exclude>
 					</excludes>
 				</configuration>
+				<executions>
+					<!-- META-INF/build-info.properties: /actuator/info reports the build time, which deploy.sh
+					     matches to know the new version is the one answering. -->
+					<execution>
+						<goals>
+							<goal>build-info</goal>
+						</goals>
+					</execution>
+				</executions>
 			</plugin>
 
 			<!-- Unit tests run everywhere. Integration tests need Docker, so

@@ -26,9 +26,12 @@ public class ProductionProviderGuard {
     /** Profiles that mean real customers. */
     static final Set<String> PRODUCTION_PROFILES = Set.of("prod", "production");
 
-    /** Providers that must never be the mock where money and identity are real. */
-    static final List<String> GUARDED = List.of(
-            "costonomy.mp.providers.payment", "costonomy.mp.providers.payout");
+    /**
+     * Providers that must never be the mock where money and identity are real. Not the payout provider: only QuickScan
+     * pays out, QuickScan is refused below until it has legal sign-off (D-106), and no real payout provider exists yet,
+     * so requiring one would only stop the app from starting.
+     */
+    static final List<String> GUARDED = List.of("costonomy.mp.providers.payment");
 
     private final Environment environment;
 
@@ -149,10 +152,7 @@ public class ProductionProviderGuard {
                 throw new IllegalStateException(property + " is not set under a production profile.");
             }
         }
-        if (environment.getProperty("costonomy.security.common-api.base-url", "").contains("localhost")) {
-            throw new IllegalStateException("costonomy.security.common-api.base-url points at localhost under a "
-                    + "production profile.");
-        }
+        // common-api's address may be localhost: on the servers it runs in the same Tomcat and is called directly.
     }
 
     /** The number, or 0 when it is not one. */

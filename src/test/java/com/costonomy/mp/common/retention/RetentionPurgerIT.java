@@ -106,32 +106,17 @@ class RetentionPurgerIT extends AbstractIntegrationTest {
     }
 
     @Test
-    @DisplayName("old live-location rows, expired refresh tokens and old OTP challenges go; recent ones stay")
+    @DisplayName("old live-location rows go; recent ones stay")
     void otherTables() {
-        String tag = UUID.randomUUID().toString().replace("-", "");
         withoutForeignKeys("insert into delivery_location (delivery_id, latitude, longitude, recorded_at) "
                 + "values (999999001, 12.9, 77.6, ?)", ago(Duration.ofDays(45)));
         withoutForeignKeys("insert into delivery_location (delivery_id, latitude, longitude, recorded_at) "
                 + "values (999999001, 12.9, 77.6, ?)", ago(Duration.ofDays(1)));
-        withoutForeignKeys("insert into refresh_token (user_id, token_hash, status, expires_at) "
-                + "values (999999001, ?, 'EXPIRED', ?)", hash64(), ago(Duration.ofDays(45)));
-        withoutForeignKeys("insert into refresh_token (user_id, token_hash, status, expires_at) "
-                + "values (999999001, ?, 'ACTIVE', ?)", hash64(), Timestamp.from(Instant.now().plus(Duration.ofDays(5))));
-        jdbc.update("insert into otp_verification (phone, purpose, otp_hash, status, max_attempts, expires_at, provider) "
-                + "values (?, 'LOGIN', 'x', 'EXPIRED', 5, ?, 'MOCK')", "+91" + tag.substring(0, 10), ago(Duration.ofDays(20)));
-        jdbc.update("insert into otp_verification (phone, purpose, otp_hash, status, max_attempts, expires_at, provider) "
-                + "values (?, 'LOGIN', 'x', 'PENDING', 5, ?, 'MOCK')", "+91" + tag.substring(10, 20),
-                Timestamp.from(Instant.now().plus(Duration.ofMinutes(5))));
 
         purger.runAll(Instant.now());
 
         assertThat(jdbc.queryForObject("select count(*) from delivery_location where delivery_id = 999999001",
                 Integer.class)).as("only the day-old position").isEqualTo(1);
-        assertThat(jdbc.queryForObject("select count(*) from refresh_token where user_id = 999999001",
-                Integer.class)).as("only the live token").isEqualTo(1);
-        assertThat(jdbc.queryForObject("select count(*) from otp_verification where phone in (?, ?)",
-                Integer.class, "+91" + tag.substring(0, 10), "+91" + tag.substring(10, 20)))
-                .as("only the pending challenge").isEqualTo(1);
     }
 
     @Test

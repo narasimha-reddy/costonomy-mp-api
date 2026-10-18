@@ -68,13 +68,12 @@ its port — so a browser session survives the restart, which is most of the
 saving.
 
 It is **off by default**: `application.properties` sets
-`spring.devtools.restart.enabled=false`, and your own gitignored
-`application-local.properties` turns it on:
+`spring.devtools.restart.enabled=false`, and the `dev` profile
+(`application-dev.properties`) turns it on.
 
-```properties
-spring.devtools.restart.enabled=true
-spring.devtools.livereload.enabled=false
-```
+**Local settings** live in your git-ignored `.env.local` (template `.env.example`), as in every Costonomy repo; run
+from source with `set -a; . ./.env.local; set +a; mvn -o spring-boot:run`, or everything with costonomy-api's
+`local/run.sh dev --build`. `application.properties` is production behaviour; servers set the rest in setenv.sh.
 
 Then a change is picked up by recompiling in a second terminal — devtools watches
 `target/classes`, not the source tree:
@@ -108,7 +107,8 @@ Follows `costonomy-api` (`~/Documents/GitHub/costonomy-api`) — inspect it befo
 inventing anything:
 
 - Java 17, Spring Boot 3.2.x, Maven, `com.costonomy` groupId
-- Spring Security + JJWT, Spring Data JPA, MySQL, Redis
+- Spring Security with costonomy-security-starter (sign-in and access are costonomy-common-api's, D-70 in its
+  DECISIONS), Spring Data JPA, MySQL, Redis (only for several instances)
 - ShedLock for `@Scheduled` jobs across instances
 
 Base Java package: `com.costonomy.mp`.

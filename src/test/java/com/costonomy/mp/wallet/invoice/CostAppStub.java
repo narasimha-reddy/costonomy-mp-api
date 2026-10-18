@@ -18,7 +18,8 @@ import java.util.function.Supplier;
 
 /**
  * A local stand-in for the cost app (D-113, D-114). Never a real service. It records what it is sent and answers
- * like the real one: {@code POST /auth/login} and {@code POST /auth/refresh} issue made-up tokens,
+ * like the real ones: {@code POST /v1/auth/password/login} and {@code POST /v1/auth/refresh} (costonomy-common-api's,
+ * played by the same stub) issue made-up tokens, the refresh rotating them as common does,
  * {@code /item-purchase/invoice/extract} answers an array shaped like the real one (including the internal fields of
  * the cost app's SKU and supplier records and its users, which must never reach us), and {@code GET /supplier/list}
  * and {@code GET /sku/list/expand} answer lists with internal fields too.
@@ -143,9 +144,9 @@ public final class CostAppStub implements AutoCloseable {
                 exchange.getRequestHeaders().getFirst("Content-Type"), body));
         calls.incrementAndGet();
         Reply r;
-        if ("POST".equals(method) && "/auth/login".equals(path)) {
+        if ("POST".equals(method) && "/v1/auth/password/login".equals(path)) {
             r = login(body);
-        } else if ("POST".equals(method) && "/auth/refresh".equals(path)) {
+        } else if ("POST".equals(method) && "/v1/auth/refresh".equals(path)) {
             r = refresh(body);
         } else if (requireAuth && (auth == null || !auth.startsWith("Bearer ")
                 || !validAccess.contains(auth.substring(7)))) {
@@ -203,8 +204,8 @@ public final class CostAppStub implements AutoCloseable {
         } catch (IOException e) {
             return new Reply(400, "{\"message\":\"bad\"}", 0);
         }
-        boolean ok = in != null && USERNAME.equals(in.path("username").asText())
-                && password.equals(in.path("password").asText()) && "local".equals(in.path("provider").asText());
+        boolean ok = in != null && USERNAME.equals(in.path("login").asText())
+                && password.equals(in.path("password").asText()) && "core-web".equals(in.path("clientId").asText());
         if (!ok) {
             return new Reply(401, "{\"message\":\"Invalid username or password\"}", loginDelayMillis);
         }
@@ -231,9 +232,12 @@ public final class CostAppStub implements AutoCloseable {
         }
         String access = token("access");
         validAccess.add(access);
-        // Like the real one: a new access token only.
-        return new Reply(200, "{\"accessToken\":\"%s\",\"tokenType\":\"Bearer\",\"expiresIn\":%d}"
-                .formatted(access, expiresIn), 0);
+        // Like common: a new access token and a new refresh token; the old refresh token is spent.
+        validRefresh.remove(given);
+        String rotated = token("refresh");
+        validRefresh.add(rotated);
+        return new Reply(200, "{\"accessToken\":\"%s\",\"refreshToken\":\"%s\",\"tokenType\":\"Bearer\",\"expiresIn\":%d}"
+                .formatted(access, rotated, expiresIn), 0);
     }
 
     private String token(String kind) {
