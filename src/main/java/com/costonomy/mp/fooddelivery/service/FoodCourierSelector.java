@@ -65,6 +65,17 @@ public class FoodCourierSelector {
     /** As {@link #order(FoodDelivery, BigDecimal)} at a given instant, so expiry can be judged on a clock the caller controls. */
     @Transactional(readOnly = true)
     public List<Choice> order(FoodDelivery delivery, BigDecimal maxAmount, Instant now) {
+        Set<String> tried = attempts.findByFoodDeliveryIdOrderByAttemptNumberAsc(delivery.getId()).stream()
+                .map(FoodDeliveryAttempt::getProviderCode).collect(Collectors.toSet());
+        return order(delivery, maxAmount, now, tried);
+    }
+
+    /**
+     * @param tried couriers to treat as already asked. The booking service passes those tried in the current round only,
+     *              so within the retry window a courier that failed an earlier round may be asked again.
+     */
+    @Transactional(readOnly = true)
+    public List<Choice> order(FoodDelivery delivery, BigDecimal maxAmount, Instant now, Set<String> tried) {
         // The newest usable quote per courier: one still valid, with a price and an ETA.
         var byProvider = new LinkedHashMap<String, FoodDeliveryQuote>();
         quotes.findByFoodDeliveryIdOrderByIdAsc(delivery.getId()).stream()
@@ -75,8 +86,6 @@ public class FoodCourierSelector {
             return List.of();
         }
 
-        Set<String> tried = attempts.findByFoodDeliveryIdOrderByAttemptNumberAsc(delivery.getId()).stream()
-                .map(FoodDeliveryAttempt::getProviderCode).collect(Collectors.toSet());
         var assessments = reliability.assess(byProvider.keySet());
         var settings = reliability.settings();
 

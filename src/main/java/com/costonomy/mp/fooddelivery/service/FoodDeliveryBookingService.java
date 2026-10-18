@@ -1,0 +1,649 @@
+package com.costonomy.mp.fooddelivery.service;
+
+import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.common.error.ErrorCode;
+import com.costonomy.mp.common.error.NotFoundException;
+import com.costonomy.mp.delivery.domain.VehicleType;
+import com.costonomy.mp.delivery.provider.DeliveryProvider;
+import com.costonomy.mp.delivery.provider.DeliveryProviderException;
+import com.costonomy.mp.delivery.service.DeliveryDirectory;
+import com.costonomy.mp.delivery.service.DeliveryProviderRegistry;
+import com.costonomy.mp.delivery.service.ProviderReliabilityService;
+import com.costonomy.mp.fooddelivery.domain.FoodDelivery;
+import com.costonomy.mp.fooddelivery.domain.FoodDeliveryAttempt;
+import com.costonomy.mp.fooddelivery.domain.FoodDeliveryStatus;
+import com.costonomy.mp.fooddelivery.repository.FoodDeliveryAttemptRepository;
+import com.costonomy.mp.fooddelivery.repository.FoodDeliveryQuoteRepository;
+import com.costonomy.mp.fooddelivery.repository.FoodDeliveryRepository;
+import com.costonomy.mp.wallet.service.WalletService;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.Instant;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+/**
+ * Creates a food delivery, holds its fee, books a courier with fallback, and ends it cleanly when nobody will take it
+ * (D-197, doc 06 §16). Reading courier events, the restaurant API, the public tracking link and customer notifications
+ * are separate; the seams to them are {@link #rebook}, {@link #settleFee} and {@link #cancel}.
+ *
+ * <p><b>The fee.</b> The restaurant agrees a maximum. That amount is held from its wallet before any courier is asked, and
+ * only couriers quoting at or below it are. The whole hold stays until pickup, so a dearer replacement courier never needs a
+ * second debit; {@link #settleFee} then returns the unused part. Cancelling before pickup, or running out of couriers,
+ * returns all of it. Every refund is idempotent on its wallet reference.
+ *
+ * <p><b>Booking is a loop that talks to couriers outside any transaction</b>, in short transactions around it: reserve
+ * an attempt, call the courier, record the answer. A slow courier does not hold a database connection, and an attempt that
+ * was reserved and never answered (the process died) stops blocking after {@code pendingStaleAfter}.
+ */
+@Service
+@Slf4j
+public class FoodDeliveryBookingService {
+
+    /** Statuses in which a new courier may be asked, provided no consignment is live. */
+    private static final Set<FoodDeliveryStatus> BOOKABLE = Set.of(
+            FoodDeliveryStatus.QUOTED, FoodDeliveryStatus.PROVIDER_UNAVAILABLE, FoodDeliveryStatus.PROVIDER_SELECTED);
+
+    private final FoodDeliveryRepository deliveries;
+    private final FoodDeliveryAttemptRepository attempts;
+    private final FoodDeliveryQuoteRepository quotes;
+    private final FoodDeliveryQuotingService quoting;
+    private final FoodCourierSelector selector;
+    private final DeliveryProviderRegistry registry;
+    private final DeliveryDirectory directory;
+    private final WalletService wallet;
+    private final FoodDeliveryTimeline timeline;
+    private final FoodDeliveryProperties properties;
+    private final ProviderReliabilityService reliability;
+    private final JdbcTemplate jdbc;
+    private final TransactionTemplate tx;
+
+    public FoodDeliveryBookingService(FoodDeliveryRepository deliveries, FoodDeliveryAttemptRepository attempts,
+                                      FoodDeliveryQuoteRepository quotes, FoodDeliveryQuotingService quoting,
+                                      FoodCourierSelector selector, DeliveryProviderRegistry registry,
+                                      DeliveryDirectory directory, WalletService wallet, FoodDeliveryTimeline timeline,
+                                      FoodDeliveryProperties properties, ProviderReliabilityService reliability,
+                                      JdbcTemplate jdbc, PlatformTransactionManager txManager) {
+        this.deliveries = deliveries;
+        this.attempts = attempts;
+        this.quotes = quotes;
+        this.quoting = quoting;
+        this.selector = selector;
+        this.registry = registry;
+        this.directory = directory;
+        this.wallet = wallet;
+        this.timeline = timeline;
+        this.properties = properties;
+        this.reliability = reliability;
+        this.jdbc = jdbc;
+        // Every step is its own transaction: a courier booked is a fact outside our database, so it is committed on its
+        // own and never rolled back with something that fails later.
+        this.tx = new TransactionTemplate(txManager);
+        this.tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    }
+
+    /**
+     * What the restaurant's system sends to ask for a delivery.
+     *
+     * @param maxFee the most it will pay; null means "up to 1.5 x the cheapest courier", rounded up to a rupee
+     */
+    public record CreateRequest(
+            Long restaurantId, Long outletId, String idempotencyKey, String externalOrderRef,
+            String customerName, String customerPhone,
+            String dropAddress, String dropLandmark, BigDecimal dropLatitude, BigDecimal dropLongitude,
+            String dropCity, String dropState, String dropPincode, String dropInstructions,
+            BigDecimal orderValue, BigDecimal weightKg, Integer maxDeliveryMinutes, BigDecimal maxFee) {
+    }
+
+    // ── Create ───────────────────────────────────────────────────────────
+
+    /**
+     * Create the delivery, hold the fee and book a courier. Safe to repeat: the same {@code idempotencyKey} from the same
+     * restaurant returns the first delivery and books nothing more.
+     *
+     * @return the delivery as it stands: {@code PROVIDER_SELECTED} when a courier took it, {@code PROVIDER_UNAVAILABLE}
+     *         when none did yet (the retry window then applies)
+     * @throws BusinessException if the request is invalid, no courier covers the address or quotes within the agreed
+     *                           maximum, or the wallet cannot hold the fee; in each case nothing is debited
+     */
+    public FoodDelivery create(CreateRequest request) {
+        var existing = deliveries.findByRestaurantIdAndIdempotencyKey(request.restaurantId(), request.idempotencyKey());
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        validate(request);
+        Long id;
+        try {
+            id = tx.execute(status -> createAndHold(request));
+        } catch (DataIntegrityViolationException duplicate) {
+            // A simultaneous request with the same key won the unique index; hand back its delivery.
+            return deliveries.findByRestaurantIdAndIdempotencyKey(request.restaurantId(), request.idempotencyKey())
+                    .orElseThrow(() -> duplicate);
+        }
+        book(id, "BOOKING");
+        return deliveries.findById(id).orElseThrow();
+    }
+
+    private Long createAndHold(CreateRequest r) {
+        Long ownerOfOutlet = jdbc.query("select restaurant_id from outlet where id = ?",
+                (rs, row) -> rs.getLong(1), r.outletId()).stream().findFirst().orElse(null);
+        // Not found, not forbidden: whether another restaurant's outlet exists is not for this caller to learn.
+        if (ownerOfOutlet == null || !ownerOfOutlet.equals(r.restaurantId())) {
+            throw new NotFoundException("Outlet", r.outletId());
+        }
+        var pickup = directory.dropFor(r.outletId());
+        var pickupLocality = directory.dropLocality(r.outletId());
+        if (pickup == null || pickup.latitude() == null || pickup.longitude() == null
+                || isBlank(pickup.contactPhone()) || pickupLocality == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "This outlet needs a location and a contact phone before it can send deliveries.");
+        }
+
+        Instant now = Instant.now();
+        var d = new FoodDelivery();
+        d.setRestaurantId(r.restaurantId());
+        d.setOutletId(r.outletId());
+        d.setIdempotencyKey(r.idempotencyKey());
+        d.setExternalOrderRef(r.externalOrderRef());
+        d.setPickupAddress(pickup.address());
+        d.setPickupLatitude(pickup.latitude());
+        d.setPickupLongitude(pickup.longitude());
+        d.setPickupContactName(pickup.contactName() == null ? pickup.name() : pickup.contactName());
+        d.setPickupContactPhone(pickup.contactPhone());
+        d.setCustomerName(r.customerName().trim());
+        d.setCustomerPhone(r.customerPhone().trim());
+        d.setDropAddress(r.dropAddress().trim());
+        d.setDropLandmark(r.dropLandmark());
+        d.setDropLatitude(r.dropLatitude());
+        d.setDropLongitude(r.dropLongitude());
+        d.setDropCity(r.dropCity().trim());
+        d.setDropState(r.dropState().trim());
+        d.setDropPincode(r.dropPincode().trim());
+        d.setDropInstructions(r.dropInstructions());
+        d.setOrderValue(r.orderValue());
+        d.setWeightKg(r.weightKg());
+        d.setVehicleType(VehicleType.fromWeight(r.weightKg(), false));
+        d.setMaxDeliveryMinutes(r.maxDeliveryMinutes());
+        d.setRequestedAt(now);
+        d.setRoundStartedAt(now);
+        d = deliveries.saveAndFlush(d);
+        timeline.record(d, FoodDeliveryStatus.REQUESTED, "Delivery requested");
+
+        var outcome = quoting.gather(d);
+        var priced = outcome.all().stream()
+                .filter(q -> "QUOTED".equals(q.getStatus()) && q.getAmount() != null && q.getEtaMinutes() != null)
+                .map(q -> q.getAmount()).toList();
+        if (priced.isEmpty()) {
+            throw new BusinessException(ErrorCode.DELIVERY_UNAVAILABLE,
+                    "No delivery partner can take this delivery right now.");
+        }
+        BigDecimal cheapest = priced.stream().min(BigDecimal::compareTo).orElseThrow();
+        BigDecimal maxFee = r.maxFee() != null ? r.maxFee()
+                : cheapest.multiply(BigDecimal.valueOf(factor())).setScale(0, RoundingMode.CEILING);
+        if (cheapest.compareTo(maxFee) > 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "The cheapest delivery partner costs ₹%s, above your limit of ₹%s."
+                            .formatted(cheapest.stripTrailingZeros().toPlainString(), maxFee.stripTrailingZeros().toPlainString()));
+        }
+
+        // Held before any courier is asked. If the wallet is short this throws and the whole step rolls back.
+        wallet.debitFoodDelivery(d.getOutletId(), d.getId(), maxFee);
+        d.setMaxFee(maxFee);
+        d.setFeeDebitRef("food-delivery-" + d.getId());
+        d.setFeeDebitedAt(now);
+        d.moveTo(FoodDeliveryStatus.QUOTED);
+        deliveries.save(d);
+        timeline.record(d, FoodDeliveryStatus.QUOTED, "Delivery fee held; finding a delivery partner");
+        return d.getId();
+    }
+
+    /** The same bound the ranking uses: dearer than this many times the cheapest is not worth paying for reliability. */
+    private double factor() {
+        return reliability.settings().getCostFactor();
+    }
+
+    // ── Booking loop ─────────────────────────────────────────────────────
+
+    /** What reserving the next attempt produced. */
+    private record Reserved(Long attemptId, String providerCode, DeliveryProvider.BookingRequest request) {
+    }
+
+    private enum Reservation { RESERVED, NONE, BUSY, NOT_BOOKABLE }
+
+    private record Step(Reservation kind, Reserved reserved) {
+        static Step of(Reservation kind) {
+            return new Step(kind, null);
+        }
+    }
+
+    private enum Result { BOOKED, FAILED, STAND_DOWN_NEEDED }
+
+    /**
+     * Ask couriers in the selector's order until one takes it. Each is its own short transaction around the courier call.
+     * Ends with the delivery {@code PROVIDER_SELECTED}, or {@code PROVIDER_UNAVAILABLE} when none would.
+     */
+    void book(Long id, String attemptType) {
+        while (true) {
+            Step step = tx.execute(status -> reserveNext(id, attemptType));
+            if (step.kind() == Reservation.BUSY || step.kind() == Reservation.NOT_BOOKABLE) {
+                return;
+            }
+            if (step.kind() == Reservation.NONE) {
+                tx.executeWithoutResult(status -> markUnavailable(id));
+                return;
+            }
+            var reserved = step.reserved();
+            DeliveryProvider.Booking booking = null;
+            DeliveryProviderException failure = null;
+            long startedNs = System.nanoTime();
+            try {
+                booking = registry.adapter(reserved.providerCode()).book(reserved.request());
+            } catch (DeliveryProviderException ex) {
+                failure = ex;
+            }
+            int callMs = (int) Math.min(Integer.MAX_VALUE, (System.nanoTime() - startedNs) / 1_000_000L);
+            var answer = booking;
+            var error = failure;
+            Result result = tx.execute(status -> recordAnswer(id, reserved, answer, error, callMs));
+            if (result == Result.BOOKED) {
+                return;
+            }
+            if (result == Result.STAND_DOWN_NEEDED && answer != null) {
+                // The delivery was cancelled, or the courier's price broke the agreed maximum, while it was being booked.
+                // The courier exists at the provider and nowhere we are looking: stand it down.
+                cancelAtProvider(reserved.providerCode(), answer.providerDeliveryId(), "Booking not wanted");
+                if (!tx.execute(status -> stillBookable(id))) {
+                    return;
+                }
+            }
+        }
+    }
+
+    private boolean stillBookable(Long id) {
+        var d = deliveries.findById(id).orElse(null);
+        return d != null && BOOKABLE.contains(d.getStatus()) && d.getProviderDeliveryId() == null;
+    }
+
+    private Step reserveNext(Long id, String attemptType) {
+        var d = deliveries.lockById(id).orElseThrow(() -> new NotFoundException("FoodDelivery", id));
+        if (!BOOKABLE.contains(d.getStatus()) || d.getProviderDeliveryId() != null) {
+            return Step.of(Reservation.NOT_BOOKABLE);
+        }
+        Instant now = Instant.now();
+
+        // Someone else is mid-call. A reservation that never got an answer (the process died) stops blocking.
+        for (var pending : attempts.findByFoodDeliveryIdOrderByAttemptNumberAsc(id)) {
+            if (!"PENDING".equals(pending.getOutcome())) {
+                continue;
+            }
+            if (pending.getStartedAt().isAfter(now.minus(properties.getPendingStaleAfter()))) {
+                return Step.of(Reservation.BUSY);
+            }
+            pending.setOutcome("FAILED");
+            pending.setFailureCode("ABANDONED");
+            pending.setEndedCause("ABANDONED");
+            pending.setEndedAt(now);
+            attempts.save(pending);
+        }
+
+        Set<String> triedThisRound = attempts.findByFoodDeliveryIdOrderByAttemptNumberAsc(id).stream()
+                .filter(a -> d.getRoundStartedAt() == null || !a.getStartedAt().isBefore(d.getRoundStartedAt()))
+                .map(FoodDeliveryAttempt::getProviderCode).collect(Collectors.toSet());
+        var choices = selector.order(d, d.getMaxFee(), now, triedThisRound);
+        if (choices.isEmpty()) {
+            return Step.of(Reservation.NONE);
+        }
+        var choice = choices.get(0);
+        var quote = choice.quote();
+
+        int number = d.getAttemptCount() + 1;
+        var attempt = new FoodDeliveryAttempt();
+        attempt.setFoodDeliveryId(id);
+        attempt.setDeliveryProviderId(quote.getDeliveryProviderId());
+        attempt.setProviderCode(quote.getProviderCode());
+        attempt.setAttemptNumber(number);
+        attempt.setAttemptType(attemptType);
+        attempt.setOutcome("PENDING");
+        attempt.setQuotedAmount(quote.getAmount());
+        attempt.setStartedAt(now);
+        attempt.setRankPosition(choice.rank());
+        attempt.setSelectionReason(choice.reason());
+        attempt.setReliabilityScore(choice.score());
+        attempt.setBreakerState(choice.breakerState());
+        attempt.setDecision(choice.decisionJson());
+        attempt = attempts.save(attempt);
+        d.setAttemptCount(number);
+        deliveries.save(d);
+
+        var request = new DeliveryProvider.BookingRequest(
+                null, quote.getProviderQuoteId(),
+                d.getPickupAddress(), d.getPickupLatitude(), d.getPickupLongitude(),
+                d.getPickupContactName(), d.getPickupContactPhone(),
+                d.getDropAddress(), d.getDropLatitude(), d.getDropLongitude(),
+                d.getCustomerName(), d.getCustomerPhone(),
+                // Ours, so a retried booking cannot put two couriers at one door.
+                "mp-food-delivery-%d-%d".formatted(id, number),
+                d.getWeightKg(), null,
+                quote.getVehicleType() != null ? quote.getVehicleType() : d.getVehicleType(),
+                directory.dropLocality(d.getOutletId()),
+                new DeliveryProvider.Locality(d.getDropCity(), d.getDropState(), d.getDropPincode()),
+                d.getOrderValue(), "FD-" + id);
+        return new Step(Reservation.RESERVED, new Reserved(attempt.getId(), quote.getProviderCode(), request));
+    }
+
+    private Result recordAnswer(Long id, Reserved reserved, DeliveryProvider.Booking booking,
+                                DeliveryProviderException failure, int callMs) {
+        var d = deliveries.lockById(id).orElseThrow();
+        var attempt = attempts.findById(reserved.attemptId()).orElseThrow();
+        attempt.setCallMs(callMs);
+        Instant now = Instant.now();
+
+        if (failure != null) {
+            attempt.setOutcome("FAILED");
+            attempt.setFailureCode("BOOKING_FAILED");
+            attempt.setFailureReason(failure.getMessage());
+            attempt.setRetryable(failure.retryable());
+            attempt.setEndedCause("TIMEOUT".equals(failure.errorClass()) ? "PROVIDER_TIMEOUT" : "PROVIDER_REFUSED");
+            attempt.setEndedAt(now);
+            attempts.save(attempt);
+            return Result.FAILED;
+        }
+
+        var quote = quotes.findByFoodDeliveryIdOrderByIdAsc(id).stream()
+                .filter(q -> reserved.providerCode().equals(q.getProviderCode()) && "QUOTED".equals(q.getStatus()))
+                .reduce((first, second) -> second).orElse(null);
+        BigDecimal amount = booking.amount() != null ? booking.amount()
+                : quote == null ? null : quote.getAmount();
+
+        // Cancelled while the courier was being asked, or the courier's own price is above what the restaurant agreed.
+        boolean stillWanted = BOOKABLE.contains(d.getStatus()) && d.getProviderDeliveryId() == null;
+        boolean withinFee = amount != null && d.getMaxFee() != null && amount.compareTo(d.getMaxFee()) <= 0;
+        if (!stillWanted || !withinFee) {
+            attempt.setOutcome(stillWanted ? "FAILED" : "CANCELLED");
+            attempt.setProviderDeliveryId(booking.providerDeliveryId());
+            attempt.setFailureCode(stillWanted ? "PRICE_ABOVE_LIMIT" : "NOT_WANTED");
+            attempt.setFailureReason(stillWanted
+                    ? "The courier's price is above the agreed maximum" : "The delivery was cancelled while booking");
+            attempt.setEndedCause(stillWanted ? "PRICE_ABOVE_LIMIT" : "CUSTOMER_CANCEL");
+            attempt.setEndedAt(now);
+            attempts.save(attempt);
+            return Result.STAND_DOWN_NEEDED;
+        }
+
+        attempt.setOutcome("BOOKED");
+        attempt.setProviderDeliveryId(booking.providerDeliveryId());
+        attempts.save(attempt);
+
+        var eta = booking.etaMinutes() != null ? booking.etaMinutes() : quote == null ? null : quote.getEtaMinutes();
+        d.setDeliveryProviderId(attempt.getDeliveryProviderId());
+        d.setProviderCode(reserved.providerCode());
+        d.setProviderDeliveryId(booking.providerDeliveryId());
+        d.setFee(amount);
+        d.setCurrency(booking.currency() != null ? booking.currency() : "INR");
+        d.setEtaMinutes(eta);
+        d.setEstimatedArrivalAt(booking.estimatedArrivalAt() != null ? booking.estimatedArrivalAt()
+                : eta == null ? null : now.plusSeconds(eta * 60L));
+        if (booking.trackingUrl() != null) {
+            d.setTrackingUrl(booking.trackingUrl());
+        }
+        d.setBookedAt(now);
+        d.setAssignmentDeadline(now.plus(properties.getAssignmentTimeout()));
+        d.setFailureCode(null);
+        d.setFailureReason(null);
+        d.moveTo(FoodDeliveryStatus.PROVIDER_SELECTED);
+        deliveries.save(d);
+        if (quote != null) {
+            quote.setSelected(true);
+            quotes.save(quote);
+        }
+        timeline.record(d, FoodDeliveryStatus.PROVIDER_SELECTED, "Finding a driver");
+        return Result.BOOKED;
+    }
+
+    private void markUnavailable(Long id) {
+        var d = deliveries.lockById(id).orElseThrow();
+        if (d.getProviderDeliveryId() != null || !BOOKABLE.contains(d.getStatus())) {
+            return;
+        }
+        if (d.getStatus() != FoodDeliveryStatus.PROVIDER_UNAVAILABLE) {
+            d.moveTo(FoodDeliveryStatus.PROVIDER_UNAVAILABLE);
+        }
+        d.setFailureCode("ALL_PROVIDERS_FAILED");
+        d.setFailureReason("No delivery partner could take this delivery.");
+        deliveries.save(d);
+        timeline.record(d, FoodDeliveryStatus.PROVIDER_UNAVAILABLE, "No delivery partner could take this delivery yet");
+    }
+
+    // ── Retry window ─────────────────────────────────────────────────────
+
+    /**
+     * One pass over a delivery nobody has taken. Within the retry window it asks again from scratch (fresh quotes, every
+     * courier eligible once more); past it, the delivery ends {@code FAILED} with code NO_COURIER and the whole fee is
+     * returned. Called by the retry job; checks again under the lock, so a cancel or a rebook that got there first wins.
+     */
+    public void retry(Long id) {
+        Boolean ask = tx.execute(status -> {
+            var d = deliveries.lockById(id).orElse(null);
+            if (d == null || (d.getStatus() != FoodDeliveryStatus.PROVIDER_UNAVAILABLE
+                    && d.getStatus() != FoodDeliveryStatus.QUOTE_FAILED)) {
+                return false;
+            }
+            Instant now = Instant.now();
+            if (!now.isBefore(d.getRequestedAt().plus(properties.getRetryWindow()))) {
+                failNoCourier(d);
+                return false;
+            }
+            d.setRoundStartedAt(now);
+            var outcome = quoting.gather(d);
+            if (!outcome.anyServiceable()) {
+                deliveries.save(d);
+                return false;
+            }
+            d.moveTo(FoodDeliveryStatus.QUOTED);
+            deliveries.save(d);
+            return true;
+        });
+        if (Boolean.TRUE.equals(ask)) {
+            book(id, "RETRY");
+        }
+    }
+
+    private void failNoCourier(FoodDelivery d) {
+        d.moveTo(FoodDeliveryStatus.FAILED);
+        d.setFailureCode("NO_COURIER");
+        d.setFailureReason("No delivery partner could take this delivery in time.");
+        refundAll(d, "Food delivery could not be arranged");
+        deliveries.save(d);
+        timeline.record(d, FoodDeliveryStatus.FAILED, "No delivery partner could take this delivery in time; fee returned");
+    }
+
+    // ── A courier let go, or took too long ───────────────────────────────
+
+    /**
+     * Take the delivery from a courier that let go before pickup (a rider cancelled, a pickup failed, or no rider came in
+     * time) and ask the next one. The old consignment is cancelled at the provider so two couriers cannot arrive. Does
+     * nothing if the delivery has moved on: it checks the consignment it was told about is still the current one.
+     *
+     * @param failedProviderDeliveryId the consignment that let go, or null to take whatever is current
+     * @param cause                    why, as an attempt end cause (ASSIGNMENT_TIMEOUT, RIDER_CANCELLED, ...)
+     * @return true if another courier was booked
+     */
+    public boolean rebook(Long id, String failedProviderDeliveryId, String cause, String reason) {
+        Boolean released = tx.execute(status -> {
+            var d = deliveries.lockById(id).orElse(null);
+            if (d == null || d.getProviderDeliveryId() == null || !d.getStatus().isCancellable()
+                    || d.getStatus() == FoodDeliveryStatus.QUOTED || d.getStatus() == FoodDeliveryStatus.PROVIDER_UNAVAILABLE) {
+                return false;
+            }
+            if (failedProviderDeliveryId != null && !failedProviderDeliveryId.equals(d.getProviderDeliveryId())) {
+                return false;
+            }
+            releaseProvider(d, cause, reason);
+            d.moveTo(FoodDeliveryStatus.PROVIDER_SELECTED);
+            deliveries.save(d);
+            timeline.record(d, "FoodDeliveryReassigned", FoodDeliveryStatus.PROVIDER_SELECTED, "Finding another driver");
+            return true;
+        });
+        if (!Boolean.TRUE.equals(released)) {
+            return false;
+        }
+        book(id, "REASSIGNMENT");
+        return deliveries.findById(id).map(d -> d.getProviderDeliveryId() != null).orElse(false);
+    }
+
+    /** Hands a booking that never got a rider to the next courier. Called by the sweep. */
+    public boolean rebookOnTimeout(Long id) {
+        Boolean overdue = tx.execute(status -> deliveries.findById(id)
+                .map(d -> d.getStatus() == FoodDeliveryStatus.PROVIDER_SELECTED && d.getAssignmentDeadline() != null
+                        && !d.getAssignmentDeadline().isAfter(Instant.now().minus(properties.getSweepGrace())))
+                .orElse(false));
+        return Boolean.TRUE.equals(overdue) && rebook(id, null, "ASSIGNMENT_TIMEOUT", "No driver was assigned in time");
+    }
+
+    // ── Money ────────────────────────────────────────────────────────────
+
+    /**
+     * Return the unused part of the hold once the courier is fixed (the food has been picked up): the agreed maximum less
+     * what the courier actually costs. Idempotent. Called by whatever ingests the courier's pickup event.
+     *
+     * @return the amount returned now; zero if there was nothing to return or it had already been
+     */
+    public BigDecimal settleFee(Long id) {
+        return tx.execute(status -> {
+            var d = deliveries.lockById(id).orElseThrow(() -> new NotFoundException("FoodDelivery", id));
+            if (!(d.getStatus().isInFlight() || d.getStatus() == FoodDeliveryStatus.DELIVERED) || d.getFee() == null) {
+                throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "The fee is settled once the food has been picked up.");
+            }
+            BigDecimal unused = d.netHeld().subtract(d.getFee());
+            if (unused.signum() <= 0) {
+                return BigDecimal.ZERO;
+            }
+            boolean refunded = wallet.refundFoodDelivery(d.getOutletId(), d.getId(), "adjust", unused,
+                    "Food delivery fee · unused part returned");
+            if (!refunded) {
+                return BigDecimal.ZERO;
+            }
+            d.setFeeRefundedAmount(d.getFeeRefundedAmount().add(unused));
+            d.setFeeRefundedAt(Instant.now());
+            d.setFeeRefundRef("food-delivery-" + d.getId() + "-adjust");
+            deliveries.save(d);
+            return unused;
+        });
+    }
+
+    /**
+     * Cancel before pickup: the courier is stood down and the whole hold returned. After pickup the food is on the road
+     * and nobody may cancel it.
+     */
+    public FoodDelivery cancel(Long id, String reason) {
+        return tx.execute(status -> {
+            var d = deliveries.lockById(id).orElseThrow(() -> new NotFoundException("FoodDelivery", id));
+            if (d.getStatus() == FoodDeliveryStatus.CANCELLED) {
+                return d;
+            }
+            if (!d.getStatus().isCancellable()) {
+                throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "This delivery can't be cancelled once the food has been picked up.");
+            }
+            if (d.getProviderDeliveryId() != null) {
+                releaseProvider(d, "CUSTOMER_CANCEL", reason);
+            }
+            d.moveTo(FoodDeliveryStatus.CANCELLED);
+            d.setCancelledAt(Instant.now());
+            d.setFailureReason(reason);
+            refundAll(d, "Food delivery cancelled");
+            deliveries.save(d);
+            timeline.record(d, FoodDeliveryStatus.CANCELLED, reason == null ? "Cancelled" : reason);
+            return d;
+        });
+    }
+
+    /** Returns everything still held. Idempotent on the wallet reference, so a repeat pays nothing twice. */
+    private void refundAll(FoodDelivery d, String reason) {
+        BigDecimal held = d.netHeld();
+        if (held.signum() > 0 && wallet.refundFoodDelivery(d.getOutletId(), d.getId(), "refund", held, reason)) {
+            d.setFeeRefundedAmount(d.getFeeRefundedAmount().add(held));
+            d.setFeeRefundedAt(Instant.now());
+            d.setFeeRefundRef("food-delivery-" + d.getId() + "-refund");
+        }
+        d.setFee(BigDecimal.ZERO);
+    }
+
+    // ── Provider side ────────────────────────────────────────────────────
+
+    /** Stands the current consignment down at the provider and closes its attempt. The provider being unreachable is not ours to fail on. */
+    private void releaseProvider(FoodDelivery d, String cause, String reason) {
+        cancelAtProvider(d.getProviderCode(), d.getProviderDeliveryId(), reason == null ? "Released" : reason);
+        attempts.findFirstByFoodDeliveryIdOrderByAttemptNumberDesc(d.getId()).ifPresent(a -> {
+            if ("BOOKED".equals(a.getOutcome())) {
+                a.setOutcome("CANCELLED");
+                a.setFailureReason(reason);
+                a.setEndedAt(Instant.now());
+                if (a.getEndedCause() == null) {
+                    a.setEndedCause(cause);
+                }
+                attempts.save(a);
+            }
+        });
+        d.setProviderDeliveryId(null);
+        d.setDriverName(null);
+        d.setDriverPhone(null);
+        d.setDriverVehicle(null);
+        d.setAssignmentDeadline(null);
+    }
+
+    private void cancelAtProvider(String providerCode, String providerDeliveryId, String reason) {
+        var adapter = providerCode == null ? null : registry.adapter(providerCode);
+        if (adapter == null || providerDeliveryId == null) {
+            return;
+        }
+        try {
+            adapter.cancel(providerDeliveryId, reason);
+        } catch (DeliveryProviderException ex) {
+            log.warn("Could not cancel {} consignment {}: {}", providerCode, providerDeliveryId, ex.getMessage());
+        }
+    }
+
+    // ── Validation ───────────────────────────────────────────────────────
+
+    private static void validate(CreateRequest r) {
+        require(r.restaurantId() != null && r.outletId() != null, "A restaurant and an outlet are required.");
+        require(!isBlank(r.idempotencyKey()), "An idempotency key is required.");
+        require(!isBlank(r.customerName()), "The customer's name is required.");
+        require(r.customerPhone() != null && r.customerPhone().replaceAll("\\D", "").length() >= 10,
+                "The customer's phone number must have at least 10 digits.");
+        require(!isBlank(r.dropAddress()), "The delivery address is required.");
+        require(r.dropLatitude() != null && r.dropLongitude() != null
+                        && r.dropLatitude().abs().compareTo(BigDecimal.valueOf(90)) <= 0
+                        && r.dropLongitude().abs().compareTo(BigDecimal.valueOf(180)) <= 0,
+                "The delivery location (latitude and longitude) is required.");
+        require(!isBlank(r.dropCity()) && !isBlank(r.dropState()) && !isBlank(r.dropPincode()),
+                "The delivery city, state and pincode are required.");
+        require(r.orderValue() != null && r.orderValue().signum() > 0, "The order value is required.");
+        require(r.weightKg() != null && r.weightKg().signum() > 0
+                        && r.weightKg().compareTo(VehicleType.TWO_WHEELER.maxWeightKg()) <= 0,
+                "The weight must be above zero and within what a bike can carry (%s kg).".formatted(VehicleType.TWO_WHEELER.maxWeightKg()));
+        require(r.maxDeliveryMinutes() == null || r.maxDeliveryMinutes() > 0, "The delivery time limit must be above zero.");
+        require(r.maxFee() == null || r.maxFee().signum() > 0, "The fee limit must be above zero.");
+    }
+
+    private static void require(boolean ok, String message) {
+        if (!ok) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, message);
+        }
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.isBlank();
+    }
+}

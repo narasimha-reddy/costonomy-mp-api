@@ -84,6 +84,16 @@ public class FoodDelivery extends BaseEntity {
     @Column(name = "drop_address", nullable = false, length = 500)
     private String dropAddress;
 
+    /** The customer's locality, which couriers require to book (V91). Supplied by the request, never guessed. */
+    @Column(name = "drop_city", length = 120)
+    private String dropCity;
+
+    @Column(name = "drop_state", length = 120)
+    private String dropState;
+
+    @Column(name = "drop_pincode", length = 16)
+    private String dropPincode;
+
     @Column(name = "drop_landmark", length = 250)
     private String dropLandmark;
 
@@ -118,6 +128,20 @@ public class FoodDelivery extends BaseEntity {
 
     @Column(name = "currency", nullable = false, columnDefinition = "char(3)")
     private String currency = "INR";
+
+    /**
+     * The most the restaurant agreed to pay, and what was held from its wallet at creation (V91). Net held is
+     * {@code maxFee - feeRefundedAmount}; {@code fee} is what the booked courier will actually cost.
+     */
+    @Column(name = "max_fee", precision = 19, scale = 4)
+    private BigDecimal maxFee;
+
+    @Column(name = "fee_refunded_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal feeRefundedAmount = BigDecimal.ZERO;
+
+    /** When the current round of asking couriers began; "already tried" is counted from here. */
+    @Column(name = "round_started_at")
+    private Instant roundStartedAt;
 
     @Column(name = "fee_debit_ref", length = 100)
     private String feeDebitRef;
@@ -210,6 +234,11 @@ public class FoodDelivery extends BaseEntity {
                     "Food delivery " + getId() + " cannot go from " + status + " to " + target);
         }
         this.status = target;
+    }
+
+    /** What is still held from the restaurant's wallet: the agreed maximum less whatever has been given back. */
+    public BigDecimal netHeld() {
+        return maxFee == null ? BigDecimal.ZERO : maxFee.subtract(feeRefundedAmount);
     }
 
     /** 32 hex characters from 128 random bits: not derivable from the id and not guessable. */
