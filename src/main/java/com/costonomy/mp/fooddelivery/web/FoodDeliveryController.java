@@ -37,7 +37,7 @@ public class FoodDeliveryController {
             @Valid @RequestBody FoodDeliveryDtos.CreateFoodDeliveryRequest body) {
 
         Long actorId = ActorContext.requireUserId();
-        accessControl.requireScoped(actorId, Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "FoodDelivery");
+        accessControl.require(actorId, Permissions.OUTLET_EDIT, ScopeType.OUTLET, outletId);
 
         Long restaurantId = jdbc.query("select restaurant_id from outlet where id = ?",
                 (rs, row) -> rs.getLong(1), outletId).stream().findFirst().orElse(null);
@@ -97,7 +97,7 @@ public class FoodDeliveryController {
             @PathVariable Long id,
             @RequestBody(required = false) FoodDeliveryDtos.CancelFoodDeliveryRequest body) {
         Long actorId = ActorContext.requireUserId();
-        accessControl.requireScoped(actorId, Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "FoodDelivery");
+        accessControl.require(actorId, Permissions.OUTLET_EDIT, ScopeType.OUTLET, outletId);
 
         // Verify outlet ownership
         queryService.get(actorId, outletId, id);

@@ -29,11 +29,8 @@ import java.util.List;
 @Slf4j
 public class DeliveryJobs {
 
-    /** Deliveries still expecting something to happen. */
-    private static final List<DeliveryStatus> ACTIVE = List.of(
-            DeliveryStatus.PROVIDER_SELECTED, DeliveryStatus.DRIVER_ASSIGNED,
-            DeliveryStatus.DRIVER_AT_PICKUP, DeliveryStatus.PICKED_UP,
-            DeliveryStatus.IN_TRANSIT, DeliveryStatus.ARRIVED_AT_DESTINATION);
+    private static final int BATCH_SIZE = 50;
+    private static final java.time.Duration STALE_CLAIM_TIMEOUT = java.time.Duration.ofMinutes(2);
 
     private final DeliveryRepository deliveries;
     private final DeliveryProviderRegistry registry;
@@ -41,52 +38,63 @@ public class DeliveryJobs {
 
     @Scheduled(fixedDelayString = "${costonomy.mp.delivery.poll-interval:PT30S}")
     @SchedulerLock(name = "delivery-poll", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
-    @Transactional
     public void pollActiveDeliveries() {
-        for (Delivery delivery : deliveries.findByStatusIn(ACTIVE)) {
-            // Supplier own delivery has no provider to ask. Doc 06 §2.
-            if (delivery.getMode() != DeliveryMode.COSTONOMY
-                    || delivery.getProviderDeliveryId() == null) {
+        java.time.Instant now = java.time.Instant.now();
+        java.time.Instant staleThreshold = now.minus(STALE_CLAIM_TIMEOUT);
+
+        List<Long> dueIds = deliveries.findDueDeliveryIdsForPolling(staleThreshold, BATCH_SIZE);
+        for (Long id : dueIds) {
+            String claimToken = java.util.UUID.randomUUID().toString();
+            int claimed = deliveries.claimDeliveryForPoll(id, now, staleThreshold, claimToken);
+            if (claimed == 0) {
                 continue;
             }
-
-            var adapter = registry.adapter(delivery.getProviderCode());
-            if (adapter == null) {
-                continue;
-            }
-
             try {
-                var state = adapter.status(delivery.getProviderDeliveryId());
+                pollOne(id);
+            } catch (Exception ex) {
+                log.error("Unexpected error during polling delivery {}", id, ex);
+            } finally {
+                deliveries.releaseDeliveryAfterPoll(id, claimToken, java.time.Instant.now());
+            }
+        }
+    }
 
-                if (state.driverName() != null) {
-                    eventService.recordDriver(delivery, state.driverName(),
-                            state.driverPhone(), state.driverVehicle());
-                }
-                eventService.recordEta(delivery, state.etaMinutes());
+    public void pollOne(Long deliveryId) {
+        Delivery delivery = deliveries.findById(deliveryId).orElse(null);
+        if (delivery == null
+                || delivery.getMode() != DeliveryMode.COSTONOMY
+                || delivery.getProviderDeliveryId() == null) {
+            return;
+        }
 
-                // Oldest first, so a burst of events applies in the order they
-                // happened rather than the order they were listed.
-                var events = new java.util.ArrayList<>(state.events());
-                java.util.Collections.reverse(events);
-                events.forEach(event -> eventService.apply(delivery, event));
+        var adapter = registry.adapter(delivery.getProviderCode());
+        if (adapter == null) {
+            return;
+        }
 
-                if (adapter.supportsTracking() && delivery.getStatus().isTrackable()) {
+        try {
+            var state = adapter.status(delivery.getProviderDeliveryId());
+            if (state == null) {
+                return;
+            }
+
+            boolean trackable = eventService.applyProviderSnapshot(delivery.getId(), state);
+            if (adapter.supportsTracking() && trackable) {
+                try {
                     var location = adapter.location(delivery.getProviderDeliveryId());
                     if (location != null) {
-                        eventService.recordLocation(delivery, location.latitude(),
+                        eventService.recordLocation(delivery.getId(), location.latitude(),
                                 location.longitude(), location.bearing(),
                                 location.speedKmph(), location.recordedAt());
                     }
+                } catch (Exception locEx) {
+                    log.debug("Could not fetch location for delivery {}: {}", delivery.getId(), locEx.getMessage());
                 }
-
-            } catch (DeliveryProviderException ex) {
-                // Unreachable providers are normal. The next sweep asks again.
-                log.debug("Could not poll delivery {}: {}", delivery.getId(), ex.getMessage());
-            } catch (RuntimeException ex) {
-                // One stuck delivery must not stop the rest — the next one may be
-                // the one whose driver has been waiting at a locked door.
-                log.error("Could not poll delivery {}", delivery.getId(), ex);
             }
+        } catch (DeliveryProviderException ex) {
+            log.debug("Could not poll delivery {}: {}", delivery.getId(), ex.getMessage());
+        } catch (RuntimeException ex) {
+            log.error("Could not poll delivery {}", delivery.getId(), ex);
         }
     }
 }

@@ -8,6 +8,8 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.data.domain.Pageable;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
@@ -24,6 +26,12 @@ public interface DeliveryRepository extends JpaRepository<Delivery, Long> {
     List<Delivery> findByStatusAndAssignmentDeadlineBefore(
             DeliveryStatus status, java.time.Instant now);
 
+    List<Delivery> findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            DeliveryStatus status, java.time.Instant now, Pageable page);
+
+    List<Delivery> findByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAscIdAsc(
+            List<DeliveryStatus> statuses, java.time.Instant cutoff, Pageable page);
+
     /** Pidge deliveries of ours in these statuses created since the cutoff; the sandbox auto-advance job's sweep (D-196). */
     List<Delivery> findByProviderCodeAndModeAndProviderDeliveryIdIsNotNullAndStatusInAndCreatedAtAfter(
             String providerCode, com.costonomy.mp.delivery.domain.DeliveryMode mode,
@@ -34,6 +42,48 @@ public interface DeliveryRepository extends JpaRepository<Delivery, Long> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select d from Delivery d where d.id = :id")
     Optional<Delivery> lockById(@Param("id") Long id);
+
+    @Query(value = """
+            SELECT id FROM delivery
+             WHERE mode = 'COSTONOMY'
+               AND provider_delivery_id IS NOT NULL
+               AND status IN ('PROVIDER_SELECTED', 'DRIVER_ASSIGNED', 'DRIVER_AT_PICKUP', 'PICKED_UP', 'IN_TRANSIT', 'ARRIVED_AT_DESTINATION')
+               AND (poll_claimed_at IS NULL OR poll_claimed_at <= :staleThreshold)
+             ORDER BY last_polled_at ASC, id ASC
+             LIMIT :batchSize
+            """, nativeQuery = true)
+    List<Long> findDueDeliveryIdsForPolling(@Param("staleThreshold") java.time.Instant staleThreshold,
+                                           @Param("batchSize") int batchSize);
+
+    @Modifying
+        @Transactional
+    @Query(value = """
+            UPDATE delivery
+               SET poll_claimed_at = :now,
+                                   poll_claim_token = :claimToken
+             WHERE id = :id
+                           AND mode = 'COSTONOMY'
+                           AND provider_delivery_id IS NOT NULL
+                           AND status IN ('PROVIDER_SELECTED', 'DRIVER_ASSIGNED', 'DRIVER_AT_PICKUP', 'PICKED_UP', 'IN_TRANSIT', 'ARRIVED_AT_DESTINATION')
+               AND (poll_claimed_at IS NULL OR poll_claimed_at <= :staleThreshold)
+            """, nativeQuery = true)
+    int claimDeliveryForPoll(@Param("id") Long id,
+                             @Param("now") java.time.Instant now,
+                             @Param("staleThreshold") java.time.Instant staleThreshold,
+                             @Param("claimToken") String claimToken);
+
+    @Modifying
+        @Transactional
+    @Query(value = """
+            UPDATE delivery
+               SET last_polled_at = :now,
+                   poll_claimed_at = NULL,
+                                   poll_claim_token = NULL
+             WHERE id = :id AND poll_claim_token = :claimToken
+            """, nativeQuery = true)
+    int releaseDeliveryAfterPoll(@Param("id") Long id,
+                                 @Param("claimToken") String claimToken,
+                                 @Param("now") java.time.Instant now);
 
     // The retry queries read the database's own clock and take durations in seconds, so no timestamp is bound from
     // Java. The clock is utc_timestamp(6), not now(6): hibernate.jdbc.time_zone is UTC, so no_partner_since and

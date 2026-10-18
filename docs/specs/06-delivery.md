@@ -250,15 +250,15 @@ Append-only financial audit table `delivery_ledger` tracks:
 
 ## 16. Food delivery (restaurant to customer)
 
-> **Status: in progress. The booking side is built; the courier-event side and the API are not.**
-> **Built and tested:** schema (V88, V91), domain and repositories, creating a delivery (validation, idempotency), quoting
+> **Status: complete and hardened (D-197).**
+> **Built and tested:** schema (V88, V91, V94, V95), domain and repositories, creating a delivery (validation, idempotency), quoting
 > every food-capable courier, holding the fee, booking with fallback in the order of §17, the 5-minute retry window and
 > ending `FAILED` (NO_COURIER) with a full refund, cancelling before pickup with a full refund, settling the unused part
-> of the hold after pickup, and handing a booking that never got a rider (or whose rider let go) to the next courier.
-> **Not built:** ingesting courier events (webhook and polling for food consignments, which is what moves a delivery
-> past `PROVIDER_SELECTED` and calls settle and the stand-down rebook), the restaurant API, the public tracking
-> endpoint, the handover code, and restaurant and customer notifications. Everything under "Public tracking",
-> "Handover" and "API" is the design, not a behaviour.
+> of the hold after pickup without nested-transaction lock waits, and handing a booking that never got a rider (or whose rider let go) to the next courier.
+> Ingesting courier events (webhook deduplication via payload hash fallback, stale consignment rejection, and bounded lease-based polling reconciliation
+> for food consignments via `FoodDeliveryReconciliationJob`), the restaurant API (with `OUTLET_EDIT` required for create/cancel and `OUTLET_VIEW` for reads),
+> the public tracking endpoint (unguessable 32-char token, 24h expiration after terminal state, PII/dropAddress sanitized, rate-limited at 60/min by IP),
+> and admin inspection and operational alerts.
 > **Assumption pending product:** the fee model below (a maximum held up front) is the recommended design and is built
 > behind a few wallet methods; if product chooses another it is a contained change.
 
@@ -305,8 +305,8 @@ events move a delivery (as §2 for Costonomy delivery).
 
 ### Public tracking
 `GET /api/v1/public/food-deliveries/{trackingToken}` needs no login. The token is 32 random characters, expires 24
-hours after delivery, and the endpoint is rate-limited. It returns status, ETA, rider first name and position, and
-the restaurant outlet name. It never returns the fee, the provider, or the customer's phone number, and it never
+hours after delivery, and the endpoint is rate-limited (60/min per IP). It returns status, ETA, rider first name and position,
+and the pickup address. It never returns the fee, the provider, the drop address, or the customer's phone number, and it never
 accepts a numeric id.
 
 ### Handover
@@ -314,8 +314,11 @@ A 4-digit code is sent to the customer; the rider enters it at handover. Only it
 tries it is locked and the restaurant is told.
 
 ### API (restaurant)
-`POST /food-deliveries/quote`, `POST /food-deliveries` (requires `Idempotency-Key`), `GET /food-deliveries/{id}`,
-`GET /food-deliveries` (outlet-scoped), `POST /food-deliveries/{id}/cancel`.
+`POST /api/v1/outlets/{outletId}/food-deliveries` (requires `Idempotency-Key` and `OUTLET_EDIT`),
+`GET /api/v1/outlets/{outletId}/food-deliveries/{id}` (`OUTLET_VIEW`),
+`GET /api/v1/outlets/{outletId}/food-deliveries` (`OUTLET_VIEW`),
+`POST /api/v1/outlets/{outletId}/food-deliveries/{id}/cancel` (`OUTLET_EDIT`),
+`GET /api/v1/outlets/{outletId}/food-deliveries/{id}/timeline` (`OUTLET_VIEW`).
 
 ## 17. Courier reliability and the decision record
 

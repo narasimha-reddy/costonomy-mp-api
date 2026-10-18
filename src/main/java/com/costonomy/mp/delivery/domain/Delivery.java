@@ -165,6 +165,15 @@ public class Delivery extends BaseEntity {
     @Column(name = "last_provider_update_at")
     private Instant lastProviderUpdateAt;
 
+    @Column(name = "last_polled_at")
+    private Instant lastPolledAt;
+
+    @Column(name = "poll_claimed_at")
+    private Instant pollClaimedAt;
+
+    @Column(name = "poll_claim_token", length = 36)
+    private String pollClaimToken;
+
     /** When the search for a partner first failed; null while one is booked. D-185. */
     @Column(name = "no_partner_since")
     private Instant noPartnerSince;

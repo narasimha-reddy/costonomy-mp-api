@@ -113,6 +113,12 @@ class RetentionPurgerIT extends AbstractIntegrationTest {
                 + "values (999999001, 12.9, 77.6, ?)", ago(Duration.ofDays(45)));
         withoutForeignKeys("insert into delivery_location (delivery_id, latitude, longitude, recorded_at) "
                 + "values (999999001, 12.9, 77.6, ?)", ago(Duration.ofDays(1)));
+        withoutForeignKeys("insert into food_delivery_location (food_delivery_id, latitude, longitude, recorded_at) "
+            + "values (999999002, 17.4, 78.4, ?)", ago(Duration.ofDays(100)));
+        withoutForeignKeys("insert into food_delivery_location (food_delivery_id, latitude, longitude, recorded_at) "
+            + "values (999999002, 17.4, 78.4, ?)", ago(Duration.ofDays(45)));
+        withoutForeignKeys("insert into food_delivery_location (food_delivery_id, latitude, longitude, recorded_at) "
+            + "values (999999002, 17.4, 78.4, ?)", ago(Duration.ofDays(1)));
         withoutForeignKeys("insert into refresh_token (user_id, token_hash, status, expires_at) "
                 + "values (999999001, ?, 'EXPIRED', ?)", hash64(), ago(Duration.ofDays(45)));
         withoutForeignKeys("insert into refresh_token (user_id, token_hash, status, expires_at) "
@@ -127,6 +133,8 @@ class RetentionPurgerIT extends AbstractIntegrationTest {
 
         assertThat(jdbc.queryForObject("select count(*) from delivery_location where delivery_id = 999999001",
                 Integer.class)).as("only the day-old position").isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from food_delivery_location where food_delivery_id = 999999002",
+            Integer.class)).as("the 45-day and day-old food positions remain under the 90-day policy").isEqualTo(2);
         assertThat(jdbc.queryForObject("select count(*) from refresh_token where user_id = 999999001",
                 Integer.class)).as("only the live token").isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from otp_verification where phone in (?, ?)",

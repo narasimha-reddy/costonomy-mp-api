@@ -13,6 +13,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.data.domain.Pageable;
 
 import java.time.Instant;
 import java.util.List;
@@ -57,7 +58,8 @@ class DeliveryAssignmentSweepJobTest {
     @Test
     @DisplayName("bookings past their deadline are handed to the waterfall")
     void overdueBookingsAreCascaded() {
-        when(deliveries.findByStatusAndAssignmentDeadlineBefore(any(), any()))
+        when(deliveries.findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            any(), any(), any(Pageable.class)))
                 .thenReturn(List.of(delivery(1), delivery(2)));
         when(waterfall.cascadeUnassigned(1L)).thenReturn(true);
         when(waterfall.cascadeUnassigned(2L)).thenReturn(false);
@@ -71,13 +73,14 @@ class DeliveryAssignmentSweepJobTest {
     @Test
     @DisplayName("only PROVIDER_SELECTED is swept, and only past the deadline plus the grace")
     void queryIsStatusAndGrace() {
-        when(deliveries.findByStatusAndAssignmentDeadlineBefore(any(), any())).thenReturn(List.of());
+        when(deliveries.findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            any(), any(), any(Pageable.class))).thenReturn(List.of());
 
         job.runOnce(now);
 
         var cutoff = ArgumentCaptor.forClass(Instant.class);
-        verify(deliveries).findByStatusAndAssignmentDeadlineBefore(
-                org.mockito.ArgumentMatchers.eq(DeliveryStatus.PROVIDER_SELECTED), cutoff.capture());
+        verify(deliveries).findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            org.mockito.ArgumentMatchers.eq(DeliveryStatus.PROVIDER_SELECTED), cutoff.capture(), any(Pageable.class));
         assertThat(cutoff.getValue()).as("30s grace so a live timer wins").isEqualTo(now.minusSeconds(30));
         verify(waterfall, never()).cascadeUnassigned(anyLong());
     }
@@ -85,7 +88,8 @@ class DeliveryAssignmentSweepJobTest {
     @Test
     @DisplayName("one delivery failing does not stop the rest")
     void oneFailureDoesNotStopTheSweep() {
-        when(deliveries.findByStatusAndAssignmentDeadlineBefore(any(), any()))
+        when(deliveries.findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            any(), any(), any(Pageable.class)))
                 .thenReturn(List.of(delivery(1), delivery(2), delivery(3)));
         when(waterfall.cascadeUnassigned(1L)).thenThrow(new IllegalStateException("provider down"));
         when(waterfall.cascadeUnassigned(2L)).thenReturn(true);
@@ -99,11 +103,15 @@ class DeliveryAssignmentSweepJobTest {
     @DisplayName("a sweep is capped at the batch size")
     void batchIsCapped() {
         ReflectionTestUtils.setField(job, "batch", 2);
-        when(deliveries.findByStatusAndAssignmentDeadlineBefore(any(), any()))
-                .thenReturn(List.of(delivery(1), delivery(2), delivery(3)));
+        when(deliveries.findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            any(), any(), any(Pageable.class)))
+            .thenReturn(List.of(delivery(1), delivery(2)));
         when(waterfall.cascadeUnassigned(anyLong())).thenReturn(true);
 
         assertThat(job.runOnce(now)).isEqualTo(2);
+        verify(deliveries).findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            eq(DeliveryStatus.PROVIDER_SELECTED), any(),
+            eq(org.springframework.data.domain.PageRequest.of(0, 2)));
         verify(waterfall, never()).cascadeUnassigned(3L);
     }
 
@@ -129,8 +137,10 @@ class DeliveryAssignmentSweepJobTest {
     @DisplayName("a delivery left in DRIVER_CANCELLED or PICKUP_FAILED is given another courier")
     void stoodDownDeliveriesAreRescued() {
         var old = now.minusSeconds(120);
-        when(deliveries.findByStatusAndAssignmentDeadlineBefore(any(), any())).thenReturn(List.of());
-        when(deliveries.findByStatusIn(List.of(DeliveryStatus.DRIVER_CANCELLED, DeliveryStatus.PICKUP_FAILED)))
+        when(deliveries.findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            any(), any(), any(Pageable.class))).thenReturn(List.of());
+        when(deliveries.findByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAscIdAsc(
+            any(), any(), any(Pageable.class)))
                 .thenReturn(List.of(stoodDown(1, DeliveryStatus.DRIVER_CANCELLED, old),
                         stoodDown(2, DeliveryStatus.PICKUP_FAILED, old)));
         when(deliveryService.reassignAfterProviderFailure(eq(1L), isNull(), any())).thenReturn(true);
@@ -143,11 +153,15 @@ class DeliveryAssignmentSweepJobTest {
     @Test
     @DisplayName("one that just stood down is left to the event listener for the grace period")
     void freshStandDownIsLeftAlone() {
-        when(deliveries.findByStatusAndAssignmentDeadlineBefore(any(), any())).thenReturn(List.of());
-        when(deliveries.findByStatusIn(any()))
-                .thenReturn(List.of(stoodDown(1, DeliveryStatus.DRIVER_CANCELLED, now.minusSeconds(5))));
+        when(deliveries.findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            any(), any(), any(Pageable.class))).thenReturn(List.of());
+        when(deliveries.findByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAscIdAsc(
+            any(), any(), any(Pageable.class))).thenReturn(List.of());
 
         assertThat(job.runOnce(now)).isZero();
+        verify(deliveries).findByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAscIdAsc(
+                eq(List.of(DeliveryStatus.DRIVER_CANCELLED, DeliveryStatus.PICKUP_FAILED)),
+                eq(now.minusSeconds(30)), any(Pageable.class));
         verifyNoInteractions(deliveryService);
     }
 
@@ -155,8 +169,10 @@ class DeliveryAssignmentSweepJobTest {
     @DisplayName("a failing rescue does not stop the next")
     void rescueFailureDoesNotStopTheRest() {
         var old = now.minusSeconds(120);
-        when(deliveries.findByStatusAndAssignmentDeadlineBefore(any(), any())).thenReturn(List.of());
-        when(deliveries.findByStatusIn(any())).thenReturn(List.of(
+        when(deliveries.findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            any(), any(), any(Pageable.class))).thenReturn(List.of());
+        when(deliveries.findByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAscIdAsc(
+            any(), any(), any(Pageable.class))).thenReturn(List.of(
                 stoodDown(1, DeliveryStatus.DRIVER_CANCELLED, old), stoodDown(2, DeliveryStatus.DRIVER_CANCELLED, old)));
         when(deliveryService.reassignAfterProviderFailure(eq(1L), isNull(), any()))
                 .thenThrow(new IllegalStateException("provider down"));
@@ -168,14 +184,17 @@ class DeliveryAssignmentSweepJobTest {
     @Test
     @DisplayName("stale pending attempts are rescued by the booking service")
     void stalePendingAttemptsAreRescued() {
-        when(deliveries.findByStatusAndAssignmentDeadlineBefore(any(), any())).thenReturn(List.of());
-        when(deliveries.findByStatusIn(any())).thenReturn(List.of());
+        when(deliveries.findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            any(), any(), any(Pageable.class))).thenReturn(List.of());
+        when(deliveries.findByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAscIdAsc(
+            any(), any(), any(Pageable.class))).thenReturn(List.of());
 
         var staleAttempt = new com.costonomy.mp.delivery.domain.DeliveryProviderAttempt();
         staleAttempt.setId(99L);
         staleAttempt.setOutcome("PENDING");
         staleAttempt.setStartedAt(now.minusSeconds(300));
-        when(attempts.findByOutcomeAndStartedAtBefore(eq("PENDING"), any())).thenReturn(List.of(staleAttempt));
+        when(attempts.findByOutcomeAndStartedAtBeforeOrderByStartedAtAscIdAsc(
+            eq("PENDING"), any(), any(Pageable.class))).thenReturn(List.of(staleAttempt));
 
         assertThat(job.runOnce(now)).isEqualTo(1);
         verify(bookingService).recoverStalePendingAttempt(99L);

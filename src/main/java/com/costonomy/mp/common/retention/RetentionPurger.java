@@ -39,6 +39,8 @@ public class RetentionPurger {
     private int outboxPublishedDays;
     @Value("${costonomy.mp.retention.delivery-location-days:30}")
     private int deliveryLocationDays;
+    @Value("${costonomy.mp.retention.food-delivery-location-days:90}")
+    private int foodDeliveryLocationDays;
     @Value("${costonomy.mp.retention.refresh-token-days:30}")
     private int refreshTokenDays;
     @Value("${costonomy.mp.retention.otp-days:7}")
@@ -66,6 +68,9 @@ public class RetentionPurger {
         rules.add(new Rule("delivery_location",
                 "delete from delivery_location where recorded_at < ? limit ?",
                 now.minus(Duration.ofDays(deliveryLocationDays))));
+        rules.add(new Rule("food_delivery_location",
+                "delete from food_delivery_location where recorded_at < ? limit ?",
+            now.minus(Duration.ofDays(foodDeliveryLocationDays))));
         rules.add(new Rule("refresh_token",
                 "delete from refresh_token where expires_at < ? limit ?",
                 now.minus(Duration.ofDays(refreshTokenDays))));

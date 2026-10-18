@@ -27,8 +27,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -125,19 +127,40 @@ public class FoodDeliveryBookingService {
             return existing.get();
         }
         validate(request);
-        Long id;
+
+        Long id = null;
         try {
-            id = tx.execute(status -> createAndHold(request));
+            // Phase 1: Short transaction to insert delivery in REQUESTED status
+            FoodDelivery created = tx.execute(status -> createRequested(request));
+            id = created.getId();
+
+            // Phase 2: External quote gathering outside any database transaction or row lock
+            var outcome = quoting.gather(created);
+
+            // Phase 3: Short transaction to validate quotes, hold fee from wallet, and advance to QUOTED
+            final Long deliveryId = id;
+            tx.executeWithoutResult(status -> holdAndAdvance(deliveryId, request, outcome));
         } catch (DataIntegrityViolationException duplicate) {
             // A simultaneous request with the same key won the unique index; hand back its delivery.
             return deliveries.findByRestaurantIdAndIdempotencyKey(request.restaurantId(), request.idempotencyKey())
                     .orElseThrow(() -> duplicate);
+        } catch (RuntimeException ex) {
+            if (id != null) {
+                final Long deliveryId = id;
+                try {
+                    tx.executeWithoutResult(status -> cleanUpFailedCreate(deliveryId));
+                } catch (Exception cleanEx) {
+                    log.warn("Failed to clean up delivery {} after creation failure: {}", deliveryId, cleanEx.getMessage());
+                }
+            }
+            throw ex;
         }
+
         book(id, "BOOKING");
         return deliveries.findById(id).orElseThrow();
     }
 
-    private Long createAndHold(CreateRequest r) {
+    private FoodDelivery createRequested(CreateRequest r) {
         Long ownerOfOutlet = jdbc.query("select restaurant_id from outlet where id = ?",
                 (rs, row) -> rs.getLong(1), r.outletId()).stream().findFirst().orElse(null);
         // Not found, not forbidden: whether another restaurant's outlet exists is not for this caller to learn.
@@ -181,8 +204,13 @@ public class FoodDeliveryBookingService {
         d.setRoundStartedAt(now);
         d = deliveries.saveAndFlush(d);
         timeline.record(d, FoodDeliveryStatus.REQUESTED, "Delivery requested");
+        return d;
+    }
 
-        var outcome = quoting.gather(d);
+    private void holdAndAdvance(Long id, CreateRequest r, FoodDeliveryQuotingService.Outcome outcome) {
+        var d = deliveries.lockById(id).orElseThrow(() -> new NotFoundException("FoodDelivery", id));
+        Instant now = Instant.now();
+
         var priced = outcome.all().stream()
                 .filter(q -> "QUOTED".equals(q.getStatus()) && q.getAmount() != null && q.getEtaMinutes() != null)
                 .map(q -> q.getAmount()).toList();
@@ -227,7 +255,14 @@ public class FoodDeliveryBookingService {
         d.moveTo(FoodDeliveryStatus.QUOTED);
         deliveries.save(d);
         timeline.record(d, FoodDeliveryStatus.QUOTED, "Delivery fee held; finding a delivery partner");
-        return d.getId();
+    }
+
+    private void cleanUpFailedCreate(Long deliveryId) {
+        jdbc.update("delete from food_delivery_attempt where food_delivery_id = ?", deliveryId);
+        jdbc.update("delete from food_delivery_event where food_delivery_id = ?", deliveryId);
+        jdbc.update("delete from food_delivery_quote where food_delivery_id = ?", deliveryId);
+        jdbc.update("delete from food_delivery_location where food_delivery_id = ?", deliveryId);
+        jdbc.update("delete from food_delivery where id = ?", deliveryId);
     }
 
     /** The same bound the ranking uses: dearer than this many times the cheapest is not worth paying for reliability. */
@@ -503,19 +538,37 @@ public class FoodDeliveryBookingService {
      * returned. Called by the retry job; checks again under the lock, so a cancel or a rebook that got there first wins.
      */
     public void retry(Long id) {
-        Boolean ask = tx.execute(status -> {
+        // Phase 1: Reserve under short lock
+        FoodDelivery snapshot = tx.execute(status -> {
+            var d = deliveries.lockById(id).orElse(null);
+            if (d == null || (d.getStatus() != FoodDeliveryStatus.PROVIDER_UNAVAILABLE
+                    && d.getStatus() != FoodDeliveryStatus.QUOTE_FAILED)) {
+                return null;
+            }
+            Instant now = Instant.now();
+            if (!now.isBefore(d.getRequestedAt().plus(properties.getRetryWindow()))) {
+                failNoCourier(d);
+                return null;
+            }
+            d.setRoundStartedAt(now);
+            deliveries.save(d);
+            return d;
+        });
+
+        if (snapshot == null) {
+            return;
+        }
+
+        // Phase 2: External quote gathering outside any database transaction or row lock
+        var outcome = quoting.gather(snapshot);
+
+        // Phase 3: Persist quote gathering result under short lock
+        Boolean proceed = tx.execute(status -> {
             var d = deliveries.lockById(id).orElse(null);
             if (d == null || (d.getStatus() != FoodDeliveryStatus.PROVIDER_UNAVAILABLE
                     && d.getStatus() != FoodDeliveryStatus.QUOTE_FAILED)) {
                 return false;
             }
-            Instant now = Instant.now();
-            if (!now.isBefore(d.getRequestedAt().plus(properties.getRetryWindow()))) {
-                failNoCourier(d);
-                return false;
-            }
-            d.setRoundStartedAt(now);
-            var outcome = quoting.gather(d);
             if (!outcome.anyServiceable()) {
                 deliveries.save(d);
                 return false;
@@ -524,7 +577,8 @@ public class FoodDeliveryBookingService {
             deliveries.save(d);
             return true;
         });
-        if (Boolean.TRUE.equals(ask)) {
+
+        if (Boolean.TRUE.equals(proceed)) {
             book(id, "RETRY");
         }
     }
@@ -533,6 +587,7 @@ public class FoodDeliveryBookingService {
         d.moveTo(FoodDeliveryStatus.FAILED);
         d.setFailureCode("NO_COURIER");
         d.setFailureReason("No delivery partner could take this delivery in time.");
+        d.setTrackingExpiresAt(Instant.now().plus(Duration.ofHours(24)));
         refundAll(d, "Food delivery could not be arranged");
         deliveries.save(d);
         timeline.record(d, FoodDeliveryStatus.FAILED, "No delivery partner could take this delivery in time; fee returned");
@@ -540,34 +595,68 @@ public class FoodDeliveryBookingService {
 
     // ── A courier let go, or took too long ───────────────────────────────
 
+    private record RebookReleaseInfo(String providerCode, String providerDeliveryId) {}
+
     /**
      * Take the delivery from a courier that let go before pickup (a rider cancelled, a pickup failed, or no rider came in
      * time) and ask the next one. The old consignment is cancelled at the provider so two couriers cannot arrive. Does
      * nothing if the delivery has moved on: it checks the consignment it was told about is still the current one.
+     * Keeps provider cancellation outside database row locks.
      *
      * @param failedProviderDeliveryId the consignment that let go, or null to take whatever is current
      * @param cause                    why, as an attempt end cause (ASSIGNMENT_TIMEOUT, RIDER_CANCELLED, ...)
      * @return true if another courier was booked
      */
     public boolean rebook(Long id, String failedProviderDeliveryId, String cause, String reason) {
-        Boolean released = tx.execute(status -> {
+        // Phase 1: Under short lock, verify state and update attempt/delivery
+        RebookReleaseInfo info = tx.execute(status -> {
             var d = deliveries.lockById(id).orElse(null);
             if (d == null || d.getProviderDeliveryId() == null || !d.getStatus().isCancellable()
                     || d.getStatus() == FoodDeliveryStatus.QUOTED || d.getStatus() == FoodDeliveryStatus.PROVIDER_UNAVAILABLE) {
-                return false;
+                return null;
             }
             if (failedProviderDeliveryId != null && !failedProviderDeliveryId.equals(d.getProviderDeliveryId())) {
-                return false;
+                return null;
             }
-            releaseProvider(d, cause, reason);
+            String provCode = d.getProviderCode();
+            String provDeliveryId = d.getProviderDeliveryId();
+
+            attempts.findFirstByFoodDeliveryIdOrderByAttemptNumberDesc(d.getId()).ifPresent(a -> {
+                if ("BOOKED".equals(a.getOutcome())) {
+                    a.setOutcome("CANCELLED");
+                    a.setFailureReason(reason);
+                    a.setEndedAt(Instant.now());
+                    if (a.getEndedCause() == null) {
+                        a.setEndedCause(cause);
+                    }
+                    attempts.save(a);
+                }
+            });
+            d.setProviderDeliveryId(null);
+            d.setDriverName(null);
+            d.setDriverPhone(null);
+            d.setDriverVehicle(null);
+            d.setAssignmentDeadline(null);
+
             d.moveTo(FoodDeliveryStatus.PROVIDER_SELECTED);
             deliveries.save(d);
             timeline.record(d, "FoodDeliveryReassigned", FoodDeliveryStatus.PROVIDER_SELECTED, "Finding another driver");
-            return true;
+            return new RebookReleaseInfo(provCode, provDeliveryId);
         });
-        if (!Boolean.TRUE.equals(released)) {
+
+        if (info == null) {
             return false;
         }
+
+        // Phase 2: External provider cancellation outside database row lock
+        if (info.providerDeliveryId() != null) {
+            boolean cancelFailed = cancelAtProvider(info.providerCode(), info.providerDeliveryId(), reason == null ? "Released" : reason);
+            if (cancelFailed) {
+                recoveryService.scheduleCancellation("FOOD", id, info.providerCode(), info.providerDeliveryId(), reason);
+            }
+        }
+
+        // Phase 3: Book next courier
         book(id, "REASSIGNMENT");
         return deliveries.findById(id).map(d -> d.getProviderDeliveryId() != null).orElse(false);
     }
@@ -583,14 +672,18 @@ public class FoodDeliveryBookingService {
 
     // ── Money ────────────────────────────────────────────────────────────
 
+    private record SettleHoldInfo(Long outletId, BigDecimal unused) {}
+
     /**
      * Return the unused part of the hold once the courier is fixed (the food has been picked up): the agreed maximum less
      * what the courier actually costs. Idempotent. Called by whatever ingests the courier's pickup event.
+     * Keeps wallet network call outside database transactions and locks.
      *
      * @return the amount returned now; zero if there was nothing to return or it had already been
      */
     public BigDecimal settleFee(Long id) {
-        return tx.execute(status -> {
+        // Phase 1: Under short lock, verify status, fee, and amount to refund
+        SettleHoldInfo info = tx.execute(status -> {
             var d = deliveries.lockById(id).orElseThrow(() -> new NotFoundException("FoodDelivery", id));
             if (!(d.getStatus().isInFlight() || d.getStatus() == FoodDeliveryStatus.DELIVERED) || d.getFee() == null) {
                 throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
@@ -598,53 +691,132 @@ public class FoodDeliveryBookingService {
             }
             BigDecimal unused = d.netHeld().subtract(d.getFee());
             if (unused.signum() <= 0) {
+                return new SettleHoldInfo(d.getOutletId(), BigDecimal.ZERO);
+            }
+            if (d.getFeeRefundRef() != null && d.getFeeRefundRef().endsWith("-adjust")) {
+                return new SettleHoldInfo(d.getOutletId(), BigDecimal.ZERO);
+            }
+            return new SettleHoldInfo(d.getOutletId(), unused);
+        });
+
+        if (info == null || info.unused().signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+
+        // Phase 2: External wallet call outside database transaction and row lock
+        boolean refunded = false;
+        try {
+            refunded = wallet.refundFoodDelivery(info.outletId(), id, "adjust", info.unused(),
+                    "Food delivery fee · unused part returned");
+        } catch (Exception ex) {
+            log.warn("Wallet adjust failed for food delivery {}: {}", id, ex.getMessage());
+        }
+
+        // Phase 3: Persist refund outcome under short lock
+        final boolean refundSuccess = refunded;
+        return tx.execute(status -> {
+            var d = deliveries.lockById(id).orElseThrow(() -> new NotFoundException("FoodDelivery", id));
+            if (refundSuccess) {
+                d.setFeeRefundedAmount(d.getFeeRefundedAmount().add(info.unused()));
+                d.setFeeRefundedAt(Instant.now());
+                d.setFeeRefundRef("food-delivery-" + d.getId() + "-adjust");
+                deliveries.save(d);
+                return info.unused();
+            } else {
+                recoveryService.scheduleRefund(d.getId(), d.getOutletId(), "adjust", info.unused(),
+                        "Food delivery fee · unused part returned");
                 return BigDecimal.ZERO;
             }
-            boolean refunded = false;
-            try {
-                refunded = wallet.refundFoodDelivery(d.getOutletId(), d.getId(), "adjust", unused,
-                        "Food delivery fee · unused part returned");
-            } catch (Exception ex) {
-                log.warn("Wallet adjust failed for food delivery {}: {}", d.getId(), ex.getMessage());
-            }
-            if (!refunded) {
-                recoveryService.scheduleRefund(d.getId(), d.getOutletId(), "adjust", unused,
-                        "Food delivery fee · unused part returned");
-                return BigDecimal.ZERO;
-            }
-            d.setFeeRefundedAmount(d.getFeeRefundedAmount().add(unused));
-            d.setFeeRefundedAt(Instant.now());
-            d.setFeeRefundRef("food-delivery-" + d.getId() + "-adjust");
-            deliveries.save(d);
-            return unused;
         });
     }
 
+    private record CancelHoldInfo(Long deliveryId, Long outletId, String providerCode, String providerDeliveryId, BigDecimal held) {}
+
     /**
      * Cancel before pickup: the courier is stood down and the whole hold returned. After pickup the food is on the road
-     * and nobody may cancel it.
+     * and nobody may cancel it. Keeps provider and wallet network calls outside database transactions and locks.
      */
     public FoodDelivery cancel(Long id, String reason) {
-        return tx.execute(status -> {
+        // Phase 1: Under short lock, verify state and update delivery status
+        CancelHoldInfo info = tx.execute(status -> {
             var d = deliveries.lockById(id).orElseThrow(() -> new NotFoundException("FoodDelivery", id));
             if (d.getStatus() == FoodDeliveryStatus.CANCELLED) {
-                return d;
+                return null;
             }
             if (!d.getStatus().isCancellable()) {
                 throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
                         "This delivery can't be cancelled once the food has been picked up.");
             }
-            if (d.getProviderDeliveryId() != null) {
-                releaseProvider(d, "CUSTOMER_CANCEL", reason);
-            }
+            String provCode = d.getProviderCode();
+            String provDeliveryId = d.getProviderDeliveryId();
+            BigDecimal held = d.netHeld();
+
+            attempts.findFirstByFoodDeliveryIdOrderByAttemptNumberDesc(d.getId()).ifPresent(a -> {
+                if ("BOOKED".equals(a.getOutcome())) {
+                    a.setOutcome("CANCELLED");
+                    a.setFailureReason(reason);
+                    a.setEndedAt(Instant.now());
+                    if (a.getEndedCause() == null) {
+                        a.setEndedCause("CUSTOMER_CANCEL");
+                    }
+                    attempts.save(a);
+                }
+            });
+            d.setProviderDeliveryId(null);
+            d.setDriverName(null);
+            d.setDriverPhone(null);
+            d.setDriverVehicle(null);
+            d.setAssignmentDeadline(null);
+
+            Instant now = Instant.now();
             d.moveTo(FoodDeliveryStatus.CANCELLED);
-            d.setCancelledAt(Instant.now());
+            d.setCancelledAt(now);
             d.setFailureReason(reason);
-            refundAll(d, "Food delivery cancelled");
+            d.setTrackingExpiresAt(now.plus(Duration.ofHours(24)));
+            d.setFee(BigDecimal.ZERO);
             deliveries.save(d);
             timeline.record(d, FoodDeliveryStatus.CANCELLED, reason == null ? "Cancelled" : reason);
-            return d;
+
+            return new CancelHoldInfo(d.getId(), d.getOutletId(), provCode, provDeliveryId, held);
         });
+
+        if (info == null) {
+            return deliveries.findById(id).orElseThrow();
+        }
+
+        // Phase 2: External provider cancellation outside database row lock
+        if (info.providerDeliveryId() != null) {
+            boolean cancelFailed = cancelAtProvider(info.providerCode(), info.providerDeliveryId(), reason == null ? "Released" : reason);
+            if (cancelFailed) {
+                recoveryService.scheduleCancellation("FOOD", info.deliveryId(), info.providerCode(), info.providerDeliveryId(), reason);
+            }
+        }
+
+        // Phase 3: External wallet refund outside database transaction and row lock
+        if (info.held().signum() > 0) {
+            boolean ok = false;
+            try {
+                ok = wallet.refundFoodDelivery(info.outletId(), info.deliveryId(), "refund", info.held(), "Food delivery cancelled");
+            } catch (Exception ex) {
+                log.warn("Wallet refund threw for food delivery {}: {}", info.deliveryId(), ex.getMessage());
+            }
+            final boolean refundSuccess = ok;
+            tx.executeWithoutResult(status -> {
+                var d = deliveries.lockById(info.deliveryId()).orElse(null);
+                if (d != null) {
+                    if (refundSuccess) {
+                        d.setFeeRefundedAmount(d.getFeeRefundedAmount().add(info.held()));
+                        d.setFeeRefundedAt(Instant.now());
+                        d.setFeeRefundRef("food-delivery-" + d.getId() + "-refund");
+                        deliveries.save(d);
+                    } else {
+                        recoveryService.scheduleRefund(d.getId(), d.getOutletId(), "refund", info.held(), "Food delivery cancelled");
+                    }
+                }
+            });
+        }
+
+        return deliveries.findById(id).orElseThrow();
     }
 
     /** Returns everything still held. Idempotent on the wallet reference, so a repeat pays nothing twice. */
@@ -670,32 +842,6 @@ public class FoodDeliveryBookingService {
 
     // ── Provider side ────────────────────────────────────────────────────
 
-    /** Stands the current consignment down at the provider and closes its attempt. Durable task is recorded if provider cancel fails. */
-    private void releaseProvider(FoodDelivery d, String cause, String reason) {
-        String providerCode = d.getProviderCode();
-        String providerDeliveryId = d.getProviderDeliveryId();
-        boolean cancelFailed = cancelAtProvider(providerCode, providerDeliveryId, reason == null ? "Released" : reason);
-        if (cancelFailed && providerDeliveryId != null) {
-            recoveryService.scheduleCancellation("FOOD", d.getId(), providerCode, providerDeliveryId, reason);
-        }
-        attempts.findFirstByFoodDeliveryIdOrderByAttemptNumberDesc(d.getId()).ifPresent(a -> {
-            if ("BOOKED".equals(a.getOutcome())) {
-                a.setOutcome("CANCELLED");
-                a.setFailureReason(reason);
-                a.setEndedAt(Instant.now());
-                if (a.getEndedCause() == null) {
-                    a.setEndedCause(cause);
-                }
-                attempts.save(a);
-            }
-        });
-        d.setProviderDeliveryId(null);
-        d.setDriverName(null);
-        d.setDriverPhone(null);
-        d.setDriverVehicle(null);
-        d.setAssignmentDeadline(null);
-    }
-
     private boolean cancelAtProvider(String providerCode, String providerDeliveryId, String reason) {
         var adapter = providerCode == null ? null : registry.adapter(providerCode);
         if (adapter == null || providerDeliveryId == null) {
@@ -710,76 +856,110 @@ public class FoodDeliveryBookingService {
         }
     }
 
+    private record StalePendingInfo(
+            Long deliveryId,
+            Long attemptId,
+            String providerCode,
+            int attemptNumber,
+            BigDecimal quotedAmount,
+            Long deliveryProviderId,
+            String ref
+    ) {}
+
     public void recoverStalePendingAttempt(Long attemptId) {
-        var attemptOpt = attempts.findById(attemptId);
-        if (attemptOpt.isEmpty() || !"PENDING".equals(attemptOpt.get().getOutcome())) {
+        // Phase 1: Verify eligibility under short lock
+        StalePendingInfo info = tx.execute(status -> {
+            var attemptOpt = attempts.findById(attemptId);
+            if (attemptOpt.isEmpty() || !"PENDING".equals(attemptOpt.get().getOutcome())) {
+                return null;
+            }
+            var curAttempt = attemptOpt.get();
+            var d = deliveries.lockById(curAttempt.getFoodDeliveryId()).orElse(null);
+            if (d == null) return null;
+
+            Instant now = Instant.now();
+            if (!curAttempt.getStartedAt().isBefore(now.minus(properties.getPendingStaleAfter()))) {
+                return null;
+            }
+
+            String ref = "mp-food-delivery-%d-%d".formatted(d.getId(), curAttempt.getAttemptNumber());
+            return new StalePendingInfo(d.getId(), curAttempt.getId(), curAttempt.getProviderCode(),
+                    curAttempt.getAttemptNumber(), curAttempt.getQuotedAmount(), curAttempt.getDeliveryProviderId(), ref);
+        });
+
+        if (info == null) {
             return;
         }
-        var attempt = attemptOpt.get();
-        Long deliveryId = attempt.getFoodDeliveryId();
 
+        // Phase 2: External provider lookup outside database transaction and row lock
+        var adapter = registry.adapter(info.providerCode());
+        Optional<DeliveryProvider.ProviderDelivery> lookedUp = Optional.empty();
+        boolean lookupSupported = adapter != null && adapter.supportsLookupByReference();
+        boolean lookupThrew = false;
+
+        if (lookupSupported) {
+            try {
+                lookedUp = adapter.findByReference(info.ref(), info.ref());
+            } catch (Exception ex) {
+                lookupThrew = true;
+                log.warn("Error reconciling stale attempt {} with {}: {}", info.attemptId(), info.providerCode(), ex.getMessage());
+            }
+        }
+
+        final Optional<DeliveryProvider.ProviderDelivery> finalLookedUp = lookedUp;
+        final boolean finalLookupSupported = lookupSupported;
+        final boolean finalLookupThrew = lookupThrew;
+
+        // Phase 3: Persist outcome under short lock
         tx.executeWithoutResult(status -> {
-            var d = deliveries.lockById(deliveryId).orElse(null);
+            var d = deliveries.lockById(info.deliveryId()).orElse(null);
             if (d == null) return;
-            var curAttempt = attempts.findById(attemptId).orElse(null);
+            var curAttempt = attempts.findById(info.attemptId()).orElse(null);
             if (curAttempt == null || !"PENDING".equals(curAttempt.getOutcome())) {
                 return;
             }
 
             Instant now = Instant.now();
-            if (!curAttempt.getStartedAt().isBefore(now.minus(properties.getPendingStaleAfter()))) {
-                return;
-            }
-
-            var adapter = registry.adapter(curAttempt.getProviderCode());
-            String ref = "mp-food-delivery-%d-%d".formatted(d.getId(), curAttempt.getAttemptNumber());
-
-            if (adapter != null && adapter.supportsLookupByReference()) {
-                try {
-                    var lookedUp = adapter.findByReference(ref, ref);
-                    if (lookedUp.isPresent()) {
-                        var booking = lookedUp.get();
-                        log.info("Recovered accepted booking from {} for food delivery {}", curAttempt.getProviderCode(), d.getId());
-                        if (BOOKABLE.contains(d.getStatus()) && d.getProviderDeliveryId() == null) {
-                            curAttempt.setOutcome("BOOKED");
-                            curAttempt.setProviderDeliveryId(booking.providerDeliveryId());
-                            curAttempt.setEndedAt(now);
-                            attempts.save(curAttempt);
-
-                            d.setDeliveryProviderId(curAttempt.getDeliveryProviderId());
-                            d.setProviderCode(curAttempt.getProviderCode());
-                            d.setProviderDeliveryId(booking.providerDeliveryId());
-                            d.setFee(curAttempt.getQuotedAmount());
-                            d.setCurrency("INR");
-                            d.setEtaMinutes(booking.etaMinutes());
-                            d.setEstimatedArrivalAt(booking.estimatedArrivalAt() != null ? booking.estimatedArrivalAt()
-                                    : booking.etaMinutes() == null ? null : now.plusSeconds(booking.etaMinutes() * 60L));
-                            d.setBookedAt(now);
-                            d.setAssignmentDeadline(now.plus(properties.getAssignmentTimeout()));
-                            d.moveTo(FoodDeliveryStatus.PROVIDER_SELECTED);
-                            deliveries.save(d);
-                            timeline.record(d, FoodDeliveryStatus.PROVIDER_SELECTED, "Booking recovered from " + curAttempt.getProviderCode());
-                            return;
-                        } else {
-                            cancelAtProvider(curAttempt.getProviderCode(), booking.providerDeliveryId(), "Delivery no longer active");
-                            curAttempt.setOutcome("CANCELLED");
-                            curAttempt.setEndedCause("RECOVERED_BUT_NOT_WANTED");
-                            curAttempt.setEndedAt(now);
-                            attempts.save(curAttempt);
-                            return;
-                        }
-                    } else {
-                        log.info("Provider {} confirmed pending attempt {} not found", curAttempt.getProviderCode(), curAttempt.getId());
-                        curAttempt.setOutcome("FAILED");
-                        curAttempt.setFailureCode("ABANDONED");
-                        curAttempt.setEndedCause("ABANDONED_STALE_PENDING");
+            if (finalLookupSupported && !finalLookupThrew) {
+                if (finalLookedUp.isPresent()) {
+                    var booking = finalLookedUp.get();
+                    log.info("Recovered accepted booking from {} for food delivery {}", curAttempt.getProviderCode(), d.getId());
+                    if (BOOKABLE.contains(d.getStatus()) && d.getProviderDeliveryId() == null) {
+                        curAttempt.setOutcome("BOOKED");
+                        curAttempt.setProviderDeliveryId(booking.providerDeliveryId());
                         curAttempt.setEndedAt(now);
                         attempts.save(curAttempt);
-                        timeline.record(d, "StaleAttemptAbandoned", d.getStatus(), "Stale booking attempt abandoned as provider confirmed not booked");
+
+                        d.setDeliveryProviderId(curAttempt.getDeliveryProviderId());
+                        d.setProviderCode(curAttempt.getProviderCode());
+                        d.setProviderDeliveryId(booking.providerDeliveryId());
+                        d.setFee(curAttempt.getQuotedAmount());
+                        d.setCurrency("INR");
+                        d.setEtaMinutes(booking.etaMinutes());
+                        d.setEstimatedArrivalAt(booking.estimatedArrivalAt() != null ? booking.estimatedArrivalAt()
+                                : booking.etaMinutes() == null ? null : now.plusSeconds(booking.etaMinutes() * 60L));
+                        d.setBookedAt(now);
+                        d.setAssignmentDeadline(now.plus(properties.getAssignmentTimeout()));
+                        d.moveTo(FoodDeliveryStatus.PROVIDER_SELECTED);
+                        deliveries.save(d);
+                        timeline.record(d, FoodDeliveryStatus.PROVIDER_SELECTED, "Booking recovered from " + curAttempt.getProviderCode());
+                        return;
+                    } else {
+                        curAttempt.setOutcome("CANCELLED");
+                        curAttempt.setEndedCause("RECOVERED_BUT_NOT_WANTED");
+                        curAttempt.setEndedAt(now);
+                        attempts.save(curAttempt);
                         return;
                     }
-                } catch (Exception ex) {
-                    log.warn("Error reconciling stale attempt {} with {}: {}", curAttempt.getId(), curAttempt.getProviderCode(), ex.getMessage());
+                } else {
+                    log.info("Provider {} confirmed pending attempt {} not found", curAttempt.getProviderCode(), curAttempt.getId());
+                    curAttempt.setOutcome("FAILED");
+                    curAttempt.setFailureCode("ABANDONED");
+                    curAttempt.setEndedCause("ABANDONED_STALE_PENDING");
+                    curAttempt.setEndedAt(now);
+                    attempts.save(curAttempt);
+                    timeline.record(d, "StaleAttemptAbandoned", d.getStatus(), "Stale booking attempt abandoned as provider confirmed not booked");
+                    return;
                 }
             }
 
@@ -794,6 +974,14 @@ public class FoodDeliveryBookingService {
             deliveries.save(d);
             timeline.record(d, "ReconciliationRequired", d.getStatus(), "Stale attempt could not be reconciled with " + curAttempt.getProviderCode());
         });
+
+        // If booking was recovered but not wanted, stand down at provider outside transaction
+        if (finalLookupSupported && !finalLookupThrew && finalLookedUp.isPresent()) {
+            var d = deliveries.findById(info.deliveryId()).orElse(null);
+            if (d != null && (d.getProviderDeliveryId() == null || !d.getProviderDeliveryId().equals(finalLookedUp.get().providerDeliveryId()))) {
+                cancelAtProvider(info.providerCode(), finalLookedUp.get().providerDeliveryId(), "Delivery no longer active");
+            }
+        }
     }
 
     // ── Validation ───────────────────────────────────────────────────────

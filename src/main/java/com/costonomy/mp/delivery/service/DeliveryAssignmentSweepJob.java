@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import org.springframework.data.domain.PageRequest;
 
 /**
  * Finds bookings that never got a driver and hands them to the waterfall (doc 06 §14).
@@ -60,10 +61,10 @@ public class DeliveryAssignmentSweepJob {
         if (!enabled) {
             return 0;
         }
-        var overdue = deliveries.findByStatusAndAssignmentDeadlineBefore(
-                DeliveryStatus.PROVIDER_SELECTED, now.minus(grace));
+        var overdue = deliveries.findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            DeliveryStatus.PROVIDER_SELECTED, now.minus(grace), PageRequest.of(0, batch));
         int moved = 0;
-        for (var delivery : overdue.stream().limit(batch).toList()) {
+        for (var delivery : overdue) {
             try {
                 if (waterfall.cascadeUnassigned(delivery.getId())) {
                     moved++;
@@ -86,11 +87,9 @@ public class DeliveryAssignmentSweepJob {
     private int rescueStoodDown(Instant now) {
         var cutoff = now.minus(grace);
         int rescued = 0;
-        var stuck = deliveries.findByStatusIn(List.of(DeliveryStatus.DRIVER_CANCELLED, DeliveryStatus.PICKUP_FAILED))
-                .stream()
-                .filter(d -> d.getUpdatedAt() != null && d.getUpdatedAt().isBefore(cutoff))
-                .limit(batch)
-                .toList();
+        var stuck = deliveries.findByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAscIdAsc(
+            List.of(DeliveryStatus.DRIVER_CANCELLED, DeliveryStatus.PICKUP_FAILED), cutoff,
+            PageRequest.of(0, batch));
         for (var delivery : stuck) {
             try {
                 if (deliveryService.reassignAfterProviderFailure(delivery.getId(), null, "Reassigned by sweep")) {
@@ -111,7 +110,8 @@ public class DeliveryAssignmentSweepJob {
      */
     private int rescueStalePendingAttempts(Instant now) {
         var cutoff = now.minus(Duration.ofMinutes(2));
-        var stale = attempts.findByOutcomeAndStartedAtBefore("PENDING", cutoff);
+        var stale = attempts.findByOutcomeAndStartedAtBeforeOrderByStartedAtAscIdAsc(
+            "PENDING", cutoff, PageRequest.of(0, batch));
         int rescued = 0;
         for (var attempt : stale) {
             try {

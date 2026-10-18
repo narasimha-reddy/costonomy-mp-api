@@ -48,13 +48,17 @@ public class FoodDeliveryJobs {
         runStalePendingSweep(Instant.now());
     }
 
+    private static final int BATCH_SIZE = 50;
+
     /** One retry pass; the scheduled method and the tests both call it. */
     public int runRetry() {
         if (!properties.isJobsEnabled()) {
             return 0;
         }
         int handled = 0;
-        for (var d : deliveries.findByStatusIn(List.of(FoodDeliveryStatus.PROVIDER_UNAVAILABLE, FoodDeliveryStatus.QUOTE_FAILED))) {
+        for (var d : deliveries.findByStatusInOrderByUpdatedAtAsc(
+                List.of(FoodDeliveryStatus.PROVIDER_UNAVAILABLE, FoodDeliveryStatus.QUOTE_FAILED),
+                org.springframework.data.domain.PageRequest.of(0, BATCH_SIZE))) {
             try {
                 booking.retry(d.getId());
                 handled++;
@@ -71,8 +75,9 @@ public class FoodDeliveryJobs {
             return 0;
         }
         int moved = 0;
-        for (var d : deliveries.findByStatusAndAssignmentDeadlineBefore(
-                FoodDeliveryStatus.PROVIDER_SELECTED, now.minus(properties.getSweepGrace()))) {
+        for (var d : deliveries.findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            FoodDeliveryStatus.PROVIDER_SELECTED, now.minus(properties.getSweepGrace()),
+            org.springframework.data.domain.PageRequest.of(0, BATCH_SIZE))) {
             try {
                 if (booking.rebookOnTimeout(d.getId())) {
                     moved++;
@@ -90,7 +95,8 @@ public class FoodDeliveryJobs {
             return 0;
         }
         var staleCutoff = now.minus(properties.getPendingStaleAfter());
-        var stale = attempts.findByOutcomeAndStartedAtBefore("PENDING", staleCutoff);
+        var stale = attempts.findByOutcomeAndStartedAtBeforeOrderByStartedAtAscIdAsc("PENDING", staleCutoff,
+            org.springframework.data.domain.PageRequest.of(0, BATCH_SIZE));
         int recovered = 0;
         for (var attempt : stale) {
             try {

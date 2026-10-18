@@ -10,8 +10,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
-import java.util.UUID;
+import java.util.HexFormat;
 
 /**
  * Handles provider webhook events for food deliveries that are not claimed by supplier delivery (D-197).
@@ -28,6 +31,10 @@ public class FoodDeliveryUnclaimedEventHandler implements UnclaimedDeliveryEvent
     public boolean handle(String providerCode, String providerDeliveryId, JsonNode payload) {
         if (providerDeliveryId == null && payload == null) {
             return false;
+        }
+
+        if (providerDeliveryId == null && payload != null) {
+            providerDeliveryId = extractProviderDeliveryId(payload);
         }
 
         // 1. Look up by providerDeliveryId
@@ -52,16 +59,16 @@ public class FoodDeliveryUnclaimedEventHandler implements UnclaimedDeliveryEvent
 
         // Extract status and event details
         DeliveryProvider.ProviderDeliveryStatus pStatus = extractProviderStatus(payload);
-        String eventId = extractEventId(payload, providerDeliveryId);
-        String description = payload != null && payload.hasNonNull("description") ? payload.path("description").asText() : null;
         Instant occurredAt = extractOccurredAt(payload);
+        String eventId = extractEventId(payload, providerCode, providerDeliveryId, pStatus, occurredAt);
+        String description = payload != null && payload.hasNonNull("description") ? payload.path("description").asText() : null;
 
         // Driver details if present
         String riderName = payload != null && payload.hasNonNull("rider_name") ? payload.path("rider_name").asText() : null;
         String riderPhone = payload != null && payload.hasNonNull("rider_phone") ? payload.path("rider_phone").asText() : null;
         String riderVehicle = payload != null && payload.hasNonNull("rider_vehicle") ? payload.path("rider_vehicle").asText() : null;
         if (riderName != null || riderPhone != null || riderVehicle != null) {
-            eventService.recordDriver(delivery, riderName, riderPhone, riderVehicle);
+            eventService.recordDriver(delivery, providerCode, providerDeliveryId, riderName, riderPhone, riderVehicle);
         }
 
         // Location if present
@@ -69,7 +76,7 @@ public class FoodDeliveryUnclaimedEventHandler implements UnclaimedDeliveryEvent
             try {
                 BigDecimal lat = new BigDecimal(payload.path("latitude").asText());
                 BigDecimal lng = new BigDecimal(payload.path("longitude").asText());
-                eventService.recordLocation(delivery, lat, lng, null, null, occurredAt);
+                eventService.recordLocation(delivery, providerCode, providerDeliveryId, lat, lng, null, null, occurredAt);
             } catch (Exception ex) {
                 log.debug("Could not parse coordinates from payload: {}", ex.getMessage());
             }
@@ -77,10 +84,24 @@ public class FoodDeliveryUnclaimedEventHandler implements UnclaimedDeliveryEvent
 
         if (pStatus != null) {
             var provEvent = new DeliveryProvider.ProviderEvent(eventId, pStatus, description, occurredAt);
-            eventService.apply(delivery, provEvent, providerCode, payload);
+            eventService.apply(delivery, providerCode, providerDeliveryId, provEvent, payload);
         }
 
         return true;
+    }
+
+    private String extractProviderDeliveryId(JsonNode payload) {
+        if (payload == null) return null;
+        String[] fields = {"delivery_id", "consignment_id", "provider_delivery_id", "task_id", "job_id", "order_id"};
+        for (String field : fields) {
+            if (payload.hasNonNull(field)) {
+                String val = payload.path(field).asText().trim();
+                if (!val.startsWith("FD-") && !val.startsWith("mp-food-delivery-")) {
+                    return val;
+                }
+            }
+        }
+        return null;
     }
 
     private Long extractFoodDeliveryId(JsonNode payload) {
@@ -126,14 +147,28 @@ public class FoodDeliveryUnclaimedEventHandler implements UnclaimedDeliveryEvent
         };
     }
 
-    private String extractEventId(JsonNode payload, String providerDeliveryId) {
+    private String extractEventId(JsonNode payload, String providerCode, String providerDeliveryId,
+                                  DeliveryProvider.ProviderDeliveryStatus status, Instant occurredAt) {
         if (payload != null && payload.hasNonNull("event_id")) {
             return payload.path("event_id").asText();
         }
         if (payload != null && payload.hasNonNull("id")) {
-            return payload.path("id").asText();
+            String idVal = payload.path("id").asText();
+            if (providerDeliveryId == null || !providerDeliveryId.equals(idVal)) {
+                return idVal;
+            }
         }
-        return "evt_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            String base = (providerCode == null ? "" : providerCode) + "|"
+                    + (providerDeliveryId == null ? "" : providerDeliveryId) + "|"
+                    + (status == null ? "" : status.name()) + "|"
+                    + (payload == null ? "" : payload.toString());
+            byte[] digest = md.digest(base.getBytes(StandardCharsets.UTF_8));
+            return "evt_" + HexFormat.of().formatHex(digest).substring(0, 32);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
+        }
     }
 
     private Instant extractOccurredAt(JsonNode payload) {

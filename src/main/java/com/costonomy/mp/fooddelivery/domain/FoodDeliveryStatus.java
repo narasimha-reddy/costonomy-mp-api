@@ -109,11 +109,11 @@ public enum FoodDeliveryStatus {
             // FAILED from here: no courier took it within the retry window (failure code NO_COURIER).
             case QUOTE_FAILED -> Set.of(QUOTED, QUOTE_FAILED, CANCELLED, FAILED);
             // PROVIDER_SELECTED to itself: the waterfall booked the next courier after one timed out.
-            case PROVIDER_SELECTED -> Set.of(DRIVER_ASSIGNED, PROVIDER_SELECTED, PROVIDER_UNAVAILABLE, CANCELLED);
+            case PROVIDER_SELECTED -> Set.of(DRIVER_ASSIGNED, AT_PICKUP, PICKED_UP, OUT_FOR_DELIVERY, ARRIVED, DELIVERED, PROVIDER_SELECTED, PROVIDER_UNAVAILABLE, CANCELLED);
             case PROVIDER_UNAVAILABLE -> Set.of(PROVIDER_SELECTED, QUOTED, CANCELLED, FAILED);
             // A courier cancelling before pickup sends the delivery back to selection (reassign).
-            case DRIVER_ASSIGNED -> Set.of(AT_PICKUP, PICKED_UP, PROVIDER_SELECTED, CANCELLED);
-            case AT_PICKUP -> Set.of(PICKED_UP, PROVIDER_SELECTED, CANCELLED);
+            case DRIVER_ASSIGNED -> Set.of(AT_PICKUP, PICKED_UP, OUT_FOR_DELIVERY, ARRIVED, DELIVERED, PROVIDER_SELECTED, CANCELLED);
+            case AT_PICKUP -> Set.of(PICKED_UP, OUT_FOR_DELIVERY, ARRIVED, DELIVERED, PROVIDER_SELECTED, CANCELLED);
             case PICKED_UP -> Set.of(OUT_FOR_DELIVERY, ARRIVED, DELIVERED, FAILED);
             case OUT_FOR_DELIVERY -> Set.of(ARRIVED, DELIVERED, FAILED);
             case ARRIVED -> Set.of(DELIVERED, FAILED);

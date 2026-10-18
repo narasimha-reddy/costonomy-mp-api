@@ -110,7 +110,6 @@ public final class FoodDeliveryDtos {
             Integer etaMinutes,
             Instant estimatedArrivalAt,
             String pickupAddress,
-            String dropAddress,
             BigDecimal lastKnownLatitude,
             BigDecimal lastKnownLongitude,
             boolean locationStale,
