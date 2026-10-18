@@ -69,7 +69,11 @@ public class DeliveryBookingService {
         this.directory = directory;
         this.recoveryService = recoveryService;
         this.tx = new org.springframework.transaction.support.TransactionTemplate(txManager);
-        this.tx.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        // REQUIRED, not REQUIRES_NEW: request, reassign, retry and auto-dispatch call book() from inside their own
+        // transaction, which holds the uncommitted delivery row (and a lock on it). A new transaction would block on
+        // the attempt row's foreign key to that row until the lock wait timed out, a self-deadlock. Called with no
+        // transaction (the jobs), each step still commits on its own, so the provider call sits between commits.
+        this.tx.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRED);
     }
 
     @org.springframework.beans.factory.annotation.Value("${costonomy.mp.delivery.bike-assignment-timeout:PT3M}")
