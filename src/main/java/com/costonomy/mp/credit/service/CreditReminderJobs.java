@@ -14,7 +14,11 @@ public class CreditReminderJobs {
 
     private final CreditAutoReminderService reminders;
 
-    @Scheduled(fixedDelayString = "${costonomy.mp.credit.reminder-interval:PT1H}")
+    // A fixed-delay job with no initial delay runs once as soon as the application context starts, whatever the interval.
+    // The default here is no delay, as before. The test profile sets it long, because under load that first run lands
+    // late, in the middle of the first test of a class, and sends the reminder the test was about to send.
+    @Scheduled(fixedDelayString = "${costonomy.mp.credit.reminder-interval:PT1H}",
+            initialDelayString = "${costonomy.mp.credit.reminder-initial-delay:PT0S}")
     @SchedulerLock(name = "credit-reminders", lockAtMostFor = "PT30M", lockAtLeastFor = "PT0S")
     public void runReminders() {
         int released = reminders.releaseQueued();

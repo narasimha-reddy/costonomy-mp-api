@@ -47,7 +47,26 @@ public class OtpService {
     private final OtpVerificationRepository repository;
     private final OtpAttemptStore attemptStore;
     private final OtpProvider otpProvider;
-    private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
+
+    /** BCrypt's default cost, and what production runs. See {@link #bcryptStrength}. */
+    static final int DEFAULT_BCRYPT_STRENGTH = 10;
+
+    /**
+     * BCrypt cost of the OTP hash. Production runs the default of 10: slow on purpose, so a leaked hash of a six-digit code
+     * costs an attacker real time. The test profile lowers it to BCrypt's minimum (4), because the integration suite signs in
+     * thousands of times and a throwaway code does not need to resist anyone; {@code ProductionProviderGuard} refuses to start
+     * a production profile with anything below the default. A hash records its own cost, so changing this never invalidates a
+     * code already issued.
+     */
+    @Value("${costonomy.mp.otp.bcrypt-strength:10}")
+    private int bcryptStrength = DEFAULT_BCRYPT_STRENGTH;
+
+    private BCryptPasswordEncoder encoder = new BCryptPasswordEncoder(DEFAULT_BCRYPT_STRENGTH);
+
+    @jakarta.annotation.PostConstruct
+    void configureEncoder() {
+        encoder = new BCryptPasswordEncoder(bcryptStrength);
+    }
 
     @Value("${costonomy.mp.otp.length:6}")
     private int otpLength;

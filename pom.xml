@@ -24,6 +24,23 @@
 		<maven.compiler.target>17</maven.compiler.target>
 		<testcontainers.version>1.21.3</testcontainers.version>
 		<!--
+		  Integration tests run in this many forked JVMs at once. Each fork is its own JVM with its own MySQL container
+		  (AbstractIntegrationTest starts one per JVM), its own Spring contexts and its own random ports, so forks share no
+		  database, port or static state; upload file names are UUIDs and the invoice tests use temp directories. Test
+		  classes are NOT run concurrently inside one JVM: they share cached Spring contexts, a database and static test
+		  doubles, and several are order-sensitive. 1 restores the old serial run:  mvn verify -Dit.forks=1
+		  Measured on an 8-core laptop, clean build: 1 fork 19.8 min, 2 forks 11.2 min, 3 forks 10.7 min (the original, before
+		  the test-speed changes, took 24.7 min). 2 is the default: nearly all of the gain, and it fits a 4-vCPU CI runner.
+		-->
+		<it.forks>2</it.forks>
+		<!--
+		  Extra JVM arguments for each integration-test fork. Empty on purpose: a fork keeps every Spring context it has
+		  built (about 40 across the suite), and a flat -Xmx2g measured at 350% CPU of garbage collection for over an hour
+		  where the JVM's own default (a quarter of RAM) finishes the serial suite in minutes. With several forks each holds
+		  fewer contexts. To bound memory on a small machine, set it explicitly:  mvn verify -Dit.argLine=-Xmx3g
+		-->
+		<it.argLine></it.argLine>
+		<!--
 		  Docker Engine API version Testcontainers negotiates with.
 
 		  Testcontainers 1.21.3 bundles docker-java 3.4.2, whose default negotiated
@@ -292,6 +309,10 @@
 						<include>**/*Test.java</include>
 						<include>**/*IT.java</include>
 					</includes>
+					<forkCount>${it.forks}</forkCount>
+					<!-- Reused: the MySQL container is a static started once per JVM; a fresh JVM per class would start one each. -->
+					<reuseForks>true</reuseForks>
+					<argLine>${it.argLine}</argLine>
 					<systemPropertyVariables>
 						<!-- docker-java reads this system property; the
 						     DOCKER_API_VERSION env var is NOT consulted here. -->

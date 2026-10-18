@@ -39,6 +39,33 @@ class ProductionProviderGuardTest {
     }
 
     @Test
+    @DisplayName("a production profile may not run the OTP hash weaker than the default; the test profile may")
+    void otpHashCostCannotBeLoweredInProduction() {
+        var prod = new MockEnvironment();
+        prod.setActiveProfiles("prod");
+        prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+        prod.setProperty("costonomy.mp.providers.otp", "MSG91");
+        prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        realInvoices(prod);
+        prod.setProperty("costonomy.mp.otp.bcrypt-strength", "4");
+        assertThatThrownBy(() -> ProductionProviderGuard.check(prod))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("costonomy.mp.otp.bcrypt-strength");
+        prod.setProperty("costonomy.mp.otp.bcrypt-strength", "9");
+        assertThatThrownBy(() -> ProductionProviderGuard.check(prod)).isInstanceOf(IllegalStateException.class);
+
+        prod.setProperty("costonomy.mp.otp.bcrypt-strength", "10");
+        assertThatCode(() -> ProductionProviderGuard.check(prod)).doesNotThrowAnyException();
+        prod.setProperty("costonomy.mp.otp.bcrypt-strength", "12");
+        assertThatCode(() -> ProductionProviderGuard.check(prod)).doesNotThrowAnyException();
+
+        var test = new MockEnvironment();
+        test.setActiveProfiles("test");
+        test.setProperty("costonomy.mp.otp.bcrypt-strength", "4");
+        assertThatCode(() -> ProductionProviderGuard.check(test)).doesNotThrowAnyException();
+    }
+
+    @Test
     @DisplayName("D-110: the switch that skips the check before a withdrawal is refused under production, and fine locally")
     void withdrawalPrecheckCannotBeSwitchedOffInProduction() {
         var prod = new MockEnvironment();

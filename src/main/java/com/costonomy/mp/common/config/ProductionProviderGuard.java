@@ -54,6 +54,13 @@ public class ProductionProviderGuard {
                         + "Set it to the real provider, or run without the production profile.");
             }
         }
+        // The OTP hash is slow on purpose. The test profile lowers its cost so the suite signs in quickly; a production
+        // profile must never come up with less than the default of 10, however the property got set.
+        Integer otpStrength = environment.getProperty("costonomy.mp.otp.bcrypt-strength", Integer.class);
+        if (otpStrength != null && otpStrength < 10) {
+            throw new IllegalStateException("costonomy.mp.otp.bcrypt-strength is " + otpStrength
+                    + " under a production profile. It is for the test profile only; remove it, or set it to 10 or more.");
+        }
         // A switch for watching a withdrawal be reversed on a local stack (D-110). With it off, a
         // withdrawal is debited without first asking the provider whether it can be refunded. Any explicit
         // value but exactly "true" is refused, not only "false": Spring reads off, no and 0 as false too, and
