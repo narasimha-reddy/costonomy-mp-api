@@ -12,6 +12,8 @@ public interface DeliveryProviderAttemptRepository
 
     List<DeliveryProviderAttempt> findByDeliveryIdOrderByAttemptNumberAsc(Long deliveryId);
 
+    boolean existsByDeliveryIdAndOutcome(Long deliveryId, String outcome);
+
     Optional<DeliveryProviderAttempt> findFirstByDeliveryIdOrderByAttemptNumberDesc(Long deliveryId);
 
     List<DeliveryProviderAttempt> findByOutcomeAndStartedAtBefore(String outcome, java.time.Instant threshold);

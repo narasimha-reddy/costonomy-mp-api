@@ -76,7 +76,7 @@ public class DeliveryAssignmentSweepJob {
         if (!overdue.isEmpty()) {
             log.info("Assignment sweep: {} overdue, {} moved to another courier", overdue.size(), moved);
         }
-        return moved + rescueStoodDown(now) + rescueStalePendingAttempts(now);
+        return moved + rescueStoodDown(now) + rescueUnbooked(now) + rescueStalePendingAttempts(now);
     }
 
     /**
@@ -101,6 +101,29 @@ public class DeliveryAssignmentSweepJob {
         }
         if (!stuck.isEmpty()) {
             log.info("Assignment sweep: {} stood down by the provider, {} given another courier", stuck.size(), rescued);
+        }
+        return rescued;
+    }
+
+    /**
+     * Deliveries quoted but never booked: the process stopped after the quote committed and before the courier was
+     * called (booking runs outside the transaction). Nothing else looks at a delivery in {@code QUOTE_RECEIVED}.
+     */
+    private int rescueUnbooked(Instant now) {
+        var stuck = deliveries.findByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAscIdAsc(
+            List.of(DeliveryStatus.QUOTE_RECEIVED), now.minus(grace), PageRequest.of(0, batch));
+        int rescued = 0;
+        for (var delivery : stuck) {
+            try {
+                if (deliveryService.bookQuoted(delivery.getId())) {
+                    rescued++;
+                }
+            } catch (RuntimeException ex) {
+                log.error("Assignment sweep could not book quoted delivery {}", delivery.getId(), ex);
+            }
+        }
+        if (!stuck.isEmpty()) {
+            log.info("Assignment sweep: {} quoted but unbooked, {} booked", stuck.size(), rescued);
         }
         return rescued;
     }

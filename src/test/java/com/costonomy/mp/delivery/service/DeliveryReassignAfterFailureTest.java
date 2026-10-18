@@ -57,7 +57,8 @@ class DeliveryReassignAfterFailureTest {
         service = new DeliveryService(
                 deliveries, events, locations, attempts, quoting, booking,
                 eventService, orderBridge, timeline, directory, registry,
-                accessControl, auditService, new PidgeProperties(), recoveryService);
+                accessControl, auditService, new PidgeProperties(), recoveryService,
+                org.mockito.Mockito.mock(org.springframework.transaction.PlatformTransactionManager.class));
     }
 
     private static Delivery delivery(DeliveryStatus status) {
@@ -77,7 +78,9 @@ class DeliveryReassignAfterFailureTest {
     }
 
     private void lock(Delivery d) {
-        when(deliveries.lockById(7L)).thenReturn(Optional.of(d));
+        org.mockito.Mockito.lenient().when(deliveries.lockById(7L)).thenReturn(Optional.of(d));
+        // The booking step and the closing transaction each read it again.
+        org.mockito.Mockito.lenient().when(deliveries.findById(7L)).thenReturn(Optional.of(d));
     }
 
     @Test
@@ -168,5 +171,46 @@ class DeliveryReassignAfterFailureTest {
     void missingDelivery() {
         when(deliveries.lockById(7L)).thenReturn(Optional.empty());
         assertThat(service.reassignAfterProviderFailure(7L, null, "x")).isFalse();
+    }
+
+    @Test
+    @DisplayName("bookQuoted books a delivery that was quoted but never booked, skipping couriers already tried")
+    void bookQuotedBooksAQuotedDelivery() {
+        var d = delivery(DeliveryStatus.QUOTE_RECEIVED);
+        lock(d);
+        when(booking.triedProviders(7L)).thenReturn(List.of("PIDGE"));
+        doAnswer(inv -> { d.setStatus(DeliveryStatus.PROVIDER_SELECTED); return true; })
+                .when(booking).book(eq(d), eq(List.of("PIDGE")), eq("BOOKING"));
+
+        assertThat(service.bookQuoted(7L)).isTrue();
+    }
+
+    @Test
+    @DisplayName("bookQuoted leaves a delivery alone when a booking is already in progress or it is past quoting")
+    void bookQuotedLeavesOthersAlone() {
+        var pending = delivery(DeliveryStatus.QUOTE_RECEIVED);
+        lock(pending);
+        when(attempts.existsByDeliveryIdAndOutcome(7L, "PENDING")).thenReturn(true);
+        assertThat(service.bookQuoted(7L)).isFalse();
+
+        var booked = delivery(DeliveryStatus.PROVIDER_SELECTED);
+        lock(booked);
+        org.mockito.Mockito.reset(attempts);
+        assertThat(service.bookQuoted(7L)).isFalse();
+
+        verify(booking, never()).book(any(), anyList(), anyString());
+    }
+
+    @Test
+    @DisplayName("a stood-down delivery with a booking already pending is not booked a second time")
+    void pendingAttemptBlocksSecondReassign() {
+        var d = delivery(DeliveryStatus.DRIVER_CANCELLED);
+        lock(d);
+        when(directory.order(100L)).thenReturn(order("READY_FOR_PICKUP"));
+        when(attempts.existsByDeliveryIdAndOutcome(7L, "PENDING")).thenReturn(true);
+
+        assertThat(service.reassignAfterProviderFailure(7L, null, "x")).isFalse();
+
+        verify(booking, never()).book(any(), anyList(), anyString());
     }
 }

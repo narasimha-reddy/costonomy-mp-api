@@ -90,6 +90,9 @@ class DeliveryBookingServiceTest {
     private Delivery createDelivery(Long id, VehicleType vehicleType) {
         Delivery delivery = new Delivery();
         delivery.setId(id);
+        // book() reads the delivery afresh inside each of its own transactions.
+        lenient().when(deliveries.lockById(id)).thenReturn(java.util.Optional.of(delivery));
+        lenient().when(deliveries.findById(id)).thenReturn(java.util.Optional.of(delivery));
         delivery.setSupplierOrderId(200L);
         delivery.setVehicleType(vehicleType);
         delivery.setWeightKg(BigDecimal.valueOf(10.0));

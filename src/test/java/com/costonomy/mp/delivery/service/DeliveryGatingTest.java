@@ -47,7 +47,8 @@ class DeliveryGatingTest {
         service = new DeliveryService(
                 deliveries, events, locations, attempts, quoting, booking,
                 eventService, orderBridge, timeline, directory, registry,
-                accessControl, auditService, pidgeProperties, recoveryService);
+                accessControl, auditService, pidgeProperties, recoveryService,
+                org.mockito.Mockito.mock(org.springframework.transaction.PlatformTransactionManager.class));
     }
 
     @Test
@@ -86,6 +87,18 @@ class DeliveryGatingTest {
 
         var policy = new DeliveryDirectory.DeliveryPolicy(true, false, BigDecimal.ZERO, null, BigDecimal.ZERO, null, null);
         when(directory.deliveryPolicy(20L)).thenReturn(policy);
+
+        // The delivery is committed first and read back for the response: a save assigns the id, a find returns it.
+        var saved = new java.util.concurrent.atomic.AtomicReference<com.costonomy.mp.delivery.domain.Delivery>();
+        when(deliveries.save(any(com.costonomy.mp.delivery.domain.Delivery.class))).thenAnswer(inv -> {
+            com.costonomy.mp.delivery.domain.Delivery d = inv.getArgument(0);
+            if (d.getId() == null) {
+                d.setId(55L);
+            }
+            saved.set(d);
+            return d;
+        });
+        when(deliveries.findById(55L)).thenAnswer(inv -> Optional.of(saved.get()));
 
         var result = service.autoDispatch(101L);
 

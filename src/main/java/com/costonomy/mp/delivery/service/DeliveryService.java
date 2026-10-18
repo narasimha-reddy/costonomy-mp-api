@@ -18,8 +18,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -56,6 +57,46 @@ public class DeliveryService {
     private final AuditService auditService;
     private final PidgeProperties pidgeProperties;
     private final DeliveryRecoveryService recoveryService;
+    private final PlatformTransactionManager txManager;
+
+    /** What the first transaction decided: which delivery to book (or none), skipping which couriers, as what. */
+    private record Prepared(Long deliveryId, String orderNumber, List<String> toBook, String attemptType) {
+        static Prepared nothingToBook(Long deliveryId, String orderNumber) {
+            return new Prepared(deliveryId, orderNumber, null, null);
+        }
+    }
+
+    private <T> T inTx(java.util.function.Supplier<T> work) {
+        // REQUIRES_NEW: also correct when called from an AFTER_COMMIT listener, where the committed transaction is
+        // still bound to the thread and joining it would silently never commit.
+        var template = new TransactionTemplate(txManager);
+        template.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        return template.execute(status -> work.get());
+    }
+
+    /**
+     * The booking step, run with no transaction open. The provider call is a remote request that can take seconds;
+     * holding the delivery's row lock and a connection across it would stall everything else that touches the
+     * delivery. {@code book()} commits each of its own steps (reserve the attempt, call, record the outcome), so a crash
+     * between the call and the record is what the stale-attempt recovery is for.
+     */
+    private void bookOutsideTransaction(Prepared p) {
+        if (p == null || p.toBook() == null) {
+            return;
+        }
+        var delivery = deliveries.findById(p.deliveryId()).orElse(null);
+        if (delivery != null) {
+            booking.book(delivery, p.toBook(), p.attemptType());
+        }
+    }
+
+    private DeliveryDtos.DeliveryResponse bookAndRespond(Prepared p) {
+        if (p == null) {
+            return null;
+        }
+        bookOutsideTransaction(p);
+        return inTx(() -> toResponse(deliveries.findById(p.deliveryId()).orElseThrow(), p.orderNumber()));
+    }
 
     /** Doc 06 §8: past this, a position is shown as stale rather than as current. */
     @Value("${costonomy.mp.delivery.auto-retry.window:PT30M}")
@@ -73,9 +114,13 @@ public class DeliveryService {
      * returns the delivery that already exists rather than sending a second courier
      * to the same door.
      */
-    @Transactional
     public DeliveryDtos.DeliveryResponse request(Long actorId, Long supplierOrderId,
                                                  DeliveryDtos.RequestDeliveryRequest body) {
+        return bookAndRespond(inTx(() -> prepareRequest(actorId, supplierOrderId, body)));
+    }
+
+    private Prepared prepareRequest(Long actorId, Long supplierOrderId,
+                                    DeliveryDtos.RequestDeliveryRequest body) {
 
         var order = directory.order(supplierOrderId);
         if (order == null) {
@@ -87,7 +132,7 @@ public class DeliveryService {
 
         var existing = deliveries.findBySupplierOrderId(supplierOrderId).orElse(null);
         if (existing != null) {
-            return toResponse(existing, order.orderNumber());
+            return Prepared.nothingToBook(existing.getId(), order.orderNumber());
         }
 
         if (!"READY_FOR_PICKUP".equals(order.status())) {
@@ -148,11 +193,11 @@ public class DeliveryService {
             timeline.record(delivery, DeliveryStatus.DRIVER_ASSIGNED.eventName(),
                     DeliveryStatus.DRIVER_ASSIGNED,
                     "The supplier is delivering this order");
-            return toResponse(delivery, order.orderNumber());
+            return Prepared.nothingToBook(delivery.getId(), order.orderNumber());
         }
 
-        quoteAndBook(delivery, order, body.requiredEtaMinutes(), List.of(), "BOOKING");
-        return toResponse(delivery, order.orderNumber());
+        boolean quoted = quote(delivery, order, body.requiredEtaMinutes(), List.of());
+        return new Prepared(delivery.getId(), order.orderNumber(), quoted ? List.of() : null, "BOOKING");
     }
 
     /**
@@ -163,10 +208,14 @@ public class DeliveryService {
      * the booking its order exists outside our database. If this ran inside the event's transaction, any later
      * failure there (another listener, the commit itself) would roll back the delivery row and its attempt and
      * ledger rows but not the courier, and the retry would find no delivery and book a second courier. Committed
-     * on its own, the retry meets the existing-delivery check below instead.
+     * on its own, the retry meets the existing-delivery check below instead. The delivery is committed before the
+     * courier is called, and the call runs with no transaction open.
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public DeliveryDtos.DeliveryResponse autoDispatch(Long supplierOrderId) {
+        return bookAndRespond(inTx(() -> prepareAutoDispatch(supplierOrderId)));
+    }
+
+    private Prepared prepareAutoDispatch(Long supplierOrderId) {
         var order = directory.order(supplierOrderId);
         if (order == null) {
             log.warn("Auto-dispatch ignored: supplier order {} not found", supplierOrderId);
@@ -176,7 +225,7 @@ public class DeliveryService {
         var existing = deliveries.findBySupplierOrderId(supplierOrderId).orElse(null);
         if (existing != null) {
             log.debug("Auto-dispatch: delivery already exists for order {}", supplierOrderId);
-            return toResponse(existing, order.orderNumber());
+            return Prepared.nothingToBook(existing.getId(), order.orderNumber());
         }
 
         if (!"READY_FOR_PICKUP".equals(order.status())) {
@@ -235,23 +284,22 @@ public class DeliveryService {
             timeline.record(delivery, DeliveryStatus.DRIVER_ASSIGNED.eventName(),
                     DeliveryStatus.DRIVER_ASSIGNED,
                     "The supplier is delivering this order");
-            return toResponse(delivery, order.orderNumber());
+            return Prepared.nothingToBook(delivery.getId(), order.orderNumber());
         }
 
-        quoteAndBook(delivery, order, null, List.of(), "BOOKING");
-        return toResponse(delivery, order.orderNumber());
+        boolean quoted = quote(delivery, order, null, List.of());
+        return new Prepared(delivery.getId(), order.orderNumber(), quoted ? List.of() : null, "BOOKING");
     }
 
     /**
-     * Gather quotes, then book. Doc 06 §6 steps 3–6.
+     * Gather quotes. Doc 06 §6 steps 3–5; the booking (step 6) follows, outside the transaction.
      *
      * <p>One call rather than two endpoints the client sequences: doc 04 §14 exposes
      * quoting separately for operations, but a restaurant asking for delivery wants
      * a courier, not a list of prices they are not allowed to see anyway.
      */
-    private void quoteAndBook(Delivery delivery, DeliveryDirectory.OrderInfo order,
-                              Integer requiredEtaMinutes, List<String> excluded,
-                              String attemptType) {
+    private boolean quote(Delivery delivery, DeliveryDirectory.OrderInfo order,
+                          Integer requiredEtaMinutes, List<String> excluded) {
 
         var outcome = quoting.gather(delivery, order.deliveryFee(),
                 directory.consignmentWeightGrams(delivery.getSupplierOrderId()),
@@ -272,13 +320,12 @@ public class DeliveryService {
             timeline.record(delivery, DeliveryStatus.QUOTE_FAILED.eventName(),
                     DeliveryStatus.QUOTE_FAILED,
                     delivery.getFailureReason());
-            return;
+            return false;
         }
 
         delivery.setStatus(DeliveryStatus.QUOTE_RECEIVED);
         deliveries.save(delivery);
-
-        booking.book(delivery, excluded, attemptType);
+        return true;
     }
 
     /**
@@ -380,9 +427,28 @@ public class DeliveryService {
      * would show two journeys for one consignment and would make delivery failure
      * rates meaningless.
      */
-    @Transactional
     public DeliveryDtos.DeliveryResponse reassign(Long actorId, Long deliveryId, String reason) {
-        // Locked, so a manual retry and the automatic one (D-185) cannot both book a partner.
+        var prepared = inTx(() -> prepareReassign(actorId, deliveryId, reason));
+        bookOutsideTransaction(prepared);
+        return inTx(() -> {
+            var delivery = deliveries.findById(deliveryId).orElseThrow();
+            if (delivery.getStatus() == DeliveryStatus.PROVIDER_UNAVAILABLE) {
+                throw new BusinessException(ErrorCode.DELIVERY_REASSIGNMENT_FAILED,
+                        "No other delivery partner could take this order.");
+            }
+
+            auditService.record(actorId, null, "DELIVERY_REASSIGNED", "DELIVERY", deliveryId,
+                    null, delivery.getStatus().name(), reason, "API");
+            timeline.record(delivery, "DeliveryReassigned", delivery.getStatus(),
+                    "Finding another driver");
+
+            return toResponse(delivery, prepared.orderNumber());
+        });
+    }
+
+    private Prepared prepareReassign(Long actorId, Long deliveryId, String reason) {
+        // Locked, so a manual retry and the automatic one (D-185) cannot both start a booking. Once this commits the
+        // lock is gone while the courier is called, so a second caller is stopped by the pending attempt instead.
         var delivery = loadLockedForEitherSide(actorId, deliveryId);
         delivery.setLastRetryAt(Instant.now());
 
@@ -400,6 +466,10 @@ public class DeliveryService {
             throw new BusinessException(ErrorCode.DELIVERY_REASSIGNMENT_FAILED,
                     "This order has already been picked up.");
         }
+        if (attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
+            throw new BusinessException(ErrorCode.DELIVERY_REASSIGNMENT_FAILED,
+                    "A delivery partner is already being booked for this order.");
+        }
 
         var order = directory.order(delivery.getSupplierOrderId());
         // Providers already tried are skipped when a booked partner failed and another is wanted. When nobody holds the
@@ -412,24 +482,11 @@ public class DeliveryService {
 
         // Excluding the couriers already tried is the whole point: handing it back
         // to the one that just cancelled is not a reassignment.
-        var usable = quoting.usableQuotes(deliveryId, tried, delivery.isRequiresColdChain());
-        if (usable.isEmpty()) {
-            quoteAndBook(delivery, order, null, tried, "REASSIGNMENT");
-        } else {
-            booking.book(delivery, tried, "REASSIGNMENT");
-        }
-
-        if (delivery.getStatus() == DeliveryStatus.PROVIDER_UNAVAILABLE) {
-            throw new BusinessException(ErrorCode.DELIVERY_REASSIGNMENT_FAILED,
-                    "No other delivery partner could take this order.");
-        }
-
-        auditService.record(actorId, null, "DELIVERY_REASSIGNED", "DELIVERY", deliveryId,
-                null, delivery.getStatus().name(), reason, "API");
-        timeline.record(delivery, "DeliveryReassigned", delivery.getStatus(),
-                "Finding another driver");
-
-        return toResponse(delivery, order == null ? null : order.orderNumber());
+        boolean bookable = quoting.usableQuotes(deliveryId, tried, delivery.isRequiresColdChain()).isEmpty()
+                ? quote(delivery, order, null, tried)
+                : true;
+        return new Prepared(deliveryId, order == null ? null : order.orderNumber(),
+                bookable ? tried : null, "REASSIGNMENT");
     }
 
     /**
@@ -445,43 +502,80 @@ public class DeliveryService {
      *                                 one, this is stale and does nothing. Null skips that check (the sweep).
      * @return true if another courier was booked
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public boolean reassignAfterProviderFailure(Long deliveryId, String failedProviderDeliveryId, String reason) {
+        var prepared = inTx(() -> prepareReassignAfterProviderFailure(deliveryId, failedProviderDeliveryId, reason));
+        if (prepared == null) {
+            return false;
+        }
+        bookOutsideTransaction(prepared);
+        return inTx(() -> {
+            var delivery = deliveries.findById(deliveryId).orElseThrow();
+            boolean booked = delivery.getStatus() == DeliveryStatus.PROVIDER_SELECTED;
+            auditService.record(null, null, "DELIVERY_REASSIGNED_AUTO", "DELIVERY", deliveryId,
+                    null, delivery.getStatus().name(), reason, "SYSTEM");
+            timeline.record(delivery, "DeliveryReassigned", delivery.getStatus(),
+                    booked ? "Finding another driver" : "No other driver is available yet");
+            return booked;
+        });
+    }
+
+    private Prepared prepareReassignAfterProviderFailure(Long deliveryId, String failedProviderDeliveryId,
+                                                         String reason) {
         var delivery = deliveries.lockById(deliveryId).orElse(null);
         if (delivery == null || delivery.getMode() != DeliveryMode.COSTONOMY) {
-            return false;
+            return null;
         }
         if (delivery.getStatus() != DeliveryStatus.DRIVER_CANCELLED
                 && delivery.getStatus() != DeliveryStatus.PICKUP_FAILED) {
-            return false;
+            return null;
         }
         if (failedProviderDeliveryId != null
                 && !failedProviderDeliveryId.equals(delivery.getProviderDeliveryId())) {
-            return false;
+            return null;
         }
         var order = directory.order(delivery.getSupplierOrderId());
         // The supplier or restaurant may have cancelled the order itself: booking a courier for it would cost money.
         if (order == null || !"READY_FOR_PICKUP".equals(order.status())) {
-            return false;
+            return null;
+        }
+
+        if (attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
+            return null;
         }
 
         var tried = booking.triedProviders(deliveryId);
         // Stand the old consignment down so it cannot also send a rider (two couriers at one door).
         releaseCurrentProvider(delivery, reason == null ? "Courier stood down" : reason);
 
-        var usable = quoting.usableQuotes(deliveryId, tried, delivery.isRequiresColdChain());
-        if (usable.isEmpty()) {
-            quoteAndBook(delivery, order, null, tried, "REASSIGNMENT");
-        } else {
-            booking.book(delivery, tried, "REASSIGNMENT");
-        }
+        boolean bookable = quoting.usableQuotes(deliveryId, tried, delivery.isRequiresColdChain()).isEmpty()
+                ? quote(delivery, order, null, tried)
+                : true;
+        return new Prepared(deliveryId, order.orderNumber(), bookable ? tried : null, "REASSIGNMENT");
+    }
 
-        boolean booked = delivery.getStatus() == DeliveryStatus.PROVIDER_SELECTED;
-        auditService.record(null, null, "DELIVERY_REASSIGNED_AUTO", "DELIVERY", deliveryId,
-                null, delivery.getStatus().name(), reason, "SYSTEM");
-        timeline.record(delivery, "DeliveryReassigned", delivery.getStatus(),
-                booked ? "Finding another driver" : "No other driver is available yet");
-        return booked;
+    /**
+     * Book a delivery whose quote was saved but whose booking never started: the process stopped between the
+     * transaction that quoted it and the call to the courier. Called by the sweep. Checks again under the lock, so a
+     * booking that is in progress (a pending attempt) or already done is left alone.
+     *
+     * @return true if a courier was booked
+     */
+    public boolean bookQuoted(Long deliveryId) {
+        var prepared = inTx(() -> {
+            var delivery = deliveries.lockById(deliveryId).orElse(null);
+            if (delivery == null || delivery.getMode() != DeliveryMode.COSTONOMY
+                    || delivery.getStatus() != DeliveryStatus.QUOTE_RECEIVED
+                    || attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
+                return null;
+            }
+            return new Prepared(deliveryId, null, booking.triedProviders(deliveryId), "BOOKING");
+        });
+        if (prepared == null) {
+            return false;
+        }
+        bookOutsideTransaction(prepared);
+        return inTx(() -> deliveries.findById(deliveryId)
+                .map(d -> d.getStatus() == DeliveryStatus.PROVIDER_SELECTED).orElse(false));
     }
 
     // ── No partner found (D-185) ─────────────────────────────────────────
@@ -497,18 +591,21 @@ public class DeliveryService {
      * so a manual retry or a switch that got there first wins; never throws on "still nobody", unlike
      * {@link #reassign}, which would roll back the attempt it just recorded.
      */
-    @Transactional
     public void retryNoPartner(Long deliveryId) {
-        var delivery = deliveries.lockById(deliveryId).orElse(null);
-        if (delivery == null || !isNoPartner(delivery)) {
-            return;
-        }
-        var order = directory.order(delivery.getSupplierOrderId());
-        if (order == null || !"READY_FOR_PICKUP".equals(order.status())) {
-            return;
-        }
-        releaseCurrentProvider(delivery, "Automatic retry");
-        quoteAndBook(delivery, order, null, List.of(), "AUTO_RETRY");
+        bookOutsideTransaction(inTx(() -> {
+            var delivery = deliveries.lockById(deliveryId).orElse(null);
+            if (delivery == null || !isNoPartner(delivery)
+                    || attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
+                return null;
+            }
+            var order = directory.order(delivery.getSupplierOrderId());
+            if (order == null || !"READY_FOR_PICKUP".equals(order.status())) {
+                return null;
+            }
+            releaseCurrentProvider(delivery, "Automatic retry");
+            boolean quoted = quote(delivery, order, null, List.of());
+            return new Prepared(deliveryId, order.orderNumber(), quoted ? List.of() : null, "AUTO_RETRY");
+        }));
     }
 
     /** Offer the supplier delivering it themselves, once. The event tells both sides. */
