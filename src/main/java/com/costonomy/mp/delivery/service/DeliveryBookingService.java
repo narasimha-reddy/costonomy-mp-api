@@ -69,11 +69,7 @@ public class DeliveryBookingService {
         this.directory = directory;
         this.recoveryService = recoveryService;
         this.tx = new org.springframework.transaction.support.TransactionTemplate(txManager);
-        // REQUIRED, not REQUIRES_NEW: request, reassign, retry and auto-dispatch call book() from inside their own
-        // transaction, which holds the uncommitted delivery row (and a lock on it). A new transaction would block on
-        // the attempt row's foreign key to that row until the lock wait timed out, a self-deadlock. Called with no
-        // transaction (the jobs), each step still commits on its own, so the provider call sits between commits.
-        this.tx.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRED);
+        this.tx.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     @org.springframework.beans.factory.annotation.Value("${costonomy.mp.delivery.bike-assignment-timeout:PT3M}")
@@ -89,34 +85,51 @@ public class DeliveryBookingService {
      * Book the cheapest courier that will take it.
      * Keeps remote provider calls outside long-running database transactions.
      *
+     * <p><b>Call it with no transaction open.</b> Each step commits on its own ({@code REQUIRES_NEW}); inside a caller's
+     * transaction the first step would wait on that transaction's uncommitted delivery row until the lock wait timed
+     * out. {@code DeliveryService} commits the delivery first and calls this afterwards.
+     *
      * @param excludedProviderCodes couriers already tried on this delivery
      * @return true if a courier accepted
      */
     public boolean book(Delivery delivery, List<String> excludedProviderCodes, String attemptType) {
+        final Long deliveryId = delivery.getId();
+        final int attemptsSoFar = delivery.getAttemptCount();
         var usable = quoting.usableQuotes(delivery.getId(), excludedProviderCodes, delivery.isRequiresColdChain());
 
         if (usable.isEmpty()) {
-            return tx.execute(status -> fail(delivery, DeliveryStatus.PROVIDER_UNAVAILABLE, "NO_QUOTES",
+            return tx.execute(status -> fail(deliveryId, DeliveryStatus.PROVIDER_UNAVAILABLE, "NO_QUOTES",
                     "No delivery partner is available for this route right now."));
         }
 
         String decision = decisionSnapshot(usable, excludedProviderCodes);
+        int started = 0;
         for (DeliveryQuote quote : usable) {
             var adapter = registry.adapter(quote.getProviderCode());
             if (adapter == null) {
                 continue;
             }
 
-            int attemptNumber = delivery.getAttemptCount() + 1;
+            int attemptNumber = attemptsSoFar + ++started;
             var attempt = tx.execute(status -> {
-                var a = startAttempt(delivery, quote, attemptNumber, attemptType);
+                // Locked, and the delivery read afresh: the caller's copy is from before this transaction, and a
+                // second booking racing this one must see our pending attempt and stand aside.
+                var current = deliveries.lockById(deliveryId).orElse(delivery);
+                if (attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
+                    return null;
+                }
+                var a = startAttempt(current, quote, attemptNumber, attemptType);
                 a.setRankPosition(usable.indexOf(quote) + 1);
                 a.setSelectionReason(usable.size() == 1 ? "ONLY_OPTION" : "CHEAPEST");
                 a.setDecision(decision);
-                delivery.setAttemptCount(attemptNumber);
-                deliveries.save(delivery);
+                current.setAttemptCount(Math.max(current.getAttemptCount(), attemptNumber));
+                deliveries.save(current);
                 return a;
             });
+            if (attempt == null) {
+                log.info("Delivery {} already has a booking in progress; not starting another", deliveryId);
+                return false;
+            }
 
             long startedNs = System.nanoTime();
             DeliveryProvider.Booking booking = null;
@@ -253,7 +266,7 @@ public class DeliveryBookingService {
             });
         }
 
-        return tx.execute(status -> fail(delivery, DeliveryStatus.PROVIDER_UNAVAILABLE, "ALL_PROVIDERS_FAILED",
+        return tx.execute(status -> fail(deliveryId, DeliveryStatus.PROVIDER_UNAVAILABLE, "ALL_PROVIDERS_FAILED",
                 "No delivery partner could take this order."));
     }
 
@@ -469,7 +482,8 @@ public class DeliveryBookingService {
                 directory.goodsValue(delivery.getSupplierOrderId()));
     }
 
-    private boolean fail(Delivery delivery, DeliveryStatus status, String code, String reason) {
+    private boolean fail(Long deliveryId, DeliveryStatus status, String code, String reason) {
+        var delivery = deliveries.lockById(deliveryId).orElseThrow();
         delivery.setStatus(status);
         delivery.markNoPartner(Instant.now());
         delivery.setFailureCode(code);
