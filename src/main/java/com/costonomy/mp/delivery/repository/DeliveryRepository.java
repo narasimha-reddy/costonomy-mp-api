@@ -49,7 +49,7 @@ public interface DeliveryRepository extends JpaRepository<Delivery, Long> {
                AND provider_delivery_id IS NOT NULL
                AND status IN ('PROVIDER_SELECTED', 'DRIVER_ASSIGNED', 'DRIVER_AT_PICKUP', 'PICKED_UP', 'IN_TRANSIT', 'ARRIVED_AT_DESTINATION')
                AND (poll_claimed_at IS NULL OR poll_claimed_at <= :staleThreshold)
-             ORDER BY last_polled_at ASC, id ASC
+             ORDER BY last_polled_at ASC, id DESC
              LIMIT :batchSize
             """, nativeQuery = true)
     List<Long> findDueDeliveryIdsForPolling(@Param("staleThreshold") java.time.Instant staleThreshold,
