@@ -1,6 +1,7 @@
 package com.costonomy.mp.fooddelivery.service;
 
 import com.costonomy.mp.fooddelivery.domain.FoodDeliveryStatus;
+import com.costonomy.mp.fooddelivery.repository.FoodDeliveryAttemptRepository;
 import com.costonomy.mp.fooddelivery.repository.FoodDeliveryRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +23,7 @@ import java.util.List;
 public class FoodDeliveryJobs {
 
     private final FoodDeliveryRepository deliveries;
+    private final FoodDeliveryAttemptRepository attempts;
     private final FoodDeliveryBookingService booking;
     private final FoodDeliveryProperties properties;
 
@@ -37,6 +39,13 @@ public class FoodDeliveryJobs {
     @SchedulerLock(name = "food-delivery-assignment-sweep", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
     public void sweepAssignments() {
         runSweep(Instant.now());
+    }
+
+    /** Recovers deliveries stranded with stale PENDING attempts. */
+    @Scheduled(fixedDelayString = "${costonomy.mp.food-delivery.stale-sweep-poll:PT30S}")
+    @SchedulerLock(name = "food-delivery-stale-attempt-sweep", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
+    public void sweepStalePendingAttempts() {
+        runStalePendingSweep(Instant.now());
     }
 
     /** One retry pass; the scheduled method and the tests both call it. */
@@ -73,5 +82,24 @@ public class FoodDeliveryJobs {
             }
         }
         return moved;
+    }
+
+    /** One stale attempt sweep at the given instant; recovers any attempt left PENDING past pendingStaleAfter. */
+    public int runStalePendingSweep(Instant now) {
+        if (!properties.isJobsEnabled()) {
+            return 0;
+        }
+        var staleCutoff = now.minus(properties.getPendingStaleAfter());
+        var stale = attempts.findByOutcomeAndStartedAtBefore("PENDING", staleCutoff);
+        int recovered = 0;
+        for (var attempt : stale) {
+            try {
+                booking.recoverStalePendingAttempt(attempt.getId());
+                recovered++;
+            } catch (RuntimeException ex) {
+                log.error("Food delivery stale pending sweep failed for attempt {}", attempt.getId(), ex);
+            }
+        }
+        return recovered;
     }
 }

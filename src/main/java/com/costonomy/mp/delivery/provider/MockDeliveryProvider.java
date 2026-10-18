@@ -61,7 +61,19 @@ public class MockDeliveryProvider implements DeliveryProvider {
         /** Refuse to quote at all — doc 06 §7's "quote failure". */
         QUOTE_FAILS,
         /** Quote, then refuse the booking — "provider unavailable". */
-        BOOKING_FAILS
+        BOOKING_FAILS,
+        /** Booking times out without accepting. */
+        BOOKING_TIMEOUT,
+        /** Booking times out on client side, but provider actually booked it. */
+        BOOKING_TIMEOUT_BUT_ACCEPTED,
+        /** Cancellation call fails transiently. */
+        CANCEL_FAILS,
+        /** Provider reference lookup fails with error or timeout. */
+        LOOKUP_FAILS,
+        /** Provider does not support reference lookup. */
+        LOOKUP_UNSUPPORTED,
+        /** Booking times out and provider does not support lookup. */
+        BOOKING_TIMEOUT_LOOKUP_UNSUPPORTED
     }
 
     @Override
@@ -133,6 +145,13 @@ public class MockDeliveryProvider implements DeliveryProvider {
             armed.remove(code);
             throw new DeliveryProviderException(code, "No riders available", true);
         }
+        if (armed.get(code) == Failure.BOOKING_TIMEOUT || armed.get(code) == Failure.BOOKING_TIMEOUT_LOOKUP_UNSUPPORTED) {
+            boolean keep = armed.get(code) == Failure.BOOKING_TIMEOUT_LOOKUP_UNSUPPORTED;
+            if (!keep) {
+                armed.remove(code);
+            }
+            throw new DeliveryProviderException(code, "Booking request timed out", true);
+        }
 
         var quote = quotes.get(request.providerQuoteId());
         if (quote == null) {
@@ -142,8 +161,21 @@ public class MockDeliveryProvider implements DeliveryProvider {
             throw new DeliveryProviderException(code, "Unknown or expired quote", false);
         }
 
+        if (armed.get(code) == Failure.BOOKING_TIMEOUT_BUT_ACCEPTED) {
+            armed.remove(code);
+            String id = "mock_d_" + UUID.randomUUID().toString().replace("-", "");
+            var delivery = new MockDelivery(id, quote.amount(), quote.etaMinutes());
+            delivery.reference = request.sourceRef();
+            delivery.idempotencyKey = request.idempotencyKey();
+            delivery.record(ProviderDeliveryStatus.PENDING, "Booking accepted remotely before timeout");
+            deliveries.put(id, delivery);
+            throw new DeliveryProviderException(code, "Booking timed out after acceptance", true);
+        }
+
         String id = "mock_d_" + UUID.randomUUID().toString().replace("-", "");
         var delivery = new MockDelivery(id, quote.amount(), quote.etaMinutes());
+        delivery.reference = request.sourceRef();
+        delivery.idempotencyKey = request.idempotencyKey();
         // Booked, not yet assigned. The gap is real — §23A.21's "Finding the best
         // delivery partner…" state exists precisely because it is not instant.
         delivery.record(ProviderDeliveryStatus.PENDING, "Booking accepted");
@@ -173,11 +205,40 @@ public class MockDeliveryProvider implements DeliveryProvider {
 
     @Override
     public void cancel(String providerDeliveryId, String reason) {
+        if (armed.get(code) == Failure.CANCEL_FAILS) {
+            armed.remove(code);
+            throw new DeliveryProviderException(code, "Cancellation service temporarily unavailable", true);
+        }
         var delivery = require(providerDeliveryId);
         if (delivery.status == ProviderDeliveryStatus.DELIVERED) {
             throw new DeliveryProviderException(code, "Already delivered", false);
         }
         delivery.record(ProviderDeliveryStatus.CANCELLED, reason);
+    }
+
+    @Override
+    public boolean supportsLookupByReference() {
+        return armed.get(code) != Failure.LOOKUP_UNSUPPORTED
+                && armed.get(code) != Failure.BOOKING_TIMEOUT_LOOKUP_UNSUPPORTED;
+    }
+
+    @Override
+    public java.util.Optional<ProviderDelivery> findByReference(String reference, String idempotencyKey) {
+        if (armed.get(code) == Failure.LOOKUP_FAILS) {
+            armed.remove(code);
+            throw new DeliveryProviderException(code, "Remote reference lookup timed out", true);
+        }
+        for (var d : deliveries.values()) {
+            if ((reference != null && reference.equals(d.reference))
+                    || (idempotencyKey != null && idempotencyKey.equals(d.idempotencyKey))) {
+                return java.util.Optional.of(new ProviderDelivery(d.id, d.status,
+                        d.driverName, d.driverPhone, d.driverVehicle,
+                        d.etaMinutes, d.estimatedArrivalAt,
+                        d.failureCode, d.failureReason,
+                        List.copyOf(d.events)));
+            }
+        }
+        return java.util.Optional.empty();
     }
 
     // ── simulation, for tests and the protected ops endpoints ────────────
@@ -253,6 +314,8 @@ public class MockDeliveryProvider implements DeliveryProvider {
         private String failureCode;
         private String failureReason;
         private Location location;
+        private String reference;
+        private String idempotencyKey;
         private final List<ProviderEvent> events = new ArrayList<>();
 
         private MockDelivery(String id, BigDecimal amount, Integer etaMinutes) {

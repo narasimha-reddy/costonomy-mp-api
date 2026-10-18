@@ -60,6 +60,21 @@ public interface DeliveryProvider {
         return true;
     }
 
+    /**
+     * Look up an order by our reference (e.g. FD-123 or SO-456) or idempotency key.
+     * Used for reconciling ambiguous outcomes after booking timeouts or network disconnects.
+     */
+    default java.util.Optional<ProviderDelivery> findByReference(String reference, String idempotencyKey) {
+        return java.util.Optional.empty();
+    }
+
+    /**
+     * Whether this provider supports looking up orders by client reference or idempotency key.
+     */
+    default boolean supportsLookupByReference() {
+        return false;
+    }
+
     // ── our types, never theirs ──────────────────────────────────────────
 
     record QuoteRequest(

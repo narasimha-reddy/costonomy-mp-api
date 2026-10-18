@@ -7,10 +7,14 @@ import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.delivery.domain.DeliveryLedgerEntry;
 import com.costonomy.mp.delivery.domain.DeliveryProviderStats;
 import com.costonomy.mp.delivery.repository.DeliveryLedgerRepository;
-import com.costonomy.mp.delivery.repository.DeliveryProviderStatsRepository;
 import com.costonomy.mp.delivery.repository.DeliveryProviderMetricsRepository;
+import com.costonomy.mp.delivery.repository.DeliveryProviderStatsRepository;
+import com.costonomy.mp.delivery.repository.DeliveryQuoteRepository;
+import com.costonomy.mp.delivery.repository.DeliveryProviderAttemptRepository;
 import com.costonomy.mp.delivery.repository.DeliveryRepository;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
+import com.costonomy.mp.fooddelivery.service.FoodDeliveryQueryService;
+import com.costonomy.mp.fooddelivery.web.dto.FoodDeliveryDtos;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -32,8 +36,12 @@ public class AdminDeliveryService {
     private final DeliveryLedgerRepository ledgerRepository;
     private final DeliveryProviderStatsRepository statsRepository;
     private final DeliveryProviderMetricsRepository metricsRepository;
+    private final DeliveryQuoteRepository quotes;
+    private final DeliveryProviderAttemptRepository attempts;
+    private final DeliveryRecoveryService recoveryService;
     private final DeliveryWaterfallService waterfallService;
     private final DeliveryService deliveryService;
+    private final FoodDeliveryQueryService foodDeliveryQueryService;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @Transactional(readOnly = true)
@@ -401,5 +409,129 @@ public class AdminDeliveryService {
 
     private static double round1dp(double value) {
         return Math.round(value * 10.0) / 10.0;
+    }
+
+    @Transactional(readOnly = true)
+    public FoodDeliveryDtos.SupplierDeliveryInspectionResponse inspectSupplierDelivery(Long actorId, Long deliveryId) {
+        accessControl.require(actorId, Permissions.DELIVERY_INSPECT, ScopeType.PLATFORM, null);
+        var delivery = deliveries.findById(deliveryId)
+                .orElseThrow(() -> new NotFoundException("Delivery", deliveryId));
+
+        var qList = quotes.findByDeliveryIdOrderByIdAsc(deliveryId).stream()
+                .map(q -> new FoodDeliveryDtos.QuoteInspection(
+                        q.getId(), q.getProviderCode(), q.getStatus(), q.getAmount(),
+                        q.getEtaMinutes(), q.getDistanceKm(), q.getFailureReason(),
+                        false, q.getCreatedAt()))
+                .toList();
+
+        var aList = attempts.findByDeliveryIdOrderByAttemptNumberAsc(deliveryId).stream()
+                .map(a -> new FoodDeliveryDtos.AttemptInspection(
+                        a.getId(), a.getAttemptNumber(), a.getAttemptType(), a.getProviderCode(),
+                        a.getOutcome(), a.getQuotedAmount(), a.getRankPosition(), a.getSelectionReason(),
+                        a.getFailureCode(), a.getFailureReason(), a.getEndedCause(),
+                        a.getStartedAt(), a.getEndedAt()))
+                .toList();
+
+        var timeline = deliveryService.timelineFor(actorId, deliveryId);
+
+        var rList = recoveryService.getTasksForDelivery("SUPPLIER", deliveryId).stream()
+                .map(r -> new FoodDeliveryDtos.RecoveryTaskInspection(
+                        r.getId(), r.getTaskType(), r.getProviderCode(), r.getProviderDeliveryId(),
+                        r.getIdempotencyRef(), r.getAmount(), r.getStatus(), r.getAttempts(),
+                        r.getMaxAttempts(), r.getNextRetryAt(), r.getLastError(), r.getCreatedAt()))
+                .toList();
+
+        String nextAction;
+        String nextReason;
+        if (delivery.isReconciliationRequired()) {
+            nextAction = "OPERATOR_RECONCILIATION";
+            nextReason = delivery.getReconciliationReason() != null ? delivery.getReconciliationReason() : "Reconciliation required";
+        } else if (delivery.getStatus() == com.costonomy.mp.delivery.domain.DeliveryStatus.DELIVERY_REQUESTED) {
+            nextAction = "WATERFALL";
+            nextReason = "Searching and booking available partners";
+        } else if (delivery.getStatus() == com.costonomy.mp.delivery.domain.DeliveryStatus.PROVIDER_SELECTED) {
+            nextAction = "ASSIGNMENT_SWEEP";
+            nextReason = "Waiting for driver assignment deadline at " + delivery.getAssignmentDeadline();
+        } else if (delivery.getStatus() == com.costonomy.mp.delivery.domain.DeliveryStatus.PROVIDER_UNAVAILABLE) {
+            nextAction = "RETRY";
+            nextReason = "Will auto-retry if within window or offer supplier own delivery";
+        } else if (delivery.getStatus().isInFlight()) {
+            nextAction = "IN_TRANSIT";
+            nextReason = "Consignment is in transit with " + delivery.getProviderCode();
+        } else {
+            nextAction = "TERMINAL";
+            nextReason = "Delivery reached terminal status " + delivery.getStatus();
+        }
+
+        return new FoodDeliveryDtos.SupplierDeliveryInspectionResponse(
+                deliveryService.toResponse(delivery, null),
+                qList, aList, timeline, rList,
+                delivery.isReconciliationRequired(), delivery.getReconciliationReason(),
+                nextAction, nextReason
+        );
+    }
+
+    @Transactional(readOnly = true)
+    public FoodDeliveryDtos.FoodDeliveryInspectionResponse inspectFoodDelivery(Long actorId, Long foodDeliveryId) {
+        return foodDeliveryQueryService.inspect(actorId, foodDeliveryId);
+    }
+
+    @Transactional(readOnly = true)
+    public FoodDeliveryDtos.OperationalAlertsResponse getOperationalAlerts(Long actorId) {
+        accessControl.require(actorId, Permissions.DELIVERY_INSPECT, ScopeType.PLATFORM, null);
+
+        var stuckSupplier = jdbc.query(
+                "SELECT id, outlet_id, status, provider_code, reconciliation_required, reconciliation_reason " +
+                "FROM delivery WHERE reconciliation_required = true " +
+                "OR (status = 'PROVIDER_SELECTED' AND assignment_deadline < NOW()) LIMIT 50",
+                (rs, row) -> new FoodDeliveryDtos.StuckDeliveryAlert(
+                        "SUPPLIER",
+                        rs.getLong("id"),
+                        rs.getLong("outlet_id"),
+                        rs.getString("status"),
+                        rs.getString("provider_code"),
+                        rs.getBoolean("reconciliation_required"),
+                        rs.getString("reconciliation_reason"),
+                        rs.getBoolean("reconciliation_required") ? "Reconciliation required" : "Assignment deadline passed"
+                )
+        );
+
+        var stuckFood = jdbc.query(
+                "SELECT id, outlet_id, status, provider_code, reconciliation_required, reconciliation_reason " +
+                "FROM food_delivery WHERE reconciliation_required = true " +
+                "OR (status = 'PROVIDER_SELECTED' AND assignment_deadline < NOW()) LIMIT 50",
+                (rs, row) -> new FoodDeliveryDtos.StuckDeliveryAlert(
+                        "FOOD",
+                        rs.getLong("id"),
+                        rs.getLong("outlet_id"),
+                        rs.getString("status"),
+                        rs.getString("provider_code"),
+                        rs.getBoolean("reconciliation_required"),
+                        rs.getString("reconciliation_reason"),
+                        rs.getBoolean("reconciliation_required") ? "Reconciliation required" : "Assignment deadline passed"
+                )
+        );
+
+        var allStuck = new java.util.ArrayList<FoodDeliveryDtos.StuckDeliveryAlert>();
+        allStuck.addAll(stuckSupplier);
+        allStuck.addAll(stuckFood);
+
+        long pendingTasks = recoveryService.countByStatus("PENDING");
+        long exhaustedTasks = recoveryService.countByStatus("EXHAUSTED");
+        long failedRefunds = recoveryService.countByTaskTypeAndStatus("WALLET_REFUND", "EXHAUSTED");
+        long failedCancels = recoveryService.countByTaskTypeAndStatus("PROVIDER_CANCEL", "EXHAUSTED");
+
+        long reconCount = allStuck.stream().filter(FoodDeliveryDtos.StuckDeliveryAlert::reconciliationRequired).count();
+
+        return new FoodDeliveryDtos.OperationalAlertsResponse(
+                stuckSupplier.size(),
+                stuckFood.size(),
+                reconCount,
+                pendingTasks,
+                exhaustedTasks,
+                failedRefunds,
+                failedCancels,
+                allStuck
+        );
     }
 }

@@ -55,6 +55,7 @@ public class DeliveryService {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final PidgeProperties pidgeProperties;
+    private final DeliveryRecoveryService recoveryService;
 
     /** Doc 06 §8: past this, a position is shown as stale rather than as current. */
     @Value("${costonomy.mp.delivery.auto-retry.window:PT30M}")
@@ -628,10 +629,12 @@ public class DeliveryService {
             } catch (DeliveryProviderException ex) {
                 // Their problem, not ours to fail on. A courier we cannot reach is
                 // still a courier we are no longer using, and blocking the
-                // reassignment would strand the consignment.
+                // reassignment would strand the consignment. Durable task is recorded for retry.
                 log.warn("Could not cancel {} delivery {}: {}",
                         delivery.getProviderCode(), delivery.getProviderDeliveryId(),
                         ex.getMessage());
+                recoveryService.scheduleCancellation("SUPPLIER", delivery.getId(),
+                        delivery.getProviderCode(), delivery.getProviderDeliveryId(), reason);
             }
         }
 

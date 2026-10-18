@@ -1,6 +1,7 @@
 package com.costonomy.mp.delivery.service;
 
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
+import com.costonomy.mp.delivery.repository.DeliveryProviderAttemptRepository;
 import com.costonomy.mp.delivery.repository.DeliveryRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -34,6 +35,8 @@ import java.util.List;
 public class DeliveryAssignmentSweepJob {
 
     private final DeliveryRepository deliveries;
+    private final DeliveryProviderAttemptRepository attempts;
+    private final DeliveryBookingService bookingService;
     private final DeliveryWaterfallService waterfall;
     private final DeliveryService deliveryService;
 
@@ -72,7 +75,7 @@ public class DeliveryAssignmentSweepJob {
         if (!overdue.isEmpty()) {
             log.info("Assignment sweep: {} overdue, {} moved to another courier", overdue.size(), moved);
         }
-        return moved + rescueStoodDown(now);
+        return moved + rescueStoodDown(now) + rescueStalePendingAttempts(now);
     }
 
     /**
@@ -99,6 +102,27 @@ public class DeliveryAssignmentSweepJob {
         }
         if (!stuck.isEmpty()) {
             log.info("Assignment sweep: {} stood down by the provider, {} given another courier", stuck.size(), rescued);
+        }
+        return rescued;
+    }
+
+    /**
+     * Stale booking attempts left PENDING: process died or network response lost.
+     */
+    private int rescueStalePendingAttempts(Instant now) {
+        var cutoff = now.minus(Duration.ofMinutes(2));
+        var stale = attempts.findByOutcomeAndStartedAtBefore("PENDING", cutoff);
+        int rescued = 0;
+        for (var attempt : stale) {
+            try {
+                bookingService.recoverStalePendingAttempt(attempt.getId());
+                rescued++;
+            } catch (RuntimeException ex) {
+                log.error("Assignment sweep could not recover stale pending attempt {}", attempt.getId(), ex);
+            }
+        }
+        if (!stale.isEmpty()) {
+            log.info("Assignment sweep: {} stale pending attempts found, {} processed", stale.size(), rescued);
         }
         return rescued;
     }

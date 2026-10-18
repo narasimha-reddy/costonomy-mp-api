@@ -48,6 +48,7 @@ class DeliveryReassignAfterFailureTest {
     @Mock private AccessControlService accessControl;
     @Mock private AuditService auditService;
     @Mock private DeliveryProvider pidge;
+    @Mock private DeliveryRecoveryService recoveryService;
 
     private DeliveryService service;
 
@@ -56,7 +57,7 @@ class DeliveryReassignAfterFailureTest {
         service = new DeliveryService(
                 deliveries, events, locations, attempts, quoting, booking,
                 eventService, orderBridge, timeline, directory, registry,
-                accessControl, auditService, new PidgeProperties());
+                accessControl, auditService, new PidgeProperties(), recoveryService);
     }
 
     private static Delivery delivery(DeliveryStatus status) {

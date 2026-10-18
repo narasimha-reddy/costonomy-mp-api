@@ -35,6 +35,8 @@ import static org.mockito.Mockito.when;
 class DeliveryAssignmentSweepJobTest {
 
     @Mock private DeliveryRepository deliveries;
+    @Mock private com.costonomy.mp.delivery.repository.DeliveryProviderAttemptRepository attempts;
+    @Mock private com.costonomy.mp.delivery.service.DeliveryBookingService bookingService;
     @Mock private DeliveryWaterfallService waterfall;
     @Mock private com.costonomy.mp.delivery.service.DeliveryService deliveryService;
 
@@ -43,7 +45,7 @@ class DeliveryAssignmentSweepJobTest {
 
     @BeforeEach
     void setUp() {
-        job = new DeliveryAssignmentSweepJob(deliveries, waterfall, deliveryService);
+        job = new DeliveryAssignmentSweepJob(deliveries, attempts, bookingService, waterfall, deliveryService);
     }
 
     private static Delivery delivery(long id) {
@@ -161,5 +163,21 @@ class DeliveryAssignmentSweepJobTest {
         when(deliveryService.reassignAfterProviderFailure(eq(2L), isNull(), any())).thenReturn(true);
 
         assertThat(job.runOnce(now)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("stale pending attempts are rescued by the booking service")
+    void stalePendingAttemptsAreRescued() {
+        when(deliveries.findByStatusAndAssignmentDeadlineBefore(any(), any())).thenReturn(List.of());
+        when(deliveries.findByStatusIn(any())).thenReturn(List.of());
+
+        var staleAttempt = new com.costonomy.mp.delivery.domain.DeliveryProviderAttempt();
+        staleAttempt.setId(99L);
+        staleAttempt.setOutcome("PENDING");
+        staleAttempt.setStartedAt(now.minusSeconds(300));
+        when(attempts.findByOutcomeAndStartedAtBefore(eq("PENDING"), any())).thenReturn(List.of(staleAttempt));
+
+        assertThat(job.runOnce(now)).isEqualTo(1);
+        verify(bookingService).recoverStalePendingAttempt(99L);
     }
 }

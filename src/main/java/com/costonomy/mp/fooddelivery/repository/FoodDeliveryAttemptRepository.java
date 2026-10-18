@@ -11,4 +11,6 @@ public interface FoodDeliveryAttemptRepository extends JpaRepository<FoodDeliver
     List<FoodDeliveryAttempt> findByFoodDeliveryIdOrderByAttemptNumberAsc(Long foodDeliveryId);
 
     Optional<FoodDeliveryAttempt> findFirstByFoodDeliveryIdOrderByAttemptNumberDesc(Long foodDeliveryId);
+
+    List<FoodDeliveryAttempt> findByOutcomeAndStartedAtBefore(String outcome, java.time.Instant threshold);
 }

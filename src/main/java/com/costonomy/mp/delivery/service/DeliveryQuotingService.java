@@ -58,7 +58,6 @@ public class DeliveryQuotingService {
      *                              reassignment must not hand it back to the one
      *                              that just cancelled (doc 06 §7)
      */
-    @Transactional
     public Outcome gather(Delivery delivery, BigDecimal orderValue, BigDecimal weightGrams,
                           Integer requiredEtaMinutes, List<String> excludedProviderCodes) {
 

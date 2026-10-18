@@ -47,10 +47,22 @@ class AdminDeliveryServiceTest {
     private com.costonomy.mp.delivery.repository.DeliveryProviderMetricsRepository metricsRepository;
 
     @Mock
+    private com.costonomy.mp.delivery.repository.DeliveryQuoteRepository quotes;
+
+    @Mock
+    private com.costonomy.mp.delivery.repository.DeliveryProviderAttemptRepository attempts;
+
+    @Mock
+    private com.costonomy.mp.delivery.service.DeliveryRecoveryService recoveryService;
+
+    @Mock
     private DeliveryWaterfallService waterfallService;
 
     @Mock
     private DeliveryService deliveryService;
+
+    @Mock
+    private com.costonomy.mp.fooddelivery.service.FoodDeliveryQueryService foodDeliveryQueryService;
 
     @Mock
     private org.springframework.jdbc.core.JdbcTemplate jdbc;
@@ -59,7 +71,8 @@ class AdminDeliveryServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new AdminDeliveryService(accessControl, deliveries, ledgerRepository, statsRepository, metricsRepository, waterfallService, deliveryService, jdbc);
+        service = new AdminDeliveryService(accessControl, deliveries, ledgerRepository, statsRepository, metricsRepository,
+                quotes, attempts, recoveryService, waterfallService, deliveryService, foodDeliveryQueryService, jdbc);
     }
 
 

@@ -223,6 +223,13 @@ public class FoodDelivery extends BaseEntity {
     @Column(name = "last_provider_update_at")
     private Instant lastProviderUpdateAt;
 
+    /** Set when an ambiguous provider outcome or exhausted recovery requires operator intervention. */
+    @Column(name = "reconciliation_required", nullable = false)
+    private boolean reconciliationRequired;
+
+    @Column(name = "reconciliation_reason", length = 255)
+    private String reconciliationReason;
+
     /**
      * Moves to {@code target}, refusing a move the state machine does not allow. A refusal here is a programming
      * or ordering error, so it is an exception; a provider event that arrives out of order is filtered by the

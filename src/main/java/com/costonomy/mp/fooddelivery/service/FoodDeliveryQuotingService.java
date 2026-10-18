@@ -44,7 +44,6 @@ public class FoodDeliveryQuotingService {
     public record Outcome(List<FoodDeliveryQuote> all, boolean anyServiceable) {
     }
 
-    @Transactional
     public Outcome gather(FoodDelivery delivery) {
         var vehicle = delivery.getVehicleType() != null ? delivery.getVehicleType()
                 : VehicleType.fromWeight(delivery.getWeightKg(), false);

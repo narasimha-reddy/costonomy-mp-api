@@ -37,6 +37,7 @@ class DeliveryGatingTest {
     @Mock private DeliveryProviderRegistry registry;
     @Mock private AccessControlService accessControl;
     @Mock private AuditService auditService;
+    @Mock private DeliveryRecoveryService recoveryService;
     private final PidgeProperties pidgeProperties = new PidgeProperties();
 
     private DeliveryService service;
@@ -46,7 +47,7 @@ class DeliveryGatingTest {
         service = new DeliveryService(
                 deliveries, events, locations, attempts, quoting, booking,
                 eventService, orderBridge, timeline, directory, registry,
-                accessControl, auditService, pidgeProperties);
+                accessControl, auditService, pidgeProperties, recoveryService);
     }
 
     @Test
