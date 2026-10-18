@@ -195,10 +195,13 @@ delivery/       provider-agnostic delivery, tracking and reassignment
                 DeliveryAssignmentSweepJob (a booking with no driver, and a
                 delivery the provider let go of, found from the database),
                 DeliveryReassignListener (books the next courier after a stand-down)
+                ProviderReliabilityService + ProviderReliability / ReliabilityRanking
+                (domain): courier score, circuit breaker and the order to ask in
 fooddelivery/   restaurant to customer delivery (D-197, doc 06 §16). IN PROGRESS:
                 domain and repositories only; no service, API or tracking yet
   domain/       FoodDelivery, FoodDeliveryStatus, FoodDeliveryQuote,
                 FoodDeliveryAttempt, FoodDeliveryEvent, FoodDeliveryLocation
+  service/      FoodCourierSelector (which courier to ask, and what to record)
 credit/         supplier-funded credit: requests, agreements, ledger, invoices
   domain/       CreditAgreement, CreditRequest, CreditReservation, CreditInvoice,
                 CreditPayment, CreditTransaction, CreditLimitHistory,

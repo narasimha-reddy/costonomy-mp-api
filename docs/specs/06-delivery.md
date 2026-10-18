@@ -257,6 +257,8 @@ Append-only financial audit table `delivery_ledger` tracks:
 > for food consignments, the restaurant API, the public tracking endpoint, the handover code, and customer
 > notifications. Everything below under "Public tracking", "Handover" and "API" is the design, not a behaviour.
 > The fee model (a `maxFee` held up front) is awaiting product's decision.
+> Courier choice for food (`FoodCourierSelector`, reliability ranking and circuit breaker, §17) is built and tested; the
+> booking service that calls it is not.
 
 D-197. A restaurant can hand cooked food to a Costonomy courier and have it delivered to its own customer. This is
 a separate flow from §2–§15, which carry raw material from a supplier to a restaurant; it shares their couriers, not
@@ -310,3 +312,51 @@ tries it is locked and the restaurant is told.
 ### API (restaurant)
 `POST /food-deliveries/quote`, `POST /food-deliveries` (requires `Idempotency-Key`), `GET /food-deliveries/{id}`,
 `GET /food-deliveries` (outlet-scoped), `POST /food-deliveries/{id}/cancel`.
+
+## 17. Courier reliability and the decision record
+
+D-197 addendum. When a courier does not accept or cannot fulfil, the next one asked should be a reliable one, and a
+courier that is failing should stop being asked. Applied to food delivery first; supplier delivery still asks couriers in
+price order and only records the decision (below).
+
+### What reliability is
+A score from 0 to 1 per courier, a weighted blend of five rates, each smoothed toward a prior so a new courier is
+neither trusted fully nor written off on two orders (`(successes + prior x k) / (total + k)`):
+
+| Part | Weight | Measures | Window |
+|---|---|---|---|
+| Assignment | 0.40 | Booked attempts that ended with a rider who stayed | recent attempts |
+| Acceptance | 0.20 | Bookings the courier did not refuse | recent attempts |
+| Quote answer | 0.10 | Quotes that did not fail (an "unserviceable" answer is not a failure) | recent quotes |
+| After assignment | 0.15 | Bookings without a rider cancellation or failed pickup | nightly stats, 7 days |
+| Delivery | 0.15 | Deliveries completed and on time | nightly stats, 7 days |
+
+"Recent" is the last two hours, at most 30 attempts per courier, across supplier and food delivery together. An attempt
+counts only once it is old enough (5 minutes) that a missing rider is the courier's fault. The first three parts come
+from attempts and quotes directly, so they see the failures the nightly stats cannot: the stats begin at
+`DRIVER_ASSIGNED`, and these failures happen before it.
+
+### Circuit breaker
+Stateless, read off recent attempts each time. **Open** when at least 5 attempts have resolved and fewer than half ended
+with a rider who stayed: the courier is skipped. After 10 quiet minutes it is **half open** and one attempt is let
+through, asked last so a failed probe costs least. If everyone is open, everyone is asked anyway, best first: a late
+delivery beats none.
+
+### Order of asking (`ReliabilityRanking`)
+- First attempt: the cheapest courier that meets the delivery's deadline, skipping open breakers.
+- After a failure: couriers priced within 1.5 x the cheapest remaining are ranked by reliability, the rest follow by price.
+  Nothing above the fee the restaurant agreed to is ever asked. A courier already tried is never asked again.
+- `FoodCourierSelector` applies this to a food delivery's quotes and returns, for each courier, what to record.
+
+### The decision record
+Written on every attempt and quote (V89), both flows, going forward only; NULL means "not recorded", never "fine":
+`ended_cause` (PROVIDER_REFUSED, PROVIDER_TIMEOUT, ASSIGNMENT_TIMEOUT, RIDER_CANCELLED, PROVIDER_CANCELLED,
+PICKUP_FAILED, DELIVERY_FAILED, CUSTOMER_CANCEL, OPS_REASSIGN, SWITCHED_TO_OWN, COMPLETED), `retryable`, `assigned_at`,
+`call_ms`, `rank_position`, `selection_reason` (CHEAPEST, RELIABILITY, PROBE, ONLY_OPTION), `reliability_score`,
+`breaker_state`, and `decision` (every courier considered and every one skipped). Quotes record `call_ms`,
+`error_class` (TIMEOUT, TRANSIENT, REFUSED, UNSERVICEABLE) and `retryable`; food quotes also record the vehicle.
+
+Supplier delivery fills the cause, timing, rank, reason and candidate list, but not the score or breaker state, because
+it does not compute them yet.
+
+Configuration: `costonomy.mp.delivery.reliability.*`.
