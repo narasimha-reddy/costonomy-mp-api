@@ -70,6 +70,10 @@ public class RateLimitPolicies {
     @Value("${costonomy.mp.ratelimit.delivery-read:60}")
     private int deliveryReadLimit;
 
+    /** Public tracking: unauthenticated, keyed by IP. 60/min = 1/sec. */
+    @Value("${costonomy.mp.ratelimit.public-tracking:60}")
+    private int publicTrackingLimit;
+
     private List<Rule> rules;
 
     /**
@@ -104,6 +108,10 @@ public class RateLimitPolicies {
                 // Providers have no user either, and they burst on retry.
                 new Rule(HttpMethod.POST, "/api/v1/webhooks/",
                         new RateLimitPolicy("webhook", webhookLimit, minute, KeyBy.IP)),
+
+                // Public food delivery tracking: unauthenticated, keyed by IP. 60/min = 1/sec.
+                new Rule(HttpMethod.GET, "/api/v1/public/food-deliveries/",
+                        new RateLimitPolicy("public-tracking", publicTrackingLimit, minute, KeyBy.IP)),
 
                 // Authenticated from here: keyed by user, so one busy person cannot
                 // throttle everyone else behind the same office router.

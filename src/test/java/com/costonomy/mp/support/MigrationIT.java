@@ -84,6 +84,39 @@ class MigrationIT extends AbstractIntegrationTest {
     }
 
     @Test
+    @DisplayName("delivery rows enforce their parent tenant scopes")
+    void deliveryParentScopeConstraintsExist() {
+        Integer supplierScope = jdbc.queryForObject("""
+                select count(*) from information_schema.key_column_usage
+                where constraint_schema = database()
+                    and constraint_name = 'fk_delivery_order_scope'
+                    and table_name = 'delivery'
+                """, Integer.class);
+        Integer foodScope = jdbc.queryForObject("""
+                select count(*) from information_schema.key_column_usage
+                where constraint_schema = database()
+                    and constraint_name = 'fk_food_delivery_outlet_restaurant_scope'
+                    and table_name = 'food_delivery'
+                """, Integer.class);
+
+        assertThat(supplierScope).isEqualTo(3);
+        assertThat(foodScope).isEqualTo(2);
+
+        assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> jdbc.update("""
+                insert into food_delivery (
+                    restaurant_id, outlet_id, idempotency_key,
+                    status, pickup_address, customer_name, customer_phone, drop_address,
+                    tracking_token, requested_at
+                ) values (
+                    999999, 888888, 'test-idem-scope',
+                    'REQUESTED', 'addr', 'Cust', '9876543210', 'drop',
+                    'token12345678901234567890123456', now()
+                )
+                """)))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
+
+    @Test
     @DisplayName("a phone number can only be registered once")
     void userPhoneIsUnique() {
         jdbc.update("insert into users (phone, status) values (?, 'ACTIVE')", "+919999000001");
@@ -210,6 +243,10 @@ class MigrationIT extends AbstractIntegrationTest {
                         // that could be edited would be a metric that could be
                         // rewritten after the fact.
                         "analytics_event",
+                        // Experiment definitions change; evaluation and metric rows are immutable observations.
+                        "experiment_variant",
+                        "experiment_exposure",
+                        "experiment_metric_event",
                         // A page of a wallet bill (D-113): written once with the bill, removed with it
                         // (ON DELETE CASCADE), never edited. A different file would be a different page.
                         "wallet_entry_invoice_page",

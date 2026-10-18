@@ -31,9 +31,62 @@ public interface FoodDeliveryRepository extends JpaRepository<FoodDelivery, Long
     /** Booked but unassigned past the deadline: the waterfall's sweep. */
     List<FoodDelivery> findByStatusAndAssignmentDeadlineBefore(FoodDeliveryStatus status, Instant now);
 
+    List<FoodDelivery> findByStatusAndAssignmentDeadlineBefore(FoodDeliveryStatus status, Instant now, Pageable page);
+
+        List<FoodDelivery> findByStatusAndAssignmentDeadlineBeforeOrderByAssignmentDeadlineAscIdAsc(
+            FoodDeliveryStatus status, Instant now, Pageable page);
+
     List<FoodDelivery> findByStatusIn(List<FoodDeliveryStatus> statuses);
+
+    List<FoodDelivery> findByStatusInOrderByUpdatedAtAsc(List<FoodDeliveryStatus> statuses, Pageable page);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select d from FoodDelivery d where d.id = :id")
     Optional<FoodDelivery> lockById(@Param("id") Long id);
+
+    @Query(value = """
+            SELECT id FROM food_delivery
+            WHERE status IN (:statuses)
+              AND provider_code IS NOT NULL
+              AND provider_delivery_id IS NOT NULL
+              AND (last_polled_at IS NULL OR last_polled_at < :staleUpdateThreshold)
+              AND (poll_claimed_at IS NULL OR poll_claimed_at < :staleClaimThreshold)
+            ORDER BY id ASC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<Long> findDueDeliveryIdsForPolling(
+            @Param("statuses") java.util.Collection<String> statuses,
+            @Param("staleUpdateThreshold") Instant staleUpdateThreshold,
+            @Param("staleClaimThreshold") Instant staleClaimThreshold,
+            @Param("limit") int limit);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = """
+            UPDATE food_delivery
+            SET poll_claimed_at = :claimedAt,
+                poll_claim_token = :claimToken
+            WHERE id = :id
+              AND (poll_claimed_at IS NULL OR poll_claimed_at < :staleClaimThreshold)
+            """, nativeQuery = true)
+    int claimDeliveryForPoll(
+            @Param("id") Long id,
+            @Param("claimedAt") Instant claimedAt,
+            @Param("staleClaimThreshold") Instant staleClaimThreshold,
+            @Param("claimToken") String claimToken);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = """
+            UPDATE food_delivery
+            SET poll_claimed_at = NULL,
+                poll_claim_token = NULL,
+                last_polled_at = :polledAt
+            WHERE id = :id
+              AND poll_claim_token = :claimToken
+            """, nativeQuery = true)
+    int releaseDeliveryAfterPoll(
+            @Param("id") Long id,
+            @Param("claimToken") String claimToken,
+            @Param("polledAt") Instant polledAt);
 }

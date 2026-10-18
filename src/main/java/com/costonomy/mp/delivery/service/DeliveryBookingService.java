@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -252,85 +253,115 @@ public class DeliveryBookingService {
                 "No delivery partner could take this order."));
     }
 
+    private record StaleSupplierPendingInfo(
+            Long deliveryId,
+            Long attemptId,
+            String providerCode,
+            int attemptNumber,
+            java.math.BigDecimal quotedAmount,
+            Long deliveryProviderId,
+            String ref
+    ) {}
+
     public void recoverStalePendingAttempt(Long attemptId) {
-        var attemptOpt = attempts.findById(attemptId);
-        if (attemptOpt.isEmpty() || !"PENDING".equals(attemptOpt.get().getOutcome())) {
+        // Phase 1: Verify eligibility under short lock
+        StaleSupplierPendingInfo info = tx.execute(status -> {
+            var attemptOpt = attempts.findById(attemptId);
+            if (attemptOpt.isEmpty() || !"PENDING".equals(attemptOpt.get().getOutcome())) {
+                return null;
+            }
+            var curAttempt = attemptOpt.get();
+            var delivery = deliveries.lockById(curAttempt.getDeliveryId()).orElse(null);
+            if (delivery == null) return null;
+
+            Instant now = Instant.now();
+            if (!curAttempt.getStartedAt().isBefore(now.minus(pendingStaleAfter))) {
+                return null;
+            }
+
+            String ref = "mp-delivery-%d-%d".formatted(delivery.getId(), curAttempt.getAttemptNumber());
+            return new StaleSupplierPendingInfo(delivery.getId(), curAttempt.getId(), curAttempt.getProviderCode(),
+                    curAttempt.getAttemptNumber(), curAttempt.getQuotedAmount(), curAttempt.getDeliveryProviderId(), ref);
+        });
+
+        if (info == null) {
             return;
         }
-        var attempt = attemptOpt.get();
-        Long deliveryId = attempt.getDeliveryId();
 
+        // Phase 2: External provider lookup outside database transaction and row lock
+        var adapter = registry.adapter(info.providerCode());
+        Optional<DeliveryProvider.ProviderDelivery> lookedUp = Optional.empty();
+        boolean lookupSupported = adapter != null && adapter.supportsLookupByReference();
+        boolean lookupThrew = false;
+
+        if (lookupSupported) {
+            try {
+                lookedUp = adapter.findByReference(info.ref(), info.ref());
+            } catch (Exception ex) {
+                lookupThrew = true;
+                log.warn("Error reconciling stale attempt {} with {}: {}", info.attemptId(), info.providerCode(), ex.getMessage());
+            }
+        }
+
+        final Optional<DeliveryProvider.ProviderDelivery> finalLookedUp = lookedUp;
+        final boolean finalLookupSupported = lookupSupported;
+        final boolean finalLookupThrew = lookupThrew;
+
+        // Phase 3: Persist outcome under short lock
         tx.executeWithoutResult(status -> {
-            var delivery = deliveries.lockById(deliveryId).orElse(null);
+            var delivery = deliveries.lockById(info.deliveryId()).orElse(null);
             if (delivery == null) return;
-            var curAttempt = attempts.findById(attemptId).orElse(null);
+            var curAttempt = attempts.findById(info.attemptId()).orElse(null);
             if (curAttempt == null || !"PENDING".equals(curAttempt.getOutcome())) {
                 return;
             }
 
             Instant now = Instant.now();
-            if (!curAttempt.getStartedAt().isBefore(now.minus(pendingStaleAfter))) {
-                return;
-            }
-
-            var adapter = registry.adapter(curAttempt.getProviderCode());
-            String ref = "mp-delivery-%d-%d".formatted(delivery.getId(), curAttempt.getAttemptNumber());
-
-            if (adapter != null && adapter.supportsLookupByReference()) {
-                try {
-                    var lookedUp = adapter.findByReference(ref, ref);
-                    if (lookedUp.isPresent()) {
-                        var booking = lookedUp.get();
-                        log.info("Recovered accepted booking from {} for supplier delivery {}", curAttempt.getProviderCode(), delivery.getId());
-                        if (delivery.getStatus() == DeliveryStatus.DELIVERY_REQUESTED || delivery.getStatus() == DeliveryStatus.PROVIDER_UNAVAILABLE) {
-                            curAttempt.setOutcome("BOOKED");
-                            curAttempt.setProviderDeliveryId(booking.providerDeliveryId());
-                            curAttempt.setEndedAt(now);
-                            attempts.save(curAttempt);
-
-                            delivery.setDeliveryProviderId(curAttempt.getDeliveryProviderId());
-                            delivery.setProviderCode(curAttempt.getProviderCode());
-                            delivery.setProviderDeliveryId(booking.providerDeliveryId());
-                            var bookedAmount = curAttempt.getQuotedAmount();
-                            delivery.setFee(bookedAmount);
-                            delivery.setCurrency("INR");
-                            delivery.setEtaMinutes(booking.etaMinutes());
-                            delivery.setEstimatedArrivalAt(booking.estimatedArrivalAt() != null ? booking.estimatedArrivalAt()
-                                    : booking.etaMinutes() == null ? null : now.plusSeconds(booking.etaMinutes() * 60L));
-                            delivery.setStatus(DeliveryStatus.PROVIDER_SELECTED);
-                            delivery.setBookedAt(now);
-                            delivery.setAssignmentDeadline(now.plus(bikeAssignmentTimeout));
-                            delivery.setFailureCode(null);
-                            delivery.setFailureReason(null);
-                            delivery.clearNoPartner();
-                            deliveries.save(delivery);
-
-                            timeline.record(delivery, DeliveryStatus.PROVIDER_SELECTED.eventName(),
-                                    DeliveryStatus.PROVIDER_SELECTED, "Booking recovered from " + curAttempt.getProviderCode());
-                            return;
-                        } else {
-                            try {
-                                adapter.cancel(booking.providerDeliveryId(), "Delivery no longer active");
-                            } catch (Exception ex) {
-                                recoveryService.scheduleCancellation("SUPPLIER", delivery.getId(), curAttempt.getProviderCode(), booking.providerDeliveryId(), "Delivery no longer active");
-                            }
-                            curAttempt.setOutcome("CANCELLED");
-                            curAttempt.setEndedCause("RECOVERED_BUT_NOT_WANTED");
-                            curAttempt.setEndedAt(now);
-                            attempts.save(curAttempt);
-                            return;
-                        }
-                    } else {
-                        curAttempt.setOutcome("FAILED");
-                        curAttempt.setFailureCode("ABANDONED");
-                        curAttempt.setEndedCause("ABANDONED_STALE_PENDING");
+            if (finalLookupSupported && !finalLookupThrew) {
+                if (finalLookedUp.isPresent()) {
+                    var booking = finalLookedUp.get();
+                    log.info("Recovered accepted booking from {} for supplier delivery {}", curAttempt.getProviderCode(), delivery.getId());
+                    if (delivery.getStatus() == DeliveryStatus.DELIVERY_REQUESTED || delivery.getStatus() == DeliveryStatus.PROVIDER_UNAVAILABLE) {
+                        curAttempt.setOutcome("BOOKED");
+                        curAttempt.setProviderDeliveryId(booking.providerDeliveryId());
                         curAttempt.setEndedAt(now);
                         attempts.save(curAttempt);
-                        timeline.record(delivery, "StaleAttemptAbandoned", delivery.getStatus(), "Stale booking attempt abandoned as provider confirmed not booked");
+
+                        delivery.setDeliveryProviderId(curAttempt.getDeliveryProviderId());
+                        delivery.setProviderCode(curAttempt.getProviderCode());
+                        delivery.setProviderDeliveryId(booking.providerDeliveryId());
+                        var bookedAmount = curAttempt.getQuotedAmount();
+                        delivery.setFee(bookedAmount);
+                        delivery.setCurrency("INR");
+                        delivery.setEtaMinutes(booking.etaMinutes());
+                        delivery.setEstimatedArrivalAt(booking.estimatedArrivalAt() != null ? booking.estimatedArrivalAt()
+                                : booking.etaMinutes() == null ? null : now.plusSeconds(booking.etaMinutes() * 60L));
+                        delivery.setStatus(DeliveryStatus.PROVIDER_SELECTED);
+                        delivery.setBookedAt(now);
+                        delivery.setAssignmentDeadline(now.plus(bikeAssignmentTimeout));
+                        delivery.setFailureCode(null);
+                        delivery.setFailureReason(null);
+                        delivery.clearNoPartner();
+                        deliveries.save(delivery);
+
+                        timeline.record(delivery, DeliveryStatus.PROVIDER_SELECTED.eventName(),
+                                DeliveryStatus.PROVIDER_SELECTED, "Booking recovered from " + curAttempt.getProviderCode());
+                        return;
+                    } else {
+                        curAttempt.setOutcome("CANCELLED");
+                        curAttempt.setEndedCause("RECOVERED_BUT_NOT_WANTED");
+                        curAttempt.setEndedAt(now);
+                        attempts.save(curAttempt);
                         return;
                     }
-                } catch (Exception ex) {
-                    log.warn("Error reconciling stale attempt {} with {}: {}", curAttempt.getId(), curAttempt.getProviderCode(), ex.getMessage());
+                } else {
+                    curAttempt.setOutcome("FAILED");
+                    curAttempt.setFailureCode("ABANDONED");
+                    curAttempt.setEndedCause("ABANDONED_STALE_PENDING");
+                    curAttempt.setEndedAt(now);
+                    attempts.save(curAttempt);
+                    timeline.record(delivery, "StaleAttemptAbandoned", delivery.getStatus(), "Stale booking attempt abandoned as provider confirmed not booked");
+                    return;
                 }
             }
 
@@ -345,6 +376,18 @@ public class DeliveryBookingService {
             deliveries.save(delivery);
             timeline.record(delivery, "ReconciliationRequired", delivery.getStatus(), "Stale attempt could not be reconciled with " + curAttempt.getProviderCode());
         });
+
+        // Phase 4: Stand down provider outside database transaction if recovered but not wanted
+        if (finalLookupSupported && !finalLookupThrew && finalLookedUp.isPresent()) {
+            var delivery = deliveries.findById(info.deliveryId()).orElse(null);
+            if (delivery != null && (delivery.getProviderDeliveryId() == null || !delivery.getProviderDeliveryId().equals(finalLookedUp.get().providerDeliveryId()))) {
+                try {
+                    adapter.cancel(finalLookedUp.get().providerDeliveryId(), "Delivery no longer active");
+                } catch (Exception ex) {
+                    recoveryService.scheduleCancellation("SUPPLIER", delivery.getId(), info.providerCode(), finalLookedUp.get().providerDeliveryId(), "Delivery no longer active");
+                }
+            }
+        }
     }
 
     /** Which couriers have already had a go at this consignment. */

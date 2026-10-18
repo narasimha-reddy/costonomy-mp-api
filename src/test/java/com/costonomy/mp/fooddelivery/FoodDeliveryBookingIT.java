@@ -164,6 +164,32 @@ class FoodDeliveryBookingIT extends AbstractIntegrationTest {
         assertThat(walletEntries(first.getId())).hasSize(1);
     }
 
+    @Test
+    @DisplayName("a retry while initial creation is still in REQUESTED status returns the in-progress delivery")
+    void retryWhileInProgressReturnsRequestedDelivery() {
+        var key = UUID.randomUUID().toString();
+        var req = request(key, null);
+
+        var initial = new FoodDelivery();
+        initial.setRestaurantId(restaurantId);
+        initial.setOutletId(outletId);
+        initial.setIdempotencyKey(key);
+        initial.setStatus(FoodDeliveryStatus.REQUESTED);
+        initial.setPickupAddress("Road No 12, Banjara Hills");
+        initial.setCustomerName("Asha");
+        initial.setCustomerPhone("+919876543210");
+        initial.setDropAddress("Flat 4B, Jubilee Hills");
+        initial.setRequestedAt(Instant.now());
+        initial = deliveries.save(initial);
+
+        BigDecimal before = balance();
+        var result = service.create(req);
+
+        assertThat(result.getId()).isEqualTo(initial.getId());
+        assertThat(result.getStatus()).isEqualTo(FoodDeliveryStatus.REQUESTED);
+        assertThat(balance()).isEqualByComparingTo(before);
+    }
+
     // ── Refused before anything is charged ───────────────────────────────
 
     @Test

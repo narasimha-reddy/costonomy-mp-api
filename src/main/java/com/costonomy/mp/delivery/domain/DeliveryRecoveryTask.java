@@ -44,7 +44,7 @@ public class DeliveryRecoveryTask {
     @Column(name = "provider_delivery_id", length = 200)
     private String providerDeliveryId;
 
-    @Column(name = "idempotency_ref", length = 100)
+    @Column(name = "idempotency_ref", length = 255)
     private String idempotencyRef;
 
     @Column(name = "amount", precision = 19, scale = 4)
@@ -66,6 +66,12 @@ public class DeliveryRecoveryTask {
     @Column(name = "next_retry_at", nullable = false)
     private Instant nextRetryAt = Instant.now();
 
+    @Column(name = "claimed_at")
+    private Instant claimedAt;
+
+    @Column(name = "claim_token", length = 36)
+    private String claimToken;
+
     @Column(name = "last_error", length = 1000)
     private String lastError;
 
@@ -76,4 +82,8 @@ public class DeliveryRecoveryTask {
     @UpdateTimestamp
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    @Version
+    @Column(name = "version", nullable = false)
+    private long version;
 }

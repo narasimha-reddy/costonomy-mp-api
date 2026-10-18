@@ -39,6 +39,8 @@ public class RetentionPurger {
     private int outboxPublishedDays;
     @Value("${costonomy.mp.retention.delivery-location-days:30}")
     private int deliveryLocationDays;
+    @Value("${costonomy.mp.retention.food-delivery-location-days:90}")
+    private int foodDeliveryLocationDays;
 
     public RetentionPurger(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
@@ -62,6 +64,9 @@ public class RetentionPurger {
         rules.add(new Rule("delivery_location",
                 "delete from delivery_location where recorded_at < ? limit ?",
                 now.minus(Duration.ofDays(deliveryLocationDays))));
+        rules.add(new Rule("food_delivery_location",
+                "delete from food_delivery_location where recorded_at < ? limit ?",
+                now.minus(Duration.ofDays(foodDeliveryLocationDays))));
         return rules;
     }
 

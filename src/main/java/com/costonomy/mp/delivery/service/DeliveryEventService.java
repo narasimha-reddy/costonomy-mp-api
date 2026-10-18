@@ -104,6 +104,29 @@ public class DeliveryEventService {
         return "APPLIED";
     }
 
+    /** Persist one provider poll result in one short transaction after the HTTP call has completed. */
+    @Transactional
+    public boolean applyProviderSnapshot(Long deliveryId, com.costonomy.mp.delivery.provider.DeliveryProvider.ProviderDelivery state) {
+        var delivery = deliveries.findById(deliveryId).orElse(null);
+        if (delivery == null) {
+            return false;
+        }
+
+        if (state.driverName() != null) {
+            delivery.setDriverName(state.driverName());
+            delivery.setDriverPhone(state.driverPhone());
+            delivery.setDriverVehicle(state.driverVehicle());
+            deliveries.save(delivery);
+        }
+        recordEta(delivery, state.etaMinutes());
+
+        var providerEvents = new java.util.ArrayList<>(
+                state.events() == null ? java.util.List.<ProviderEvent>of() : state.events());
+        java.util.Collections.reverse(providerEvents);
+        providerEvents.forEach(event -> apply(delivery, event));
+        return delivery.getStatus().isTrackable();
+    }
+
     /** Record a driver position. Never called with anything we invented. */
     @Transactional
     public void recordLocation(Delivery delivery, java.math.BigDecimal latitude,
@@ -141,6 +164,15 @@ public class DeliveryEventService {
         deliveries.save(delivery);
 
         timeline.publish(delivery, "DeliveryLocationUpdated", null);
+    }
+
+    /** Persist a polled position against a freshly loaded delivery, never a stale detached snapshot. */
+    @Transactional
+    public void recordLocation(Long deliveryId, java.math.BigDecimal latitude,
+                               java.math.BigDecimal longitude, Double bearing,
+                               Double speedKmph, Instant recordedAt) {
+        deliveries.findById(deliveryId).ifPresent(delivery ->
+                recordLocation(delivery, latitude, longitude, bearing, speedKmph, recordedAt));
     }
 
     /** A revised ETA. Doc 06 §9. */

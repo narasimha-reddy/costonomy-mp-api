@@ -62,6 +62,10 @@ public class FoodDeliveryQueryService {
         var delivery = deliveries.findByTrackingToken(trackingToken)
                 .orElseThrow(() -> new NotFoundException("TrackingToken", trackingToken));
 
+        if (delivery.getTrackingExpiresAt() != null && delivery.getTrackingExpiresAt().isBefore(Instant.now())) {
+            throw new NotFoundException("TrackingToken", trackingToken);
+        }
+
         var latestLoc = locations.findFirstByFoodDeliveryIdOrderByRecordedAtDescIdDesc(delivery.getId());
         boolean stale = false;
         Instant locTime = null;
@@ -85,7 +89,6 @@ public class FoodDeliveryQueryService {
                 delivery.getEtaMinutes(),
                 delivery.getEstimatedArrivalAt(),
                 delivery.getPickupAddress(),
-                delivery.getDropAddress(),
                 lat,
                 lng,
                 stale,

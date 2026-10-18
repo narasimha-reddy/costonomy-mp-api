@@ -13,6 +13,8 @@ import com.costonomy.mp.fooddelivery.service.FoodDeliveryBookingService;
 import com.costonomy.mp.fooddelivery.service.FoodDeliveryBookingService.CreateRequest;
 import com.costonomy.mp.fooddelivery.service.FoodDeliveryEventService;
 import com.costonomy.mp.fooddelivery.service.FoodDeliveryJobs;
+import com.costonomy.mp.fooddelivery.service.FoodDeliveryReconciliationJob;
+import com.costonomy.mp.fooddelivery.service.FoodDeliveryUnclaimedEventHandler;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.wallet.service.WalletService;
@@ -34,9 +36,14 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -48,7 +55,9 @@ class FoodDeliveryOperationsRecoveryIT extends AbstractIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private FoodDeliveryBookingService bookingService;
     @Autowired private FoodDeliveryEventService eventService;
+    @Autowired private FoodDeliveryUnclaimedEventHandler unclaimedEventHandler;
     @Autowired private FoodDeliveryJobs jobs;
+        @Autowired private FoodDeliveryReconciliationJob reconciliationJob;
     @Autowired private FoodDeliveryRepository deliveries;
     @Autowired private FoodDeliveryEventRepository events;
     @Autowired private DeliveryRecoveryService recoveryService;
@@ -94,6 +103,7 @@ class FoodDeliveryOperationsRecoveryIT extends AbstractIntegrationTest {
         restaurantId = created.get("id").asLong();
         outletId = created.at("/outlets/0/id").asLong();
         wallet.topUp(outletId, new BigDecimal("2000"), "test");
+        jdbc.update("update food_delivery set last_polled_at = utc_timestamp(6)");
     }
 
     @AfterEach
@@ -112,6 +122,52 @@ class FoodDeliveryOperationsRecoveryIT extends AbstractIntegrationTest {
 
     private CreateRequest request() {
         return request(UUID.randomUUID().toString(), null);
+    }
+
+    @Test
+    @DisplayName("recovery scheduling is idempotent for long provider delivery references")
+    void cancellationTaskIsIdempotentForLongProviderReference() {
+        String providerDeliveryId = "provider-" + "x".repeat(190);
+
+        var first = recoveryService.scheduleCancellation("SUPPLIER", 7001L, "MOCK_EXPRESS",
+                providerDeliveryId, "Test cancellation");
+        var duplicate = recoveryService.scheduleCancellation("SUPPLIER", 7001L, "MOCK_EXPRESS",
+                providerDeliveryId, "Test cancellation retry");
+
+        assertThat(duplicate.getId()).isEqualTo(first.getId());
+        assertThat(duplicate.getIdempotencyRef()).hasSizeLessThanOrEqualTo(255);
+        Integer taskCount = jdbc.queryForObject(
+                "select count(*) from delivery_recovery_task where idempotency_ref = ?",
+                Integer.class, first.getIdempotencyRef());
+        assertThat(taskCount).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("two database workers cannot claim one due recovery task")
+    void concurrentWorkersClaimRecoveryTaskOnlyOnce() throws Exception {
+        var task = recoveryService.scheduleCancellation("SUPPLIER", 7002L, "MOCK_EXPRESS",
+                "claim-race", "Test cancellation");
+        var ready = new CountDownLatch(2);
+        var start = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            java.util.concurrent.Callable<Integer> claim = () -> {
+                ready.countDown();
+                if (!start.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Claim race did not start");
+                }
+                Instant now = Instant.now();
+                return recoveryTasks.claimTask(task.getId(), now, now.minusSeconds(120), UUID.randomUUID().toString());
+            };
+            var first = workers.submit(claim);
+            var second = workers.submit(claim);
+
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            assertThat(first.get(10, TimeUnit.SECONDS) + second.get(10, TimeUnit.SECONDS)).isEqualTo(1);
+        } finally {
+            workers.shutdownNow();
+        }
     }
 
     private FoodDelivery reload(long id) {
@@ -199,6 +255,57 @@ class FoodDeliveryOperationsRecoveryIT extends AbstractIntegrationTest {
         assertThat(completedTask.getStatus()).isEqualTo("COMPLETED");
     }
 
+        @Test
+        @DisplayName("reclaimed refund task does not add an existing wallet credit twice")
+        void staleRefundTaskReusesLedgerCreditAndRebuildsProjection() {
+        var d = bookingService.create(request());
+        BigDecimal refundAmount = new BigDecimal("12.5000");
+        var task = recoveryService.scheduleRefund(d.getId(), outletId, "adjust", refundAmount,
+            "Unused delivery hold");
+
+        assertThat(recoveryService.executeTask(task.getId())).isTrue();
+        String reference = task.getIdempotencyRef();
+        assertThat(jdbc.queryForObject("select count(*) from wallet_transaction where reference = ?",
+            Integer.class, reference)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select fee_refunded_amount from food_delivery where id = ?",
+            BigDecimal.class, d.getId())).isEqualByComparingTo(refundAmount);
+
+        jdbc.update("""
+            update delivery_recovery_task
+               set status = 'PROCESSING', claimed_at = utc_timestamp(6) - interval 3 minute,
+                   claim_token = 'expired-claim'
+             where id = ?
+            """, task.getId());
+
+        assertThat(recoveryService.executeTask(task.getId())).isTrue();
+        assertThat(jdbc.queryForObject("select count(*) from wallet_transaction where reference = ?",
+            Integer.class, reference)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select fee_refunded_amount from food_delivery where id = ?",
+            BigDecimal.class, d.getId())).isEqualByComparingTo(refundAmount);
+        }
+
+        @Test
+        @DisplayName("repeated food status polls deduplicate their synthetic provider event")
+        void repeatedStatusPollIsIdempotent() {
+                var d = bookingService.create(request());
+                assertThat(d.getStatus()).isEqualTo(FoodDeliveryStatus.PROVIDER_SELECTED);
+
+                MockDeliveryProvider provider = "MOCK_EXPRESS".equals(d.getProviderCode()) ? express : saver;
+                provider.simulate(d.getProviderDeliveryId(), DeliveryProvider.ProviderDeliveryStatus.DRIVER_ASSIGNED,
+                                "Rider assigned");
+
+                assertThat(reconciliationJob.runReconciliation(Instant.now())).isEqualTo(1);
+                jdbc.update("update food_delivery set last_polled_at = utc_timestamp(6) - interval 3 minute where id = ?", d.getId());
+                assertThat(reconciliationJob.runReconciliation(Instant.now())).isEqualTo(1);
+
+                Integer pollEvents = jdbc.queryForObject("""
+                                select count(*) from food_delivery_event
+                                 where food_delivery_id = ? and provider_code = ?
+                                   and provider_event_id like 'poll-%' and provider_status = 'DRIVER_ASSIGNED'
+                                """, Integer.class, d.getId(), d.getProviderCode());
+                assertThat(pollEvents).isEqualTo(1);
+        }
+
     @Test
     @DisplayName("duplicate and out-of-order events are ingested idempotently without status rewinds")
     void duplicateAndOutOfOrderEvents() {
@@ -259,7 +366,7 @@ class FoodDeliveryOperationsRecoveryIT extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.data.quotedAmount").doesNotExist())
                 .andExpect(jsonPath("$.data.maxFee").doesNotExist())
                 .andExpect(jsonPath("$.data.pickupAddress").exists())
-                .andExpect(jsonPath("$.data.dropAddress").exists());
+                .andExpect(jsonPath("$.data.dropAddress").doesNotExist());
     }
 
     @Test
@@ -287,5 +394,264 @@ class FoodDeliveryOperationsRecoveryIT extends AbstractIntegrationTest {
                 .andExpect(jsonPath("$.data.exhaustedRecoveryTasksCount").isNumber())
                 .andExpect(jsonPath("$.data.failedRefundTasksCount").isNumber())
                 .andExpect(jsonPath("$.data.failedCancellationTasksCount").isNumber());
+    }
+
+    @Test
+    @DisplayName("pickup event settles unused fee to wallet without nested lock-wait timeouts")
+    void pickupEventTriggersFeeSettlementWithoutLockWait() {
+        BigDecimal maxFee = new BigDecimal("200.00");
+        var d = bookingService.create(request(UUID.randomUUID().toString(), maxFee));
+        assertThat(d.getStatus()).isEqualTo(FoodDeliveryStatus.PROVIDER_SELECTED);
+        assertThat(d.getFee()).isNotNull();
+        BigDecimal expectedRefund = maxFee.subtract(d.getFee());
+
+        // Courier arrived and picked up
+        var pickupEvent = new DeliveryProvider.ProviderEvent(
+                "EVT-PICKUP-" + d.getId(),
+                DeliveryProvider.ProviderDeliveryStatus.PICKED_UP,
+                "Food picked up by courier",
+                Instant.now()
+        );
+
+        String disp = eventService.apply(d, d.getProviderCode(), d.getProviderDeliveryId(), pickupEvent, null);
+        assertThat(disp).isEqualTo("APPLIED");
+
+        var reloaded = reload(d.getId());
+        assertThat(reloaded.getStatus()).isEqualTo(FoodDeliveryStatus.PICKED_UP);
+        assertThat(reloaded.getPickedUpAt()).isNotNull();
+        assertThat(reloaded.getFeeRefundedAmount()).isEqualByComparingTo(expectedRefund);
+        assertThat(reloaded.getFeeRefundRef()).isEqualTo("food-delivery-" + d.getId() + "-adjust");
+    }
+
+    @Test
+    @DisplayName("driver cancellation rebooks next courier without nested lock-wait timeouts")
+    void driverCancellationRebooksNextCourierWithoutLockWait() {
+        var d = bookingService.create(request(UUID.randomUUID().toString(), new BigDecimal("200.00")));
+        assertThat(d.getStatus()).isEqualTo(FoodDeliveryStatus.PROVIDER_SELECTED);
+        String initialProvider = d.getProviderCode();
+        String initialDeliveryId = d.getProviderDeliveryId();
+        int initialAttempts = d.getAttemptCount();
+
+        // Initial driver cancels before pickup
+        var cancelEvent = new DeliveryProvider.ProviderEvent(
+                "EVT-RIDER-CANCEL-" + d.getId(),
+                DeliveryProvider.ProviderDeliveryStatus.DRIVER_CANCELLED,
+                "Rider vehicle issue",
+                Instant.now()
+        );
+
+        String disp = eventService.apply(d, initialProvider, initialDeliveryId, cancelEvent, null);
+        assertThat(disp).isEqualTo("APPLIED");
+
+        var reloaded = reload(d.getId());
+        assertThat(reloaded.getStatus()).isEqualTo(FoodDeliveryStatus.PROVIDER_SELECTED);
+        assertThat(reloaded.getAttemptCount()).isGreaterThan(initialAttempts);
+        assertThat(reloaded.getProviderDeliveryId()).isNotNull();
+        assertThat(reloaded.getProviderDeliveryId()).isNotEqualTo(initialDeliveryId);
+    }
+
+    @Test
+    @DisplayName("reject stale events from replaced provider consignments")
+    void rejectStaleEventsFromReplacedProviderConsignment() {
+        var d = bookingService.create(request(UUID.randomUUID().toString(), new BigDecimal("200.00")));
+        String oldProviderCode = d.getProviderCode();
+        String oldProviderDeliveryId = d.getProviderDeliveryId();
+
+        // Stand down and rebook to a new consignment
+        bookingService.rebook(d.getId(), oldProviderDeliveryId, "TEST_STAND_DOWN", "Replacing driver");
+        var active = reload(d.getId());
+        String activeDeliveryId = active.getProviderDeliveryId();
+        assertThat(activeDeliveryId).isNotEqualTo(oldProviderDeliveryId);
+
+        // 1. Late driver details from old consignment
+        eventService.recordDriver(active, oldProviderCode, oldProviderDeliveryId, "Old Stale Driver", "+919999900000", "Bike");
+        var afterDriver = reload(d.getId());
+        assertThat(afterDriver.getDriverName()).isNotEqualTo("Old Stale Driver");
+
+        // 2. Late DRIVER_CANCELLED from old consignment
+        var lateCancelEvent = new DeliveryProvider.ProviderEvent(
+                "EVT-OLD-CANCEL",
+                DeliveryProvider.ProviderDeliveryStatus.DRIVER_CANCELLED,
+                "Late cancel from old courier",
+                Instant.now()
+        );
+        String cancelDisp = eventService.apply(active, oldProviderCode, oldProviderDeliveryId, lateCancelEvent, null);
+        assertThat(cancelDisp).isEqualTo("IGNORED");
+        var afterCancel = reload(d.getId());
+        // Status must not have changed and active consignment must remain intact
+        assertThat(afterCancel.getProviderDeliveryId()).isEqualTo(activeDeliveryId);
+
+        // 3. Late PICKED_UP from old consignment with payload containing food delivery reference
+        var latePickupPayload = json.createObjectNode()
+                .put("reference", "FD-" + d.getId())
+                .put("provider_delivery_id", oldProviderDeliveryId)
+                .put("status", "PICKED_UP");
+        var latePickupEvent = new DeliveryProvider.ProviderEvent(
+                "EVT-OLD-PICKUP",
+                DeliveryProvider.ProviderDeliveryStatus.PICKED_UP,
+                "Late pickup from old courier",
+                Instant.now()
+        );
+        String pickupDisp = eventService.apply(active, oldProviderCode, oldProviderDeliveryId, latePickupEvent, latePickupPayload);
+        assertThat(pickupDisp).isEqualTo("IGNORED");
+        var afterPickup = reload(d.getId());
+        assertThat(afterPickup.getStatus()).isEqualTo(FoodDeliveryStatus.PROVIDER_SELECTED);
+        assertThat(afterPickup.getPickedUpAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("webhook deduplication is stable with and without event_id")
+    void stableWebhookDeduplicationWithAndWithoutEventId() {
+        var d = bookingService.create(request());
+
+        // 1. Webhook with provider event ID
+        var payloadWithId = json.createObjectNode()
+                .put("event_id", "WH-EVT-1001")
+                .put("provider_delivery_id", d.getProviderDeliveryId())
+                .put("status", "DRIVER_ASSIGNED")
+                .put("rider_name", "Rajesh");
+
+        boolean claimedFirst = unclaimedEventHandler.handle(d.getProviderCode(), d.getProviderDeliveryId(), payloadWithId);
+        assertThat(claimedFirst).isTrue();
+        assertThat(reload(d.getId()).getStatus()).isEqualTo(FoodDeliveryStatus.DRIVER_ASSIGNED);
+
+        boolean claimedRetry = unclaimedEventHandler.handle(d.getProviderCode(), d.getProviderDeliveryId(), payloadWithId);
+        assertThat(claimedRetry).isTrue();
+        // Duplicate event is ignored, only 1 APPLIED event exists
+        long appliedCount = events.findByFoodDeliveryIdOrderByOccurredAtAscIdAsc(d.getId()).stream()
+                .filter(e -> "WH-EVT-1001".equals(e.getProviderEventId()) && "APPLIED".equals(e.getDisposition()))
+                .count();
+        assertThat(appliedCount).isEqualTo(1);
+
+        // 2. Webhook WITHOUT provider event ID: deterministic payload hash fallback
+        var payloadWithoutId = json.createObjectNode()
+                .put("delivery_id", d.getProviderDeliveryId())
+                .put("status", "PICKED_UP")
+                .put("description", "Food collected from kitchen");
+
+        boolean noIdFirst = unclaimedEventHandler.handle(d.getProviderCode(), d.getProviderDeliveryId(), payloadWithoutId);
+        assertThat(noIdFirst).isTrue();
+        assertThat(reload(d.getId()).getStatus()).isEqualTo(FoodDeliveryStatus.PICKED_UP);
+
+        // Duplicate retry with identical payload without event ID
+        boolean noIdRetry = unclaimedEventHandler.handle(d.getProviderCode(), d.getProviderDeliveryId(), payloadWithoutId);
+        assertThat(noIdRetry).isTrue();
+
+        long pickupAppliedCount = events.findByFoodDeliveryIdOrderByOccurredAtAscIdAsc(d.getId()).stream()
+                .filter(e -> e.getProviderEventId() != null && e.getProviderEventId().startsWith("evt_") && "APPLIED".equals(e.getDisposition()))
+                .count();
+        assertThat(pickupAppliedCount).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("public tracking expires 24 hours after terminal state")
+    void publicTrackingExpiry() throws Exception {
+        var d = bookingService.create(request());
+
+        // Transition to terminal state DELIVERED
+        var deliveredEvent = new DeliveryProvider.ProviderEvent(
+                "EVT-DELIVERED-" + d.getId(),
+                DeliveryProvider.ProviderDeliveryStatus.DELIVERED,
+                "Delivered to customer",
+                Instant.now()
+        );
+        eventService.apply(d, d.getProviderCode(), d.getProviderDeliveryId(), deliveredEvent, null);
+
+        var delivered = reload(d.getId());
+        assertThat(delivered.getStatus()).isEqualTo(FoodDeliveryStatus.DELIVERED);
+        assertThat(delivered.getTrackingExpiresAt()).isNotNull();
+        assertThat(delivered.getTrackingExpiresAt()).isAfter(Instant.now().plusSeconds(23 * 3600));
+
+        // Active token returns 200
+        mvc.perform(get("/api/v1/public/food-deliveries/" + d.getTrackingToken())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk());
+
+        // Simulate expiration past 24 hours
+        jdbc.update("update food_delivery set tracking_expires_at = utc_timestamp(6) - interval 1 hour where id = ?", d.getId());
+
+        // Expired token returns 404
+        mvc.perform(get("/api/v1/public/food-deliveries/" + d.getTrackingToken())
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isNotFound());
+    }
+
+    private String outletUser(String roleCode, Long outletId) throws Exception {
+        var api = new ApiClient(mvc, json);
+        String phone = ApiClient.freshPhone();
+        String token = api.login(phone);
+        Long userId = jdbc.queryForObject(
+                "select id from users where phone = ?", Long.class, "+91" + phone);
+        jdbc.update("""
+                insert into user_role (user_id, role_id, scope_type, scope_id, status,
+                                       granted_at, created_at, updated_at, version)
+                select ?, r.id, 'OUTLET', ?, 'ACTIVE', now(6), now(6), now(6), 0
+                  from role r where r.code = ?
+                """, userId, outletId, roleCode);
+        return token;
+    }
+
+    @Test
+    @DisplayName("enforces OUTLET_EDIT permission for create and cancel, OUTLET_VIEW for read")
+    void outletPermissionsEnforced() throws Exception {
+        // User with REST_RECEIVING_STAFF has OUTLET_VIEW only (no OUTLET_EDIT)
+        String viewOnlyToken = outletUser("REST_RECEIVING_STAFF", outletId);
+        // User with REST_STORE_MANAGER has OUTLET_EDIT
+        String managerToken = outletUser("REST_STORE_MANAGER", outletId);
+
+        var createPayload = Map.ofEntries(
+                Map.entry("externalOrderRef", "POS-AUTH-TEST"),
+                Map.entry("customerName", "Asha"),
+                Map.entry("customerPhone", "+919876543210"),
+                Map.entry("dropAddress", "Flat 4B, Jubilee Hills"),
+                Map.entry("dropCity", "Hyderabad"),
+                Map.entry("dropState", "Telangana"),
+                Map.entry("dropPincode", "500033"),
+                Map.entry("dropLatitude", 17.4326),
+                Map.entry("dropLongitude", 78.4071),
+                Map.entry("orderValue", 500),
+                Map.entry("weightKg", 1.5),
+                Map.entry("maxFee", 150)
+        );
+
+        // 1. Create with OUTLET_VIEW only -> 403 Forbidden
+        mvc.perform(post("/api/v1/outlets/" + outletId + "/food-deliveries")
+                        .header("Authorization", "Bearer " + viewOnlyToken)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(createPayload)))
+                .andExpect(status().isForbidden());
+
+        // 2. Create with OUTLET_EDIT -> 200 OK
+        String responseJson = mvc.perform(post("/api/v1/outlets/" + outletId + "/food-deliveries")
+                        .header("Authorization", "Bearer " + managerToken)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(createPayload)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        Long createdId = json.readTree(responseJson).at("/data/id").asLong();
+        assertThat(createdId).isNotNull();
+
+        // 3. Read with OUTLET_VIEW -> 200 OK
+        mvc.perform(get("/api/v1/outlets/" + outletId + "/food-deliveries/" + createdId)
+                        .header("Authorization", "Bearer " + viewOnlyToken))
+                .andExpect(status().isOk());
+
+        // 4. Cancel with OUTLET_VIEW only -> 403 Forbidden
+        mvc.perform(post("/api/v1/outlets/" + outletId + "/food-deliveries/" + createdId + "/cancel")
+                        .header("Authorization", "Bearer " + viewOnlyToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("reason", "Cancelled"))))
+                .andExpect(status().isForbidden());
+
+        // 5. Cancel with OUTLET_EDIT -> 200 OK
+        mvc.perform(post("/api/v1/outlets/" + outletId + "/food-deliveries/" + createdId + "/cancel")
+                        .header("Authorization", "Bearer " + managerToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("reason", "Cancelled"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CANCELLED"));
     }
 }

@@ -344,9 +344,22 @@ class SettlementFlowIT extends AbstractIntegrationTest {
             var prepaid = completedOrder(10, "400");
             var credit = completedOrder(5, "400");
             // Same store, same period, same status: only the funding differs.
-            jdbc.update("update supplier_order set supplier_store_id = ?, "
-                    + "payment_method = 'CREDIT' where id = ?",
-                    prepaid.seller().storeId(), credit.orderId());
+            // Moving an order between stores is fixture-only; a delivery pins its
+            // order's store (fk_delivery_order_scope), so relax FK checks on one connection.
+            jdbc.execute((java.sql.Connection c) -> {
+                try (var st = c.createStatement()) {
+                    st.execute("SET FOREIGN_KEY_CHECKS=0");
+                    try (var ps = c.prepareStatement("update supplier_order set supplier_store_id = ?, "
+                            + "payment_method = 'CREDIT' where id = ?")) {
+                        ps.setObject(1, prepaid.seller().storeId());
+                        ps.setObject(2, credit.orderId());
+                        ps.executeUpdate();
+                    } finally {
+                        st.execute("SET FOREIGN_KEY_CHECKS=1");
+                    }
+                }
+                return null;
+            });
 
             generate();
 
