@@ -474,6 +474,49 @@ public class WalletService {
     }
 
     /**
+     * Hold a food delivery's fee from the outlet's wallet (D-197). One debit per delivery, unique on its reference, so a
+     * replayed create cannot take it twice.
+     *
+     * @throws BusinessException VALIDATION_ERROR if the balance is short; nothing is debited
+     */
+    @Transactional
+    public void debitFoodDelivery(Long outletId, Long foodDeliveryId, BigDecimal amount) {
+        var wallet = forOutlet(outletId);
+        if (wallets.debit(wallet.getId(), amount) == 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "Your wallet doesn't have ₹%s for the delivery fee.".formatted(Rupees.of(amount)));
+        }
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.DEBIT, WalletEntryKind.FOOD_DELIVERY_FEE, amount,
+                "Food delivery fee", "food-delivery-" + foodDeliveryId, null);
+    }
+
+    /**
+     * Give back part or all of a food delivery's held fee (D-197). Idempotent on {@code food-delivery-{id}-{tag}}: the
+     * same tag twice credits once, so a retried settlement or a repeated cancel cannot pay the restaurant twice.
+     *
+     * @param tag which refund this is ({@code adjust} for the unused part, {@code refund} for the rest)
+     * @return true if money was credited, false if this refund had already been made
+     */
+    @Transactional
+    public boolean refundFoodDelivery(Long outletId, Long foodDeliveryId, String tag, BigDecimal amount, String reason) {
+        String reference = "food-delivery-" + foodDeliveryId + "-" + tag;
+        if (entries.existsByReference(reference)) {
+            return false;
+        }
+        var wallet = forOutlet(outletId);
+        wallets.credit(wallet.getId(), amount);
+        wallets.flush();
+
+        var refreshed = wallets.findById(wallet.getId()).orElseThrow();
+        record(refreshed, null, WalletDirection.CREDIT, WalletEntryKind.FOOD_DELIVERY_REFUND, amount,
+                reason, reference, null);
+        return true;
+    }
+
+    /**
      * Take a QuickScan payment's money (D-106). Called with the wallet already
      * locked by the caller — {@code QuickScanService.payFromWallet} locks before
      * inserting the payment row, so the conditional debit below never races a
