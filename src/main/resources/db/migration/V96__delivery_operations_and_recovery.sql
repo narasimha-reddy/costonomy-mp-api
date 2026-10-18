@@ -1,4 +1,4 @@
--- V95 — Delivery operations, failure recovery, and reconciliation (D-201).
+-- V96 — Delivery operations, failure recovery, and reconciliation (D-201).
 --
 --   delivery_recovery_task: Durable retry queue for provider cancellations, wallet refunds,
 --                           and reconciliation tasks that failed transiently.

@@ -35,7 +35,7 @@ public class DeliveryProviderRecord extends BaseEntity {
     @Column(name = "supports_proof", nullable = false)
     private Boolean supportsProof = false;
 
-    /** Whether this provider may be asked to carry cooked food to a restaurant's customer (V90, D-201). */
+    /** Whether this provider may be asked to carry cooked food to a restaurant's customer (V91, D-201). */
     @Column(name = "supports_food_delivery", nullable = false)
     private Boolean supportsFoodDelivery = false;
 

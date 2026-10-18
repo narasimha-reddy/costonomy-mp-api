@@ -71,7 +71,7 @@ public class DeliveryProviderAttempt {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
-    /** Why this attempt ended, as a code (V91, D-201 addendum). Null on rows from before, and while it is live. */
+    /** Why this attempt ended, as a code (V92, D-201 addendum). Null on rows from before, and while it is live. */
     @Column(name = "ended_cause", length = 40)
     private String endedCause;
 

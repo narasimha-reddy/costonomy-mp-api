@@ -7,5 +7,7 @@ public enum CreditPaymentSource {
     /** The restaurant repaid from its wallet. */
     WALLET,
     /** The supplier confirmed a payment the restaurant claimed to have made. */
-    CLAIM_CONFIRMED
+    CLAIM_CONFIRMED,
+    /** Paid online through Razorpay (UPI, card) through Mandi (D-199). */
+    ONLINE
 }

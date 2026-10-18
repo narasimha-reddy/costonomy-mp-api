@@ -158,14 +158,14 @@ mvn -o -q compile
 ### Tests
 
 Run the integration test you are changing, not all of them. A full clean `mvn verify`
-is about eleven minutes on an 8-core laptop (about 25 before D-199); one class is
+is about eleven minutes on an 8-core laptop (about 25 before D-202); one class is
 about thirty to fifty seconds, most of it the MySQL container and the Spring context:
 
 ```bash
 mvn -o verify -Dit.test=StorefrontIT
 ```
 
-How the integration suite is made fast (D-199), and how to turn each part off:
+How the integration suite is made fast (D-202), and how to turn each part off:
 
 | What | Default | Turn it off |
 |---|---|---|
@@ -272,7 +272,7 @@ app is built across both roles.
 ### In progress: food delivery, restaurant to customer (D-201)
 
 A restaurant hands cooked food to a Costonomy courier for its own customer. Spec: `docs/specs/06-delivery.md` §16, whose
-status banner says what is built. **Built:** the V90 schema, the `fooddelivery` domain and repositories, the optional
+status banner says what is built. **Built:** the V91 schema, the `fooddelivery` domain and repositories, the optional
 `reference` on provider requests, and the hook that lets food own provider events. **Not built:** quoting and booking, the
 fee debit and refund, the restaurant API, the public tracking link, the handover code, customer notifications.
 **Waiting on product:** the fee model (a `maxFee` held up front, only couriers at or below it eligible, the difference

@@ -251,7 +251,7 @@ Append-only financial audit table `delivery_ledger` tracks:
 ## 16. Food delivery (restaurant to customer)
 
 > **Status: in progress. The booking side is built; the courier-event side and the API are not.**
-> **Built and tested:** schema (V90, V93), domain and repositories, creating a delivery (validation, idempotency), quoting
+> **Built and tested:** schema (V91, V94), domain and repositories, creating a delivery (validation, idempotency), quoting
 > every food-capable courier, holding the fee, booking with fallback in the order of §17, the 5-minute retry window and
 > ending `FAILED` (NO_COURIER) with a full refund, cancelling before pickup with a full refund, settling the unused part
 > of the hold after pickup, and handing a booking that never got a rider (or whose rider let go) to the next courier.
@@ -353,7 +353,7 @@ delivery beats none.
 - `FoodCourierSelector` applies this to a food delivery's quotes and returns, for each courier, what to record.
 
 ### The decision record
-Written on every attempt and quote (V91), both flows, going forward only; NULL means "not recorded", never "fine":
+Written on every attempt and quote (V92), both flows, going forward only; NULL means "not recorded", never "fine":
 `ended_cause` (PROVIDER_REFUSED, PROVIDER_TIMEOUT, ASSIGNMENT_TIMEOUT, RIDER_CANCELLED, PROVIDER_CANCELLED,
 PICKUP_FAILED, DELIVERY_FAILED, CUSTOMER_CANCEL, OPS_REASSIGN, SWITCHED_TO_OWN, COMPLETED), `retryable`, `assigned_at`,
 `call_ms`, `rank_position`, `selection_reason` (CHEAPEST, RELIABILITY, PROBE, ONLY_OPTION), `reliability_score`,

@@ -52,9 +52,9 @@ Active experiments in the layer are sorted deterministically by `experimentKey`.
 
 ---
 
-## 3. Database Schema (Flyway V92 & V94)
+## 3. Database Schema (Flyway V93 & V95)
 
-The implementation is **purely additive** across V92 and V94 migrations:
+The implementation is **purely additive** across V93 and V95 migrations:
 
 ```
 ┌─────────────────────────────────┐          ┌──────────────────────────────────┐

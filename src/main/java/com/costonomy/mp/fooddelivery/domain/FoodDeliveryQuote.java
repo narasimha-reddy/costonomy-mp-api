@@ -67,7 +67,7 @@ public class FoodDeliveryQuote {
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
-    /** How long the provider's API took to answer this quote (V91, D-201 addendum). */
+    /** How long the provider's API took to answer this quote (V92, D-201 addendum). */
     @Column(name = "call_ms")
     private Integer callMs;
 

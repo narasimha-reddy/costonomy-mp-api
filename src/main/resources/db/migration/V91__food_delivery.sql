@@ -1,4 +1,4 @@
--- V90 — Food delivery: a restaurant sends cooked food to its own customer (D-201, doc 06 §16).
+-- V91 — Food delivery: a restaurant sends cooked food to its own customer (D-201, doc 06 §16).
 --
 -- Additive only. The supplier flow's `delivery` tables are not touched: that flow is one consignment per
 -- supplier order, and every column and constraint in it says so. A food delivery has no supplier order,

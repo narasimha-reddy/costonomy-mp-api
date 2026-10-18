@@ -9,13 +9,15 @@ import com.costonomy.mp.payment.repository.PaymentRepository;
 import com.costonomy.mp.procurement.service.OrderReleaseService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 
 /**
  * Provider webhooks. Doc 04 §12, doc 09 §5, doc 46.
@@ -41,7 +43,6 @@ import java.time.Instant;
  * ignored rather than applied.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class PaymentWebhookService {
 
@@ -51,6 +52,33 @@ public class PaymentWebhookService {
     private final OrderReleaseService orderRelease;
     private final PaymentProvider provider;
     private final ObjectMapper json;
+    /** Other modules' claims on payments that are not order payments (credit pay, D-199). May be empty. */
+    private final List<ProviderPaymentListener> listeners;
+
+    @Autowired
+    public PaymentWebhookService(PaymentWebhookStore store, PaymentRepository payments, PaymentService paymentService,
+                                 OrderReleaseService orderRelease, PaymentProvider provider, ObjectMapper json,
+                                 ObjectProvider<ProviderPaymentListener> listeners) {
+        this(store, payments, paymentService, orderRelease, provider, json, listeners.orderedStream().toList());
+    }
+
+    /** No listeners: order payments only. */
+    public PaymentWebhookService(PaymentWebhookStore store, PaymentRepository payments, PaymentService paymentService,
+                                 OrderReleaseService orderRelease, PaymentProvider provider, ObjectMapper json) {
+        this(store, payments, paymentService, orderRelease, provider, json, List.of());
+    }
+
+    PaymentWebhookService(PaymentWebhookStore store, PaymentRepository payments, PaymentService paymentService,
+                          OrderReleaseService orderRelease, PaymentProvider provider, ObjectMapper json,
+                          List<ProviderPaymentListener> listeners) {
+        this.store = store;
+        this.payments = payments;
+        this.paymentService = paymentService;
+        this.orderRelease = orderRelease;
+        this.provider = provider;
+        this.json = json;
+        this.listeners = listeners;
+    }
 
     /**
      * Take a webhook.
@@ -160,6 +188,16 @@ public class PaymentWebhookService {
                 .orElse(null);
 
         if (payment == null) {
+            // Not an order payment. Another module (credit pay) may own the Razorpay order; each listener fetches the
+            // payment itself. Handled means PROCESSED, and no payment_id: that column points at an order payment.
+            String orderId = extractOrderId(payload);
+            for (var listener : listeners) {
+                if (listener.onProviderPayment(orderId, providerPaymentId, event.getEventType())) {
+                    log.info("Webhook {} handled by {}", event.getProviderEventId(),
+                            listener.getClass().getSimpleName());
+                    return;
+                }
+            }
             // An event about something we have no record of. Kept rather than
             // discarded: it is either a provider-side problem or ours, and either
             // way the record is what makes it diagnosable.

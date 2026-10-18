@@ -27,7 +27,7 @@ import java.time.Instant;
 @NoArgsConstructor
 public class CreditRefundDue extends BaseEntity {
 
-    public enum Channel { OFF_PLATFORM, WALLET }
+    public enum Channel { OFF_PLATFORM, WALLET, ONLINE }
 
     public enum Status { OPEN, REFUNDED }
 

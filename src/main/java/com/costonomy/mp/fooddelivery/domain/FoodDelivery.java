@@ -84,7 +84,7 @@ public class FoodDelivery extends BaseEntity {
     @Column(name = "drop_address", nullable = false, length = 500)
     private String dropAddress;
 
-    /** The customer's locality, which couriers require to book (V93). Supplied by the request, never guessed. */
+    /** The customer's locality, which couriers require to book (V94). Supplied by the request, never guessed. */
     @Column(name = "drop_city", length = 120)
     private String dropCity;
 
@@ -130,7 +130,7 @@ public class FoodDelivery extends BaseEntity {
     private String currency = "INR";
 
     /**
-     * The most the restaurant agreed to pay, and what was held from its wallet at creation (V93). Net held is
+     * The most the restaurant agreed to pay, and what was held from its wallet at creation (V94). Net held is
      * {@code maxFee - feeRefundedAmount}; {@code fee} is what the booked courier will actually cost.
      */
     @Column(name = "max_fee", precision = 19, scale = 4)

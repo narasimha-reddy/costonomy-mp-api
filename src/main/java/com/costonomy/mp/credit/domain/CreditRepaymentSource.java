@@ -6,5 +6,7 @@ public enum CreditRepaymentSource {
     /** The supplier recorded money received outside Mandi: no wallet debit, no payout. */
     SUPPLIER_RECORDED,
     UPI,
-    CARD
+    CARD,
+    /** Paid online through Razorpay (UPI, card) through Mandi, one repayment per supplier line (D-199). */
+    ONLINE
 }

@@ -17,7 +17,7 @@ On macOS with Homebrew the JDK is not visible to `java_home`; use
 `export JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home`.
 
 CI (`.github/workflows/ci.yml`) runs one `mvn verify`, which compiles, runs the unit tests, then the integration tests, and stops at
-the first phase that fails. Integration tests run in two forked JVMs (`it.forks`, D-199); see `docs/ONBOARDING.md` for the switches.
+the first phase that fails. Integration tests run in two forked JVMs (`it.forks`, D-202); see `docs/ONBOARDING.md` for the switches.
 
 ## Guardrails that are enforced, not just requested
 

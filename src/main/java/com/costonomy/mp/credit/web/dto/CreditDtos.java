@@ -174,7 +174,9 @@ public final class CreditDtos {
             /** The sum of the agreements' open "I paid" claims (D-155); 0 when none. */
             BigDecimal openClaimsAmount,
             /** The sum of the agreements' reportable amounts (D-157). */
-            BigDecimal reportableAmount) {
+            BigDecimal reportableAmount,
+            /** Whether paying dues online is switched on (D-199); the app then hides 'Paid direct' and shows 'Pay dues'. */
+            boolean onlinePayEnabled) {
     }
 
     public record LedgerEntryResponse(
@@ -222,7 +224,9 @@ public final class CreditDtos {
             /** Outstanding less the "I paid" claims awaiting the supplier, never below 0; 0 once settled (D-157). */
             BigDecimal reportableAmount,
             /** What credit notes and write-offs took off the invoice (B7, B8): not paid, no longer owed. */
-            BigDecimal creditedAmount) {
+            BigDecimal creditedAmount,
+            /** The order's number (e.g. MP-261007-000024), as the invoice detail returns it; null when the order is unknown. */
+            String orderNumber) {
     }
 
     /** One payment against an invoice. */
@@ -236,7 +240,9 @@ public final class CreditDtos {
             /** The wallet ledger entry that funded it, for a WALLET payment; null otherwise. */
             Long walletEntryId,
             /** When the supplier reversed it, else null: it is no longer counted in what was paid. */
-            Instant reversedAt) {
+            Instant reversedAt,
+            /** The transaction id to show: ONLINE the Razorpay payment id, WALLET the same number as walletEntryId; else null. */
+            String transactionId) {
     }
 
     /** An invoice with who it is from, which order it is for, and what has been paid against it. */
@@ -658,7 +664,9 @@ public final class CreditDtos {
             /** The last India day it can be undone; null once reversed or when it never can be (WALLET). */
             LocalDate reversibleUntil,
             /** When the supplier reversed it, else null. A reversed payment stays in the feed and is not collected. */
-            Instant reversedAt) {
+            Instant reversedAt,
+            /** The transaction id to show: ONLINE the Razorpay payment id, WALLET the id the restaurant sees; else null. */
+            String transactionId) {
     }
 
     // ── Undoing a recorded payment (B6) ──────────────────────────────────

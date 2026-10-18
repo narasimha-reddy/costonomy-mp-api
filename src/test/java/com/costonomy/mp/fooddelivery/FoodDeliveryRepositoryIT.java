@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The food delivery mapping against the real V90 schema (Hibernate runs with {@code ddl-auto=validate}, so a
+ * The food delivery mapping against the real V91 schema (Hibernate runs with {@code ddl-auto=validate}, so a
  * column drift fails the context), and the guarantees the database is meant to give: one delivery per idempotency
  * key, one per tracking token, and no duplicate provider events.
  */

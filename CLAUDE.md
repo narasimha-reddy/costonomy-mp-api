@@ -85,7 +85,7 @@ mvn -o -q compile
 ```
 
 **Run the integration test you are changing, not all of them.** A full clean
-`mvn verify` is about eleven minutes on an 8-core laptop (it was about 25 before D-199);
+`mvn verify` is about eleven minutes on an 8-core laptop (it was about 25 before D-202);
 one class is about thirty to fifty seconds, most of it the MySQL container and the
 Spring context:
 

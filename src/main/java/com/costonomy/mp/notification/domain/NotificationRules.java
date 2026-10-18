@@ -377,12 +377,29 @@ public final class NotificationRules {
                 "{supplierName} recorded your payment of {amount} against invoice {invoiceNumber}.",
                 "CREDIT_INVOICE"));
 
-        // A restaurant repaid from its own wallet (D-153): the supplier is told, the restaurant already saw the
-        // result on screen. Not CreditRepaymentRecorded, whose text says the supplier recorded it.
+        // A restaurant repaid through Mandi, from its wallet (D-153) or online (D-199): the supplier is told, the
+        // restaurant already saw the result on screen. Not CreditRepaymentRecorded, whose text says the supplier
+        // recorded it. "{paidVia|through Mandi}" reads "by UPI" when the payload names how, and keeps the wording of
+        // events queued before D-199 (which carry neither the count nor the method).
         add(rules, new NotificationRule(CreditEvents.REPAYMENT_RECEIVED, SUPPLIER_STORE, CREDIT, false,
                 List.of(IN_APP, PUSH),
                 "Payment received",
-                "{restaurantName} paid {amount} through Mandi.", "CREDIT_AGREEMENT"));
+                "{restaurantName} paid {amount}[ ({invoiceCountText})] {paidVia|through Mandi}.", "CREDIT_AGREEMENT"));
+
+        // The restaurant's online payment was applied after it left the screen (D-199): told once, in-app and push.
+        // Not told when it saw the result on screen, and never SMS.
+        add(rules, new NotificationRule(CreditEvents.PAYMENT_COMPLETED, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Payment successful",
+                "You paid {amount} for {invoiceCountText}. Those invoices are settled.", "CREDIT_PAYMENT_ATTEMPT"));
+
+        // Part or all of an online payment goes back to the card or UPI it came from (D-199): invoices that changed
+        // before the capture was applied were not paid twice.
+        add(rules, new NotificationRule(CreditEvents.PAYMENT_REFUND, OUTLET, CREDIT, false,
+                List.of(IN_APP, PUSH),
+                "Money on its way back",
+                "{amount} is going back to your {methodLabel}. {skippedText} changed before your payment arrived, "
+                        + "so we didn't pay it twice.", "CREDIT_PAYMENT_ATTEMPT"));
 
         // "I paid" claims (D-155). The supplier is asked to check; the restaurant is told the answer. Never SMS and
         // never critical: nothing here is owed today. A confirmation is told once, here, and not also as
