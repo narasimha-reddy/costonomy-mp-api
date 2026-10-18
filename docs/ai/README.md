@@ -10,13 +10,14 @@ and what to avoid reading whole.
 | `mvn -o -q compile` | no | after each edit |
 | `mvn -o test -DskipITs` | no | before saying "done"; includes `ArchitectureTest` |
 | `mvn -o verify -Dit.test=<Class>` | yes | one integration test you are changing |
-| `mvn clean install` | yes | whole suite, before committing (~5 min) |
+| `mvn clean install` | yes | whole suite, before committing (~11 min, two JVMs at once; `-Dit.forks=1` for serial) |
 
 Build with **JDK 17**. If you see hundreds of "cannot find symbol" on getters, it is the JDK, not the code.
 On macOS with Homebrew the JDK is not visible to `java_home`; use
 `export JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home`.
 
-CI (`.github/workflows/ci.yml`) runs `compile`, `test`, `verify`: the same commands as above.
+CI (`.github/workflows/ci.yml`) runs one `mvn verify`, which compiles, runs the unit tests, then the integration tests, and stops at
+the first phase that fails. Integration tests run in two forked JVMs (`it.forks`, D-199); see `docs/ONBOARDING.md` for the switches.
 
 ## Guardrails that are enforced, not just requested
 

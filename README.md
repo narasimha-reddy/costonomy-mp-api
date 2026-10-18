@@ -80,7 +80,7 @@ Testcontainers MySQL per run (D-007), and need Docker running.
 ```bash
 mvn spring-boot:run       # local profile, all providers mocked
 mvn test                  # unit tests — no Docker needed
-mvn verify                # + integration and migration tests (needs Docker)
+mvn verify                # + integration and migration tests (needs Docker; two JVMs at once, -Dit.forks=1 for serial)
 ```
 
 Local development needs no external provider and no MySQL install: OTP, payment

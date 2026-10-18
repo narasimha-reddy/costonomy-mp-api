@@ -160,13 +160,27 @@ mvn -o -q compile
 
 ### Tests
 
-Run the integration test you are changing, not all of them. A full `mvn verify`
-is about five minutes; one class is about fifty seconds, of which forty is the
-MySQL container and the Spring context:
+Run the integration test you are changing, not all of them. A full clean `mvn verify`
+is about eleven minutes on an 8-core laptop (about 25 before D-199); one class is
+about thirty to fifty seconds, most of it the MySQL container and the Spring context:
 
 ```bash
 mvn -o verify -Dit.test=StorefrontIT
 ```
+
+How the integration suite is made fast (D-199), and how to turn each part off:
+
+| What | Default | Turn it off |
+|---|---|---|
+| Integration tests run in this many JVMs at once, each with its own MySQL container | 2 | `-Dit.forks=1` (serial), or `-Dit.forks=3` on 8+ cores |
+| The test MySQL keeps its data in memory and skips per-commit fsync | on | `-Dit.mysql.fast=false` |
+| OTP codes are hashed at BCrypt's minimum cost in the `test` profile (production stays at 10) | on | `-Dcostonomy.mp.otp.bcrypt-strength=10` |
+
+Test classes are never run concurrently inside one JVM: they share cached Spring contexts, a database and static test
+doubles. If the suite fails only with more than one fork, try `-Dit.forks=1` first and tell whoever owns the failing test.
+Known intermittent failures, not caused by the fork count: the `Clock` mock re-stubbing race in the credit tests
+(`ClassCast`, `UnfinishedStubbing` or `WrongTypeOfReturnValue` on `creditClock`), and `OutboxRelayOnCommitIT`'s "relayed
+promptly" timing test on a loaded machine.
 
 Run the whole suite before you open a PR, not between edits.
 

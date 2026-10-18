@@ -85,9 +85,10 @@ Then a change is picked up by recompiling in a second terminal — devtools watc
 mvn -o -q compile
 ```
 
-**Run the integration test you are changing, not all of them.** A full
-`mvn verify` is about five minutes; one class is about fifty seconds, of which
-forty is the MySQL container and the Spring context and only eight is the tests:
+**Run the integration test you are changing, not all of them.** A full clean
+`mvn verify` is about eleven minutes on an 8-core laptop (it was about 25 before D-199);
+one class is about thirty to fifty seconds, most of it the MySQL container and the
+Spring context:
 
 ```
 mvn -o verify -Dit.test=StorefrontIT
