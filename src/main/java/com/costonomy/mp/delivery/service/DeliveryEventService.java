@@ -46,6 +46,7 @@ public class DeliveryEventService {
     private final DeliveryOrderBridge orders;
     private final AuditService auditService;
     private final org.springframework.context.ApplicationEventPublisher publisher;
+    private final DeliveryProviderAttemptRepository attempts;
 
     /**
      * Apply one provider event.
@@ -196,6 +197,7 @@ public class DeliveryEventService {
             default -> { }
         }
         deliveries.save(delivery);
+        recordOnAttempt(delivery, target, event);
 
         // Publish, do not record. The ledger row for this event was already written
         // at the top of this method, carrying the provider's event id and its
@@ -242,6 +244,35 @@ public class DeliveryEventService {
             return DeliveryStatus.DRIVER_CANCELLED;
         }
         return target;
+    }
+
+    /**
+     * What the provider's news means for the attempt that is current (D-197 addendum): when its rider was assigned, and
+     * why it ended if it ended. {@code CANCELLED} from the provider (read as that courier standing down) is told apart
+     * from the rider cancelling by the provider's own status, which {@link #providerStoodDown} did not change.
+     */
+    private void recordOnAttempt(Delivery delivery, DeliveryStatus target, ProviderEvent event) {
+        String cause = switch (target) {
+            case DRIVER_CANCELLED -> event.status() == ProviderDeliveryStatus.CANCELLED
+                    ? "PROVIDER_CANCELLED" : "RIDER_CANCELLED";
+            case PICKUP_FAILED -> "PICKUP_FAILED";
+            case DELIVERY_FAILED -> "DELIVERY_FAILED";
+            case DELIVERED -> "COMPLETED";
+            default -> null;
+        };
+        if (cause == null && target != DeliveryStatus.DRIVER_ASSIGNED) {
+            return;
+        }
+        attempts.findFirstByDeliveryIdOrderByAttemptNumberDesc(delivery.getId()).ifPresent(attempt -> {
+            if (target == DeliveryStatus.DRIVER_ASSIGNED) {
+                if (attempt.getAssignedAt() == null) {
+                    attempt.setAssignedAt(Instant.now());
+                }
+            } else if (attempt.getEndedCause() == null) {
+                attempt.setEndedCause(cause);
+            }
+            attempts.save(attempt);
+        });
     }
 
     /** Provider vocabulary onto ours. The only place the two meet. */

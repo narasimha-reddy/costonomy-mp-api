@@ -66,6 +66,7 @@ public class DeliveryBookingService {
                     "No delivery partner is available for this route right now.");
         }
 
+        String decision = decisionSnapshot(usable, excludedProviderCodes);
         for (DeliveryQuote quote : usable) {
             var adapter = registry.adapter(quote.getProviderCode());
             if (adapter == null) {
@@ -74,9 +75,16 @@ public class DeliveryBookingService {
 
             int attemptNumber = delivery.getAttemptCount() + 1;
             var attempt = startAttempt(delivery, quote, attemptNumber, attemptType);
+            // What the choice looked like when it was made (D-197 addendum). Supplier delivery still orders by price
+            // alone, so the reason is always the price order; the reliability fields are for food, which ranks on them.
+            attempt.setRankPosition(usable.indexOf(quote) + 1);
+            attempt.setSelectionReason(usable.size() == 1 ? "ONLY_OPTION" : "CHEAPEST");
+            attempt.setDecision(decision);
 
+            long startedNs = System.nanoTime();
             try {
                 var booking = adapter.book(bookingRequest(delivery, quote));
+                attempt.setCallMs(elapsedMs(startedNs));
 
                 delivery.setAttemptCount(attemptNumber);
                 delivery.setDeliveryProviderId(quote.getDeliveryProviderId());
@@ -147,6 +155,9 @@ public class DeliveryBookingService {
                 attempt.setOutcome("FAILED");
                 attempt.setFailureCode("BOOKING_FAILED");
                 attempt.setFailureReason(ex.getMessage());
+                attempt.setCallMs(elapsedMs(startedNs));
+                attempt.setRetryable(ex.retryable());
+                attempt.setEndedCause("TIMEOUT".equals(ex.errorClass()) ? "PROVIDER_TIMEOUT" : "PROVIDER_REFUSED");
                 attempt.setEndedAt(Instant.now());
                 attempts.save(attempt);
                 delivery.setAttemptCount(attemptNumber);
@@ -164,6 +175,35 @@ public class DeliveryBookingService {
         attempts.findByDeliveryIdOrderByAttemptNumberAsc(deliveryId)
                 .forEach(attempt -> tried.add(attempt.getProviderCode()));
         return tried;
+    }
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON = new com.fasterxml.jackson.databind.ObjectMapper();
+
+    private static int elapsedMs(long startedNs) {
+        return (int) Math.min(Integer.MAX_VALUE, (System.nanoTime() - startedNs) / 1_000_000L);
+    }
+
+    /** Every courier considered for this booking, in the order they will be asked, and those already ruled out. */
+    private static String decisionSnapshot(List<DeliveryQuote> usable, List<String> excluded) {
+        try {
+            var candidates = new ArrayList<java.util.Map<String, Object>>();
+            for (int i = 0; i < usable.size(); i++) {
+                var q = usable.get(i);
+                var row = new java.util.LinkedHashMap<String, Object>();
+                row.put("provider", q.getProviderCode());
+                row.put("rank", i + 1);
+                row.put("amount", q.getAmount());
+                row.put("etaMinutes", q.getEtaMinutes());
+                candidates.add(row);
+            }
+            var snapshot = new java.util.LinkedHashMap<String, Object>();
+            snapshot.put("candidates", candidates);
+            snapshot.put("alreadyTried", excluded);
+            return JSON.writeValueAsString(snapshot);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+            // The snapshot is a record for later, never a reason to fail a booking.
+            return null;
+        }
     }
 
     private DeliveryProviderAttempt startAttempt(Delivery delivery, DeliveryQuote quote,

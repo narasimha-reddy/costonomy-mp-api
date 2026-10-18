@@ -76,4 +76,15 @@ public class DeliveryQuote {
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
+
+    /** How long the provider's API took to answer this quote (V89, D-197 addendum). */
+    @Column(name = "call_ms")
+    private Integer callMs;
+
+    /** TIMEOUT, TRANSIENT, REFUSED or UNSERVICEABLE; null when the quote succeeded. */
+    @Column(name = "error_class", length = 40)
+    private String errorClass;
+
+    @Column(name = "retryable")
+    private Boolean retryable;
 }

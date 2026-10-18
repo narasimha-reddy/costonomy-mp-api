@@ -40,12 +40,13 @@ class DeliveryProviderStandDownTest {
     @Mock private DeliveryOrderBridge orders;
     @Mock private AuditService auditService;
     @Mock private ApplicationEventPublisher publisher;
+    @Mock private com.costonomy.mp.delivery.repository.DeliveryProviderAttemptRepository attempts;
 
     private DeliveryEventService service;
 
     @BeforeEach
     void setUp() {
-        service = new DeliveryEventService(deliveries, eventStore, locations, timeline, orders, auditService, publisher);
+        service = new DeliveryEventService(deliveries, eventStore, locations, timeline, orders, auditService, publisher, attempts);
     }
 
     private static Delivery delivery(DeliveryStatus status) {

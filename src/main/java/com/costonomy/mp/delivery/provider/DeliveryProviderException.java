@@ -32,4 +32,22 @@ public class DeliveryProviderException extends RuntimeException {
     public boolean retryable() {
         return retryable;
     }
+
+    /**
+     * What kind of failure this was, for the record a decision engine reads (D-197 addendum):
+     * {@code TIMEOUT} (the provider did not answer in time), {@code TRANSIENT} (a bad minute, worth asking again) or
+     * {@code REFUSED} (it will not take this job).
+     */
+    public String errorClass() {
+        for (Throwable t = this; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof java.net.SocketTimeoutException || t instanceof java.util.concurrent.TimeoutException) {
+                return "TIMEOUT";
+            }
+            String message = t.getMessage();
+            if (message != null && message.toLowerCase(java.util.Locale.ROOT).contains("timed out")) {
+                return "TIMEOUT";
+            }
+        }
+        return retryable ? "TRANSIENT" : "REFUSED";
+    }
 }

@@ -709,6 +709,147 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
 
     // ── Tracking honesty ─────────────────────────────────────────────────
 
+    // ── What the decision engine is told (D-197 addendum) ────────────────
+
+    @Nested
+    @DisplayName("decision signals")
+    class DecisionSignals {
+
+        private List<java.util.Map<String, Object>> attempts(long deliveryId) {
+            return jdbc.queryForList("select * from delivery_provider_attempt where delivery_id = ? order by attempt_number",
+                    deliveryId);
+        }
+
+        private void awaitStatus(long deliveryId, String status) {
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(20))
+                    .pollInterval(java.time.Duration.ofMillis(200))
+                    .untilAsserted(() -> assertThat(jdbc.queryForObject(
+                            "select status from delivery where id = ?", String.class, deliveryId))
+                            .isEqualTo(status));
+        }
+
+        @Test
+        @DisplayName("a booking records how long the courier took, its rank, why it won, and who else was considered")
+        void bookingRecordsTheDecision() throws Exception {
+            var order = readyOrder();
+            long deliveryId = requestDelivery(order).get("id").asLong();
+
+            var first = attempts(deliveryId).get(0);
+            assertThat(first.get("call_ms")).as("booking call time").isNotNull();
+            assertThat(first.get("rank_position")).isEqualTo(1);
+            assertThat(first.get("selection_reason")).isIn("CHEAPEST", "ONLY_OPTION");
+            var decision = json.readTree((String) first.get("decision"));
+            assertThat(decision.at("/candidates").size()).isGreaterThanOrEqualTo(1);
+            assertThat(decision.at("/candidates/0/provider").asText()).isEqualTo(first.get("provider_code"));
+
+            // Each quote asked of a courier says how long that courier took to answer.
+            var quoteTimes = jdbc.queryForList(
+                    "select call_ms from delivery_quote where delivery_id = ? and status in ('QUOTED', 'UNSERVICEABLE')",
+                    deliveryId);
+            assertThat(quoteTimes).isNotEmpty().allSatisfy(row -> assertThat(row.get("call_ms")).isNotNull());
+        }
+
+        @Test
+        @DisplayName("when a rider is assigned the attempt records when")
+        void assignmentIsTimed() throws Exception {
+            var order = readyOrder();
+            var operator = operator();
+            long deliveryId = requestDelivery(order).get("id").asLong();
+            assertThat(attempts(deliveryId).get(0).get("assigned_at")).isNull();
+
+            simulate(operator, deliveryId, Map.of("status", "DRIVER_ASSIGNED"));
+
+            assertThat(attempts(deliveryId).get(0).get("assigned_at")).isNotNull();
+        }
+
+        @Test
+        @DisplayName("a rider cancelling is recorded on the attempt as the cause, and the replacement attempt is still open")
+        void riderCancelledIsRecorded() throws Exception {
+            var order = readyOrder();
+            var operator = operator();
+            long deliveryId = requestDelivery(order).get("id").asLong();
+            simulate(operator, deliveryId, Map.of("status", "DRIVER_ASSIGNED"));
+            simulate(operator, deliveryId, Map.of("status", "DRIVER_CANCELLED"));
+
+            awaitStatus(deliveryId, "PROVIDER_SELECTED");
+
+            var all = attempts(deliveryId);
+            assertThat(all).hasSize(2);
+            assertThat(all.get(0).get("ended_cause")).isEqualTo("RIDER_CANCELLED");
+            assertThat(all.get(0).get("outcome")).isEqualTo("CANCELLED");
+            assertThat(all.get(1).get("ended_cause")).as("the replacement is still live").isNull();
+            assertThat(all.get(1).get("rank_position")).isNotNull();
+            var considered = json.readTree((String) all.get(1).get("decision"));
+            assertThat(considered.at("/alreadyTried/0").asText()).isEqualTo(all.get(0).get("provider_code"));
+        }
+
+        @Test
+        @DisplayName("a refused booking is recorded with its cause, whether it is worth retrying, and the call time")
+        void refusedBookingIsRecorded() throws Exception {
+            var order = readyOrder();
+            express.arm(MockDeliveryProvider.Failure.BOOKING_FAILS);
+            saver.arm(MockDeliveryProvider.Failure.BOOKING_FAILS);
+
+            long deliveryId = requestDelivery(order).get("id").asLong();
+
+            var all = attempts(deliveryId);
+            assertThat(all).isNotEmpty().allSatisfy(row -> {
+                assertThat(row.get("outcome")).isEqualTo("FAILED");
+                assertThat(row.get("ended_cause")).isEqualTo("PROVIDER_REFUSED");
+                assertThat(row.get("retryable")).as("the mock says it is worth asking again").isEqualTo(true);
+                assertThat(row.get("call_ms")).isNotNull();
+            });
+            assertThat(jdbc.queryForObject("select status from delivery where id = ?", String.class, deliveryId))
+                    .isEqualTo("PROVIDER_UNAVAILABLE");
+        }
+
+        @Test
+        @DisplayName("a failed quote is recorded with its class and call time")
+        void failedQuoteIsRecorded() throws Exception {
+            var order = readyOrder();
+            express.arm(MockDeliveryProvider.Failure.QUOTE_FAILS);
+
+            long deliveryId = requestDelivery(order).get("id").asLong();
+
+            var failed = jdbc.queryForList(
+                    "select error_class, retryable, call_ms from delivery_quote where delivery_id = ? and status = 'FAILED'",
+                    deliveryId);
+            assertThat(failed).hasSize(1);
+            assertThat(failed.get(0).get("error_class")).isEqualTo("TRANSIENT");
+            assertThat(failed.get(0).get("retryable")).isEqualTo(true);
+            assertThat(failed.get(0).get("call_ms")).isNotNull();
+        }
+
+        @Test
+        @DisplayName("an assignment that timed out is recorded as a timeout, not as someone reassigning")
+        void assignmentTimeoutIsTheCause() throws Exception {
+            var order = readyOrder();
+            long deliveryId = requestDelivery(order).get("id").asLong();
+            // The deadline passed one minute ago, in UTC as the application stores it.
+            jdbc.update("update delivery set status = 'PROVIDER_SELECTED', "
+                    + "assignment_deadline = utc_timestamp(6) - interval 1 minute where id = ?", deliveryId);
+
+            mvc.perform(MockMvcRequestBuilders.get("/api/v1/supplier-orders/" + order.orderId() + "/delivery")
+                    .header("Authorization", "Bearer " + order.buyer().token())).andReturn();
+
+            assertThat(attempts(deliveryId).get(0).get("ended_cause")).isEqualTo("ASSIGNMENT_TIMEOUT");
+        }
+
+        @Test
+        @DisplayName("the restaurant cancelling is recorded as a customer cancel")
+        void customerCancelIsTheCause() throws Exception {
+            var order = readyOrder();
+            long deliveryId = requestDelivery(order).get("id").asLong();
+
+            mvc.perform(MockMvcRequestBuilders.post("/api/v1/deliveries/" + deliveryId + "/cancel")
+                    .header("Authorization", "Bearer " + order.buyer().token())
+                    .header("Idempotency-Key", UUID.randomUUID().toString())
+                    .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"Changed my mind\"}")).andReturn();
+
+            assertThat(attempts(deliveryId).get(0).get("ended_cause")).isEqualTo("CUSTOMER_CANCEL");
+        }
+    }
+
     @Nested
     @DisplayName("tracking")
     class Tracking {

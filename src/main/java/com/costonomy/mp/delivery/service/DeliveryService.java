@@ -559,7 +559,7 @@ public class DeliveryService {
         }
 
         var pickup = directory.pickupFor(delivery.getSupplierStoreId());
-        releaseCurrentProvider(delivery, "Supplier is delivering");
+        releaseCurrentProvider(delivery, "Supplier is delivering", "SWITCHED_TO_OWN");
         delivery.setMode(DeliveryMode.SUPPLIER_OWN);
         delivery.setFee(order.deliveryFee() == null ? BigDecimal.ZERO : order.deliveryFee());
         delivery.setStatus(DeliveryStatus.DRIVER_ASSIGNED);
@@ -592,7 +592,7 @@ public class DeliveryService {
                     "This delivery can't be cancelled once the goods have been picked up.");
         }
 
-        releaseCurrentProvider(delivery, reason);
+        releaseCurrentProvider(delivery, reason, "CUSTOMER_CANCEL");
 
         delivery.setStatus(DeliveryStatus.CANCELLED);
         delivery.setCancelledAt(Instant.now());
@@ -609,6 +609,15 @@ public class DeliveryService {
 
     /** Tell the current courier to stand down, and close their attempt. */
     private void releaseCurrentProvider(Delivery delivery, String reason) {
+        releaseCurrentProvider(delivery, reason, null);
+    }
+
+    /**
+     * @param cause why the attempt ends (D-197 addendum), or null to work it out from the delivery: no rider yet and
+     *              past the deadline is an assignment timeout, anything else released by us is an ops reassignment.
+     *              A cause the provider's own event already recorded is kept.
+     */
+    private void releaseCurrentProvider(Delivery delivery, String reason, String cause) {
         if (delivery.getProviderDeliveryId() == null) {
             return;
         }
@@ -632,6 +641,9 @@ public class DeliveryService {
                         attempt.setOutcome("CANCELLED");
                         attempt.setFailureReason(reason);
                         attempt.setEndedAt(Instant.now());
+                        if (attempt.getEndedCause() == null) {
+                            attempt.setEndedCause(cause != null ? cause : inferEndCause(delivery));
+                        }
                         attempts.save(attempt);
                     }
                 });
@@ -639,6 +651,17 @@ public class DeliveryService {
         delivery.setDriverName(null);
         delivery.setDriverPhone(null);
         delivery.setDriverVehicle(null);
+    }
+
+    private static String inferEndCause(Delivery delivery) {
+        return switch (delivery.getStatus()) {
+            case DRIVER_CANCELLED -> "RIDER_CANCELLED";
+            case PICKUP_FAILED -> "PICKUP_FAILED";
+            case PROVIDER_SELECTED -> delivery.getAssignmentDeadline() != null
+                    && !delivery.getAssignmentDeadline().isAfter(Instant.now())
+                    ? "ASSIGNMENT_TIMEOUT" : "OPS_REASSIGN";
+            default -> "OPS_REASSIGN";
+        };
     }
 
     // ── Supplier own delivery ────────────────────────────────────────────
