@@ -77,18 +77,18 @@ must be allowed in its security group.
 
 ### Run it
 
-Everything, including this API, with one command from costonomy-api (set `MP_API_REPO` in its `.env.local`):
+From this repo (set `COSTONOMY_API_REPO` in this `.env.local`, and `MP_API_REPO` in costonomy-api's):
 
 ```bash
-cd ../costonomy-api && local/run.sh dev --build
+./run.sh --build     # common-api, Core and MP in Docker, building them first; ./run.sh skips the build
+./run.sh source      # MP from source (a recompile restarts it in seconds), the stack's common-api and Core
+./run.sh check       # only the checks every start runs first
+./run.sh stop        # stop the stack
 ```
 
-Or just this API from source, with the stack running for common-api, which is the quicker loop while you work on it:
-
-```bash
-set -a; . ./.env.local; set +a
-mvn -o spring-boot:run                     # profile dev, from SPRING_PROFILES_ACTIVE in .env.local
-```
+Every start first checks the settings and refuses to start on a mistake: the database is the dev MySQL (never
+production's RDS) and answers, the database names are the dev ones, no `CHANGE ME` is left, S3 settings are complete,
+Docker runs, the ports are free.
 
 Flyway applies the migrations on startup and the data survives restarts.
 

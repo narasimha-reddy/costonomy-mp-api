@@ -38,14 +38,18 @@ public class S3FileStorage implements FileStorage, AutoCloseable {
     private final S3Client client;
     private final String bucket;
     private final String baseUrl;
+    /** Folder in a bucket shared with other apps ("mp/"), or empty for a bucket of MP's own. */
+    private final String prefix;
 
     public S3FileStorage(
             @Value("${costonomy.mp.storage.s3.bucket}") String bucket,
             @Value("${costonomy.mp.storage.s3.region:ap-south-1}") String region,
             @Value("${costonomy.mp.storage.s3.endpoint:}") String endpoint,
-            @Value("${costonomy.mp.storage.base-url:}") String baseUrl) {
+            @Value("${costonomy.mp.storage.base-url:}") String baseUrl,
+            @Value("${costonomy.mp.storage.s3.prefix:}") String prefix) {
 
         this.bucket = bucket;
+        this.prefix = folder(prefix);
         // The public base is usually a CDN in front of the bucket, not the bucket.
         // Falling back to the virtual-hosted URL keeps a bare setup working.
         this.baseUrl = (baseUrl == null || baseUrl.isBlank()
@@ -58,7 +62,14 @@ public class S3FileStorage implements FileStorage, AutoCloseable {
             builder = builder.endpointOverride(URI.create(endpoint)).forcePathStyle(true);
         }
         this.client = builder.build();
-        log.info("S3 storage: bucket {} in {}, served from {}", bucket, region, this.baseUrl);
+        log.info("S3 storage: bucket {}{} in {}, served from {}", bucket, this.prefix.isEmpty() ? "" : " under " + this.prefix,
+                region, this.baseUrl);
+    }
+
+    /** "mp", "/mp/" → "mp/"; blank → "". */
+    public static String folder(String prefix) {
+        String p = prefix == null ? "" : prefix.strip().replaceAll("^/+|/+$", "");
+        return p.isEmpty() ? "" : p + "/";
     }
 
     @Override
@@ -67,7 +78,7 @@ public class S3FileStorage implements FileStorage, AutoCloseable {
             client.putObject(
                     PutObjectRequest.builder()
                             .bucket(bucket)
-                            .key(key)
+                            .key(prefix + key)
                             .contentType(contentType)
                             // Immutable by construction: the key carries a UUID, so a
                             // long cache is correct and a changed image is a new key.
@@ -79,7 +90,7 @@ public class S3FileStorage implements FileStorage, AutoCloseable {
             log.error("S3 rejected a put for key {}", key, e);
             throw new StorageException("Could not store the file", e);
         }
-        return baseUrl + "/" + key;
+        return baseUrl + "/" + prefix + key;
     }
 
     @Override

@@ -47,6 +47,20 @@ class S3InvoiceStorageTest {
     }
 
     @Test
+    @DisplayName("in a shared bucket every key sits under the prefix; the key handed in stays as it is")
+    void prefixInASharedBucket() {
+        var client = mock(S3Client.class);
+        new S3InvoiceStorage(client, presigner(), "costonomy-generic", "/mp/")
+                .put("invoices/1/2026-10/abc-p1.jpg", new byte[]{1}, "image/jpeg");
+
+        var captor = ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(client).putObject(captor.capture(), any(RequestBody.class));
+        assertThat(captor.getValue().key()).isEqualTo("mp/invoices/1/2026-10/abc-p1.jpg");
+        assertThat(com.costonomy.mp.storage.provider.S3FileStorage.folder("mp")).isEqualTo("mp/");
+        assertThat(com.costonomy.mp.storage.provider.S3FileStorage.folder(" ")).isEmpty();
+    }
+
+    @Test
     @DisplayName("a page link is a presigned GET that lasts five minutes")
     void presignedLink() {
         var url = new S3InvoiceStorage(mock(S3Client.class), presigner(), "bills-bucket")

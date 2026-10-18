@@ -35,20 +35,29 @@ public class S3InvoiceStorage implements InvoiceStorage, AutoCloseable {
     private final S3Client client;
     private final S3Presigner presigner;
     private final String bucket;
+    /** Folder in a bucket shared with other apps ("mp/"), or empty for a bucket of MP's own. Keys stored in the
+     * database never include it, so it can be set or changed without touching them. */
+    private final String prefix;
 
     @Autowired
     public S3InvoiceStorage(
             @Value("${costonomy.mp.invoices.storage.s3.bucket:}") String bucket,
-            @Value("${costonomy.mp.invoices.storage.s3.region:ap-south-1}") String region) {
+            @Value("${costonomy.mp.invoices.storage.s3.region:ap-south-1}") String region,
+            @Value("${costonomy.mp.invoices.storage.s3.prefix:}") String prefix) {
         this(S3Client.builder().region(Region.of(region)).build(),
-                S3Presigner.builder().region(Region.of(region)).build(), requireBucket(bucket));
+                S3Presigner.builder().region(Region.of(region)).build(), requireBucket(bucket), prefix);
     }
 
     /** For tests, with a client and presigner of their own. */
     public S3InvoiceStorage(S3Client client, S3Presigner presigner, String bucket) {
+        this(client, presigner, bucket, "");
+    }
+
+    public S3InvoiceStorage(S3Client client, S3Presigner presigner, String bucket, String prefix) {
         this.client = client;
         this.presigner = presigner;
         this.bucket = bucket;
+        this.prefix = com.costonomy.mp.storage.provider.S3FileStorage.folder(prefix);
     }
 
     private static String requireBucket(String bucket) {
@@ -63,7 +72,7 @@ public class S3InvoiceStorage implements InvoiceStorage, AutoCloseable {
     public void put(String key, byte[] content, String contentType) {
         try {
             client.putObject(PutObjectRequest.builder()
-                            .bucket(bucket).key(key).contentType(contentType)
+                            .bucket(bucket).key(prefix + key).contentType(contentType)
                             .serverSideEncryption(ServerSideEncryption.AES256)
                             .cacheControl("private, no-store")
                             .build(),
@@ -79,7 +88,7 @@ public class S3InvoiceStorage implements InvoiceStorage, AutoCloseable {
     public Optional<String> openOrPresign(String key, Duration ttl) {
         var presigned = presigner.presignGetObject(GetObjectPresignRequest.builder()
                 .signatureDuration(ttl)
-                .getObjectRequest(GetObjectRequest.builder().bucket(bucket).key(key).build())
+                .getObjectRequest(GetObjectRequest.builder().bucket(bucket).key(prefix + key).build())
                 .build());
         return Optional.of(presigned.url().toString());
     }
@@ -88,7 +97,7 @@ public class S3InvoiceStorage implements InvoiceStorage, AutoCloseable {
     public Optional<byte[]> read(String key) {
         try {
             return Optional.of(client.getObjectAsBytes(
-                    GetObjectRequest.builder().bucket(bucket).key(key).build()).asByteArray());
+                    GetObjectRequest.builder().bucket(bucket).key(prefix + key).build()).asByteArray());
         } catch (NoSuchKeyException e) {
             return Optional.empty();
         } catch (S3Exception e) {
@@ -100,7 +109,7 @@ public class S3InvoiceStorage implements InvoiceStorage, AutoCloseable {
     @Override
     public void delete(String key) {
         try {
-            client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(key).build());
+            client.deleteObject(DeleteObjectRequest.builder().bucket(bucket).key(prefix + key).build());
         } catch (S3Exception e) {
             log.error("S3 rejected an invoice delete for key {}", key, e);
             throw new StorageException("Could not remove the file", e);

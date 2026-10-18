@@ -6752,3 +6752,16 @@ the configuration every Costonomy service uses, so it can run in the shared Tomc
    (`/opt/costonomy/mp-api-config/` instead), writes `logs/costonomy-mp-api.log`, logs its configuration at startup
    with secrets masked, closes its S3 clients and the MySQL driver's thread on undeploy, and reports its build time
    at `/actuator/info` for `deploy.sh`.
+
+## D-198 — Files in shared buckets under mp/ (costonomy-test for local and test, costonomy-generic in production); every local start is checked first
+
+1. **Shared buckets, one folder.** Product images and bills go under `mp/` (`STORAGE_S3_PREFIX` / `INVOICE_S3_PREFIX`)
+   in `costonomy-test` for local runs and testapi, which share the dev database (so they must share files too), and in
+   `costonomy-generic` in production. Inside `mp/`: `suppliers/{org}/stores/{store}/sku-images/…` and
+   `restaurants/{org}/outlets/{outlet}/…` (served from the bucket, so public read), `invoices/{outlet}/{yyyy-mm}/…`
+   (D-113: private, encrypted, reached through expiring links; never public). The prefix is applied only when talking
+   to S3, so keys in the database never carry it and it can change without a migration. A local run refuses
+   `costonomy-generic`.
+2. **Local starts are checked.** `./run.sh` (and the app's `npm run start:local`) run costonomy-api's
+   `local/check.sh` first: the dev MySQL only (production's RDS refused), the dev database names, no CHANGE ME left,
+   S3 settings complete when S3 is on, the database reachable, Docker, free ports.
