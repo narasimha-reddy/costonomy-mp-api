@@ -5,11 +5,14 @@ import com.costonomy.mp.delivery.domain.*;
 import com.costonomy.mp.delivery.provider.DeliveryProvider;
 import com.costonomy.mp.delivery.provider.DeliveryProviderException;
 import com.costonomy.mp.delivery.repository.DeliveryQuoteRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -30,7 +33,6 @@ import java.util.Optional;
  * nothing as long as somebody answers.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class DeliveryQuotingService {
 
@@ -40,6 +42,39 @@ public class DeliveryQuotingService {
     private final DeliveryProviderRegistry registry;
     private final DeliveryQuoteRepository quotes;
     private final ColdChainCarrierGate coldChainGate;
+    private final TransactionTemplate tx;
+
+    public DeliveryQuotingService(DeliveryProviderRegistry registry,
+                                  DeliveryQuoteRepository quotes,
+                                  ColdChainCarrierGate coldChainGate) {
+        this(registry, quotes, coldChainGate, null);
+    }
+
+    @Autowired
+    public DeliveryQuotingService(DeliveryProviderRegistry registry,
+                                  DeliveryQuoteRepository quotes,
+                                  ColdChainCarrierGate coldChainGate,
+                                  @Autowired(required = false) PlatformTransactionManager txManager) {
+        this.registry = registry;
+        this.quotes = quotes;
+        this.coldChainGate = coldChainGate;
+        if (txManager != null) {
+            this.tx = new TransactionTemplate(txManager);
+            this.tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        } else {
+            this.tx = null;
+        }
+    }
+
+    private DeliveryQuote saveQuote(DeliveryQuote quote) {
+        DeliveryQuote saved = null;
+        if (tx != null) {
+            saved = tx.execute(status -> quotes.save(quote));
+        } else {
+            saved = quotes.save(quote);
+        }
+        return saved != null ? saved : quote;
+    }
 
     @Value("${costonomy.mp.delivery.max-radius-km:30.0}")
     private double maxRadiusKm = 30.0;
@@ -84,7 +119,7 @@ public class DeliveryQuotingService {
             unserviceableQuote.setDistanceKm(BigDecimal.valueOf(distanceKm).setScale(4, RoundingMode.HALF_UP));
             unserviceableQuote.setFailureReason("Exceeds %s km intra-city radius limit".formatted(maxRadiusKm));
             unserviceableQuote.setVehicleType(vehicleType);
-            quotes.save(unserviceableQuote);
+            unserviceableQuote = saveQuote(unserviceableQuote);
             return new Outcome(null, List.of(unserviceableQuote), false);
         }
 
@@ -111,7 +146,7 @@ public class DeliveryQuotingService {
                 if (capable.isEmpty()) {
                     quote.setStatus("UNSERVICEABLE");
                     quote.setFailureReason("No verified temperature-controlled vehicle for this consignment");
-                    quotes.save(quote);
+                    quote = saveQuote(quote);
                     recorded.add(quote);
                     continue;
                 }
@@ -184,7 +219,7 @@ public class DeliveryQuotingService {
                 quote.setRetryable(ex.retryable());
             }
 
-            quotes.save(quote);
+            quote = saveQuote(quote);
             recorded.add(quote);
         }
 
@@ -200,7 +235,7 @@ public class DeliveryQuotingService {
                     .orElse(null);
             if (selected != null) {
                 selected.setSelected(true);
-                quotes.save(selected);
+                selected = saveQuote(selected);
             }
         }
 
@@ -216,7 +251,7 @@ public class DeliveryQuotingService {
      * carrier's capability is checked again now: one revoked since the quote was taken cannot be booked on a
      * reassignment.
      */
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
     public List<DeliveryQuote> usableQuotes(Long deliveryId, List<String> excludedProviderCodes,
                                             boolean requiresColdChain) {
         var now = java.time.Instant.now();

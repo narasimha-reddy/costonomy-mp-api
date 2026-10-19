@@ -8,11 +8,14 @@ import com.costonomy.mp.delivery.service.DeliveryProviderRegistry;
 import com.costonomy.mp.fooddelivery.domain.FoodDelivery;
 import com.costonomy.mp.fooddelivery.domain.FoodDeliveryQuote;
 import com.costonomy.mp.fooddelivery.repository.FoodDeliveryQuoteRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -27,7 +30,6 @@ import java.util.List;
  * anyone; a quote row says so, so the failure explains itself.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class FoodDeliveryQuotingService {
 
@@ -36,6 +38,36 @@ public class FoodDeliveryQuotingService {
 
     private final DeliveryProviderRegistry registry;
     private final FoodDeliveryQuoteRepository quotes;
+    private final TransactionTemplate tx;
+
+    public FoodDeliveryQuotingService(DeliveryProviderRegistry registry,
+                                      FoodDeliveryQuoteRepository quotes) {
+        this(registry, quotes, null);
+    }
+
+    @Autowired
+    public FoodDeliveryQuotingService(DeliveryProviderRegistry registry,
+                                      FoodDeliveryQuoteRepository quotes,
+                                      @Autowired(required = false) PlatformTransactionManager txManager) {
+        this.registry = registry;
+        this.quotes = quotes;
+        if (txManager != null) {
+            this.tx = new TransactionTemplate(txManager);
+            this.tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        } else {
+            this.tx = null;
+        }
+    }
+
+    private FoodDeliveryQuote saveQuote(FoodDeliveryQuote quote) {
+        FoodDeliveryQuote saved = null;
+        if (tx != null) {
+            saved = tx.execute(status -> quotes.save(quote));
+        } else {
+            saved = quotes.save(quote);
+        }
+        return saved != null ? saved : quote;
+    }
 
     @Value("${costonomy.mp.delivery.max-radius-km:30.0}")
     private double maxRadiusKm = 30.0;
@@ -58,8 +90,8 @@ public class FoodDeliveryQuotingService {
             tooFar.setErrorClass("UNSERVICEABLE");
             tooFar.setDistanceKm(BigDecimal.valueOf(distanceKm).setScale(4, RoundingMode.HALF_UP));
             tooFar.setFailureReason("Exceeds %s km intra-city radius limit".formatted(maxRadiusKm));
-            tooFar.setVehicleType(vehicle);
-            return new Outcome(List.of(quotes.save(tooFar)), false);
+            tooFar = saveQuote(tooFar);
+            return new Outcome(List.of(tooFar), false);
         }
 
         var weightGrams = delivery.getWeightKg() == null ? null : delivery.getWeightKg().multiply(BigDecimal.valueOf(1000));
@@ -109,7 +141,7 @@ public class FoodDeliveryQuotingService {
                 quote.setErrorClass(ex.errorClass());
                 quote.setRetryable(ex.retryable());
             }
-            recorded.add(quotes.save(quote));
+            recorded.add(saveQuote(quote));
         }
         return new Outcome(recorded, anyServiceable);
     }

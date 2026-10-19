@@ -102,6 +102,25 @@ class DeliveryReassignAfterFailureTest {
     }
 
     @Test
+    @DisplayName("the released courier's id is cleared from the delivery, so a late event from it finds nothing")
+    void releasedConsignmentIdIsCleared() {
+        var d = delivery(DeliveryStatus.DRIVER_CANCELLED);
+        lock(d);
+        when(directory.order(100L)).thenReturn(order("READY_FOR_PICKUP"));
+        when(booking.triedProviders(7L)).thenReturn(List.of("PIDGE"));
+        when(quoting.usableQuotes(eq(7L), eq(List.of("PIDGE")), anyBoolean())).thenReturn(List.of(new DeliveryQuote()));
+        when(registry.adapter("PIDGE")).thenReturn(pidge);
+        var idWhenBooking = new java.util.concurrent.atomic.AtomicReference<String>("unset");
+        doAnswer(inv -> { idWhenBooking.set(d.getProviderDeliveryId()); return true; })
+                .when(booking).book(eq(d), anyList(), eq("REASSIGNMENT"));
+
+        service.reassignAfterProviderFailure(7L, "pidge-1", "Rider cancelled");
+
+        assertThat(idWhenBooking.get()).as("already cleared when the replacement is being booked").isNull();
+        verify(pidge).cancel("pidge-1", "Rider cancelled");
+    }
+
+    @Test
     @DisplayName("re-quotes when no quote is left to use")
     void requotesWhenNoQuotesLeft() {
         var d = delivery(DeliveryStatus.PICKUP_FAILED);
@@ -177,6 +196,7 @@ class DeliveryReassignAfterFailureTest {
     @DisplayName("bookQuoted books a delivery that was quoted but never booked, skipping couriers already tried")
     void bookQuotedBooksAQuotedDelivery() {
         var d = delivery(DeliveryStatus.QUOTE_RECEIVED);
+        d.setProviderDeliveryId(null); // quoted, so no courier holds it
         lock(d);
         when(booking.triedProviders(7L)).thenReturn(List.of("PIDGE"));
         doAnswer(inv -> { d.setStatus(DeliveryStatus.PROVIDER_SELECTED); return true; })
@@ -211,6 +231,28 @@ class DeliveryReassignAfterFailureTest {
 
         assertThat(service.reassignAfterProviderFailure(7L, null, "x")).isFalse();
 
+        verify(booking, never()).book(any(), anyList(), anyString());
+    }
+
+    @Test
+    @DisplayName("a quote result that arrives after the supplier took the delivery over changes nothing and books nothing")
+    void quoteResultAfterSwitchToOwnIsDiscarded() {
+        var d = delivery(DeliveryStatus.QUOTE_FAILED);
+        d.setProviderDeliveryId(null);
+        d.setNoPartnerSince(java.time.Instant.now().minusSeconds(600));
+        lock(d);
+        when(directory.order(100L)).thenReturn(order("READY_FOR_PICKUP"));
+        // While the quotes are being fetched with no lock held, the supplier switches the delivery to their own.
+        when(quoting.gather(eq(d), any(), any(), any(), anyList())).thenAnswer(inv -> {
+            d.setMode(DeliveryMode.SUPPLIER_OWN);
+            d.setStatus(DeliveryStatus.DRIVER_ASSIGNED);
+            return new DeliveryQuotingService.Outcome(null, List.of(new DeliveryQuote()), true);
+        });
+
+        service.retryNoPartner(7L);
+
+        assertThat(d.getMode()).isEqualTo(DeliveryMode.SUPPLIER_OWN);
+        assertThat(d.getStatus()).as("not overwritten by the late quote").isEqualTo(DeliveryStatus.DRIVER_ASSIGNED);
         verify(booking, never()).book(any(), anyList(), anyString());
     }
 }
