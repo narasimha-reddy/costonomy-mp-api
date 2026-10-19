@@ -36,7 +36,8 @@ public class DeliveryJobs {
     private final DeliveryProviderRegistry registry;
     private final DeliveryEventService eventService;
 
-    @Scheduled(fixedDelayString = "${costonomy.mp.delivery.poll-interval:PT30S}")
+    @Scheduled(fixedDelayString = "${costonomy.mp.delivery.poll-interval:PT30S}",
+            initialDelayString = "${costonomy.mp.delivery.poll-initial-delay:PT0S}")
     @SchedulerLock(name = "delivery-poll", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
     public void pollActiveDeliveries() {
         java.time.Instant now = java.time.Instant.now();
