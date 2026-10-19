@@ -14,7 +14,8 @@ import com.costonomy.mp.experiment.dto.ExperimentEvaluation;
 import com.costonomy.mp.experiment.service.ExperimentService;
 import com.costonomy.mp.experiment.web.ExperimentAdminController;
 import com.costonomy.mp.experiment.web.ExperimentClientController;
-import com.costonomy.mp.identity.security.AuthenticatedActor;
+import com.costonomy.security.CostonomyPrincipal;
+import com.costonomy.security.web.CostonomyAuthentication;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,7 +25,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.MediaType;
-import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -69,8 +69,11 @@ class ExperimentControllerTest {
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
 
-        AuthenticatedActor actor = new AuthenticatedActor(1L, "+919876543210");
-        SecurityContextHolder.getContext().setAuthentication(new TestingAuthenticationToken(actor, null));
+        // Signed in as common-api user 1, the way ActorContext reads it
+        SecurityContextHolder.getContext().setAuthentication(new CostonomyAuthentication(
+                new CostonomyPrincipal(CostonomyPrincipal.Type.USER, 1L, "sid-1", "mp-mobile", "MARKETPLACE",
+                        java.util.Set.of("otp"), null, null),
+                null, java.util.Set.of(), null, null, List.of()));
     }
 
     @AfterEach
