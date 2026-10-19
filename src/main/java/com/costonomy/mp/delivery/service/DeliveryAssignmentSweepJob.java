@@ -106,24 +106,27 @@ public class DeliveryAssignmentSweepJob {
     }
 
     /**
-     * Deliveries quoted but never booked: the process stopped after the quote committed and before the courier was
-     * called (booking runs outside the transaction). Nothing else looks at a delivery in {@code QUOTE_RECEIVED}.
+     * Deliveries requested or quoted but never booked: the process stopped after the request/quote committed
+     * and before the courier was called (quoting and booking run outside transactions).
      */
     private int rescueUnbooked(Instant now) {
         var stuck = deliveries.findByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAscIdAsc(
-            List.of(DeliveryStatus.QUOTE_RECEIVED), now.minus(grace), PageRequest.of(0, batch));
+            List.of(DeliveryStatus.DELIVERY_REQUESTED, DeliveryStatus.QUOTE_RECEIVED), now.minus(grace), PageRequest.of(0, batch));
         int rescued = 0;
         for (var delivery : stuck) {
             try {
-                if (deliveryService.bookQuoted(delivery.getId())) {
+                boolean ok = delivery.getStatus() == DeliveryStatus.QUOTE_RECEIVED
+                        ? deliveryService.bookQuoted(delivery.getId())
+                        : deliveryService.quoteAndBookUnquoted(delivery.getId());
+                if (ok) {
                     rescued++;
                 }
             } catch (RuntimeException ex) {
-                log.error("Assignment sweep could not book quoted delivery {}", delivery.getId(), ex);
+                log.error("Assignment sweep could not quote/book unbooked delivery {}", delivery.getId(), ex);
             }
         }
         if (!stuck.isEmpty()) {
-            log.info("Assignment sweep: {} quoted but unbooked, {} booked", stuck.size(), rescued);
+            log.info("Assignment sweep: {} requested/quoted but unbooked, {} booked", stuck.size(), rescued);
         }
         return rescued;
     }

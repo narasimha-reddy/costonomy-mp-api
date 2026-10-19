@@ -115,7 +115,9 @@ public class DeliveryBookingService {
                 // Locked, and the delivery read afresh: the caller's copy is from before this transaction, and a
                 // second booking racing this one must see our pending attempt and stand aside.
                 var current = deliveries.lockById(deliveryId).orElse(delivery);
-                if (attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
+                if (current.getMode() == DeliveryMode.SUPPLIER_OWN || current.getStatus().isTerminal()
+                        || attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
+                    // The supplier took it over, it finished, or another booking is in progress.
                     return null;
                 }
                 var a = startAttempt(current, quote, attemptNumber, attemptType);
@@ -127,7 +129,7 @@ public class DeliveryBookingService {
                 return a;
             });
             if (attempt == null) {
-                log.info("Delivery {} already has a booking in progress; not starting another", deliveryId);
+                log.info("Delivery {} is no longer awaiting a courier or has a booking in progress; not booking", deliveryId);
                 return false;
             }
 

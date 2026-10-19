@@ -7,6 +7,7 @@ import com.costonomy.mp.support.TestCatalog;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -173,6 +174,39 @@ class PidgeDeliveryFlowIT extends AbstractIntegrationTest {
         assertThat(deliveryRow.get("status")).isEqualTo("DRIVER_ASSIGNED");
         assertThat(deliveryRow.get("driver_name")).isEqualTo("Rider Vikram");
         assertThat(deliveryRow.get("driver_phone")).isEqualTo("9876543210");
+    }
+
+    @Autowired private com.costonomy.mp.delivery.service.DeliveryService deliveryService;
+
+    @Test
+    @DisplayName("a late event from a courier that was released does not move the delivery")
+    void lateEventFromReleasedCourierIsIgnored() throws Exception {
+        String released = "pidg_released_" + System.currentTimeMillis();
+        Long deliveryId = createSeedDelivery(released);
+
+        try {
+            deliveryService.reassign(null, deliveryId, "Test reassignment");
+        } catch (com.costonomy.mp.common.error.BusinessException noOtherPartner) {
+            // Nobody else covers this route in the test setup. The release already committed, which is what is under test.
+        }
+
+        String payload = """
+                {"id": "%s", "status": "fulfilled",
+                 "fulfillment": {"status": "PICKED_UP",
+                   "logs": [{"timestamp": "2026-10-06T10:05:00.000Z", "status": "PICKED_UP",
+                             "rider": {"id": "306", "name": "Old Rider", "mobile": "9876543210"}}]}}
+                """.formatted(released);
+        mvc.perform(MockMvcRequestBuilders.post("/api/v1/webhooks/delivery/pidge")
+                        .header("X-Pidge-Signature", sign(payload))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isOk());
+
+        Map<String, Object> row = jdbc.queryForMap(
+                "select status, provider_delivery_id, driver_name from delivery where id = ?", deliveryId);
+        assertThat(row.get("status")).as("not picked up by the released courier").isNotEqualTo("PICKED_UP");
+        assertThat(row.get("provider_delivery_id")).isNotEqualTo(released);
+        assertThat(row.get("driver_name")).isNotEqualTo("Old Rider");
     }
 
     @Test
