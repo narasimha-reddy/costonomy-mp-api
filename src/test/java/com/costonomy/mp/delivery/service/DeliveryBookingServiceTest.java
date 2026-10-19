@@ -305,6 +305,83 @@ class DeliveryBookingServiceTest {
     }
 
     @Test
+    @DisplayName("Each fallback attempt is sent with its own reference, and the timeout lookup uses the one that was sent")
+    void book_fallbackAttemptsUseDistinctReferences() {
+        Delivery delivery = createDelivery(12L, VehicleType.TWO_WHEELER);
+        DeliveryQuote first = createQuote(12L, "SHADOWFAX", VehicleType.TWO_WHEELER);
+        DeliveryQuote second = createQuote(12L, "MOCK_EXPRESS", VehicleType.TWO_WHEELER);
+        DeliveryProvider shadowfax = mock(DeliveryProvider.class);
+        when(quoting.usableQuotes(12L, List.of(), false)).thenReturn(List.of(first, second));
+        when(registry.adapter("SHADOWFAX")).thenReturn(shadowfax);
+        when(registry.adapter("MOCK_EXPRESS")).thenReturn(providerAdapter);
+        when(shadowfax.book(any())).thenThrow(new com.costonomy.mp.delivery.provider.DeliveryProviderException("SHADOWFAX", "refused", false));
+        when(providerAdapter.book(any())).thenReturn(new DeliveryProvider.Booking(
+                "m-9", new BigDecimal("80.00"), "INR", 25, Instant.now().plusSeconds(1500), null));
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isTrue();
+
+        ArgumentCaptor<DeliveryProvider.BookingRequest> sent = ArgumentCaptor.forClass(DeliveryProvider.BookingRequest.class);
+        verify(shadowfax).book(sent.capture());
+        verify(providerAdapter).book(sent.capture());
+        assertThat(sent.getAllValues()).extracting(DeliveryProvider.BookingRequest::idempotencyKey)
+                .containsExactly("mp-delivery-12-1", "mp-delivery-12-2");
+    }
+
+    @Test
+    @DisplayName("The attempt number comes from the locked delivery, not the caller's stale copy")
+    void book_numbersTheAttemptFromTheLockedState() {
+        Delivery delivery = createDelivery(13L, VehicleType.TWO_WHEELER);
+        DeliveryQuote quote = createQuote(13L, "MOCK_EXPRESS", VehicleType.TWO_WHEELER);
+        when(quoting.usableQuotes(13L, List.of(), false)).thenReturn(List.of(quote));
+        when(registry.adapter("MOCK_EXPRESS")).thenReturn(providerAdapter);
+        when(providerAdapter.book(any())).thenReturn(new DeliveryProvider.Booking(
+                "m-10", new BigDecimal("80.00"), "INR", 25, Instant.now().plusSeconds(1500), null));
+        // The caller's copy says no attempts yet, but another booking has since used numbers 1 to 3.
+        var latest = new DeliveryProviderAttempt();
+        latest.setAttemptNumber(3);
+        when(attempts.findFirstByDeliveryIdOrderByAttemptNumberDesc(13L)).thenReturn(java.util.Optional.of(latest));
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isTrue();
+
+        ArgumentCaptor<DeliveryProvider.BookingRequest> sent = ArgumentCaptor.forClass(DeliveryProvider.BookingRequest.class);
+        verify(providerAdapter).book(sent.capture());
+        assertThat(sent.getValue().idempotencyKey()).isEqualTo("mp-delivery-13-4");
+    }
+
+    @Test
+    @DisplayName("Losing the race for the attempt number to another booking is a clean no, not an error")
+    void book_whenTheAttemptNumberIsTaken_standsAside() {
+        Delivery delivery = createDelivery(14L, VehicleType.TWO_WHEELER);
+        DeliveryQuote quote = createQuote(14L, "MOCK_EXPRESS", VehicleType.TWO_WHEELER);
+        when(quoting.usableQuotes(14L, List.of(), false)).thenReturn(List.of(quote));
+        when(registry.adapter("MOCK_EXPRESS")).thenReturn(providerAdapter);
+        when(attempts.save(any(DeliveryProviderAttempt.class)))
+                .thenThrow(new org.springframework.dao.DataIntegrityViolationException("uk_attempt_number"));
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isFalse();
+
+        verify(providerAdapter, never()).book(any());
+    }
+
+    @Test
+    @DisplayName("A delivery a courier already holds is not booked a second time, even if it was free when the caller looked")
+    void book_whenACourierAlreadyHoldsTheDelivery_booksNothing() {
+        Delivery delivery = createDelivery(11L, VehicleType.TWO_WHEELER);
+        DeliveryQuote quote = createQuote(11L, "SHADOWFAX", VehicleType.TWO_WHEELER);
+        DeliveryProvider shadowfax = mock(DeliveryProvider.class);
+        when(quoting.usableQuotes(11L, List.of(), false)).thenReturn(List.of(quote));
+        when(registry.adapter("SHADOWFAX")).thenReturn(shadowfax);
+        // Another booking finished between the caller's check and this reservation.
+        delivery.setProviderDeliveryId("sfx-already");
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isFalse();
+
+        verify(shadowfax, never()).book(any());
+        verify(attempts, never()).save(any(DeliveryProviderAttempt.class));
+        assertThat(delivery.getProviderDeliveryId()).isEqualTo("sfx-already");
+    }
+
+    @Test
     @DisplayName("When every carrier refuses, the delivery is marked unavailable and nothing is booked or charged")
     void book_whenEveryCarrierRefuses_marksUnavailableAndBooksNothing() {
         Delivery delivery = createDelivery(9L, VehicleType.TWO_WHEELER);

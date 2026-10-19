@@ -94,7 +94,6 @@ public class DeliveryBookingService {
      */
     public boolean book(Delivery delivery, List<String> excludedProviderCodes, String attemptType) {
         final Long deliveryId = delivery.getId();
-        final int attemptsSoFar = delivery.getAttemptCount();
         var usable = quoting.usableQuotes(delivery.getId(), excludedProviderCodes, delivery.isRequiresColdChain());
 
         if (usable.isEmpty()) {
@@ -103,41 +102,55 @@ public class DeliveryBookingService {
         }
 
         String decision = decisionSnapshot(usable, excludedProviderCodes);
-        int started = 0;
         for (DeliveryQuote quote : usable) {
             var adapter = registry.adapter(quote.getProviderCode());
             if (adapter == null) {
                 continue;
             }
 
-            int attemptNumber = attemptsSoFar + ++started;
-            var attempt = tx.execute(status -> {
+            DeliveryProviderAttempt reserved;
+            try {
+                reserved = tx.execute(status -> {
                 // Locked, and the delivery read afresh: the caller's copy is from before this transaction, and a
                 // second booking racing this one must see our pending attempt and stand aside.
                 var current = deliveries.lockById(deliveryId).orElse(delivery);
                 if (current.getMode() == DeliveryMode.SUPPLIER_OWN || current.getStatus().isTerminal()
+                        || current.getProviderDeliveryId() != null
                         || attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
-                    // The supplier took it over, it finished, or another booking is in progress.
+                    // The supplier took it over, it finished, a courier already holds it (a booking that finished
+                    // after the caller looked), or another booking is in progress. Every caller that wants a new
+                    // courier releases the old one first, which clears this id.
                     return null;
                 }
-                var a = startAttempt(current, quote, attemptNumber, attemptType);
+                // Numbered from the delivery as just locked, never from the caller's copy: another booking may have
+                // used numbers since, and (delivery_id, attempt_number) is unique.
+                int next = Math.max(current.getAttemptCount(),
+                        attempts.findFirstByDeliveryIdOrderByAttemptNumberDesc(deliveryId)
+                                .map(DeliveryProviderAttempt::getAttemptNumber).orElse(0)) + 1;
+                var a = startAttempt(current, quote, next, attemptType);
                 a.setRankPosition(usable.indexOf(quote) + 1);
                 a.setSelectionReason(usable.size() == 1 ? "ONLY_OPTION" : "CHEAPEST");
                 a.setDecision(decision);
-                current.setAttemptCount(Math.max(current.getAttemptCount(), attemptNumber));
+                current.setAttemptCount(next);
                 deliveries.save(current);
                 return a;
-            });
-            if (attempt == null) {
+                });
+            } catch (org.springframework.dao.DataIntegrityViolationException conflict) {
+                // Lost the race for the attempt number to another booking: it won, this one stands aside.
+                reserved = null;
+            }
+            if (reserved == null) {
                 log.info("Delivery {} is no longer awaiting a courier or has a booking in progress; not booking", deliveryId);
                 return false;
             }
 
+            final DeliveryProviderAttempt attempt = reserved;
+            final int attemptNumber = attempt.getAttemptNumber();
             long startedNs = System.nanoTime();
             DeliveryProvider.Booking booking = null;
             DeliveryProviderException failure = null;
             try {
-                booking = adapter.book(bookingRequest(delivery, quote));
+                booking = adapter.book(bookingRequest(delivery, quote, attemptNumber));
             } catch (DeliveryProviderException ex) {
                 failure = ex;
             } catch (Exception ex) {
@@ -461,7 +474,7 @@ public class DeliveryBookingService {
         return attempts.save(attempt);
     }
 
-    private DeliveryProvider.BookingRequest bookingRequest(Delivery delivery, DeliveryQuote quote) {
+    private DeliveryProvider.BookingRequest bookingRequest(Delivery delivery, DeliveryQuote quote, int attemptNumber) {
         var vehicleType = quote.getVehicleType() != null ? quote.getVehicleType()
                 : delivery.getVehicleType() != null ? delivery.getVehicleType()
                 : VehicleType.fromWeight(delivery.getWeightKg());
@@ -474,8 +487,9 @@ public class DeliveryBookingService {
                 delivery.getDropAddress(), delivery.getDropLatitude(),
                 delivery.getDropLongitude(), delivery.getDropContactName(),
                 delivery.getDropContactPhone(),
-                // Ours, so a retried booking cannot produce two couriers at one door.
-                "mp-delivery-%d-%d".formatted(delivery.getId(), delivery.getAttemptCount() + 1),
+                // Ours, so a retried booking cannot produce two couriers at one door. Built from the attempt this call
+                // reserved, so each fallback attempt has its own reference and the timeout lookup finds the one sent.
+                "mp-delivery-%d-%d".formatted(delivery.getId(), attemptNumber),
                 delivery.getWeightKg(), delivery.getVolumeCbm(), vehicleType,
                 // Read from our own records at booking time; a carrier that needs a city,
                 // pincode or declared value is told the truth or refuses, never a default.
