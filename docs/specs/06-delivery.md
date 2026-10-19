@@ -295,7 +295,8 @@ a restart cannot strand it.
   stays held until pickup, so a dearer replacement courier needs no second debit; at pickup the unused part (maximum less
   the courier's price) is returned. Cancelling before pickup, or no courier within the retry window, returns all of it.
   Every refund is idempotent on its wallet reference. A request whose maximum is below the cheapest courier, or whose
-  wallet cannot hold it, is refused with the reason and nothing is created or debited.
+  wallet cannot hold it, is refused with the reason and nothing is created or debited. Replaying the same idempotency key
+  while initial quote gathering is in-flight safely returns the in-progress delivery without error or duplicate debit.
 - Cancelling before pickup refunds the fee; after pickup it does not.
 
 ### Status

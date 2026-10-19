@@ -65,7 +65,8 @@ public class CreditDigestService {
         this.digestTime = LocalTime.parse(digestTime);
     }
 
-    @Scheduled(fixedDelayString = "${costonomy.mp.credit.digest-interval:PT10M}")
+    @Scheduled(fixedDelayString = "${costonomy.mp.credit.digest-interval:PT10M}",
+            initialDelayString = "${costonomy.mp.credit.jobs-initial-delay:PT0S}")
     @SchedulerLock(name = "credit-digest", lockAtMostFor = "PT30M", lockAtLeastFor = "PT0S")
     public void runDigest() {
         int sent = sendDigests();

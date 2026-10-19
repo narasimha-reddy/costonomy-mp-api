@@ -35,7 +35,8 @@ public class CreditJobs {
      * boundary, so checking sixty times an hour would find the same answer
      * fifty-nine times.
      */
-    @Scheduled(fixedDelayString = "${costonomy.mp.credit.overdue-interval:PT1H}")
+    @Scheduled(fixedDelayString = "${costonomy.mp.credit.overdue-interval:PT1H}",
+            initialDelayString = "${costonomy.mp.credit.jobs-initial-delay:PT0S}")
     @SchedulerLock(name = "credit-overdue", lockAtMostFor = "PT30M", lockAtLeastFor = "PT0S")
     public void sweepOverdue() {
         int marked = invoices.markOverdue();
@@ -50,7 +51,8 @@ public class CreditJobs {
      * boundary. Each offer is expired in its own transaction, so one failure does not stop the rest, and an offer that
      * fails is simply picked up by the next run.
      */
-    @Scheduled(fixedDelayString = "${costonomy.mp.credit.offer-expiry-interval:PT1H}")
+    @Scheduled(fixedDelayString = "${costonomy.mp.credit.offer-expiry-interval:PT1H}",
+            initialDelayString = "${costonomy.mp.credit.jobs-initial-delay:PT0S}")
     @SchedulerLock(name = "credit-offer-expiry", lockAtMostFor = "PT30M", lockAtLeastFor = "PT0S")
     public void expireOffers() {
         LocalDate today = invoices.today();
