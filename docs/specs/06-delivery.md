@@ -168,6 +168,20 @@ For Costonomy delivery, fee is determined by platform policy/provider economics.
 
 Provider bid details are internal.
 
+### Supplier-funded Costonomy delivery (D-203)
+
+A supplier may opt in (`fund_costonomy_delivery`, with a `funded_delivery_cap` and a free-delivery threshold, all required together)
+to pay for the rider on orders whose goods, before GST, reach the threshold.
+
+- The supplier pays `min(courier fee, cap)` and the restaurant pays the rest, so a quote above the cap is cheaper by the cap but not free.
+  The restaurant sees its own price in the delivery quote (`fee`, with `courierFee` and `supplierFunded` beside it) and in the order preview.
+- The share is fixed at checkout (`supplier_order.delivery_funded_amount`). It is charged when a courier reports the goods picked up, in
+  transit or delivered, once per delivery, as a `DELIVERY_FUNDING` deduction that the settlement takes as a DEBIT adjustment. A credit order,
+  which is never settled, is charged to the store's next settlement.
+- Nothing is charged for an order cancelled before pickup or one the supplier carries themselves (the amount is cleared when the order
+  becomes `SUPPLIER_DELIVERY`).
+- Own delivery: a `SELF` answer with no charge named is free once the goods reach the threshold, and stays free only while the order does.
+
 ## 11. Mock provider
 
 Mandatory local/test provider supporting:

@@ -90,6 +90,13 @@ public class IntentAcceptance extends BaseEntity {
     @Column(name = "delivery_offer", length = 16)
     private String deliveryOffer;
 
+    /**
+     * Set when {@code SELF_FREE} was derived from the store's free-delivery threshold rather than chosen (D-203): the
+     * delivery is free only while the order's goods still reach this. Null when the supplier chose it or named a fee.
+     */
+    @Column(name = "delivery_free_from_goods", precision = 19, scale = 4)
+    private java.math.BigDecimal deliveryFreeFromGoods;
+
     @Column(name = "notes", length = 1000)
     private String notes;
 

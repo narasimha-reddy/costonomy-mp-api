@@ -33,11 +33,14 @@ public class DeliveryOrderBridge {
 
     @Transactional
     public void onDeliveryStatus(Delivery delivery, DeliveryStatus status) {
+        // Any report that the goods are with a courier or delivered: a provider can skip the pickup stage (assigned,
+        // then delivered), and the charge is once-only, so asking on each is safe.
+        if (status.isInFlight() || status == DeliveryStatus.DELIVERED) {
+            chargeFundedDelivery(delivery);
+        }
         switch (status) {
-            case PICKED_UP -> {
-                advance(delivery, SupplierOrderStatus.READY_FOR_PICKUP, SupplierOrderStatus.OUT_FOR_DELIVERY);
-                chargeFundedDelivery(delivery);
-            }
+            case PICKED_UP -> advance(delivery,
+                    SupplierOrderStatus.READY_FOR_PICKUP, SupplierOrderStatus.OUT_FOR_DELIVERY);
             case DELIVERED -> advance(delivery,
                     SupplierOrderStatus.OUT_FOR_DELIVERY, SupplierOrderStatus.DELIVERED);
             default -> { }

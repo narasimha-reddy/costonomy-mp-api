@@ -222,6 +222,19 @@ class DeliveryReassignAfterFailureTest {
     }
 
     @Test
+    @DisplayName("bookQuoted does not book another courier when an earlier attempt's outcome is unknown")
+    void bookQuotedWaitsForReconciliation() {
+        var d = delivery(DeliveryStatus.QUOTE_RECEIVED);
+        d.setProviderDeliveryId(null);
+        d.setReconciliationRequired(true); // an ambiguous attempt: the provider may have booked
+        lock(d);
+
+        assertThat(service.bookQuoted(7L)).isFalse();
+
+        verify(booking, never()).book(any(), anyList(), anyString());
+    }
+
+    @Test
     @DisplayName("a stood-down delivery with a booking already pending is not booked a second time")
     void pendingAttemptBlocksSecondReassign() {
         var d = delivery(DeliveryStatus.DRIVER_CANCELLED);

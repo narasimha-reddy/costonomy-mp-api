@@ -364,6 +364,67 @@ class DeliveryBookingServiceTest {
     }
 
     @Test
+    @DisplayName("A courier booked after the delivery was cancelled is stood down, and the cancelled delivery stays cancelled")
+    void book_whenTheDeliveryIsCancelledDuringTheCall_standsTheCourierDown() {
+        Delivery delivery = createDelivery(15L, VehicleType.TWO_WHEELER);
+        DeliveryQuote quote = createQuote(15L, "MOCK_EXPRESS", VehicleType.TWO_WHEELER);
+        when(quoting.usableQuotes(15L, List.of(), false)).thenReturn(List.of(quote));
+        when(registry.adapter("MOCK_EXPRESS")).thenReturn(providerAdapter);
+        // The provider call takes no lock, so the delivery is cancelled while it is in flight.
+        when(providerAdapter.book(any())).thenAnswer(inv -> {
+            delivery.setStatus(DeliveryStatus.CANCELLED);
+            return new DeliveryProvider.Booking("m-77", new BigDecimal("80.00"), "INR", 25,
+                    Instant.now().plusSeconds(1500), null);
+        });
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isFalse();
+
+        verify(providerAdapter).cancel(eq("m-77"), anyString());
+        assertThat(delivery.getStatus()).isEqualTo(DeliveryStatus.CANCELLED);
+        assertThat(delivery.getProviderDeliveryId()).isNull();
+        verifyNoInteractions(ledger, eventPublisher);
+    }
+
+    @Test
+    @DisplayName("A courier that cannot be stood down is retried durably, not forgotten")
+    void book_whenTheUnwantedCourierCannotBeCancelled_schedulesTheCancellation() {
+        Delivery delivery = createDelivery(16L, VehicleType.TWO_WHEELER);
+        DeliveryQuote quote = createQuote(16L, "MOCK_EXPRESS", VehicleType.TWO_WHEELER);
+        when(quoting.usableQuotes(16L, List.of(), false)).thenReturn(List.of(quote));
+        when(registry.adapter("MOCK_EXPRESS")).thenReturn(providerAdapter);
+        when(providerAdapter.book(any())).thenAnswer(inv -> {
+            delivery.setStatus(DeliveryStatus.CANCELLED);
+            return new DeliveryProvider.Booking("m-78", new BigDecimal("80.00"), "INR", 25,
+                    Instant.now().plusSeconds(1500), null);
+        });
+        doThrow(new com.costonomy.mp.delivery.provider.DeliveryProviderException("MOCK_EXPRESS", "down", true))
+                .when(providerAdapter).cancel(anyString(), anyString());
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isFalse();
+
+        verify(recoveryService).scheduleCancellation(eq("SUPPLIER"), eq(16L), eq("MOCK_EXPRESS"), eq("m-78"), anyString());
+    }
+
+    @Test
+    @DisplayName("When every carrier fails, a delivery cancelled meanwhile is not turned back into 'no partner'")
+    void book_whenAllCarriersFailAfterTheDeliveryWasCancelled_leavesItCancelled() {
+        Delivery delivery = createDelivery(17L, VehicleType.TWO_WHEELER);
+        DeliveryQuote quote = createQuote(17L, "SHADOWFAX", VehicleType.TWO_WHEELER);
+        DeliveryProvider shadowfax = mock(DeliveryProvider.class);
+        when(quoting.usableQuotes(17L, List.of(), false)).thenReturn(List.of(quote));
+        when(registry.adapter("SHADOWFAX")).thenReturn(shadowfax);
+        when(shadowfax.book(any())).thenAnswer(inv -> {
+            delivery.setStatus(DeliveryStatus.CANCELLED);
+            throw new com.costonomy.mp.delivery.provider.DeliveryProviderException("SHADOWFAX", "refused", false);
+        });
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isFalse();
+
+        assertThat(delivery.getStatus()).isEqualTo(DeliveryStatus.CANCELLED);
+        assertThat(delivery.getFailureCode()).isNull();
+    }
+
+    @Test
     @DisplayName("A delivery a courier already holds is not booked a second time, even if it was free when the caller looked")
     void book_whenACourierAlreadyHoldsTheDelivery_booksNothing() {
         Delivery delivery = createDelivery(11L, VehicleType.TWO_WHEELER);
