@@ -83,6 +83,13 @@ public class SupplierOrder extends BaseEntity {
     @Column(name = "delivery_fee", nullable = false, precision = 19, scale = 4)
     private BigDecimal deliveryFee = BigDecimal.ZERO;
 
+    /**
+     * The part of the courier's fee the supplier pays on this order (D-203), fixed at checkout. {@code deliveryFee}
+     * above is what the restaurant pays, so the courier's whole fee is the two together.
+     */
+    @Column(name = "delivery_funded_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal deliveryFundedAmount = BigDecimal.ZERO;
+
     @Column(name = "total_amount", nullable = false, precision = 19, scale = 4)
     private BigDecimal totalAmount = BigDecimal.ZERO;
 

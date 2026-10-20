@@ -14,9 +14,25 @@ public interface SupplierDeductionRepository extends JpaRepository<SupplierDeduc
 
     Optional<SupplierDeduction> findByDisputeRefundId(Long disputeRefundId);
 
+    /**
+     * A funded delivery on a credit order waits for no settlement of its own: credit is collected by the supplier, so
+     * the order is never paid out. It comes out of the store's next settlement instead.
+     */
+    @Query(value = """
+            select d.* from supplier_deduction d
+              join supplier_order o on o.id = d.supplier_order_id
+             where d.status = 'PENDING' and d.kind = 'DELIVERY_FUNDING'
+               and d.supplier_store_id = :storeId and o.payment_method = 'CREDIT'
+            """, nativeQuery = true)
+    List<SupplierDeduction> findPendingCreditDeliveryFunding(@Param("storeId") Long storeId);
+
     List<SupplierDeduction> findByStatusAndSupplierOrderIdIn(String status, Collection<Long> orderIds);
 
-    /** Everything already taken, or waiting to be taken, from this order's payout. */
-    @Query("select coalesce(sum(d.amount), 0) from SupplierDeduction d where d.supplierOrderId = :orderId")
+    /**
+     * Everything already taken, or waiting to be taken, from this order's payout for refunds. A funded delivery is
+     * not a refund and does not use up what the restaurant may be refunded.
+     */
+    @Query("select coalesce(sum(d.amount), 0) from SupplierDeduction d "
+            + "where d.supplierOrderId = :orderId and d.kind = 'DISPUTE_REFUND'")
     BigDecimal sumForOrder(@Param("orderId") Long supplierOrderId);
 }

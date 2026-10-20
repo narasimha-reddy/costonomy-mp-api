@@ -6843,3 +6843,23 @@ Pidge's sandbox answer names every rider "Rider name", so every demo screen read
 - **Spotlight and other apps compete for CPU on a developer laptop**, which makes every timing here approximate.
 
 **Do not.** Do not set a flat `-Xmx` on the integration forks: a first attempt at `-Xmx2g` made the serial run spend 350% CPU in garbage collection for over an hour, because one JVM keeps every Spring context it builds (about 40). `it.argLine` is empty on purpose.
+
+## D-203 — A supplier can pay for the rider on orders that reach their free-delivery threshold
+
+**Context.** Research found most suppliers willing to absorb delivery on orders over a value. The free-delivery threshold only ever applied to a supplier's own delivery: D-146 removed it for Costonomy riders because waiving the fee left nobody paying the courier. A supplier who used our riders could not offer "free delivery over ₹X".
+
+**Decision (product).** A supplier may fund Costonomy delivery on orders whose goods reach the threshold they already set.
+1. **Opt-in, bounded.** `supplier_delivery_policy.fund_costonomy_delivery` (default off) and `funded_delivery_cap` (V96). Switching it on requires Costonomy delivery enabled, a threshold above zero and a cap above zero, checked by the API and by `ck_policy_funded_delivery`. It takes money from the supplier's payout, so it is never inferred from a threshold that was set for their own delivery.
+2. **Who pays what.** `DeliveryCharges.fundCostonomyFee`: goods (before GST) at or over the threshold → the supplier pays `min(courier fee, cap)` and the restaurant pays the rest. A quote above the cap is not free but cheaper by the cap. The two parts always add up to the courier's fee.
+3. **The restaurant is shown its price.** The delivery quote returns `fee` (what the restaurant pays) beside `courierFee` and `supplierFunded`; the order preview carries `deliveryFundedBySupplier`. `supplier_order.delivery_fee` is the restaurant's part and `delivery_funded_amount` the supplier's, both fixed at checkout. The stored courier quote keeps the whole fee.
+4. **Charged when the courier has the goods.** `DeliveryOrderBridge` records a `supplier_deduction` (kind `DELIVERY_FUNDING`, once per delivery, `uk_supplier_deduction_delivery`) when the delivery is picked up: the cost is incurred whether or not the food arrives. Nothing is charged for an order cancelled before pickup or one the supplier ends up carrying themselves (`setDeliveryMode` clears the funded amount).
+5. **Taken through the existing deduction path.** The settlement applies it as a DEBIT adjustment, reason `DELIVERY_FUNDING`, as it does dispute refunds (D-104). The deduction table now has a `kind` and either a dispute refund or a delivery. A funded delivery does not use up what a restaurant may be refunded (`sumForOrder` counts refunds only).
+6. **Credit orders.** Credit is collected by the supplier and never settled (D-153), so a charge on one would wait forever. It comes out of the store's next settlement instead (`findPendingCreditDeliveryFunding`).
+7. **Own delivery at the threshold is free by default.** When a supplier answers a request with `SELF` and names no charge, goods at or over the store's threshold make it `SELF_FREE` (free, and shown as free) instead of the store's standing fee. A charge the supplier types still stands (D-146).
+
+**Not done, for a decision or later.**
+- The cap is per delivery. There is no monthly limit, and no notice to the supplier when a charge is taken (it shows as an adjustment on the settlement).
+- If the courier's actual booked fee differs from the quote, the supplier still pays the figure fixed at checkout; Costonomy keeps the difference either way, as it did before.
+- A restaurant that lowers quantities after the quote can drop below the threshold; the order preview, which is computed at that point, shows the price that will be charged.
+- A settlement whose payout the charge pushes negative is held for a person to decide, as for a refund (D-104).
+- The mobile apps do not show the supplier's share or the policy fields yet.

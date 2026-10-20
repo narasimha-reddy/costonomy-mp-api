@@ -31,6 +31,31 @@ public class DeliveryCharges {
                 && subtotal.compareTo(policy.freeDeliveryThreshold()) >= 0;
     }
 
+    /** What the restaurant pays for a Costonomy delivery, and what the supplier pays towards it. They sum to the courier's fee. */
+    public record FundedFee(BigDecimal buyerFee, BigDecimal supplierFunded) {
+        public static FundedFee buyerPays(BigDecimal fee) {
+            return new FundedFee(fee, BigDecimal.ZERO);
+        }
+    }
+
+    /**
+     * Split a courier's fee between the supplier and the restaurant (D-203). Only when the supplier opted in, and the
+     * goods (before GST) reach their free-delivery threshold: the supplier pays up to their cap and the restaurant
+     * pays whatever is left, so a quote above the cap is not free but is cheaper by the cap. Anything else leaves the
+     * whole fee with the restaurant, as before.
+     */
+    public static FundedFee fundCostonomyFee(DeliveryDirectory.DeliveryPolicy policy, BigDecimal subtotal,
+                                             BigDecimal courierFee) {
+        if (courierFee == null || courierFee.signum() <= 0
+                || !policy.fundCostonomyDelivery()
+                || policy.fundedDeliveryCap() == null || policy.fundedDeliveryCap().signum() <= 0
+                || !waivedByThreshold(policy, subtotal)) {
+            return FundedFee.buyerPays(courierFee);
+        }
+        BigDecimal funded = courierFee.min(policy.fundedDeliveryCap());
+        return new FundedFee(courierFee.subtract(funded), funded);
+    }
+
     /**
      * The fee for pickup or supplier delivery, refusing a supplier that does not deliver or an order below
      * their delivery minimum.

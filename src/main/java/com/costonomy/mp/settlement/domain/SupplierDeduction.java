@@ -10,7 +10,8 @@ import java.math.BigDecimal;
 import java.time.Instant;
 
 /**
- * What an approved dispute refund takes from a supplier's payout (D-104).
+ * What is taken from a supplier's payout for an order: an approved dispute refund (D-104), or the supplier's share of
+ * a Costonomy delivery they chose to pay for (D-203).
  *
  * <p>PENDING until the order is in a settlement, then APPLIED to it as a DEBIT
  * adjustment. Costonomy never funds a refund; this row is how that is kept.
@@ -25,13 +26,23 @@ public class SupplierDeduction extends BaseEntity {
     public static final String PENDING = "PENDING";
     public static final String APPLIED = "APPLIED";
 
+    public static final String KIND_DISPUTE_REFUND = "DISPUTE_REFUND";
+    public static final String KIND_DELIVERY_FUNDING = "DELIVERY_FUNDING";
+
+    /** Which of {@code disputeRefundId} or {@code deliveryId} says why. */
+    @Column(name = "kind", nullable = false, length = 24)
+    private String kind = KIND_DISPUTE_REFUND;
+
+    @Column(name = "delivery_id")
+    private Long deliveryId;
+
     @Column(name = "supplier_store_id", nullable = false)
     private Long supplierStoreId;
 
     @Column(name = "supplier_order_id", nullable = false)
     private Long supplierOrderId;
 
-    @Column(name = "dispute_refund_id", nullable = false)
+    @Column(name = "dispute_refund_id")
     private Long disputeRefundId;
 
     @Column(name = "amount", nullable = false, precision = 19, scale = 4)

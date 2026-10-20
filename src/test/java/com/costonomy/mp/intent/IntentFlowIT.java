@@ -716,8 +716,18 @@ class IntentFlowIT extends AbstractIntegrationTest {
         }
 
         private OpenRequest answered(String offer, String fee, int own, int costonomy) throws Exception {
+            return answered(offer, fee, own, costonomy, null);
+        }
+
+        /** As above, with the store's standing free-delivery threshold set before the answer (null leaves it unset). */
+        private OpenRequest answered(String offer, String fee, int own, int costonomy, String threshold)
+                throws Exception {
             var open = sendRequest(6);
             policy(open.seller(), own, costonomy);
+            if (threshold != null) {
+                jdbc.update("update supplier_delivery_policy set free_delivery_threshold = ? where supplier_store_id = ?",
+                        threshold, open.seller().storeId());
+            }
             var body = new java.util.HashMap<String, Object>();
             body.put("lines", List.of(Map.of("intentItemId", open.itemId(), "offeredQuantity", 6)));
             if (offer != null) {
@@ -774,6 +784,44 @@ class IntentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("own delivery with no amount named is free once the goods reach the store's threshold, and stated as free")
+        void thresholdMakesAnUnpricedSelfOfferFree() throws Exception {
+            // 6 KG of paneer is 2,460 of goods, over a 2,000 threshold.
+            var open = answered("SELF", null, 1, 1, "2000");
+
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryOffer").asText()).isEqualTo("SELF_FREE");
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).isEqualTo(0.0);
+
+            long orderId = orderWith(open, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("own delivery with no amount named is still charged at the store fee below the threshold")
+        void belowTheThresholdTheStoreFeeStands() throws Exception {
+            var open = answered("SELF", null, 1, 1, "3000");
+
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryOffer").asText()).isEqualTo("SELF");
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).isEqualTo(30.0);
+        }
+
+        @Test
+        @DisplayName("an amount the supplier names is theirs to charge even above the threshold (D-146)")
+        void aNamedAmountBeatsTheThreshold() throws Exception {
+            var open = answered("SELF", "45", 1, 1, "2000");
+
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).isEqualTo(45.0);
+
+            long orderId = orderWith(open, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("45");
+        }
+
+        @Test
         @DisplayName("a supplier can charge less than their store fee for one order, and that is what the buyer pays")
         void lowerChargeForOneOrder() throws Exception {
             var open = answered("SELF", "20", 1, 1);
@@ -822,6 +870,154 @@ class IntentFlowIT extends AbstractIntegrationTest {
             long ownOrder = orderWith(own, "SUPPLIER_DELIVERY").at("/data/supplierOrderId").asLong();
             assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
                     java.math.BigDecimal.class, ownOrder)).isEqualByComparingTo("45");
+        }
+
+        // ── A supplier who pays for the rider (D-203) ────────────────────────
+
+        @Autowired private com.costonomy.mp.delivery.service.DeliveryOrderBridge deliveryBridge;
+
+        /** Turns on paying for the rider for the store behind this request, from {@code threshold} of goods, up to {@code cap}. */
+        private void fundsRiders(OpenRequest open, boolean on, String threshold, String cap) {
+            jdbc.update("update supplier_delivery_policy set free_delivery_threshold = ?, fund_costonomy_delivery = ?, "
+                    + "funded_delivery_cap = ? where supplier_store_id = ?",
+                    threshold, on, on ? cap : null, open.seller().storeId());
+        }
+
+        private JsonNode riderQuote(OpenRequest open) throws Exception {
+            var quote = api.post(open.buyer().token(), "/api/v1/intents/" + open.intentId() + "/delivery-quote", Map.of());
+            assertThat(quote.at("/data/courierFee").asDouble()).as(quote.toString()).isPositive();
+            return quote;
+        }
+
+        /** A courier delivery row for the order, as booking would have made, so a pickup has something to attach to. */
+        private long courierDeliveryFor(long orderId) {
+            var order = jdbc.queryForMap("select outlet_id, supplier_store_id from supplier_order where id = ?", orderId);
+            jdbc.update("""
+                    insert into delivery (supplier_order_id, outlet_id, supplier_store_id, mode, status,
+                                          provider_code, provider_delivery_id, fee, currency,
+                                          pickup_address, drop_address, requested_at, created_at, updated_at, version)
+                    values (?, ?, ?, 'COSTONOMY', 'DRIVER_ASSIGNED', 'MOCK_EXPRESS', ?, 60.0000, 'INR',
+                            'Pickup', 'Drop', now(6), now(6), now(6), 0)
+                    """, orderId, order.get("outlet_id"), order.get("supplier_store_id"), "mock-" + orderId);
+            return jdbc.queryForObject("select id from delivery where supplier_order_id = ?", Long.class, orderId);
+        }
+
+        private void courierPicksUp(long orderId, long deliveryId) {
+            var delivery = new com.costonomy.mp.delivery.domain.Delivery();
+            delivery.setId(deliveryId);
+            delivery.setSupplierOrderId(orderId);
+            delivery.setMode(com.costonomy.mp.delivery.domain.DeliveryMode.COSTONOMY);
+            deliveryBridge.onDeliveryStatus(delivery, com.costonomy.mp.delivery.domain.DeliveryStatus.PICKED_UP);
+        }
+
+        @Test
+        @DisplayName("a supplier who funds riders pays the whole courier fee on an order over their threshold, taken at pickup, once")
+        void supplierFundsTheRider() throws Exception {
+            var open = answered("COSTONOMY", 1, 1);
+            fundsRiders(open, true, "100", "1000");
+
+            var quote = riderQuote(open);
+            double courierFee = quote.at("/data/courierFee").asDouble();
+            assertThat(quote.at("/data/fee").asDouble()).as("the restaurant pays nothing").isZero();
+            assertThat(quote.at("/data/supplierFunded").asDouble()).isCloseTo(courierFee, org.assertj.core.data.Offset.offset(0.001));
+
+            long orderId = orderWith(open, "COSTONOMY_DELIVERY", quote.at("/data/quoteReference").asText())
+                    .at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("0");
+            assertThat(jdbc.queryForObject("select delivery_funded_amount from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId).doubleValue())
+                    .isCloseTo(courierFee, org.assertj.core.data.Offset.offset(0.001));
+
+            assertThat(jdbc.queryForObject("select count(*) from supplier_deduction where supplier_order_id = ?",
+                    Integer.class, orderId)).as("nothing is taken before a courier has the goods").isZero();
+
+            long deliveryId = courierDeliveryFor(orderId);
+            courierPicksUp(orderId, deliveryId);
+            courierPicksUp(orderId, deliveryId); // a replayed pickup event
+
+            var rows = jdbc.queryForList("select kind, status, amount, delivery_id, dispute_refund_id "
+                    + "from supplier_deduction where supplier_order_id = ?", orderId);
+            assertThat(rows).as("charged once however many times the pickup is reported").hasSize(1);
+            assertThat(rows.get(0).get("kind")).isEqualTo("DELIVERY_FUNDING");
+            assertThat(rows.get(0).get("status")).isEqualTo("PENDING");
+            assertThat(((java.math.BigDecimal) rows.get(0).get("amount")).doubleValue())
+                    .isCloseTo(courierFee, org.assertj.core.data.Offset.offset(0.001));
+            assertThat(((Number) rows.get(0).get("delivery_id")).longValue()).isEqualTo(deliveryId);
+            assertThat(rows.get(0).get("dispute_refund_id")).isNull();
+        }
+
+        @Test
+        @DisplayName("above the supplier's cap the restaurant pays the difference, and the two parts add up to the courier's fee")
+        void restaurantPaysAboveTheCap() throws Exception {
+            var open = answered("COSTONOMY", 1, 1);
+            fundsRiders(open, true, "100", "20");
+
+            var quote = riderQuote(open);
+            double courierFee = quote.at("/data/courierFee").asDouble();
+            assertThat(courierFee).isGreaterThan(20.0);
+            assertThat(quote.at("/data/supplierFunded").asDouble()).isEqualTo(20.0);
+            assertThat(quote.at("/data/fee").asDouble()).isCloseTo(courierFee - 20.0, org.assertj.core.data.Offset.offset(0.001));
+
+            long orderId = orderWith(open, "COSTONOMY_DELIVERY", quote.at("/data/quoteReference").asText())
+                    .at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId).doubleValue())
+                    .isCloseTo(courierFee - 20.0, org.assertj.core.data.Offset.offset(0.001));
+            assertThat(jdbc.queryForObject("select delivery_funded_amount from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("20");
+        }
+
+        @Test
+        @DisplayName("a supplier who has not opted in is never charged for the rider, even over their threshold")
+        void notOptedInPaysNothing() throws Exception {
+            var open = answered("COSTONOMY", 1, 1);
+            fundsRiders(open, false, "100", null);
+
+            var quote = riderQuote(open);
+            double courierFee = quote.at("/data/courierFee").asDouble();
+            assertThat(quote.at("/data/fee").asDouble()).isCloseTo(courierFee, org.assertj.core.data.Offset.offset(0.001));
+            assertThat(quote.at("/data/supplierFunded").asDouble()).isZero();
+
+            long orderId = orderWith(open, "COSTONOMY_DELIVERY", quote.at("/data/quoteReference").asText())
+                    .at("/data/supplierOrderId").asLong();
+            courierPicksUp(orderId, courierDeliveryFor(orderId));
+
+            assertThat(jdbc.queryForObject("select count(*) from supplier_deduction where supplier_order_id = ?",
+                    Integer.class, orderId)).isZero();
+        }
+
+        @Test
+        @DisplayName("an order under the threshold is not funded even when the supplier has opted in")
+        void underTheThresholdPaysNothing() throws Exception {
+            var open = answered("COSTONOMY", 1, 1);
+            fundsRiders(open, true, "5000", "1000"); // 6 KG of paneer is 2,460 of goods
+
+            var quote = riderQuote(open);
+            assertThat(quote.at("/data/supplierFunded").asDouble()).isZero();
+            assertThat(quote.at("/data/fee").asDouble()).isCloseTo(quote.at("/data/courierFee").asDouble(), org.assertj.core.data.Offset.offset(0.001));
+        }
+
+        @Test
+        @DisplayName("paying for riders cannot be switched on without a threshold and a cap")
+        void fundingNeedsAThresholdAndACap() throws Exception {
+            var open = answered("COSTONOMY", 1, 1);
+            String path = "/api/v1/supplier-stores/" + open.seller().storeId() + "/delivery-policy";
+
+            for (var body : List.<Map<String, Object>>of(
+                    Map.of("costonomyDeliveryEnabled", true, "fundCostonomyDelivery", true,
+                            "freeDeliveryThreshold", 2000),
+                    Map.of("costonomyDeliveryEnabled", true, "fundCostonomyDelivery", true,
+                            "fundedDeliveryCap", 100))) {
+                var status = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(path)
+                                .header("Authorization", "Bearer " + open.seller().token())
+                                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                                .content(json.writeValueAsString(body)))
+                        .andReturn().getResponse().getStatus();
+                assertThat(status).as(body.toString()).isBetween(400, 422);
+            }
+            assertThat(jdbc.queryForObject("select fund_costonomy_delivery from supplier_delivery_policy "
+                    + "where supplier_store_id = ?", Boolean.class, open.seller().storeId())).isFalse();
         }
 
         @Test

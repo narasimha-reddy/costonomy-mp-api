@@ -48,8 +48,11 @@ public class DeliveryDirectory {
 
     /** The supplier is now carrying it (D-185). The version moves so an in-flight stale write cannot overwrite it. */
     public void setDeliveryMode(Long supplierOrderId, String deliveryMode) {
-        jdbc.update("update supplier_order set delivery_mode = ?, version = version + 1, updated_at = now(6) "
-                + "where id = ?", deliveryMode, supplierOrderId);
+        // No courier will run when the supplier carries it, so there is no rider fee for them to have funded (D-203).
+        jdbc.update("update supplier_order set delivery_mode = ?, "
+                + "delivery_funded_amount = if(? = 'COSTONOMY_DELIVERY', delivery_funded_amount, 0), "
+                + "version = version + 1, updated_at = now(6) where id = ?",
+                deliveryMode, deliveryMode, supplierOrderId);
     }
 
     public OrderInfo order(Long supplierOrderId) {
@@ -233,7 +236,18 @@ public class DeliveryDirectory {
             BigDecimal ownDeliveryMinOrderValue,
             BigDecimal minOrderValue,
             BigDecimal freeDeliveryThreshold,
-            BigDecimal maxDeliveryRadiusKm) {
+            BigDecimal maxDeliveryRadiusKm,
+            /** The supplier pays the rider on orders at or over the free-delivery threshold, up to the cap (D-203). */
+            boolean fundCostonomyDelivery,
+            BigDecimal fundedDeliveryCap) {
+
+        /** A policy that does not fund Costonomy delivery, which is every policy before D-203. */
+        public DeliveryPolicy(boolean ownDeliveryEnabled, boolean costonomyDeliveryEnabled, BigDecimal ownDeliveryFee,
+                              BigDecimal ownDeliveryMinOrderValue, BigDecimal minOrderValue,
+                              BigDecimal freeDeliveryThreshold, BigDecimal maxDeliveryRadiusKm) {
+            this(ownDeliveryEnabled, costonomyDeliveryEnabled, ownDeliveryFee, ownDeliveryMinOrderValue,
+                    minOrderValue, freeDeliveryThreshold, maxDeliveryRadiusKm, false, null);
+        }
 
         public static final DeliveryPolicy DEFAULT = new DeliveryPolicy(
                 false, true, BigDecimal.ZERO, null, BigDecimal.ZERO, null, null);
@@ -243,12 +257,12 @@ public class DeliveryDirectory {
         var rows = jdbc.query("""
                 select own_delivery_enabled, costonomy_delivery_enabled, own_delivery_fee,
                        own_delivery_min_order_value, coalesce(min_order_value, 0), free_delivery_threshold,
-                       max_delivery_radius_km
+                       max_delivery_radius_km, fund_costonomy_delivery, funded_delivery_cap
                   from supplier_delivery_policy where supplier_store_id = ?
                 """,
                 (rs, row) -> new DeliveryPolicy(rs.getBoolean(1), rs.getBoolean(2),
                         rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getBigDecimal(5),
-                        rs.getBigDecimal(6), rs.getBigDecimal(7)),
+                        rs.getBigDecimal(6), rs.getBigDecimal(7), rs.getBoolean(8), rs.getBigDecimal(9)),
                 supplierStoreId);
         return rows.isEmpty() ? DeliveryPolicy.DEFAULT : rows.get(0);
     }

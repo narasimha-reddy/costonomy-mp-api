@@ -214,7 +214,11 @@ public final class IntentDtos {
             String currency,
             Integer etaMinutes,
             Double distanceKm,
-            Instant expiresAt) {
+            Instant expiresAt,
+            /** The courier's whole fee. {@code fee} above is what the restaurant pays after the supplier's share (D-203). */
+            BigDecimal courierFee,
+            /** What the supplier pays towards the rider on this order; zero unless they opted in and the goods qualify. */
+            BigDecimal supplierFunded) {
     }
 
     public record OrderLine(
@@ -605,7 +609,9 @@ public final class IntentDtos {
              * away from the order it is previewing.
              */
             BigDecimal grandTotal,
-            List<Blocker> blockers) {
+            List<Blocker> blockers,
+            /** The part of the courier's fee the supplier pays, already left out of {@code deliveryFee} (D-203). */
+            BigDecimal deliveryFundedBySupplier) {
     }
 
     public record PreviewLine(

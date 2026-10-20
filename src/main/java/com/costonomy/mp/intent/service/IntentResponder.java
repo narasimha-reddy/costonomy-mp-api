@@ -183,6 +183,15 @@ public class IntentResponder {
         acceptance.setOfferedValue(Pricing.money(value));
         acceptance.setOfferedGst(Pricing.money(gst));
         acceptance.setOfferedTotal(Pricing.money(value.add(gst)));
+        // A supplier who delivers themselves and did not name a charge gets the store's standing rule: free once the
+        // goods (before GST) reach the free-delivery threshold, otherwise the store's own fee. An amount they typed
+        // is their decision for this order and stands (D-146). Stated as free so the buyer sees "free", not "0".
+        if ("SELF".equals(acceptance.getDeliveryOffer()) && request.deliveryFee() == null
+                && com.costonomy.mp.delivery.service.DeliveryCharges.waivedByThreshold(
+                        deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId()), value)) {
+            acceptance.setDeliveryOffer("SELF_FREE");
+            acceptance.setDeliveryFee(Pricing.money(BigDecimal.ZERO));
+        }
         acceptances.save(acceptance);
 
         var from = intent.getStatus();
