@@ -140,7 +140,10 @@ public final class DeliveryDtos {
             BigDecimal minOrderValue,
             BigDecimal freeDeliveryThreshold,
             /** Null means no limit beyond the platform's own serviceability. */
-            BigDecimal maxDeliveryRadiusKm) {
+            BigDecimal maxDeliveryRadiusKm,
+            /** The supplier pays the rider on orders at or over the free-delivery threshold, up to the cap (D-203). */
+            boolean fundCostonomyDelivery,
+            BigDecimal fundedDeliveryCap) {
     }
 
     public record UpdateDeliveryPolicyRequest(
@@ -156,7 +159,10 @@ public final class DeliveryDtos {
             BigDecimal freeDeliveryThreshold,
             @DecimalMin(value = "0.1", message = "A delivery radius must be at least 0.1 km")
             @DecimalMax(value = "500.0", message = "A delivery radius of more than 500 km is not a radius")
-            BigDecimal maxDeliveryRadiusKm) {
+            BigDecimal maxDeliveryRadiusKm,
+            Boolean fundCostonomyDelivery,
+            @DecimalMin(value = "0.01", message = "The most you pay towards a delivery must be more than zero")
+            BigDecimal fundedDeliveryCap) {
     }
 
     public record DeliveryLedgerResponse(

@@ -392,6 +392,99 @@ class SettlementFlowIT extends AbstractIntegrationTest {
         }
     }
 
+    // ── Supplier-funded delivery (D-203) ─────────────────────────────────
+
+    @Nested
+    @DisplayName("a supplier's share of a Costonomy delivery")
+    class FundedDelivery {
+
+        /** A courier delivery for the order and the pending charge the bridge makes at pickup. */
+        private long fundedDelivery(long orderId, String amount) {
+            var order = jdbc.queryForMap("select outlet_id, supplier_store_id from supplier_order where id = ?", orderId);
+            // The order was completed through a delivery already; one made for a moved order is made here.
+            var existing = jdbc.queryForList("select id from delivery where supplier_order_id = ?", Long.class, orderId);
+            if (existing.isEmpty()) {
+                jdbc.update("""
+                        insert into delivery (supplier_order_id, outlet_id, supplier_store_id, mode, status,
+                                              provider_code, provider_delivery_id, fee, currency,
+                                              pickup_address, drop_address, requested_at, created_at, updated_at, version)
+                        values (?, ?, ?, 'COSTONOMY', 'PICKED_UP', 'MOCK_EXPRESS', ?, 60.0000, 'INR',
+                                'Pickup', 'Drop', now(6), now(6), now(6), 0)
+                        """, orderId, order.get("outlet_id"), order.get("supplier_store_id"), "mock-" + orderId);
+            }
+            long deliveryId = jdbc.queryForObject("select id from delivery where supplier_order_id = ?", Long.class, orderId);
+            jdbc.update("""
+                    insert into supplier_deduction (supplier_store_id, supplier_order_id, dispute_refund_id, amount,
+                                                    reason, status, kind, delivery_id)
+                    values (?, ?, null, ?, 'Costonomy delivery', 'PENDING', 'DELIVERY_FUNDING', ?)
+                    """, order.get("supplier_store_id"), orderId, amount, deliveryId);
+            return deliveryId;
+        }
+
+        @Test
+        @DisplayName("comes out of the payout as a debit, and the charge is marked applied")
+        void takenFromThePayout() throws Exception {
+            var order = completedOrder(10, "400");
+            fundedDelivery(order.orderId(), "76.00");
+
+            generate();
+
+            // 4,000 - 1% commission - 76 delivery.
+            var settlement = settlementFor(order.seller());
+            assertThat(settlement.get("netAmount").asDouble()).isEqualTo(3884.00);
+            assertThat(jdbc.queryForObject("""
+                    select concat(direction, ':', reason_code) from settlement_adjustment
+                     where settlement_id = ? and supplier_order_id = ?
+                    """, String.class, settlement.get("id").asLong(), order.orderId())).isEqualTo("DEBIT:DELIVERY_FUNDING");
+            assertThat(jdbc.queryForObject("select status from supplier_deduction where supplier_order_id = ?",
+                    String.class, order.orderId())).isEqualTo("APPLIED");
+        }
+
+        @Test
+        @DisplayName("is not taken twice if settlements are generated again")
+        void takenOnce() throws Exception {
+            var order = completedOrder(10, "400");
+            fundedDelivery(order.orderId(), "76.00");
+
+            generate();
+            generate();
+
+            assertThat(jdbc.queryForObject("select count(*) from settlement_adjustment where supplier_order_id = ?",
+                    Integer.class, order.orderId())).isEqualTo(1);
+            assertThat(settlementFor(order.seller()).get("netAmount").asDouble()).isEqualTo(3884.00);
+        }
+
+        @Test
+        @DisplayName("on a credit order, which is never paid out, comes out of the store's next settlement")
+        void creditOrderChargeFollowsTheStore() throws Exception {
+            var prepaid = completedOrder(10, "400");
+            var credit = completedOrder(5, "400");
+            // The same store, funded by credit; the store move is fixture-only (see creditOrderIsNeverSettled).
+            jdbc.execute((java.sql.Connection c) -> {
+                try (var st = c.createStatement()) {
+                    st.execute("SET FOREIGN_KEY_CHECKS=0");
+                    try (var ps = c.prepareStatement("update supplier_order set supplier_store_id = ?, "
+                            + "payment_method = 'CREDIT' where id = ?")) {
+                        ps.setObject(1, prepaid.seller().storeId());
+                        ps.setObject(2, credit.orderId());
+                        ps.executeUpdate();
+                    } finally {
+                        st.execute("SET FOREIGN_KEY_CHECKS=1");
+                    }
+                }
+                return null;
+            });
+            fundedDelivery(credit.orderId(), "76.00");
+
+            generate();
+
+            var settlement = settlementFor(prepaid.seller());
+            assertThat(settlement.get("netAmount").asDouble()).as("3,960 less the credit order's rider").isEqualTo(3884.00);
+            assertThat(jdbc.queryForObject("select status from supplier_deduction where supplier_order_id = ?",
+                    String.class, credit.orderId())).isEqualTo("APPLIED");
+        }
+    }
+
     // ── Reproducibility ──────────────────────────────────────────────────
 
     @Nested

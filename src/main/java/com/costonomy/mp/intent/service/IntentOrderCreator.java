@@ -150,8 +150,14 @@ public class IntentOrderCreator {
         var fee = deliveryQuotes.quote(intentId, intent.getOutletId(),
                 intent.getSupplierStoreId(), orderValue);
 
-        return new IntentDtos.DeliveryQuoteResponse(fee.quoteReference(), fee.amount(),
-                fee.currency(), fee.etaMinutes(), fee.distanceKm(), fee.expiresAt());
+        // The supplier may pay towards the rider (D-203): the restaurant is shown what it will pay, with the whole
+        // courier fee and the supplier's share beside it. The stored quote keeps the whole fee.
+        var split = DeliveryCharges.fundCostonomyFee(
+                deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId()),
+                acceptance == null ? null : acceptance.getOfferedValue(), fee.amount());
+        return new IntentDtos.DeliveryQuoteResponse(fee.quoteReference(), split.buyerFee(),
+                fee.currency(), fee.etaMinutes(), fee.distanceKm(), fee.expiresAt(),
+                fee.amount(), split.supplierFunded());
     }
 
 
@@ -191,11 +197,14 @@ public class IntentOrderCreator {
         // Read, never spent: previewing an order must not consume the quote the
         // order itself will need.
         BigDecimal deliveryFee = BigDecimal.ZERO;
+        BigDecimal fundedBySupplier = BigDecimal.ZERO;
         if (request != null && request.deliveryMode() != null) {
             requireOffered(request.deliveryMode(), plan.acceptance());
-            deliveryFee = deliveryFeeFor(
+            var charge = deliveryFeeFor(
                     request.deliveryMode(), plan.intent(), request, Instant.now(), false, plan.subtotal(),
                     plan.acceptance());
+            deliveryFee = charge.buyerFee();
+            fundedBySupplier = charge.supplierFunded();
         }
 
         return new IntentDtos.OrderPreviewResponse(
@@ -209,7 +218,8 @@ public class IntentOrderCreator {
                 plan.total(),
                 Pricing.money(deliveryFee),
                 Pricing.money(plan.total().add(deliveryFee)),
-                plan.blockers());
+                plan.blockers(),
+                Pricing.money(fundedBySupplier));
     }
 
     // ── Create ───────────────────────────────────────────────────────────
@@ -284,8 +294,8 @@ public class IntentOrderCreator {
         }
         DeliveryMode mode = request.deliveryMode();
         requireOffered(mode, plan.acceptance());
-        BigDecimal deliveryFee = deliveryFeeFor(mode, intent, request, now, true, plan.subtotal(),
-                plan.acceptance());
+        var charge = deliveryFeeFor(mode, intent, request, now, true, plan.subtotal(), plan.acceptance());
+        BigDecimal deliveryFee = charge.buyerFee();
 
         var order = new SupplierOrder();
         // No procurement: the intent was the basket. The link to where this came
@@ -305,6 +315,8 @@ public class IntentOrderCreator {
         order.setGstAmount(Pricing.money(plan.gst()));
         order.setDeliveryMode(mode);
         order.setDeliveryFee(Pricing.money(deliveryFee));
+        // The supplier's share of the rider (D-203). Taken from their payout once the courier has picked the goods up.
+        order.setDeliveryFundedAmount(Pricing.money(charge.supplierFunded()));
         // A slot is checked here as well as offered by the picker (D-142); no slot and no day means as soon as possible.
         if (request.deliverySlotId() != null) {
             deliverySlots.requireBookable(intent.getSupplierStoreId(), request.deliverySlotId(),
@@ -560,9 +572,16 @@ public class IntentOrderCreator {
         }
     }
 
-    private BigDecimal deliveryFeeFor(DeliveryMode mode, com.costonomy.mp.intent.domain.Intent intent,
-                                      IntentDtos.CreateOrderRequest request, Instant now,
-                                      boolean requireQuote, BigDecimal subtotal, IntentAcceptance acceptance) {
+    /** What the restaurant is charged for carriage, and the part of a courier's fee the supplier pays (D-203). */
+    private record DeliveryCharge(BigDecimal buyerFee, BigDecimal supplierFunded) {
+        static DeliveryCharge buyerPays(BigDecimal fee) {
+            return new DeliveryCharge(fee, BigDecimal.ZERO);
+        }
+    }
+
+    private DeliveryCharge deliveryFeeFor(DeliveryMode mode, com.costonomy.mp.intent.domain.Intent intent,
+                                          IntentDtos.CreateOrderRequest request, Instant now,
+                                          boolean requireQuote, BigDecimal subtotal, IntentAcceptance acceptance) {
 
         var policy = deliveryPolicies.deliveryPolicy(intent.getSupplierStoreId());
 
@@ -581,9 +600,10 @@ public class IntentOrderCreator {
                 // and what the buyer was shown, so the store's standing free-delivery threshold does not override it
                 // (D-146). The threshold applies where no amount was offered (direct orders, older answers).
                 if (offered) {
-                    yield acceptance.getDeliveryFee();
+                    yield DeliveryCharge.buyerPays(acceptance.getDeliveryFee());
                 }
-                yield DeliveryCharges.waivedByThreshold(policy, subtotal) ? BigDecimal.ZERO : fee;
+                yield DeliveryCharge.buyerPays(
+                        DeliveryCharges.waivedByThreshold(policy, subtotal) ? BigDecimal.ZERO : fee);
             }
 
             case COSTONOMY_DELIVERY -> {
@@ -592,8 +612,9 @@ public class IntentOrderCreator {
                             "We can't deliver from this supplier. Choose pickup, or ask "
                                     + "them to deliver.");
                 }
-                // No free-delivery threshold here (D-146): free delivery is the supplier's own to give, and a courier is
-                // paid for. The threshold used to waive this fee as well, leaving nobody charged for the rider.
+                // The threshold does not simply waive this fee (D-146): a courier is paid for, and waiving it used to leave
+                // nobody charged. A supplier who opted in pays for the rider instead (D-203), up to their cap, and the
+                // restaurant pays the rest.
                 if (request.deliveryQuoteReference() == null) {
                     // Creating: not defaulted to zero and not quoted on the fly —
                     // a delivery whose price nobody saw is a charge nobody agreed
@@ -604,13 +625,15 @@ public class IntentOrderCreator {
                         throw new BusinessException(ErrorCode.VALIDATION_ERROR,
                                 "Check the delivery fee before ordering.");
                     }
-                    yield BigDecimal.ZERO;
+                    yield DeliveryCharge.buyerPays(BigDecimal.ZERO);
                 }
                 // Read, not spent. The order does not exist yet, and a quote
                 // spent here would be found already spent when the order it
                 // paid for came to claim it.
-                yield deliveryQuotes.priceFor(request.deliveryQuoteReference(), intent.getId(),
+                var courierFee = deliveryQuotes.priceFor(request.deliveryQuoteReference(), intent.getId(),
                         intent.getOutletId(), intent.getSupplierStoreId(), now);
+                var split = DeliveryCharges.fundCostonomyFee(policy, subtotal, courierFee);
+                yield new DeliveryCharge(split.buyerFee(), split.supplierFunded());
             }
         };
     }

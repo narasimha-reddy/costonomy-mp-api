@@ -163,7 +163,12 @@ public class SupplierRefundLedger {
         if (orderIds.isEmpty()) {
             return 0;
         }
-        var pending = deductions.findByStatusAndSupplierOrderIdIn(SupplierDeduction.PENDING, orderIds);
+        var pending = new java.util.ArrayList<>(
+                deductions.findByStatusAndSupplierOrderIdIn(SupplierDeduction.PENDING, orderIds));
+        // Funded deliveries on credit orders, which no settlement of their own will ever pick up (D-203).
+        deductions.findPendingCreditDeliveryFunding(settlement.getSupplierStoreId()).stream()
+                .filter(d -> pending.stream().noneMatch(p -> p.getId().equals(d.getId())))
+                .forEach(pending::add);
         pending.forEach(deduction -> apply(deduction, settlement));
         return pending.size();
     }
@@ -173,8 +178,10 @@ public class SupplierRefundLedger {
         adjustment.setSettlementId(settlement.getId());
         adjustment.setDirection("DEBIT");
         adjustment.setAmount(deduction.getAmount());
-        adjustment.setReasonCode("REFUND");
-        adjustment.setReason("Refund to the restaurant: " + deduction.getReason());
+        boolean delivery = SupplierDeduction.KIND_DELIVERY_FUNDING.equals(deduction.getKind());
+        adjustment.setReasonCode(delivery ? "DELIVERY_FUNDING" : "REFUND");
+        adjustment.setReason(delivery ? "Delivery paid by you: " + deduction.getReason()
+                : "Refund to the restaurant: " + deduction.getReason());
         adjustment.setSupplierOrderId(deduction.getSupplierOrderId());
         adjustments.save(adjustment);
 

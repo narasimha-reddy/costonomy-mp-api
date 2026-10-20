@@ -49,7 +49,9 @@ public class DeliveryPolicyService {
                 policy.ownDeliveryMinOrderValue(),
                 policy.minOrderValue(),
                 policy.freeDeliveryThreshold(),
-                policy.maxDeliveryRadiusKm());
+                policy.maxDeliveryRadiusKm(),
+                policy.fundCostonomyDelivery(),
+                policy.fundedDeliveryCap());
     }
 
     @Transactional
@@ -71,6 +73,24 @@ public class DeliveryPolicyService {
                             + "set the store offline instead.");
         }
 
+        // Paying for the rider takes money from the supplier's payout, so it is switched on knowingly and bounded: a
+        // threshold to say when, and a cap to say how much. Riders must be on offer for it to mean anything.
+        boolean fund = Boolean.TRUE.equals(request.fundCostonomyDelivery());
+        if (fund) {
+            if (!costonomy) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "Turn on Costonomy delivery to pay for it.");
+            }
+            if (request.freeDeliveryThreshold() == null || request.freeDeliveryThreshold().signum() <= 0) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "Set the order value from which delivery is free before paying for Costonomy delivery.");
+            }
+            if (request.fundedDeliveryCap() == null || request.fundedDeliveryCap().signum() <= 0) {
+                throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                        "Set the most you will pay towards one delivery.");
+            }
+        }
+
         var before = directory.deliveryPolicy(storeId);
 
         jdbc.update("""
@@ -78,8 +98,9 @@ public class DeliveryPolicyService {
                     (supplier_store_id, own_delivery_enabled, costonomy_delivery_enabled,
                      own_delivery_fee, own_delivery_min_order_value, min_order_value,
                      free_delivery_threshold, max_delivery_radius_km,
+                     fund_costonomy_delivery, funded_delivery_cap,
                      created_at, updated_at, version)
-                values (?, ?, ?, ?, ?, ?, ?, ?, now(6), now(6), 0)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now(6), now(6), 0)
                 on duplicate key update
                     own_delivery_enabled = values(own_delivery_enabled),
                     costonomy_delivery_enabled = values(costonomy_delivery_enabled),
@@ -88,6 +109,8 @@ public class DeliveryPolicyService {
                     min_order_value = values(min_order_value),
                     free_delivery_threshold = values(free_delivery_threshold),
                     max_delivery_radius_km = values(max_delivery_radius_km),
+                    fund_costonomy_delivery = values(fund_costonomy_delivery),
+                    funded_delivery_cap = values(funded_delivery_cap),
                     updated_at = now(6), version = version + 1
                 """,
                 storeId, own, costonomy,
@@ -95,12 +118,14 @@ public class DeliveryPolicyService {
                 request.ownDeliveryMinOrderValue(),
                 request.minOrderValue() == null ? BigDecimal.ZERO : request.minOrderValue(),
                 request.freeDeliveryThreshold(),
-                request.maxDeliveryRadiusKm());
+                request.maxDeliveryRadiusKm(),
+                fund, fund ? request.fundedDeliveryCap() : null);
 
         auditService.recordChange(actorId, "DELIVERY_POLICY_UPDATED", "SUPPLIER_STORE", storeId,
                 Map.of("own", before.ownDeliveryEnabled(),
-                        "costonomy", before.costonomyDeliveryEnabled()),
-                Map.of("own", own, "costonomy", costonomy),
+                        "costonomy", before.costonomyDeliveryEnabled(),
+                        "fundsCostonomyDelivery", before.fundCostonomyDelivery()),
+                Map.of("own", own, "costonomy", costonomy, "fundsCostonomyDelivery", fund),
                 "Supplier changed their delivery policy");
 
         return get(actorId, storeId);
