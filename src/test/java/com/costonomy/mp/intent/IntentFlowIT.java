@@ -799,6 +799,34 @@ class IntentFlowIT extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("free because the offered basket reached the threshold, but an order cut below it pays the store's fee")
+        void aCutOrderLosesThresholdFreeDelivery() throws Exception {
+            // 6 KG of paneer is 2,460 of goods; ordering 4 KG is 1,640, under a 2,000 threshold.
+            var open = answered("SELF", null, 1, 1, "2000");
+            var shown = api.get(open.buyer().token(), "/api/v1/intents/" + open.intentId());
+            assertThat(shown.at("/data/acceptance/deliveryFee").asDouble()).as("free on the basket offered").isZero();
+
+            var cut = createOrder(open.buyer().token(), open.intentId(), Map.of("deliveryMode", "SUPPLIER_DELIVERY",
+                    "lines", List.of(Map.of("intentItemId", open.itemId(), "quantity", 4))));
+
+            long orderId = cut.at("/data/supplierOrderId").asLong();
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, orderId)).as("the store's standing fee").isEqualByComparingTo("30");
+        }
+
+        @Test
+        @DisplayName("a supplier who chose SELF_FREE themselves keeps it however much is ordered")
+        void aChosenFreeOfferIsNotConditional() throws Exception {
+            var open = answered("SELF_FREE", null, 1, 1, "2000");
+
+            var cut = createOrder(open.buyer().token(), open.intentId(), Map.of("deliveryMode", "SUPPLIER_DELIVERY",
+                    "lines", List.of(Map.of("intentItemId", open.itemId(), "quantity", 1))));
+
+            assertThat(jdbc.queryForObject("select delivery_fee from supplier_order where id = ?",
+                    java.math.BigDecimal.class, cut.at("/data/supplierOrderId").asLong())).isEqualByComparingTo("0");
+        }
+
+        @Test
         @DisplayName("own delivery with no amount named is still charged at the store fee below the threshold")
         void belowTheThresholdTheStoreFeeStands() throws Exception {
             var open = answered("SELF", null, 1, 1, "3000");
@@ -945,6 +973,50 @@ class IntentFlowIT extends AbstractIntegrationTest {
                     .isCloseTo(courierFee, org.assertj.core.data.Offset.offset(0.001));
             assertThat(((Number) rows.get(0).get("delivery_id")).longValue()).isEqualTo(deliveryId);
             assertThat(rows.get(0).get("dispute_refund_id")).isNull();
+        }
+
+        @Test
+        @DisplayName("a provider that reports 'delivered' without ever reporting 'picked up' still charges the supplier, once")
+        void aSkippedPickupStillCharges() throws Exception {
+            var open = answered("COSTONOMY", 1, 1);
+            fundsRiders(open, true, "100", "1000");
+            var quote = riderQuote(open);
+            long orderId = orderWith(open, "COSTONOMY_DELIVERY", quote.at("/data/quoteReference").asText())
+                    .at("/data/supplierOrderId").asLong();
+            long deliveryId = courierDeliveryFor(orderId);
+
+            var delivery = new com.costonomy.mp.delivery.domain.Delivery();
+            delivery.setId(deliveryId);
+            delivery.setSupplierOrderId(orderId);
+            delivery.setMode(com.costonomy.mp.delivery.domain.DeliveryMode.COSTONOMY);
+            deliveryBridge.onDeliveryStatus(delivery, com.costonomy.mp.delivery.domain.DeliveryStatus.DELIVERED);
+            deliveryBridge.onDeliveryStatus(delivery, com.costonomy.mp.delivery.domain.DeliveryStatus.DELIVERED);
+
+            assertThat(jdbc.queryForObject("select count(*) from supplier_deduction where supplier_order_id = ? "
+                    + "and kind = 'DELIVERY_FUNDING'", Integer.class, orderId)).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a delivery the supplier carries themselves is not charged for a rider")
+        void ownDeliveryIsNotCharged() throws Exception {
+            var open = answered("COSTONOMY", 1, 1);
+            fundsRiders(open, true, "100", "1000");
+            var quote = riderQuote(open);
+            long orderId = orderWith(open, "COSTONOMY_DELIVERY", quote.at("/data/quoteReference").asText())
+                    .at("/data/supplierOrderId").asLong();
+            long deliveryId = courierDeliveryFor(orderId);
+
+            // As switchToOwn does when no courier was found: the order becomes the supplier's own.
+            jdbc.update("update supplier_order set delivery_mode = 'SUPPLIER_DELIVERY', "
+                    + "delivery_funded_amount = 0 where id = ?", orderId);
+            var delivery = new com.costonomy.mp.delivery.domain.Delivery();
+            delivery.setId(deliveryId);
+            delivery.setSupplierOrderId(orderId);
+            delivery.setMode(com.costonomy.mp.delivery.domain.DeliveryMode.SUPPLIER_OWN);
+            deliveryBridge.onDeliveryStatus(delivery, com.costonomy.mp.delivery.domain.DeliveryStatus.PICKED_UP);
+
+            assertThat(jdbc.queryForObject("select count(*) from supplier_deduction where supplier_order_id = ?",
+                    Integer.class, orderId)).isZero();
         }
 
         @Test

@@ -600,6 +600,12 @@ public class IntentOrderCreator {
                 // and what the buyer was shown, so the store's standing free-delivery threshold does not override it
                 // (D-146). The threshold applies where no amount was offered (direct orders, older answers).
                 if (offered) {
+                    // Free because the offered basket reached the threshold (D-203): an order cut below it pays the fee
+                    // the store would have charged. The restaurant sees this in the preview before it orders.
+                    if (acceptance.getDeliveryFreeFromGoods() != null && subtotal != null
+                            && subtotal.compareTo(acceptance.getDeliveryFreeFromGoods()) < 0) {
+                        yield DeliveryCharge.buyerPays(fee);
+                    }
                     yield DeliveryCharge.buyerPays(acceptance.getDeliveryFee());
                 }
                 yield DeliveryCharge.buyerPays(

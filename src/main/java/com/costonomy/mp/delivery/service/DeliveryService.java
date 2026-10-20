@@ -670,6 +670,9 @@ public class DeliveryService {
             var delivery = deliveries.lockById(deliveryId).orElse(null);
             if (delivery == null || delivery.getMode() != DeliveryMode.COSTONOMY
                     || delivery.getStatus() != DeliveryStatus.QUOTE_RECEIVED
+                    // An earlier attempt whose outcome we could not learn may have booked a courier: booking another
+                    // could put two at one door. A person settles that first.
+                    || delivery.isReconciliationRequired()
                     || attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
                 return null;
             }

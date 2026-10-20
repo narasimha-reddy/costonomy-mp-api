@@ -205,9 +205,24 @@ public class DeliveryBookingService {
 
             if (booking != null) {
                 final DeliveryProvider.Booking finalBooking = booking;
-                tx.executeWithoutResult(status -> {
+                Boolean accepted = tx.execute(status -> {
                     var curDelivery = deliveries.lockById(delivery.getId()).orElse(delivery);
                     var curAttempt = attempts.findById(attempt.getId()).orElse(attempt);
+
+                    // The provider call ran with no lock held, so the delivery can have moved meanwhile: cancelled, or taken
+                    // over by the supplier. Recording the courier as booked would bring back a delivery that was ended and
+                    // send a rider for nothing. Keep the attempt as a booking nobody wants and stand the courier down.
+                    if (curDelivery.getStatus().isTerminal() || curDelivery.getMode() == DeliveryMode.SUPPLIER_OWN
+                            || curDelivery.getProviderDeliveryId() != null) {
+                        curAttempt.setCallMs(callMs);
+                        curAttempt.setOutcome("CANCELLED");
+                        curAttempt.setProviderDeliveryId(finalBooking.providerDeliveryId());
+                        curAttempt.setFailureReason("The delivery no longer needed a courier when the booking came back.");
+                        curAttempt.setEndedCause("DELIVERY_NO_LONGER_WANTED");
+                        curAttempt.setEndedAt(Instant.now());
+                        attempts.save(curAttempt);
+                        return false;
+                    }
 
                     curAttempt.setCallMs(callMs);
                     curAttempt.setOutcome("BOOKED");
@@ -262,7 +277,13 @@ public class DeliveryBookingService {
                             curDelivery.getId(), null, DeliveryStatus.PROVIDER_SELECTED.name(),
                             "Attempt %d with %s".formatted(attemptNumber, quote.getProviderCode()),
                             "SYSTEM");
+                    return true;
                 });
+                if (!Boolean.TRUE.equals(accepted)) {
+                    standDownUnwantedCourier(deliveryId, quote.getProviderCode(), finalBooking.providerDeliveryId(),
+                            adapter);
+                    return false;
+                }
                 return true;
             }
 
@@ -498,8 +519,27 @@ public class DeliveryBookingService {
                 directory.goodsValue(delivery.getSupplierOrderId()));
     }
 
+    /** A courier booked for a delivery that no longer needs one. Outside any transaction; a failure is retried durably. */
+    private void standDownUnwantedCourier(Long deliveryId, String providerCode, String providerDeliveryId,
+                                          DeliveryProvider adapter) {
+        String reason = "Delivery no longer needs a courier";
+        try {
+            adapter.cancel(providerDeliveryId, reason);
+            log.warn("Cancelled {} courier {} booked for delivery {}, which no longer needs one",
+                    providerCode, providerDeliveryId, deliveryId);
+        } catch (Exception ex) {
+            log.warn("Could not cancel unwanted {} courier {} for delivery {}: {}",
+                    providerCode, providerDeliveryId, deliveryId, ex.getMessage());
+            recoveryService.scheduleCancellation("SUPPLIER", deliveryId, providerCode, providerDeliveryId, reason);
+        }
+    }
+
     private boolean fail(Long deliveryId, DeliveryStatus status, String code, String reason) {
         var delivery = deliveries.lockById(deliveryId).orElseThrow();
+        if (delivery.getStatus().isTerminal() || delivery.getMode() == DeliveryMode.SUPPLIER_OWN) {
+            // Ended or taken over while we were trying couriers: not a delivery without a partner.
+            return false;
+        }
         delivery.setStatus(status);
         delivery.markNoPartner(Instant.now());
         delivery.setFailureCode(code);
