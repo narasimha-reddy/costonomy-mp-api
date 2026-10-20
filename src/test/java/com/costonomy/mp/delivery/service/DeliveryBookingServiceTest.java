@@ -425,6 +425,42 @@ class DeliveryBookingServiceTest {
     }
 
     @Test
+    @DisplayName("When every carrier fails but another booking has since got a courier, the delivery is not marked 'no partner'")
+    void book_whenAllCarriersFailAfterAnotherBookingSucceeded_keepsTheCourier() {
+        Delivery delivery = createDelivery(18L, VehicleType.TWO_WHEELER);
+        DeliveryQuote quote = createQuote(18L, "SHADOWFAX", VehicleType.TWO_WHEELER);
+        DeliveryProvider shadowfax = mock(DeliveryProvider.class);
+        when(quoting.usableQuotes(18L, List.of(), false)).thenReturn(List.of(quote));
+        when(registry.adapter("SHADOWFAX")).thenReturn(shadowfax);
+        when(shadowfax.book(any())).thenAnswer(inv -> {
+            // A concurrent booking commits its courier while this one's call is failing.
+            delivery.setProviderDeliveryId("other-booking");
+            delivery.setStatus(DeliveryStatus.PROVIDER_SELECTED);
+            throw new com.costonomy.mp.delivery.provider.DeliveryProviderException("SHADOWFAX", "refused", false);
+        });
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isFalse();
+
+        assertThat(delivery.getStatus()).isEqualTo(DeliveryStatus.PROVIDER_SELECTED);
+        assertThat(delivery.getProviderDeliveryId()).isEqualTo("other-booking");
+        assertThat(delivery.getFailureCode()).isNull();
+    }
+
+    @Test
+    @DisplayName("With no usable quote, a delivery another booking still has in flight is not marked 'no partner'")
+    void book_whenThereAreNoQuotesButAnotherBookingIsPending_leavesTheDelivery() {
+        Delivery delivery = createDelivery(19L, VehicleType.TWO_WHEELER);
+        delivery.setStatus(DeliveryStatus.QUOTE_RECEIVED);
+        when(quoting.usableQuotes(19L, List.of(), false)).thenReturn(List.of());
+        when(attempts.existsByDeliveryIdAndOutcome(19L, "PENDING")).thenReturn(true);
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isFalse();
+
+        assertThat(delivery.getStatus()).isEqualTo(DeliveryStatus.QUOTE_RECEIVED);
+        assertThat(delivery.getFailureCode()).isNull();
+    }
+
+    @Test
     @DisplayName("A delivery a courier already holds is not booked a second time, even if it was free when the caller looked")
     void book_whenACourierAlreadyHoldsTheDelivery_booksNothing() {
         Delivery delivery = createDelivery(11L, VehicleType.TWO_WHEELER);
