@@ -536,8 +536,12 @@ public class DeliveryBookingService {
 
     private boolean fail(Long deliveryId, DeliveryStatus status, String code, String reason) {
         var delivery = deliveries.lockById(deliveryId).orElseThrow();
-        if (delivery.getStatus().isTerminal() || delivery.getMode() == DeliveryMode.SUPPLIER_OWN) {
-            // Ended or taken over while we were trying couriers: not a delivery without a partner.
+        if (delivery.getStatus().isTerminal() || delivery.getMode() == DeliveryMode.SUPPLIER_OWN
+                || delivery.getProviderDeliveryId() != null
+                || attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
+            // Ended, taken over, or given to a courier by a booking that finished while we were trying ours; or another
+            // booking is still in flight and may yet succeed. Not a delivery without a partner. Our own attempts are all
+            // recorded as failed by now, so a pending one is never ours.
             return false;
         }
         delivery.setStatus(status);
