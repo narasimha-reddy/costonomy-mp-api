@@ -16,6 +16,10 @@ import com.costonomy.mp.fooddelivery.domain.FoodDeliveryStatus;
 import com.costonomy.mp.fooddelivery.repository.FoodDeliveryAttemptRepository;
 import com.costonomy.mp.fooddelivery.repository.FoodDeliveryQuoteRepository;
 import com.costonomy.mp.fooddelivery.repository.FoodDeliveryRepository;
+import com.costonomy.mp.fooddelivery.web.dto.FoodDeliveryDtos;
+import com.costonomy.mp.payment.provider.PaymentProvider;
+import com.costonomy.mp.payment.provider.PaymentProviderException;
+import com.costonomy.mp.payment.service.UnusablePaymentRefunds;
 import com.costonomy.mp.wallet.service.WalletService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -68,6 +72,8 @@ public class FoodDeliveryBookingService {
     private final FoodDeliveryProperties properties;
     private final ProviderReliabilityService reliability;
     private final DeliveryRecoveryService recoveryService;
+    private final PaymentProvider paymentProvider;
+    private final UnusablePaymentRefunds gatewayRefunds;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
 
@@ -77,6 +83,8 @@ public class FoodDeliveryBookingService {
                                       DeliveryDirectory directory, WalletService wallet, FoodDeliveryTimeline timeline,
                                       FoodDeliveryProperties properties, ProviderReliabilityService reliability,
                                       DeliveryRecoveryService recoveryService,
+                                      PaymentProvider paymentProvider,
+                                      UnusablePaymentRefunds gatewayRefunds,
                                       JdbcTemplate jdbc, PlatformTransactionManager txManager) {
         this.deliveries = deliveries;
         this.attempts = attempts;
@@ -90,6 +98,8 @@ public class FoodDeliveryBookingService {
         this.properties = properties;
         this.reliability = reliability;
         this.recoveryService = recoveryService;
+        this.paymentProvider = paymentProvider;
+        this.gatewayRefunds = gatewayRefunds;
         this.jdbc = jdbc;
         // Every step is its own transaction: a courier booked is a fact outside our database, so it is committed on its
         // own and never rolled back with something that fails later.
@@ -107,7 +117,18 @@ public class FoodDeliveryBookingService {
             String customerName, String customerPhone,
             String dropAddress, String dropLandmark, BigDecimal dropLatitude, BigDecimal dropLongitude,
             String dropCity, String dropState, String dropPincode, String dropInstructions,
-            BigDecimal orderValue, BigDecimal weightKg, Integer maxDeliveryMinutes, BigDecimal maxFee) {
+            BigDecimal orderValue, BigDecimal weightKg, Integer maxDeliveryMinutes, BigDecimal maxFee,
+            String paymentMethod) {
+
+        public CreateRequest(Long restaurantId, Long outletId, String idempotencyKey, String externalOrderRef,
+                             String customerName, String customerPhone,
+                             String dropAddress, String dropLandmark, BigDecimal dropLatitude, BigDecimal dropLongitude,
+                             String dropCity, String dropState, String dropPincode, String dropInstructions,
+                             BigDecimal orderValue, BigDecimal weightKg, Integer maxDeliveryMinutes, BigDecimal maxFee) {
+            this(restaurantId, outletId, idempotencyKey, externalOrderRef, customerName, customerPhone,
+                    dropAddress, dropLandmark, dropLatitude, dropLongitude, dropCity, dropState, dropPincode, dropInstructions,
+                    orderValue, weightKg, maxDeliveryMinutes, maxFee, "WALLET");
+        }
     }
 
     // ── Create ───────────────────────────────────────────────────────────
@@ -124,7 +145,28 @@ public class FoodDeliveryBookingService {
     public FoodDelivery create(CreateRequest request) {
         var existing = deliveries.findByRestaurantIdAndIdempotencyKey(request.restaurantId(), request.idempotencyKey());
         if (existing.isPresent()) {
-            return existing.get();
+            var cur = existing.get();
+            if (isGatewayPayment(cur.getPaymentMethod()) && cur.getProviderOrderId() == null && cur.getMaxFee() != null) {
+                try {
+                    var intent = paymentProvider.createAuthorization(new PaymentProvider.AuthorizationRequest(
+                            "food-del-" + cur.getId(),
+                            cur.getMaxFee().setScale(2, RoundingMode.HALF_UP),
+                            "INR",
+                            "Food delivery " + (cur.getExternalOrderRef() != null ? cur.getExternalOrderRef() : cur.getId()),
+                            "food-del-" + cur.getId(),
+                            true));
+                    final String provOrderId = intent.providerOrderId();
+                    tx.executeWithoutResult(status -> {
+                        var row = deliveries.findById(cur.getId()).orElseThrow();
+                        row.setProviderOrderId(provOrderId);
+                        deliveries.save(row);
+                    });
+                    cur.setProviderOrderId(provOrderId);
+                } catch (RuntimeException ex) {
+                    log.warn("Failed to open payment gateway order on replayed food delivery {}: {}", cur.getId(), ex.getMessage());
+                }
+            }
+            return cur;
         }
         validate(request);
 
@@ -154,6 +196,29 @@ public class FoodDeliveryBookingService {
                 }
             }
             throw ex;
+        }
+
+        FoodDelivery cur = deliveries.findById(id).orElseThrow();
+        if (isGatewayPayment(cur.getPaymentMethod())) {
+            try {
+                var intent = paymentProvider.createAuthorization(new PaymentProvider.AuthorizationRequest(
+                        "food-del-" + cur.getId(),
+                        cur.getMaxFee().setScale(2, RoundingMode.HALF_UP),
+                        "INR",
+                        "Food delivery " + (cur.getExternalOrderRef() != null ? cur.getExternalOrderRef() : cur.getId()),
+                        "food-del-" + cur.getId(),
+                        true));
+                final String provOrderId = intent.providerOrderId();
+                tx.executeWithoutResult(status -> {
+                    var row = deliveries.findById(cur.getId()).orElseThrow();
+                    row.setProviderOrderId(provOrderId);
+                    deliveries.save(row);
+                });
+                cur.setProviderOrderId(provOrderId);
+            } catch (RuntimeException ex) {
+                log.warn("Failed to open payment gateway order for food delivery {}: {}", cur.getId(), ex.getMessage());
+            }
+            return cur;
         }
 
         book(id, "BOOKING");
@@ -200,6 +265,9 @@ public class FoodDeliveryBookingService {
         d.setWeightKg(r.weightKg());
         d.setVehicleType(VehicleType.fromWeight(r.weightKg(), false));
         d.setMaxDeliveryMinutes(r.maxDeliveryMinutes());
+        String pm = r.paymentMethod() != null && !isBlank(r.paymentMethod())
+                ? r.paymentMethod().toUpperCase() : "WALLET";
+        d.setPaymentMethod(pm);
         d.setRequestedAt(now);
         d.setRoundStartedAt(now);
         d = deliveries.saveAndFlush(d);
@@ -247,14 +315,21 @@ public class FoodDeliveryBookingService {
                             .formatted(cheapest.stripTrailingZeros().toPlainString(), maxFee.stripTrailingZeros().toPlainString()));
         }
 
-        // Held before any courier is asked. If the wallet is short this throws and the whole step rolls back.
-        wallet.debitFoodDelivery(d.getOutletId(), d.getId(), maxFee);
         d.setMaxFee(maxFee);
-        d.setFeeDebitRef("food-delivery-" + d.getId());
-        d.setFeeDebitedAt(now);
-        d.moveTo(FoodDeliveryStatus.QUOTED);
-        deliveries.save(d);
-        timeline.record(d, FoodDeliveryStatus.QUOTED, "Delivery fee held; finding a delivery partner");
+        if (isGatewayPayment(d.getPaymentMethod())) {
+            d.setFee(maxFee);
+            deliveries.save(d);
+            timeline.record(d, FoodDeliveryStatus.REQUESTED, "Delivery fee quoted at ₹%s; waiting for payment via %s"
+                    .formatted(maxFee.toPlainString(), paymentProvider.name()));
+        } else {
+            // Held before any courier is asked. If the wallet is short this throws and the whole step rolls back.
+            wallet.debitFoodDelivery(d.getOutletId(), d.getId(), maxFee);
+            d.setFeeDebitRef("food-delivery-" + d.getId());
+            d.setFeeDebitedAt(now);
+            d.moveTo(FoodDeliveryStatus.QUOTED);
+            deliveries.save(d);
+            timeline.record(d, FoodDeliveryStatus.QUOTED, "Delivery fee held; finding a delivery partner");
+        }
     }
 
     private void cleanUpFailedCreate(Long deliveryId) {
@@ -546,7 +621,8 @@ public class FoodDeliveryBookingService {
                 return null;
             }
             Instant now = Instant.now();
-            if (!now.isBefore(d.getRequestedAt().plus(properties.getRetryWindow()))) {
+            Instant baseTime = d.getPaidAt() != null ? d.getPaidAt() : d.getRequestedAt();
+            if (!now.isBefore(baseTime.plus(properties.getRetryWindow()))) {
                 failNoCourier(d);
                 return null;
             }
@@ -1005,6 +1081,297 @@ public class FoodDeliveryBookingService {
                 "The weight must be above zero and within what a bike can carry (%s kg).".formatted(VehicleType.TWO_WHEELER.maxWeightKg()));
         require(r.maxDeliveryMinutes() == null || r.maxDeliveryMinutes() > 0, "The delivery time limit must be above zero.");
         require(r.maxFee() == null || r.maxFee().signum() > 0, "The fee limit must be above zero.");
+        if (r.paymentMethod() != null && !isBlank(r.paymentMethod())) {
+            String pm = r.paymentMethod().toUpperCase();
+            require(Set.of("WALLET", "GATEWAY", "PAYMENT_GATEWAY", "UPI", "ONLINE", "CARD").contains(pm),
+                    "Payment method must be WALLET or GATEWAY.");
+        }
+    }
+
+    public static boolean isGatewayPayment(String method) {
+        return method != null && (
+                method.equalsIgnoreCase("GATEWAY")
+                || method.equalsIgnoreCase("PAYMENT_GATEWAY")
+                || method.equalsIgnoreCase("UPI")
+                || method.equalsIgnoreCase("ONLINE")
+                || method.equalsIgnoreCase("CARD")
+        );
+    }
+
+    /**
+     * Start payment gateway checkout for a food delivery fee.
+     */
+    public FoodDeliveryDtos.InitiateFoodDeliveryPaymentResponse initiatePayment(Long outletId, Long deliveryId) {
+        var d = deliveries.findById(deliveryId)
+                .orElseThrow(() -> new NotFoundException("FoodDelivery", deliveryId));
+        if (!d.getOutletId().equals(outletId)) {
+            throw new NotFoundException("FoodDelivery", deliveryId);
+        }
+        if (d.getStatus().isTerminal()) {
+            throw new BusinessException(ErrorCode.PAYMENT_STATE_CONFLICT, "This delivery has ended.");
+        }
+        if (d.getPaidAt() != null || d.getFeeDebitedAt() != null || d.getStatus() != FoodDeliveryStatus.REQUESTED) {
+            if (d.getProviderOrderId() != null && d.getPaidAt() == null) {
+                return new FoodDeliveryDtos.InitiateFoodDeliveryPaymentResponse(
+                        d.getId(), d.getProviderOrderId(), paymentProvider.createAuthorizationPublicKey(),
+                        d.getMaxFee() != null ? d.getMaxFee().setScale(2, RoundingMode.HALF_UP) : BigDecimal.ZERO, "INR");
+            }
+            throw new BusinessException(ErrorCode.PAYMENT_STATE_CONFLICT,
+                    "This delivery fee has already been paid or cannot be paid.");
+        }
+        if (d.getProviderOrderId() != null) {
+            return new FoodDeliveryDtos.InitiateFoodDeliveryPaymentResponse(
+                    d.getId(), d.getProviderOrderId(), paymentProvider.createAuthorizationPublicKey(),
+                    d.getMaxFee().setScale(2, RoundingMode.HALF_UP), "INR");
+        }
+
+        BigDecimal fee = d.getMaxFee() != null ? d.getMaxFee() : d.getFee();
+        if (fee == null || fee.signum() <= 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "No delivery fee available to pay.");
+        }
+        BigDecimal amount = fee.setScale(2, RoundingMode.HALF_UP);
+
+        PaymentProvider.AuthorizationIntent intent;
+        try {
+            intent = paymentProvider.createAuthorization(new PaymentProvider.AuthorizationRequest(
+                    "food-del-" + d.getId(), amount, "INR",
+                    "Food delivery " + (d.getExternalOrderRef() != null ? d.getExternalOrderRef() : d.getId()),
+                    "food-del-" + d.getId(), true));
+        } catch (RuntimeException ex) {
+            log.warn("Could not open checkout for food delivery {}: {}", deliveryId, ex.getMessage());
+            throw new BusinessException(ErrorCode.PAYMENT_FAILED,
+                    "We couldn't start checkout. Nothing was charged. Please try again.");
+        }
+
+        final String provOrderId = intent.providerOrderId();
+        tx.executeWithoutResult(status -> {
+            var row = deliveries.findById(deliveryId).orElseThrow();
+            row.setProviderOrderId(provOrderId);
+            row.setPaymentMethod("GATEWAY");
+            deliveries.save(row);
+        });
+
+        return new FoodDeliveryDtos.InitiateFoodDeliveryPaymentResponse(
+                d.getId(), intent.providerOrderId(), intent.publicKey(), amount, "INR");
+    }
+
+    /**
+     * Confirm payment for a food delivery fee: verifies checkout signature and payment facts
+     * with the payment provider, marks fee paid, and triggers courier booking.
+     */
+    public FoodDelivery confirmPayment(Long outletId, Long deliveryId,
+                                       FoodDeliveryDtos.ConfirmFoodDeliveryPaymentRequest request) {
+        if (request.paymentId() == null || request.paymentId().isBlank()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "Payment ID is required.");
+        }
+        if (request.signature() == null || request.signature().isBlank()) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "Signature is required.");
+        }
+        var d = deliveries.findById(deliveryId)
+                .orElseThrow(() -> new NotFoundException("FoodDelivery", deliveryId));
+        if (!d.getOutletId().equals(outletId)) {
+            throw new NotFoundException("FoodDelivery", deliveryId);
+        }
+        if (request.paymentId().equals(d.getPaymentId()) && d.getPaidAt() != null) {
+            return d;
+        }
+        if (d.getProviderOrderId() == null) {
+            throw new BusinessException(ErrorCode.PAYMENT_STATE_CONFLICT, "Checkout was never opened for this food delivery.");
+        }
+
+        if (!paymentProvider.verifyCheckoutSignature(d.getProviderOrderId(), request.paymentId(), request.signature())) {
+            log.warn("Food delivery {} confirm rejected: signature did not verify", deliveryId);
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR,
+                    "We couldn't verify that payment. Nothing was charged.");
+        }
+
+        PaymentProvider.ProviderPayment payment;
+        try {
+            payment = paymentProvider.fetchPayment(request.paymentId());
+        } catch (PaymentProviderException ex) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "We couldn't find that payment.");
+        }
+        if (payment.status() != PaymentProvider.ProviderPaymentStatus.CAPTURED) {
+            throw new BusinessException(ErrorCode.PAYMENT_FAILED, "That payment didn't go through. Nothing was charged.");
+        }
+        // Not this checkout's payment: nothing of ours to refund, and a refund here would let anyone name any payment id.
+        if (!d.getProviderOrderId().equals(payment.providerOrderId())) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "That payment does not match this checkout order.");
+        }
+
+        // The payment is this checkout's and the money has been taken. From here it is either used or sent back.
+        if (!settleGatewayPayment(deliveryId, payment, "client")) {
+            boolean back = deliveries.findById(deliveryId).map(x -> x.getGatewayRefundedAt() != null).orElse(false);
+            throw new BusinessException(ErrorCode.PAYMENT_STATE_CONFLICT, back
+                    ? "This delivery can no longer take your payment, so it has been refunded to where it came from."
+                    : "This delivery can no longer take your payment. We are refunding it and will finish shortly.");
+        }
+        return deliveries.findById(deliveryId).orElseThrow();
+    }
+
+    /**
+     * Decide what a captured gateway payment of this checkout is for, and do it. One place for the client's confirm, the
+     * provider's webhook and the sweep, so they cannot disagree.
+     *
+     * <p>Used when the delivery is waiting for it (and the amount is right): it is marked paid, the courier is booked.
+     * Anything else (cancelled or expired before the restaurant paid, a second payment, the wrong amount) is refunded to
+     * its source, and found again by the sweep if the refund could not be made now. Never leaves captured money stranded.
+     *
+     * @return true if the payment was used (or had already been); false if it was refunded or is queued to be
+     */
+    private boolean settleGatewayPayment(Long deliveryId, PaymentProvider.ProviderPayment payment, String via) {
+        String paymentId = payment.providerPaymentId();
+        var d = deliveries.findById(deliveryId).orElseThrow();
+        if (paymentId.equals(d.getPaymentId()) && d.getPaidAt() != null) {
+            return true;
+        }
+        if (d.getGatewayRefundedAt() != null) {
+            return false;
+        }
+
+        BigDecimal expected = d.getMaxFee() == null ? null : d.getMaxFee().setScale(2, RoundingMode.HALF_UP);
+        boolean amountRight = expected != null && payment.capturedAmount() != null
+                && payment.capturedAmount().compareTo(expected) == 0;
+
+        boolean usable = false;
+        if (amountRight && d.getPaidAt() == null && d.getStatus() == FoodDeliveryStatus.REQUESTED) {
+            Instant now = Instant.now();
+            // Quotes may have lapsed while the restaurant was in checkout: asked again, outside the transaction.
+            var existingQuotes = quotes.findByFoodDeliveryIdOrderByIdAsc(deliveryId);
+            boolean allExpired = existingQuotes.isEmpty() || existingQuotes.stream()
+                    .allMatch(q -> q.getExpiresAt() != null && q.getExpiresAt().isBefore(now));
+            if (allExpired) {
+                try {
+                    quoting.gather(d);
+                } catch (Exception ex) {
+                    log.warn("Failed to re-gather quotes on {} confirm for food delivery {}: {}", via, deliveryId, ex.getMessage());
+                }
+            }
+            usable = Boolean.TRUE.equals(tx.execute(status -> {
+                var row = deliveries.lockById(deliveryId).orElseThrow();
+                // Rechecked under the lock: a cancel or another payment may have got here first.
+                if (row.getPaidAt() != null || row.getStatus() != FoodDeliveryStatus.REQUESTED) {
+                    return false;
+                }
+                row.setPaymentId(paymentId);
+                row.setPaymentMethod("GATEWAY");
+                row.setPaidAt(now);
+                row.setRoundStartedAt(now);
+                row.setFeeDebitRef("food-delivery-" + row.getId() + "-gw-" + paymentId);
+                row.setFeeDebitedAt(now);
+                row.moveTo(FoodDeliveryStatus.QUOTED);
+                deliveries.save(row);
+                timeline.record(row, FoodDeliveryStatus.QUOTED, "Delivery fee paid via " + paymentProvider.name()
+                        + ("client".equals(via) ? "" : " (" + via + ")") + "; finding a delivery partner");
+                return true;
+            }));
+        }
+        if (usable) {
+            book(deliveryId, "BOOKING");
+            return true;
+        }
+
+        // Cannot be used. Back to where it came from, outside any transaction; the sweep retries what fails.
+        String refundId = gatewayRefunds.refundRest(paymentId, payment.capturedAmount(), "food-del-unusable-");
+        if (refundId != null) {
+            tx.executeWithoutResult(status -> {
+                var row = deliveries.lockById(deliveryId).orElseThrow();
+                if (row.getGatewayRefundedAt() == null) {
+                    row.setGatewayRefundId(refundId);
+                    row.setGatewayRefundedAt(Instant.now());
+                    deliveries.save(row);
+                    timeline.record(row, row.getStatus(), "A payment that arrived too late or twice was refunded to its source");
+                }
+            });
+        }
+        return false;
+    }
+
+    /**
+     * Reconciles a food delivery fee payment captured at the gateway (webhook or sweep): uses it if the delivery is
+     * waiting for it, otherwise refunds it. See {@link #settleGatewayPayment}.
+     *
+     * @return true if the event was dealt with (used, already used, or refunded or queued for refund)
+     */
+    public boolean reconcileWebhookPayment(String providerOrderId, String providerPaymentId) {
+        if (providerOrderId == null && providerPaymentId == null) {
+            return false;
+        }
+        FoodDelivery d = null;
+        if (providerOrderId != null) {
+            d = deliveries.findByProviderOrderId(providerOrderId).orElse(null);
+        }
+        if (d == null && providerPaymentId != null) {
+            d = deliveries.findByPaymentId(providerPaymentId).orElse(null);
+        }
+        if (d == null || providerPaymentId == null) {
+            return false;
+        }
+        if (d.getPaidAt() != null && providerPaymentId.equals(d.getPaymentId())) {
+            return true;
+        }
+        if (d.getGatewayRefundedAt() != null) {
+            return true;
+        }
+
+        PaymentProvider.ProviderPayment payment;
+        try {
+            payment = paymentProvider.fetchPayment(providerPaymentId);
+        } catch (Exception ex) {
+            log.warn("Could not fetch payment {} for food delivery {}: {}", providerPaymentId, d.getId(), ex.getMessage());
+            return false;
+        }
+        if (payment.status() != PaymentProvider.ProviderPaymentStatus.CAPTURED) {
+            log.warn("Payment {} for food delivery {} is {}, not CAPTURED", providerPaymentId, d.getId(), payment.status());
+            return false;
+        }
+        // Only this checkout's own payments: a refund must never follow a payment id that belongs to something else.
+        if (d.getProviderOrderId() == null || !d.getProviderOrderId().equals(payment.providerOrderId())) {
+            return false;
+        }
+        settleGatewayPayment(d.getId(), payment, "webhook");
+        return true;
+    }
+
+    /**
+     * Sweeps food deliveries whose gateway checkout was opened and not settled: recovers payments whose confirm or
+     * webhook was lost, refunds payments that landed on a delivery that had ended, and cancels a delivery the
+     * restaurant never paid for within {@code paymentExpiry}.
+     */
+    public int sweepStaleGatewayPayments() {
+        Instant now = Instant.now();
+        Instant staleBefore = now.minus(Duration.ofSeconds(30));
+        Instant createdAfter = now.minus(Duration.ofDays(1));
+        var stale = deliveries.findStaleGatewayDeliveries(staleBefore, createdAfter, 50);
+
+        int handled = 0;
+        for (var d : stale) {
+            if (d.getProviderOrderId() == null) {
+                continue;
+            }
+            try {
+                var paymentOpt = paymentProvider.findPaymentForOrder(d.getProviderOrderId());
+                if (paymentOpt.isPresent()
+                        && paymentOpt.get().status() == PaymentProvider.ProviderPaymentStatus.CAPTURED) {
+                    if (reconcileWebhookPayment(d.getProviderOrderId(), paymentOpt.get().providerPaymentId())) {
+                        handled++;
+                        log.info("Sweep settled captured food delivery payment: delivery={}, order={}, payment={}",
+                                d.getId(), d.getProviderOrderId(), paymentOpt.get().providerPaymentId());
+                    }
+                    continue;
+                }
+                // Nothing was paid. A delivery still waiting past the expiry is cancelled, not left open for ever.
+                if (d.getStatus() == FoodDeliveryStatus.REQUESTED
+                        && d.getCreatedAt() != null
+                        && d.getCreatedAt().isBefore(now.minus(properties.getPaymentExpiry()))) {
+                    cancel(d.getId(), "Payment was not completed in time");
+                    handled++;
+                }
+            } catch (Exception ex) {
+                log.warn("Failed to sweep payment for food delivery {}: {}", d.getId(), ex.getMessage());
+            }
+        }
+        return handled;
     }
 
     private static void require(boolean ok, String message) {

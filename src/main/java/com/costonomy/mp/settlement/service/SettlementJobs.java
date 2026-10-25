@@ -34,6 +34,7 @@ public class SettlementJobs {
     private final SettlementService settlements;
     private final SettlementReconciliationService reconciliation;
     private final SettlementRepository repository;
+    private final SupplierDeliveryFundingPaymentService supplierFundingPayment;
 
     @Value("${costonomy.mp.settlement.generation-interval:PT1H}")
     private Duration generationInterval;
@@ -74,6 +75,24 @@ public class SettlementJobs {
                     log.error("Could not reconcile settlement {}", settlement.getId(), ex);
                 }
             }
+        }
+    }
+
+    /**
+     * Sweeps pending delivery funding deductions that opened Razorpay orders and recovers
+     * any lost client callbacks or missed webhooks (D-203).
+     */
+    @Scheduled(fixedDelayString = "${costonomy.mp.settlement.delivery-funding-sweep-interval:PT60S}",
+            initialDelayString = "${costonomy.mp.settlement.jobs-initial-delay:PT0S}")
+    @SchedulerLock(name = "settlement-delivery-funding-sweep", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
+    public void sweepPendingDeliveryFundingPayments() {
+        try {
+            int recovered = supplierFundingPayment.sweepStaleGatewayPayments();
+            if (recovered > 0) {
+                log.info("Supplier delivery funding payment sweep reconciled {} payments", recovered);
+            }
+        } catch (Exception ex) {
+            log.error("Supplier delivery funding payment sweep failed: {}", ex.getMessage());
         }
     }
 }

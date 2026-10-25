@@ -50,7 +50,8 @@ public class DeliveryAssignmentSweepJob {
     @Value("${costonomy.mp.delivery.assignment-sweep.batch:50}")
     private int batch = 50;
 
-    @Scheduled(fixedDelayString = "${costonomy.mp.delivery.assignment-sweep.interval:PT30S}")
+    @Scheduled(fixedDelayString = "${costonomy.mp.delivery.assignment-sweep.interval:PT30S}",
+            initialDelayString = "${costonomy.mp.delivery.jobs-initial-delay:PT0S}")
     @SchedulerLock(name = "delivery-assignment-sweep", lockAtMostFor = "PT5M", lockAtLeastFor = "PT0S")
     public void sweep() {
         runOnce(Instant.now());

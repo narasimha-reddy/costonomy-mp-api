@@ -25,6 +25,7 @@ public class SupplierDeduction extends BaseEntity {
 
     public static final String PENDING = "PENDING";
     public static final String APPLIED = "APPLIED";
+    public static final String PAID_DIRECTLY = "PAID_DIRECTLY";
 
     public static final String KIND_DISPUTE_REFUND = "DISPUTE_REFUND";
     public static final String KIND_DELIVERY_FUNDING = "DELIVERY_FUNDING";
@@ -62,4 +63,26 @@ public class SupplierDeduction extends BaseEntity {
 
     @Column(name = "applied_at")
     private Instant appliedAt;
+
+    /** The provider payment id (e.g. Razorpay payment id) if paid directly by the supplier. */
+    @Column(name = "payment_id", length = 200)
+    private String paymentId;
+
+    /** The provider order id (e.g. Razorpay order id) opened for direct checkout. */
+    @Column(name = "provider_order_id", length = 200)
+    private String providerOrderId;
+
+    @Column(name = "paid_at")
+    private Instant paidAt;
+
+    /** When a direct-payment checkout was last opened or reopened; the deduction itself can be older by days. */
+    @Column(name = "checkout_opened_at")
+    private Instant checkoutOpenedAt;
+
+    /** The refund of a payment that arrived after the settlement had already taken this charge. */
+    @Column(name = "gateway_refund_id", length = 200)
+    private String gatewayRefundId;
+
+    @Column(name = "gateway_refunded_at")
+    private Instant gatewayRefundedAt;
 }

@@ -44,7 +44,8 @@ public class DeliveryRetryJobs {
     @Value("${costonomy.mp.delivery.own-delivery-offer-after:PT45M}")
     private Duration offerAfter = Duration.ofMinutes(45);
 
-    @Scheduled(fixedDelayString = "${costonomy.mp.delivery.auto-retry.poll:PT1M}")
+    @Scheduled(fixedDelayString = "${costonomy.mp.delivery.auto-retry.poll:PT1M}",
+            initialDelayString = "${costonomy.mp.delivery.jobs-initial-delay:PT0S}")
     @SchedulerLock(name = "delivery-no-partner-retry", lockAtMostFor = "PT10M", lockAtLeastFor = "PT0S")
     public void retryNoPartner() {
         runOnce();

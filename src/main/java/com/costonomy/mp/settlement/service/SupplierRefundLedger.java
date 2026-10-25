@@ -41,6 +41,9 @@ import java.util.Set;
 @Slf4j
 public class SupplierRefundLedger {
 
+    /** How long an opened checkout keeps its charge out of a settlement. */
+    private static final java.time.Duration CHECKOUT_CLAIM = java.time.Duration.ofMinutes(30);
+
     /** Where the goods have arrived. Earlier, a problem is a cancellation, not a refund. */
     private static final Set<String> REFUNDABLE_STATES = Set.of("DELIVERED", "COMPLETED");
 
@@ -169,6 +172,12 @@ public class SupplierRefundLedger {
         deductions.findPendingCreditDeliveryFunding(settlement.getSupplierStoreId()).stream()
                 .filter(d -> pending.stream().noneMatch(p -> p.getId().equals(d.getId())))
                 .forEach(pending::add);
+        // A charge whose gateway checkout was opened a moment ago is the supplier paying it right now: taking it from the
+        // payout as well would charge them twice. It waits for the next settlement if they do not finish (D-203).
+        Instant claimed = Instant.now().minus(CHECKOUT_CLAIM);
+        pending.removeIf(d -> SupplierDeduction.KIND_DELIVERY_FUNDING.equals(d.getKind())
+                && d.getProviderOrderId() != null && d.getPaidAt() == null
+                && d.getCheckoutOpenedAt() != null && d.getCheckoutOpenedAt().isAfter(claimed));
         pending.forEach(deduction -> apply(deduction, settlement));
         return pending.size();
     }

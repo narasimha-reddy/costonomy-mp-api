@@ -116,4 +116,44 @@ public final class SettlementDtos {
             BigDecimal repaymentWalletDebits,
             BigDecimal repaymentPayoutsOwed) {
     }
+
+    // ── Direct Delivery Funding Payments (D-203) ──────────────────────────
+
+    public record PendingDeliveryFundingResponse(
+            Long deductionId,
+            Long supplierOrderId,
+            String orderNumber,
+            Long deliveryId,
+            BigDecimal amount,
+            String reason,
+            String status,
+            String paymentMethod,
+            String providerOrderId,
+            Instant createdAt) {
+    }
+
+    public record InitiateDeliveryFundingPaymentRequest(
+            String clientKey) {
+    }
+
+    public record InitiateDeliveryFundingPaymentResponse(
+            Long deductionId,
+            String razorpayOrderId,
+            String keyId,
+            BigDecimal amount,
+            String currency) {
+    }
+
+    public record ConfirmDeliveryFundingPaymentRequest(
+            @NotBlank(message = "Payment id is required") String paymentId,
+            @NotBlank(message = "Signature is required") String signature) {
+    }
+
+    public record ConfirmDeliveryFundingPaymentResponse(
+            Long deductionId,
+            String status,
+            String paymentId,
+            BigDecimal amount,
+            Instant paidAt) {
+    }
 }

@@ -3,14 +3,16 @@ package com.costonomy.mp.payment.service;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.logging.TraceScope;
+import com.costonomy.mp.fooddelivery.service.FoodDeliveryBookingService;
 import com.costonomy.mp.payment.domain.PaymentWebhookEvent;
 import com.costonomy.mp.payment.provider.PaymentProvider;
 import com.costonomy.mp.payment.repository.PaymentRepository;
 import com.costonomy.mp.procurement.service.OrderReleaseService;
+import com.costonomy.mp.settlement.service.SupplierDeliveryFundingPaymentService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
@@ -41,7 +43,6 @@ import java.time.Instant;
  * ignored rather than applied.
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class PaymentWebhookService {
 
@@ -51,6 +52,36 @@ public class PaymentWebhookService {
     private final OrderReleaseService orderRelease;
     private final PaymentProvider provider;
     private final ObjectMapper json;
+    private final FoodDeliveryBookingService foodDeliveryBooking;
+    private final SupplierDeliveryFundingPaymentService supplierDeliveryFunding;
+
+    @Autowired
+    public PaymentWebhookService(PaymentWebhookStore store,
+                                 PaymentRepository payments,
+                                 PaymentService paymentService,
+                                 OrderReleaseService orderRelease,
+                                 PaymentProvider provider,
+                                 ObjectMapper json,
+                                 FoodDeliveryBookingService foodDeliveryBooking,
+                                 SupplierDeliveryFundingPaymentService supplierDeliveryFunding) {
+        this.store = store;
+        this.payments = payments;
+        this.paymentService = paymentService;
+        this.orderRelease = orderRelease;
+        this.provider = provider;
+        this.json = json;
+        this.foodDeliveryBooking = foodDeliveryBooking;
+        this.supplierDeliveryFunding = supplierDeliveryFunding;
+    }
+
+    public PaymentWebhookService(PaymentWebhookStore store,
+                                 PaymentRepository payments,
+                                 PaymentService paymentService,
+                                 OrderReleaseService orderRelease,
+                                 PaymentProvider provider,
+                                 ObjectMapper json) {
+        this(store, payments, paymentService, orderRelease, provider, json, null, null);
+    }
 
     /**
      * Take a webhook.
@@ -159,20 +190,32 @@ public class PaymentWebhookService {
                 })
                 .orElse(null);
 
-        if (payment == null) {
-            // An event about something we have no record of. Kept rather than
-            // discarded: it is either a provider-side problem or ours, and either
-            // way the record is what makes it diagnosable.
-            log.warn("Webhook {} refers to unknown payment {}",
-                    event.getProviderEventId(), providerPaymentId);
-            event.setStatus("IGNORED");
+        if (payment != null) {
+            event.setPaymentId(payment.getId());
+            try (var trace = PaymentTrace.of(payment)) {
+                apply(payment, providerPaymentId);
+            }
             return;
         }
 
-        event.setPaymentId(payment.getId());
-        try (var trace = PaymentTrace.of(payment)) {
-            apply(payment, providerPaymentId);
+        // Alternate payment flows: food delivery and supplier delivery funding
+        String orderId = extractOrderId(payload);
+        if (foodDeliveryBooking != null && foodDeliveryBooking.reconcileWebhookPayment(orderId, providerPaymentId)) {
+            log.info("Webhook {} reconciled food delivery payment {}", event.getProviderEventId(), providerPaymentId);
+            return;
         }
+
+        if (supplierDeliveryFunding != null && supplierDeliveryFunding.reconcileWebhookPayment(orderId, providerPaymentId)) {
+            log.info("Webhook {} reconciled supplier delivery funding payment {}", event.getProviderEventId(), providerPaymentId);
+            return;
+        }
+
+        // An event about something we have no record of. Kept rather than
+        // discarded: it is either a provider-side problem or ours, and either
+        // way the record is what makes it diagnosable.
+        log.warn("Webhook {} refers to unknown payment {}",
+                event.getProviderEventId(), providerPaymentId);
+        event.setStatus("IGNORED");
     }
 
     private void apply(com.costonomy.mp.payment.domain.Payment payment, String providerPaymentId) {

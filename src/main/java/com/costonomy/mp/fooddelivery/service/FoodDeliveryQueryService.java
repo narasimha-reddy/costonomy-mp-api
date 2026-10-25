@@ -189,6 +189,7 @@ public class FoodDeliveryQueryService {
                 d.getOrderValue(), d.getWeightKg(),
                 d.getVehicleType() != null ? d.getVehicleType().name() : null,
                 d.getFee(), d.getMaxFee(), d.getFeeRefundedAmount(), d.getCurrency(),
+                d.getPaymentMethod(), d.getPaymentId(), d.getProviderOrderId(),
                 d.getDriverName(), d.getDriverPhone(), d.getDriverVehicle(),
                 d.getEtaMinutes(), d.getEstimatedArrivalAt(),
                 d.getTrackingToken(), d.getTrackingUrl(),
