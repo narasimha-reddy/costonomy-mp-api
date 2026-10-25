@@ -28,11 +28,34 @@ public final class FoodDeliveryDtos {
             @NotNull @Positive BigDecimal orderValue,
             @NotNull @Positive BigDecimal weightKg,
             Integer maxDeliveryMinutes,
-            BigDecimal maxFee
-    ) {}
+            BigDecimal maxFee,
+            String paymentMethod
+    ) {
+        public CreateFoodDeliveryRequest(String externalOrderRef, String customerName, String customerPhone,
+                                         String dropAddress, String dropLandmark, BigDecimal dropLatitude, BigDecimal dropLongitude,
+                                         String dropCity, String dropState, String dropPincode, String dropInstructions,
+                                         BigDecimal orderValue, BigDecimal weightKg, Integer maxDeliveryMinutes, BigDecimal maxFee) {
+            this(externalOrderRef, customerName, customerPhone, dropAddress, dropLandmark,
+                    dropLatitude, dropLongitude, dropCity, dropState, dropPincode, dropInstructions,
+                    orderValue, weightKg, maxDeliveryMinutes, maxFee, "WALLET");
+        }
+    }
 
     public record CancelFoodDeliveryRequest(
             String reason
+    ) {}
+
+    public record InitiateFoodDeliveryPaymentResponse(
+            Long foodDeliveryId,
+            String razorpayOrderId,
+            String keyId,
+            BigDecimal amount,
+            String currency
+    ) {}
+
+    public record ConfirmFoodDeliveryPaymentRequest(
+            @NotBlank(message = "Payment id is required") String paymentId,
+            @NotBlank(message = "Signature is required") String signature
     ) {}
 
     public record FoodDeliveryResponse(
@@ -63,6 +86,9 @@ public final class FoodDeliveryDtos {
             BigDecimal maxFee,
             BigDecimal feeRefundedAmount,
             String currency,
+            String paymentMethod,
+            String paymentId,
+            String providerOrderId,
             String driverName,
             String driverPhone,
             String driverVehicle,

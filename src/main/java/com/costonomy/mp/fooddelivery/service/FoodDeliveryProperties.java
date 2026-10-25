@@ -30,6 +30,12 @@ public class FoodDeliveryProperties {
     /** An attempt left PENDING this long is taken to be abandoned (the process died mid-call) and no longer blocks booking. */
     private Duration pendingStaleAfter = Duration.ofMinutes(2);
 
+    /**
+     * How long a delivery waits for the restaurant to pay at the gateway. Past it the sweep cancels it; a payment that
+     * still arrives later is refunded to its source rather than stranded.
+     */
+    private Duration paymentExpiry = Duration.ofMinutes(30);
+
     /** Off switch for the retry and sweep jobs. */
     private boolean jobsEnabled = true;
 }

@@ -63,7 +63,8 @@ public class FoodDeliveryController {
                 body.orderValue(),
                 body.weightKg(),
                 body.maxDeliveryMinutes(),
-                body.maxFee()
+                body.maxFee(),
+                body.paymentMethod()
         );
 
         var delivery = bookingService.create(req);
@@ -88,6 +89,30 @@ public class FoodDeliveryController {
             @RequestParam(defaultValue = "20") int size) {
         Long actorId = ActorContext.requireUserId();
         return ApiResponse.ok(queryService.list(actorId, outletId, status, page, size));
+    }
+
+    @PostMapping("/{id}/pay")
+    @Operation(summary = "Initiate payment gateway checkout for food delivery fee",
+            description = "Opens a Razorpay checkout authorization intent with auto-capture for the delivery fee.")
+    public ApiResponse<FoodDeliveryDtos.InitiateFoodDeliveryPaymentResponse> initiatePayment(
+            @PathVariable Long outletId,
+            @PathVariable Long id) {
+        Long actorId = ActorContext.requireUserId();
+        accessControl.require(actorId, Permissions.OUTLET_EDIT, ScopeType.OUTLET, outletId);
+        return ApiResponse.ok(bookingService.initiatePayment(outletId, id));
+    }
+
+    @PostMapping("/{id}/confirm")
+    @Operation(summary = "Confirm payment gateway checkout for food delivery fee",
+            description = "Verifies checkout signature and payment capture with Razorpay, marks fee paid, and triggers courier booking.")
+    public ApiResponse<FoodDeliveryDtos.FoodDeliveryResponse> confirmPayment(
+            @PathVariable Long outletId,
+            @PathVariable Long id,
+            @Valid @RequestBody FoodDeliveryDtos.ConfirmFoodDeliveryPaymentRequest request) {
+        Long actorId = ActorContext.requireUserId();
+        accessControl.require(actorId, Permissions.OUTLET_EDIT, ScopeType.OUTLET, outletId);
+        var delivery = bookingService.confirmPayment(outletId, id, request);
+        return ApiResponse.ok(queryService.toResponse(delivery));
     }
 
     @PostMapping("/{id}/cancel")

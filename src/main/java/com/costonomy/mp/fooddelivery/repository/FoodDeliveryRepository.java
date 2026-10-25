@@ -24,6 +24,29 @@ public interface FoodDeliveryRepository extends JpaRepository<FoodDelivery, Long
     /** A provider webhook or poll naming its own id for the consignment. */
     Optional<FoodDelivery> findByProviderCodeAndProviderDeliveryId(String providerCode, String providerDeliveryId);
 
+    /** Provider checkout order (e.g. Razorpay order id) opened for direct payment. */
+    Optional<FoodDelivery> findByProviderOrderId(String providerOrderId);
+
+    /** Provider payment id (e.g. Razorpay payment id) that completed fee payment. */
+    Optional<FoodDelivery> findByPaymentId(String paymentId);
+
+    @Query(value = """
+            SELECT * FROM food_delivery
+            WHERE status IN ('REQUESTED', 'CANCELLED', 'FAILED')
+              AND payment_method = 'GATEWAY'
+              AND provider_order_id IS NOT NULL
+              AND paid_at IS NULL
+              AND gateway_refunded_at IS NULL
+              AND created_at < :staleBefore
+              AND created_at > :createdAfter
+            ORDER BY id ASC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<FoodDelivery> findStaleGatewayDeliveries(
+            @Param("staleBefore") Instant staleBefore,
+            @Param("createdAfter") Instant createdAfter,
+            @Param("limit") int limit);
+
     List<FoodDelivery> findByOutletIdOrderByCreatedAtDesc(Long outletId, Pageable page);
 
     List<FoodDelivery> findByRestaurantIdOrderByCreatedAtDesc(Long restaurantId, Pageable page);

@@ -155,6 +155,25 @@ public class FoodDelivery extends BaseEntity {
     @Column(name = "fee_refunded_at")
     private Instant feeRefundedAt;
 
+    @Column(name = "payment_method", nullable = false, length = 32)
+    private String paymentMethod = "WALLET";
+
+    @Column(name = "payment_id", length = 200)
+    private String paymentId;
+
+    @Column(name = "provider_order_id", length = 200)
+    private String providerOrderId;
+
+    @Column(name = "paid_at")
+    private Instant paidAt;
+
+    /** The refund of a gateway payment that arrived when this delivery could no longer use it (cancelled, expired, or paid twice). */
+    @Column(name = "gateway_refund_id", length = 200)
+    private String gatewayRefundId;
+
+    @Column(name = "gateway_refunded_at")
+    private Instant gatewayRefundedAt;
+
     @Column(name = "driver_name", length = 150)
     private String driverName;
 
@@ -254,6 +273,9 @@ public class FoodDelivery extends BaseEntity {
 
     /** What is still held from the restaurant's wallet: the agreed maximum less whatever has been given back. */
     public BigDecimal netHeld() {
+        if (feeDebitedAt == null && paidAt == null) {
+            return BigDecimal.ZERO;
+        }
         return maxFee == null ? BigDecimal.ZERO : maxFee.subtract(feeRefundedAmount);
     }
 
