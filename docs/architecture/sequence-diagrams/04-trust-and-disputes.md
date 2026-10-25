@@ -60,7 +60,7 @@ sequenceDiagram
     participant TC as TrustController
     participant DS as DisputeService
     participant NR as NotificationRelay
-    participant DB as PostgreSQL (dispute, dispute_message)
+    participant DB as MySQL (dispute, dispute_message)
 
     Restaurant->>TC: POST /api/v1/supplier-orders/{orderId}/disputes (category, reason, evidence)
     TC->>DS: createDispute(orderId, disputeDto, principal)
@@ -92,7 +92,7 @@ sequenceDiagram
     participant DRS as DisputeRefundService
     participant SRL as SupplierRefundLedger
     participant WS as WalletService
-    participant DB as PostgreSQL (dispute_refund, wallet, settlement)
+    participant DB as MySQL (dispute_refund, wallet, settlement)
 
     Restaurant->>TC: POST /api/v1/disputes/{id}/refund-request (amount, justification)
     TC->>DRS: requestRefund(disputeId, amount, principal)
@@ -131,7 +131,7 @@ sequenceDiagram
     actor Restaurant as Restaurant Buyer
     participant TC as TrustController
     participant RS as RatingService
-    participant DB as PostgreSQL (rating, supplier_store)
+    participant DB as MySQL (rating, supplier_store)
 
     Restaurant->>TC: POST /api/v1/supplier-orders/{orderId}/rating (score: 1-5, comment)
     TC->>RS: submitRating(orderId, ratingDto, principal)

@@ -6,6 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [feat/delivery-money-journeys] - Delivery journeys and delivery money (D-204, D-205, D-206, D-207)
+
+Every order now has an entry path, an observable state and a financially correct exit, for pickup, supplier delivery and Costonomy courier delivery (supplier orders and food deliveries). Migrations `V101` and `V102`.
+
+### Added
+- **Courier payable** (D-204, V101): `courier_payable`, `courier_payment_attempt` and an append-only `courier_payable_event` record what Costonomy owes a courier for each booking that reached the provider, derived from the delivery by an idempotent sync, with the restaurant / supplier / platform funding split (a supplier never pays more than the courier cost or what they agreed), cancellation fees and provider credits. Payment runs under a lease with the rail called outside any transaction and bounded retries; an unknown outcome is looked up by key, never sent again blindly. `delivery_provider.payment_rail` is `MANUAL` by default (`MOCK_API` for tests); no real provider payment API yet.
+- **Durable gateway refunds** (D-204, V101): `gateway_refund` and `gateway_refund_reservation`. A gateway-paid food delivery fee or supplier delivery-funding payment is refunded to the gateway, recorded before the call, bounded by what was captured, reconciled when unanswered, retried and then escalated, partial refunds included. Duplicate and unusable captured payments use the same path.
+- **Supplier charge correction** (D-204): when the order is cancelled or the courier costs less than agreed, a pending charge is waived, an applied one is credited in the next settlement (`DELIVERY_FUNDING_CREDIT`, `supplier_deduction.corrects_deduction_id`), a directly paid one is partly refunded.
+- **Finance API** `/api/v1/admin/delivery-finance` (D-204; permissions `DELIVERY_FINANCE_INSPECT` and `DELIVERY_FINANCE_OPERATE`): queues of overdue, exhausted, ambiguous, unreconciled and pending items, search and detail with attempts and events, and audited operator actions (mark paid, retry, void, cancellation fee, provider credit, final cost, resolve ambiguous, close reconciliation, retry or resolve a gateway refund). D-206 adds `POST /payables/backfill` and `/payables/sync-cursor/rewind`.
+- **Operator exits** (D-204, D-205): `POST /admin/deliveries/{id}/resolve`; `POST /admin/food-deliveries/{id}/resolve` (`CANCEL_AND_REFUND`, `MARK_DELIVERED`, `CLEAR_FLAG`); `POST /admin/deliveries/orders/{orderId}/close-pickup` for an uncollected pickup order; `GET /admin/deliveries/exceptions` lists orders that look finished while delivery or money work is unresolved (including flagged food deliveries and uncollected pickups). Food `RETURNED` now has a producer.
+- **Role views** (D-204): supplier `GET /supplier-stores/{id}/delivery-funding/history` and `/summary`; restaurant `GET /outlets/{id}/food-deliveries/{id}/financials`.
+- **Notification rules** (D-205) for `DeliveryQuoteFailed`, `DeliveryDriverCancelled`, `DeliveryPickupFailed`, `DeliveryFailed`, `DeliveryCancelled`, `DeliveryCancelledByOperations` and `DeliveryMarkedDeliveredByOperations`.
+- **`DeliveryResponse.underReview`** (D-206, additive): tells tenants that operations is looking at a delivery, without the reason.
+- **Refund webhooks** (D-207): `refund.created`, `refund.processed` and `refund.failed` update a gateway refund when matched by payment id plus refund id or receipt (and amount); the poll remains the fallback.
+- **Payable sync health** (D-206): gauges `courier.payable.sync.missing`, `.missing.oldest.seconds` and `.cursor.lag.seconds`, an ERROR log, and `bookingsWithoutPayable` / `payableSyncLagSeconds` in the finance queue totals.
+
+### Changed
+- A gateway refund the provider reports `PENDING` is no longer marked successful: it is stored as `PENDING` with the provider refund id and reconciled until `COMPLETED` (success announced once) or `FAILED` (visible, retried as a new refund under a new idempotency key and receipt). Pending refunds that stay pending show in the finance queue (D-206).
+- The courier payable sync walks supplier and food deliveries by a durable cursor in `(updated_at, id)` order instead of rescanning the newest 500 touched in 48 hours (D-206).
+- A provider `DELIVERED` after a reported failure supersedes it for supplier and food deliveries: failure fields and the reconciliation flag are cleared (audited) and the history stays (D-206).
+- `POST /deliveries/{id}/cancel` with `cancelOrder=false` is refused while the order is active; the default cancels both. Switch-to-own and the automatic retry are refused while a delivery is flagged for reconciliation (D-206).
+- A food delivery that fails after pickup is flagged, refunds nothing and leaves the courier payable due (D-204 section 4, confirmed in D-205).
+- A production profile refuses to start with the delivery provider left at or set to `MOCK`, and refuses Pidge without `costonomy.mp.pidge.api-token` (D-207).
+- `READY_WITHOUT_COURIER` lists a no-partner delivery only once the own-delivery offer is due; `inspect.nextAction` answers for every status; the plain `DriverAssigned` notification no longer says a delivery partner is coming for the supplier's own delivery (D-205).
+- `GET /deliveries/{id}` and `GET /supplier-orders/{id}/delivery` are read-only: they no longer reassign or call a provider; the sweep does (D-205).
+
+### Fixed
+- `courier_payable` and `gateway_refund` `lockById` take a pessimistic write lock, like payments and deliveries, so an operator action and a job on the same row cannot both read it before either writes (D-207).
+- The assignment timer and the sweep no longer release a driver assigned between their check and the lock (`reassignIfAssignmentExpired`); a manual reassign is refused after a failed hand-over (D-205).
+- A provider event is stored in the same transaction as its effect (`INSERT IGNORE`), so a failed apply is retried instead of being refused as a duplicate (D-205).
+- A booking recovered by the sweep after a lost answer is adopted in every state that wants a courier, with the vehicle's deadline, and recorded like a normal booking (D-205).
+- A food delivery with no courier no longer calls the wallet inside the retry transaction (D-205).
+- A delivery that retries and finds nobody no longer appends a timeline row and outbox event each time (D-205).
+- `force-waterfall` reports a failure to the operator and audits who tried and what happened (D-205).
+
+### Removed
+- Two settings nothing read: `costonomy.mp.delivery.webhook-secret`, `costonomy.mp.pidge.unassigned-timeout` (D-205).
+- `UnusablePaymentRefunds`, the log-and-forget refund path (D-204).
+
+### Migrations
+- `V101` (D-204): `courier_payable`, `courier_payment_attempt`, `courier_payable_event`, `gateway_refund`, `gateway_refund_reservation`, `delivery_provider.payment_rail`, `food_delivery.gateway_refunded_amount`, `supplier_deduction.corrects_deduction_id` and its CHECK, permissions `DELIVERY_FINANCE_INSPECT` / `DELIVERY_FINANCE_OPERATE`.
+- `V102` (D-206): `gateway_refund.send_round` and the `PENDING` status, `courier_payable_sync_cursor`, indexes `ix_delivery_updated` and `ix_food_delivery_updated`. Backward compatible; not yet applied to any environment.
+
+### Configuration
+- New: `costonomy.mp.delivery.courier-payable.*` (poll, initial-delay, sync-batch, sync-max-batches-per-pass, sync-settle-lag, missing-alert-after, audit-interval), `costonomy.mp.payments.gateway-refund.*`, `costonomy.mp.delivery.uncollected-pickup-listed-after` (default PT24H, visibility only).
+- Production now requires `DELIVERY_PROVIDER` (not `MOCK`) and, for Pidge, `PIDGE_API_TOKEN`.
+
+### Tests
+- New: `CourierPayableIT`, `CourierPayableSyncIT`, `DeliveryFinanceAdminIT`, `DeliveryResolutionIT`, `GatewayRefundIT`, `GatewayRefundWebhookIT`, `FinancialLockRaceIT`, `DeliveryReassignRaceIT`, `DeliveryEventRetryIT`, `DeliveryLateDeliveredIT`, `DeliveryBookingRecoveryTest`; additions to `FoodDeliveryOperationsRecoveryIT`, `FoodDeliveryPaymentGatewayIT`, `DeliveryFlowIT`, `DeliveryCancellationLifecycleIT`, `NotificationRulesTest`, `ProductionProviderGuardTest`.
+
+---
+
 ## [phase6/known-bugs] - Known bugs (D-135 onward)
 
 ### Added

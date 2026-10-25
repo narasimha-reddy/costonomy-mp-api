@@ -14,7 +14,7 @@ sequenceDiagram
     participant IC as IntentController
     participant IS as IntentService
     participant NR as NotificationRelay
-    participant DB as PostgreSQL (intent, intent_item)
+    participant DB as MySQL (intent, intent_item)
 
     Restaurant->>IC: POST /api/v1/outlets/{outletId}/intent-items (skuId, quantity, targetPrice)
     IC->>IS: addItemToDraft(outletId, itemPayload)
@@ -43,7 +43,7 @@ sequenceDiagram
     participant SIC as SupplierIntentController
     participant SIS as SupplierIntentService
     participant NR as NotificationRelay
-    participant DB as PostgreSQL (intent_response, intent_response_item)
+    participant DB as MySQL (intent_response, intent_response_item)
 
     Supplier->>SIC: POST /api/v1/intents/{id}/respond (lines, deliveryMode, validUntil)
     SIC->>SIS: submitResponse(intentId, storeId, responseDto)
@@ -73,7 +73,7 @@ sequenceDiagram
     participant IOC as IntentOrderCreator
     participant CLS as CreditLedgerService
     participant PS as PaymentService
-    participant DB as PostgreSQL (supplier_order, order_lines)
+    participant DB as MySQL (supplier_order, order_lines)
 
     Restaurant->>IC: POST /api/v1/intents/{id}/orders (responseId, fundingMethod)
     IC->>IOC: createOrderFromResponse(intentId, responseId, fundingMethod)
@@ -107,7 +107,7 @@ sequenceDiagram
     participant SOT as SupplierOrderTransitions
     participant ORS as OrderReleaseService
     participant PJ as PaymentJobs
-    participant DB as PostgreSQL
+    participant DB as MySQL
 
     Supplier->>SOC: POST /api/v1/supplier-orders/{id}/preparing
     SOC->>SOT: markPreparing(orderId, principal)
@@ -139,7 +139,7 @@ sequenceDiagram
     participant CS as CancellationService
     participant CLS as CreditLedgerService
     participant RP as RazorpayPaymentProvider
-    participant DB as PostgreSQL
+    participant DB as MySQL
 
     Supplier->>SOC: POST /api/v1/supplier-orders/{id}/supplier-cancel (reason, note)
     SOC->>SOT: cancelBySupplier(orderId, reason, principal)

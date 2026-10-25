@@ -15,7 +15,7 @@ sequenceDiagram
     participant AS as AuthService
     participant SMS as SMS / WhatsApp Provider
     participant JWT as JwtTokenService
-    participant DB as PostgreSQL (app_user, user_role)
+    participant DB as MySQL (app_user, user_role)
 
     User->>AC: POST /api/v1/auth/otp/request (phoneNumber)
     AC->>AS: requestOtp(phoneNumber)
@@ -54,7 +54,7 @@ sequenceDiagram
     actor Owner as Restaurant Owner
     participant RC as RestaurantController
     participant OS as OutletService
-    participant DB as PostgreSQL (outlet, outlet_address)
+    participant DB as MySQL (outlet, outlet_address)
 
     Owner->>RC: POST /api/v1/restaurants/{id}/outlets (name, address, lat, lng, contact)
     RC->>OS: createOutlet(restaurantId, outletDto, principal)
@@ -79,7 +79,7 @@ sequenceDiagram
     participant SC as SupplierController
     participant SVAC as SupplierVerificationAdminController
     participant SVS as SupplierVerificationService
-    participant DB as PostgreSQL (supplier, supplier_verification)
+    participant DB as MySQL (supplier, supplier_verification)
 
     Supplier->>SC: POST /api/v1/suppliers/{id}/verification (gstin, fssaiNumber, docUrls)
     SC->>SVS: submitVerification(supplierId, verificationDto)

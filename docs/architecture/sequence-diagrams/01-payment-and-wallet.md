@@ -2,6 +2,8 @@
 
 This document details the exact runtime request/response sequence diagrams for all endpoints in the **Payment** and **Wallet** modules.
 
+> **Scope notice (2026-10-25).** This page covers order payments and the wallet. It does not draw the delivery-fee gateway payments (`POST /outlets/{id}/food-deliveries/{id}/pay|confirm`, `POST /supplier-stores/{id}/delivery-funding/{deductionId}/pay|confirm`) or the durable `gateway_refund` workflow (V101); see [`docs/delivery/DIAGRAMS.md` §3](../../delivery/DIAGRAMS.md#3-money-movement) and [`docs/delivery/CURRENT_STATE.md`](../../delivery/CURRENT_STATE.md). The payment adapter is Razorpay only when `PAYMENT_PROVIDER=RAZORPAY`; the default is the mock. Database is MySQL.
+
 ---
 
 ## 1. `GET /api/v1/supplier-orders/{orderId}/payment-intent`
@@ -15,7 +17,7 @@ sequenceDiagram
     participant PS as PaymentService
     participant RP as RazorpayPaymentProvider
     participant RZ as Razorpay API
-    participant DB as PostgreSQL (payments, orders)
+    participant DB as MySQL (payments, orders)
 
     Client->>PC: GET /api/v1/supplier-orders/{orderId}/payment-intent
     PC->>PS: getOrCreateIntentForOrder(orderId, principal)
@@ -53,7 +55,7 @@ sequenceDiagram
     participant RP as RazorpayPaymentProvider
     participant RZ as Razorpay API
     participant ORS as OrderReleaseService
-    participant DB as PostgreSQL
+    participant DB as MySQL
 
     Client->>PC: POST /api/v1/payments/{id}/confirm (signature, paymentId)
     PC->>PS: confirmPayment(paymentId, confirmationPayload)
@@ -88,7 +90,7 @@ sequenceDiagram
     participant PC as PaymentController
     participant PS as PaymentService
     participant RS as RefundService
-    participant DB as PostgreSQL
+    participant DB as MySQL
 
     Client->>PC: GET /api/v1/payments/{id}
     PC->>PS: getPaymentById(id, principal)
@@ -116,7 +118,7 @@ sequenceDiagram
     participant PWS as PaymentWebhookService
     participant PS as PaymentService
     participant RS as RefundService
-    participant DB as PostgreSQL
+    participant DB as MySQL
 
     RZ->>PWC: POST /api/v1/webhooks/razorpay (Headers: X-Razorpay-Signature)
     PWC->>PWS: handleWebhook(payload, signature)
@@ -150,7 +152,7 @@ sequenceDiagram
     actor Client as Restaurant Client
     participant WC as WalletController
     participant WS as WalletService
-    participant DB as PostgreSQL (wallets, wallet_transactions)
+    participant DB as MySQL (wallets, wallet_transactions)
 
     Client->>WC: GET /api/v1/outlets/{outletId}/wallet
     WC->>WS: getWalletOverview(outletId, principal)
@@ -172,7 +174,7 @@ sequenceDiagram
     participant WC as WalletController
     participant PPG as ProductionProviderGuard
     participant WS as WalletService
-    participant DB as PostgreSQL
+    participant DB as MySQL
 
     Client->>WC: POST /api/v1/outlets/{outletId}/wallet/top-up (amount)
     WC->>PPG: checkSandboxAllowed()
@@ -202,7 +204,7 @@ sequenceDiagram
     participant WWS as WalletWithdrawalService
     participant WRS as WithdrawalReversalService
     participant RP as RazorpayPaymentProvider
-    participant DB as PostgreSQL
+    participant DB as MySQL
 
     Client->>WC: POST /api/v1/outlets/{outletId}/wallet/withdraw (amount, idempotencyKey)
     WC->>WWS: requestWithdrawal(outletId, amount, key)

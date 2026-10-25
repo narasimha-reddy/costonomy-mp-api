@@ -46,7 +46,7 @@ sequenceDiagram
     participant CS as ChatService
     participant RSH as RealtimeSessionHub
     participant NR as NotificationRelay
-    participant DB as PostgreSQL (chat_thread, chat_message)
+    participant DB as MySQL (chat_thread, chat_message)
 
     Sender->>CC: POST /api/v1/chats/{id}/messages (text, attachmentUrl)
     CC->>CS: postMessage(threadId, messageDto, principal)
@@ -75,7 +75,7 @@ sequenceDiagram
     actor User as App User
     participant NC as NotificationController
     participant NS as NotificationService
-    participant DB as PostgreSQL (notification)
+    participant DB as MySQL (notification)
 
     User->>NC: GET /api/v1/notifications?page=0&size=20
     NC->>NS: listUserNotifications(principal.userId, pageable)
@@ -102,7 +102,7 @@ sequenceDiagram
     participant UC as UploadController
     participant SS as StorageService
     participant FS as Local Filesystem / S3 Bucket
-    participant DB as PostgreSQL (stored_file)
+    participant DB as MySQL (stored_file)
 
     User->>UC: POST /api/v1/upload (multipart/form-data: file, category)
     UC->>SS: storeFile(file, category, principal)
@@ -125,7 +125,7 @@ sequenceDiagram
     actor Admin as Operations Auditor
     participant ARC as AdminRefundController
     participant WRS as WithdrawalReversalService
-    participant DB as PostgreSQL (refund, wallet_transaction, audit_log)
+    participant DB as MySQL (refund, wallet_transaction, audit_log)
 
     Admin->>ARC: GET /api/v1/admin/refunds/failures?page=0&size=20
     ARC->>WRS: listFailedRefundsAndWithdrawals(pageable)
