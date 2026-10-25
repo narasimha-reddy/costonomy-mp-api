@@ -94,6 +94,8 @@ public final class PermissionCodes {
         m.put("RATING_MODERATE", "ratings.moderate");
         m.put("DELIVERY_OPERATE", "delivery.operate");
         m.put("DELIVERY_INSPECT", "delivery.inspect");
+        m.put("DELIVERY_FINANCE_INSPECT", "delivery.finance_inspect");
+        m.put("DELIVERY_FINANCE_OPERATE", "delivery.finance_operate");
         m.put("PAYMENT_RECONCILE", "payments.reconcile");
         m.put("PAYMENT_INSPECT", "payments.inspect");
         m.put("REFUND_DECIDE", "refunds.decide");

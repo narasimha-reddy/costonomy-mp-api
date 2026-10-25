@@ -55,6 +55,7 @@ public class SupplierOrderTransitions {
     private final AuditService auditService;
     private final OutboxService outbox;
     private final ProcurementDirectory directory;
+    private final com.costonomy.mp.delivery.service.SupplierDeliveryMovementService movementService;
 
     /**
      * The supplier's display name, for the notification a restaurant reads.
@@ -85,6 +86,11 @@ public class SupplierOrderTransitions {
     @Transactional
     public ProcurementDtos.SupplierOrderResponse advance(
             Long actorId, Long orderId, SupplierOrderStatus target, String permission) {
+
+        if (target == SupplierOrderStatus.OUT_FOR_DELIVERY || target == SupplierOrderStatus.DELIVERED) {
+            movementService.reportByOrder(actorId, orderId, target);
+            return mapper.toResponse(orders.findById(orderId).orElseThrow());
+        }
 
         // Ready settles the money (D-128), and a weighing may be in flight: lock the order before reading it,
         // so the two queue and the settlement sees the figures the weighing committed.
@@ -231,6 +237,50 @@ public class SupplierOrderTransitions {
                         "outletId", order.getOutletId()),
                 actorId);
 
+        return mapper.toResponse(order);
+    }
+
+    /**
+     * End an order on operations' decision, from any state it can be stuck in after the supplier has committed (D-204).
+     *
+     * <p>Neither party may cancel past {@code PREPARING}: the goods are with the supplier or a courier and the money has
+     * been taken. But an order can be left there for good, with no courier to be found, or a delivery that failed after
+     * pickup, and then it needs an exit that is not a customer's or a supplier's to choose. The money goes back the same
+     * way as any cancellation ({@code onOrderUnfulfilled}: a captured payment is refunded in full through the durable
+     * refund, an unfunded hold is dropped). Attributed to the platform. Idempotent: a repeat finds it cancelled.
+     *
+     * <p>Authorised by the caller (operations permission at platform scope), not here.
+     */
+    @Transactional
+    public ProcurementDtos.SupplierOrderResponse cancelByOperations(Long actorId, Long orderId, String reason) {
+        var order = orders.findById(orderId)
+                .orElseThrow(() -> new NotFoundException("SupplierOrder", orderId));
+        if (order.getStatus() == SupplierOrderStatus.CANCELLED) {
+            return mapper.toResponse(order);
+        }
+        var current = order.getStatus();
+        if (current == SupplierOrderStatus.DELIVERED || current == SupplierOrderStatus.COMPLETED
+                || current == SupplierOrderStatus.DRAFT) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "This order is %s; it cannot be cancelled from here.".formatted(current));
+        }
+        order.setStatus(SupplierOrderStatus.CANCELLED);
+        order.setCancelledAt(Instant.now());
+        order.setCancelledBy(CancelledBy.SYSTEM);
+        order.setCancellationReason("Cancelled by operations: " + reason);
+        save(order, current);
+
+        funding.onOrderUnfulfilled(order.getId(), "Cancelled by operations: " + reason);
+
+        auditService.record(actorId, null, "SUPPLIER_ORDER_CANCELLED_BY_OPERATIONS", "SUPPLIER_ORDER",
+                orderId, current.name(), SupplierOrderStatus.CANCELLED.name(), reason, "ADMIN");
+        outbox.publish("SupplierOrderCancelled", "SUPPLIER_ORDER", orderId,
+                Map.of("orderNumber", order.getOrderNumber(),
+                        "supplierName", supplierNameOf(order.getSupplierStoreId()),
+                        "supplierStoreId", order.getSupplierStoreId(),
+                        "cancelledBy", CancelledBy.SYSTEM.name(),
+                        "outletId", order.getOutletId()),
+                actorId);
         return mapper.toResponse(order);
     }
 

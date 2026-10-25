@@ -111,6 +111,34 @@ public final class FoodDeliveryDtos {
             Instant createdAt
     ) {}
 
+    /**
+     * What the restaurant has paid for a delivery and where any money back stands. Only the restaurant's own money:
+     * the courier's cost, the provider and any platform-funded difference are never shown (D-027, D-204).
+     *
+     * @param chargeState  HELD (delivery in progress), CHARGED (delivered or failed after pickup), RELEASED (nothing kept),
+     *                     NOT_CHARGED (never paid)
+     * @param refundState  NONE, IN_PROGRESS (recorded, being sent), COMPLETE, NEEDS_REVIEW (our team is following up)
+     */
+    public record FoodDeliveryFinancialsResponse(
+            Long deliveryId,
+            String currency,
+            String paymentMethod,
+            String chargeState,
+            BigDecimal agreedMaximum,
+            BigDecimal keptByCostonomy,
+            BigDecimal refundedTotal,
+            BigDecimal refundedToWallet,
+            BigDecimal refundedToOriginalPayment,
+            BigDecimal refundInProgress,
+            String refundState,
+            String nextStep
+    ) {}
+
+    /** An operator's decision on a food delivery that cannot finish by itself (D-204). */
+    public record ResolveFoodDeliveryRequest(
+            @jakarta.validation.constraints.NotBlank(message = "Choose an outcome") String outcome,
+            @jakarta.validation.constraints.NotBlank(message = "Say why") String reason) {}
+
     public record FoodDeliverySummaryResponse(
             Long id,
             Long outletId,

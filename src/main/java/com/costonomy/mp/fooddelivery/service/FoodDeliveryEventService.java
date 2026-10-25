@@ -38,6 +38,7 @@ public class FoodDeliveryEventService {
     private final FoodDeliveryBookingService bookingService;
     private final DeliveryRecoveryService recoveryService;
     private final ObjectMapper json;
+    private final com.costonomy.mp.common.audit.AuditService audit;
     private final TransactionTemplate tx;
 
     public FoodDeliveryEventService(FoodDeliveryRepository deliveries,
@@ -47,6 +48,7 @@ public class FoodDeliveryEventService {
                                    @Lazy FoodDeliveryBookingService bookingService,
                                    @Lazy DeliveryRecoveryService recoveryService,
                                    ObjectMapper json,
+                                   com.costonomy.mp.common.audit.AuditService audit,
                                    PlatformTransactionManager txManager) {
         this.deliveries = deliveries;
         this.events = events;
@@ -55,6 +57,7 @@ public class FoodDeliveryEventService {
         this.bookingService = bookingService;
         this.recoveryService = recoveryService;
         this.json = json;
+        this.audit = audit;
         this.tx = new TransactionTemplate(txManager);
         this.tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -66,7 +69,8 @@ public class FoodDeliveryEventService {
             String rebookReason,
             String failedProviderDeliveryId,
             boolean needsSettleFee,
-            Long deliveryId
+            Long deliveryId,
+            boolean failedAfterPickup
     ) {}
 
     /**
@@ -125,6 +129,14 @@ public class FoodDeliveryEventService {
             }
         }
 
+        if (stepResult.failedAfterPickup()) {
+            // D-204: the courier had the food, so the restaurant keeps paying the fee it agreed and nothing is refunded
+            // here. The delivery is flagged for operations, who can close it (cancel with a refund, mark delivered, or
+            // clear the flag with a note) once they know what happened to the food.
+            log.warn("Food delivery {} failed after pickup; flagged for operations, fee kept, courier still owed",
+                    stepResult.deliveryId());
+        }
+
         return stepResult.disposition();
     }
 
@@ -148,21 +160,52 @@ public class FoodDeliveryEventService {
                     "Stale event from replaced provider consignment: " + providerDeliveryId, occurredAt, payloadStr);
             log.info("Ignoring stale event {} from provider {} consignment {} for food delivery {} (active is {} / {})",
                     eventId, providerCode, providerDeliveryId, d.getId(), d.getProviderCode(), d.getProviderDeliveryId());
-            return new ApplyResult("IGNORED", false, null, null, null, false, d.getId());
+            return new ApplyResult("IGNORED", false, null, null, null, false, d.getId(), false);
         }
 
         d.setLastProviderUpdateAt(now);
 
-        // Rider cancellation or pickup failure before pickup: trigger stand-down and rebook
-        if (pStatus == DeliveryProvider.ProviderDeliveryStatus.DRIVER_CANCELLED
-                || pStatus == DeliveryProvider.ProviderDeliveryStatus.PICKUP_FAILED) {
+        // Echo of already cancelled delivery
+        if (d.getStatus() == FoodDeliveryStatus.CANCELLED) {
+            recordEvent(d, providerCode, eventId, pStatus.name(), d.getStatus(), "APPLIED",
+                    event.description() != null ? event.description() : "Echo of cancellation", occurredAt, payloadStr);
+            deliveries.save(d);
+            return new ApplyResult("APPLIED", false, null, null, null, false, d.getId(), false);
+        }
+
+        // Rider cancellation, pickup failure, or pre-pickup failure/cancellation: trigger stand-down and rebook
+        boolean isPrePickup = !d.getStatus().isInFlight() && d.getPickedUpAt() == null;
+        if (isPrePickup && (pStatus == DeliveryProvider.ProviderDeliveryStatus.DRIVER_CANCELLED
+                || pStatus == DeliveryProvider.ProviderDeliveryStatus.PICKUP_FAILED
+                || pStatus == DeliveryProvider.ProviderDeliveryStatus.CANCELLED
+                || pStatus == DeliveryProvider.ProviderDeliveryStatus.DELIVERY_FAILED)) {
             recordEvent(d, providerCode, eventId, pStatus.name(), d.getStatus(), "APPLIED",
                     event.description() != null ? event.description() : pStatus.name(), occurredAt, payloadStr);
             deliveries.save(d);
             boolean cancellable = d.getStatus().isCancellable();
-            String cause = pStatus == DeliveryProvider.ProviderDeliveryStatus.DRIVER_CANCELLED
-                    ? "RIDER_CANCELLED" : "PICKUP_FAILED";
-            return new ApplyResult("APPLIED", cancellable, cause, event.description(), d.getProviderDeliveryId(), false, d.getId());
+            String cause = pStatus == DeliveryProvider.ProviderDeliveryStatus.CANCELLED
+                    ? "PROVIDER_CANCELLED"
+                    : pStatus == DeliveryProvider.ProviderDeliveryStatus.DELIVERY_FAILED
+                        ? "PICKUP_FAILED"
+                        : pStatus == DeliveryProvider.ProviderDeliveryStatus.DRIVER_CANCELLED
+                            ? "RIDER_CANCELLED" : "PICKUP_FAILED";
+            return new ApplyResult("APPLIED", cancellable, cause, event.description(), d.getProviderDeliveryId(), false, d.getId(), false);
+        }
+
+        // Post-pickup provider cancellation: abnormal failure after courier had custody
+        if (!isPrePickup && pStatus == DeliveryProvider.ProviderDeliveryStatus.CANCELLED) {
+            d.moveTo(FoodDeliveryStatus.FAILED);
+            d.setFailureCode("PROVIDER_CANCELLED_POST_PICKUP");
+            d.setFailureReason(event.description() != null ? event.description() : "Provider cancelled after pickup");
+            d.setReconciliationRequired(true);
+            d.setReconciliationReason("Provider cancelled after pickup: " + (event.description() != null ? event.description() : "Operator review required"));
+            d.setTrackingExpiresAt(now.plus(Duration.ofHours(24)));
+            deliveries.save(d);
+
+            recordEvent(d, providerCode, eventId, pStatus.name(), FoodDeliveryStatus.FAILED, "APPLIED",
+                    event.description(), occurredAt, payloadStr);
+            timeline.record(d, FoodDeliveryStatus.FAILED, "Provider cancelled after pickup · " + (event.description() != null ? event.description() : "Failed"));
+            return new ApplyResult("APPLIED", false, null, event.description(), null, false, d.getId(), true);
         }
 
         var target = mapStatus(pStatus);
@@ -170,7 +213,7 @@ public class FoodDeliveryEventService {
             recordEvent(d, providerCode, eventId, pStatus.name(), d.getStatus(), "IGNORED",
                     event.description(), occurredAt, payloadStr);
             deliveries.save(d);
-            return new ApplyResult("IGNORED", false, null, null, null, false, d.getId());
+            return new ApplyResult("IGNORED", false, null, null, null, false, d.getId(), false);
         }
 
         // Monotonicity / out-of-order check
@@ -183,14 +226,14 @@ public class FoodDeliveryEventService {
             log.info("Out-of-order provider event {} for food delivery {}: current={}, incoming={}",
                     eventId, d.getId(), d.getStatus(), target);
             deliveries.save(d);
-            return new ApplyResult("OUT_OF_ORDER", false, null, null, null, false, d.getId());
+            return new ApplyResult("OUT_OF_ORDER", false, null, null, null, false, d.getId(), false);
         }
 
         if (target == d.getStatus()) {
             recordEvent(d, providerCode, eventId, pStatus.name(), target, "APPLIED",
                     event.description(), occurredAt, payloadStr);
             deliveries.save(d);
-            return new ApplyResult("APPLIED", false, null, null, null, false, d.getId());
+            return new ApplyResult("APPLIED", false, null, null, null, false, d.getId(), false);
         }
 
         if (!d.getStatus().canTransitionTo(target)) {
@@ -198,11 +241,16 @@ public class FoodDeliveryEventService {
                     "Disallowed transition from " + d.getStatus() + " to " + target, occurredAt, payloadStr);
             log.warn("Disallowed status transition for food delivery {}: {} -> {}", d.getId(), d.getStatus(), target);
             deliveries.save(d);
-            return new ApplyResult("IGNORED", false, null, null, null, false, d.getId());
+            return new ApplyResult("IGNORED", false, null, null, null, false, d.getId(), false);
         }
 
         // Apply transition
         d.moveTo(target);
+        // A provider can skip the pickup report; once the food is on the road or delivered the courier had it, and
+        // "picked up" is what separates a failure before custody (nothing owed) from one after it (courier owed).
+        if ((target.isInFlight() || target == FoodDeliveryStatus.DELIVERED) && d.getPickedUpAt() == null) {
+            d.setPickedUpAt(occurredAt);
+        }
         if (target == FoodDeliveryStatus.DRIVER_ASSIGNED && d.getAssignedAt() == null) {
             d.setAssignedAt(occurredAt);
         } else if (target == FoodDeliveryStatus.PICKED_UP) {
@@ -210,9 +258,12 @@ public class FoodDeliveryEventService {
         } else if (target == FoodDeliveryStatus.DELIVERED) {
             d.setDeliveredAt(occurredAt);
             d.setTrackingExpiresAt(now.plus(Duration.ofHours(24)));
+            supersedeFailure(d);
         } else if (target == FoodDeliveryStatus.FAILED) {
             d.setFailureCode("DELIVERY_FAILED");
             d.setFailureReason(event.description());
+            d.setReconciliationRequired(true);
+            d.setReconciliationReason("Delivery failed after pickup: " + (event.description() != null ? event.description() : "Courier reported failure"));
             d.setTrackingExpiresAt(now.plus(Duration.ofHours(24)));
         } else if (target == FoodDeliveryStatus.CANCELLED) {
             d.setTrackingExpiresAt(now.plus(Duration.ofHours(24)));
@@ -224,7 +275,31 @@ public class FoodDeliveryEventService {
         timeline.record(d, target, event.description() != null ? event.description() : target.name());
 
         boolean needsSettle = target.isInFlight() || target == FoodDeliveryStatus.DELIVERED;
-        return new ApplyResult("APPLIED", false, null, null, null, needsSettle, d.getId());
+        boolean failedAfterPickup = target == FoodDeliveryStatus.FAILED && !isPrePickup;
+        return new ApplyResult("APPLIED", false, null, event.description(), null, needsSettle, d.getId(), failedAfterPickup);
+    }
+
+    /**
+     * The courier now confirms the food was delivered, after having reported a failure. The failure fields and the flag
+     * described a state that no longer holds, so they are cleared; the failure event, the delivered event and an audit row
+     * naming what was superseded keep the history (D-206). Only what the event cleared is cleared: a delivery that was
+     * never failed is untouched.
+     */
+    private void supersedeFailure(FoodDelivery d) {
+        if (d.getFailureCode() == null && !d.isReconciliationRequired()) {
+            return;
+        }
+        String was = (d.getFailureCode() == null ? "" : d.getFailureCode()
+                + (d.getFailureReason() == null ? "" : " · " + d.getFailureReason()))
+                + (d.isReconciliationRequired() && d.getReconciliationReason() != null
+                ? " [flag: " + d.getReconciliationReason() + "]" : "");
+        d.setFailureCode(null);
+        d.setFailureReason(null);
+        d.setReconciliationRequired(false);
+        d.setReconciliationReason(null);
+        audit.record(null, null, "FOOD_DELIVERY_FAILURE_SUPERSEDED", "FOOD_DELIVERY", d.getId(),
+                FoodDeliveryStatus.FAILED.name(), FoodDeliveryStatus.DELIVERED.name(),
+                "The courier confirmed delivery after reporting a failure: " + was, "PROVIDER");
     }
 
     public void recordDriver(FoodDelivery delivery, String providerCode, String providerDeliveryId,
@@ -343,9 +418,8 @@ public class FoodDeliveryEventService {
             case IN_TRANSIT -> FoodDeliveryStatus.OUT_FOR_DELIVERY;
             case ARRIVED_AT_DESTINATION -> FoodDeliveryStatus.ARRIVED;
             case DELIVERED -> FoodDeliveryStatus.DELIVERED;
-            case DRIVER_CANCELLED, PICKUP_FAILED -> null; // handled via rebook
+            case DRIVER_CANCELLED, PICKUP_FAILED, CANCELLED -> null; // handled via rebook or post-pickup failure in processEventInTransaction
             case DELIVERY_FAILED -> FoodDeliveryStatus.FAILED;
-            case CANCELLED -> FoodDeliveryStatus.CANCELLED;
         };
     }
 }

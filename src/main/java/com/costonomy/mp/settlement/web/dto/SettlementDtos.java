@@ -132,6 +132,41 @@ public final class SettlementDtos {
             Instant createdAt) {
     }
 
+    /**
+     * One delivery-funding line on a supplier's statement, in any state. {@code outcome} says in plain terms where the
+     * money stands; {@code nextAction} says what, if anything, the supplier does. A credit (a correction in the
+     * supplier's favour) has a negative effect and is flagged by {@code kind}. This is what the supplier owes
+     * Costonomy for a delivery it chose to fund; it is never a payment to the courier.
+     */
+    public record DeliveryFundingLine(
+            Long deductionId,
+            String kind,
+            Long supplierOrderId,
+            String orderNumber,
+            Long deliveryId,
+            BigDecimal amount,
+            String status,
+            String outcome,
+            String nextAction,
+            String paymentMethod,
+            Long settlementId,
+            Instant appliedAt,
+            Instant paidAt,
+            String reason,
+            Instant createdAt) {
+    }
+
+    /** The supplier's delivery funding in four buckets that never double count: owed, paid directly, taken from payouts, waived. */
+    public record DeliveryFundingSummary(
+            BigDecimal pending,
+            BigDecimal collectedDirectly,
+            BigDecimal appliedToSettlement,
+            BigDecimal waived,
+            BigDecimal creditsPending,
+            BigDecimal creditsApplied,
+            long pendingCount) {
+    }
+
     public record InitiateDeliveryFundingPaymentRequest(
             String clientKey) {
     }

@@ -496,4 +496,84 @@ class DeliveryBookingServiceTest {
         assertThat(delivery.getProviderCode()).isNull();
         verifyNoInteractions(ledger, eventPublisher);
     }
+
+    @Test
+    @DisplayName("Booking timeout with lookup supported: lookup success recovers and books consignment")
+    void book_whenTimeoutAndLookupSupported_andFound_succeeds() {
+        Delivery delivery = createDelivery(21L, VehicleType.TWO_WHEELER);
+        DeliveryQuote quote = createQuote(21L, "PIDGE", VehicleType.TWO_WHEELER);
+        DeliveryProvider pidge = mock(DeliveryProvider.class);
+
+        when(quoting.usableQuotes(21L, List.of(), false)).thenReturn(List.of(quote));
+        when(registry.adapter("PIDGE")).thenReturn(pidge);
+        when(pidge.book(any())).thenThrow(new com.costonomy.mp.delivery.provider.DeliveryProviderException("PIDGE", "Booking timed out", true));
+        when(pidge.supportsLookupByReference()).thenReturn(true);
+        when(pidge.findByReference(any(), any())).thenReturn(java.util.Optional.of(
+                new DeliveryProvider.ProviderDelivery("pidge-discovered-1", DeliveryProvider.ProviderDeliveryStatus.PENDING,
+                        null, null, null, 30, null, null, null, List.of())));
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isTrue();
+
+        assertThat(delivery.getStatus()).isEqualTo(DeliveryStatus.PROVIDER_SELECTED);
+        assertThat(delivery.getProviderDeliveryId()).isEqualTo("pidge-discovered-1");
+        assertThat(delivery.isReconciliationRequired()).isFalse();
+    }
+
+    @Test
+    @DisplayName("Booking timeout with lookup supported: lookup not found is definitive, fails without ambiguity")
+    void book_whenTimeoutAndLookupSupported_andNotFound_failsWithoutAmbiguity() {
+        Delivery delivery = createDelivery(22L, VehicleType.TWO_WHEELER);
+        DeliveryQuote quote = createQuote(22L, "PIDGE", VehicleType.TWO_WHEELER);
+        DeliveryProvider pidge = mock(DeliveryProvider.class);
+
+        when(quoting.usableQuotes(22L, List.of(), false)).thenReturn(List.of(quote));
+        when(registry.adapter("PIDGE")).thenReturn(pidge);
+        when(pidge.book(any())).thenThrow(new com.costonomy.mp.delivery.provider.DeliveryProviderException("PIDGE", "Booking timed out", true));
+        when(pidge.supportsLookupByReference()).thenReturn(true);
+        when(pidge.findByReference(any(), any())).thenReturn(java.util.Optional.empty());
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isFalse();
+
+        assertThat(delivery.getStatus()).isEqualTo(DeliveryStatus.PROVIDER_UNAVAILABLE);
+        assertThat(delivery.isReconciliationRequired()).isFalse();
+    }
+
+    @Test
+    @DisplayName("Booking timeout with lookup supported: lookup timeout marks reconciliation required and fails closed")
+    void book_whenTimeoutAndLookupSupported_andLookupTimesOut_marksReconciliationRequired() {
+        Delivery delivery = createDelivery(23L, VehicleType.TWO_WHEELER);
+        DeliveryQuote quote = createQuote(23L, "PIDGE", VehicleType.TWO_WHEELER);
+        DeliveryProvider pidge = mock(DeliveryProvider.class);
+
+        when(quoting.usableQuotes(23L, List.of(), false)).thenReturn(List.of(quote));
+        when(registry.adapter("PIDGE")).thenReturn(pidge);
+        when(pidge.book(any())).thenThrow(new com.costonomy.mp.delivery.provider.DeliveryProviderException("PIDGE", "Booking timed out", true));
+        when(pidge.supportsLookupByReference()).thenReturn(true);
+        when(pidge.findByReference(any(), any())).thenThrow(new RuntimeException("Lookup call timed out"));
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isFalse();
+
+        assertThat(delivery.isReconciliationRequired()).isTrue();
+        assertThat(delivery.getReconciliationReason()).contains("Booking outcome ambiguous with PIDGE");
+        assertThat(delivery.getFailureCode()).isEqualTo("AMBIGUOUS_PROVIDER_OUTCOME");
+    }
+
+    @Test
+    @DisplayName("Booking timeout with lookup unsupported: marks reconciliation required and fails closed")
+    void book_whenTimeoutAndLookupUnsupported_marksReconciliationRequired() {
+        Delivery delivery = createDelivery(24L, VehicleType.TWO_WHEELER);
+        DeliveryQuote quote = createQuote(24L, "SHADOWFAX", VehicleType.TWO_WHEELER);
+        DeliveryProvider shadowfax = mock(DeliveryProvider.class);
+
+        when(quoting.usableQuotes(24L, List.of(), false)).thenReturn(List.of(quote));
+        when(registry.adapter("SHADOWFAX")).thenReturn(shadowfax);
+        when(shadowfax.book(any())).thenThrow(new com.costonomy.mp.delivery.provider.DeliveryProviderException("SHADOWFAX", "Booking timed out", true));
+        when(shadowfax.supportsLookupByReference()).thenReturn(false);
+
+        assertThat(service.book(delivery, List.of(), "INITIAL")).isFalse();
+
+        assertThat(delivery.isReconciliationRequired()).isTrue();
+        assertThat(delivery.getReconciliationReason()).contains("Booking outcome ambiguous with SHADOWFAX");
+        assertThat(delivery.getFailureCode()).isEqualTo("AMBIGUOUS_PROVIDER_OUTCOME");
+    }
 }

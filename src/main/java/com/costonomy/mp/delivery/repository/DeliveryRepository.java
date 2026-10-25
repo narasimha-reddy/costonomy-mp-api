@@ -98,6 +98,7 @@ public interface DeliveryRepository extends JpaRepository<Delivery, Long> {
                and no_partner_since > utc_timestamp(6) - interval :windowSeconds second
                and (last_retry_at is null or last_retry_at <= utc_timestamp(6) - interval :intervalSeconds second)
                and auto_retry_count < :maxRetries
+               and reconciliation_required = false
              order by last_retry_at is not null, last_retry_at
              limit :batch
             """, nativeQuery = true)

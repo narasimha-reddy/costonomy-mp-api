@@ -203,7 +203,9 @@ class NotificationWordingTest {
                     .describedAs(rule.eventType())
                     .doesNotContainIgnoringCase("driver");
         }
-        assertThat(only("DriverAssigned", null, Audience.OUTLET).title()).isEqualTo("Delivery partner on the way");
+        // A partner delivery names the variant; the plain rule is the supplier's own delivery and says so (gap 12).
+        assertThat(only("DriverAssigned", "COSTONOMY_DELIVERY", Audience.OUTLET).title()).isEqualTo("Delivery partner on the way");
+        assertThat(only("DriverAssigned", null, Audience.OUTLET).title()).isEqualTo("Delivery on the way");
     }
 
     @Nested

@@ -42,4 +42,11 @@ public class DeliveryProviderRecord extends BaseEntity {
     /** Tie-break only; cost and ETA decide first (doc 06 §4). */
     @Column(name = "priority", nullable = false)
     private Integer priority = 100;
+
+    /**
+     * How Costonomy pays this provider (D-204): the code of a courier payment rail. MANUAL until a provider is paid by an
+     * API; then a person records each payment.
+     */
+    @Column(name = "payment_rail", nullable = false, length = 32)
+    private String paymentRail = "MANUAL";
 }

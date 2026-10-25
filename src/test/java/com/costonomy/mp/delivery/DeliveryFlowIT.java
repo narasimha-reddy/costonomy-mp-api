@@ -45,6 +45,7 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private com.costonomy.mp.delivery.service.DeliveryAssignmentSweepJob assignmentSweep;
     @Autowired private DeliveryJobs deliveryJobs;
     @Autowired private DeliveryRetryJobs retryJobs;
     @Autowired private com.costonomy.mp.delivery.repository.DeliveryRepository deliveryRepository;
@@ -225,8 +226,8 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
     }
 
     @Test
-    @DisplayName("reading an expired assignment through its order can run the timeout cascade")
-    void forOrderCanCascadeAnExpiredAssignment() throws Exception {
+    @DisplayName("reading an expired assignment changes nothing; the sweep is what moves it")
+    void readingNeverCascadesButTheSweepDoes() throws Exception {
         var order = readyOrder();
         var delivery = requestDelivery(order);
         long deliveryId = delivery.get("id").asLong();
@@ -239,18 +240,29 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
                        assignment_deadline = date_sub(now(6), interval 1 second)
                  where id = ?
                 """, deliveryId);
+        String providerBefore = jdbc.queryForObject(
+                "select provider_delivery_id from delivery where id = ?", String.class, deliveryId);
 
-        var response = mvc.perform(MockMvcRequestBuilders
-                        .get("/api/v1/supplier-orders/" + order.orderId() + "/delivery")
-                        .header("Authorization", "Bearer " + order.buyer().token()))
-                .andReturn().getResponse();
+        for (String path : new String[] {"/api/v1/supplier-orders/" + order.orderId() + "/delivery",
+                "/api/v1/deliveries/" + deliveryId}) {
+            var response = mvc.perform(MockMvcRequestBuilders.get(path)
+                            .header("Authorization", "Bearer " + order.buyer().token()))
+                    .andReturn().getResponse();
+            assertThat(response.getStatus()).isEqualTo(200);
+            assertThat(json.readTree(response.getContentAsString()).at("/data/id").asLong()).isEqualTo(deliveryId);
+        }
 
-        assertThat(response.getStatus()).isEqualTo(200);
-        assertThat(json.readTree(response.getContentAsString()).at("/data/id").asLong())
-                .isEqualTo(deliveryId);
-        assertThat(jdbc.queryForObject(
-                "select attempt_count from delivery where id = ?", Integer.class, deliveryId))
-                .isGreaterThan(attemptsBefore);
+        assertThat(jdbc.queryForObject("select attempt_count from delivery where id = ?", Integer.class, deliveryId))
+                .as("a read never books a courier").isEqualTo(attemptsBefore);
+        assertThat(jdbc.queryForObject("select provider_delivery_id from delivery where id = ?", String.class, deliveryId))
+                .isEqualTo(providerBefore);
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where entity_type = 'DELIVERY' and entity_id = ? "
+                + "and action like 'DELIVERY_REASSIGNED%'", Integer.class, deliveryId)).isZero();
+
+        assignmentSweep.runOnce(java.time.Instant.now().plusSeconds(60));
+
+        assertThat(jdbc.queryForObject("select attempt_count from delivery where id = ?", Integer.class, deliveryId))
+                .as("the sweep moves it").isGreaterThan(attemptsBefore);
     }
 
     // ── The journey ──────────────────────────────────────────────────────
@@ -829,8 +841,7 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
             jdbc.update("update delivery set status = 'PROVIDER_SELECTED', "
                     + "assignment_deadline = utc_timestamp(6) - interval 1 minute where id = ?", deliveryId);
 
-            mvc.perform(MockMvcRequestBuilders.get("/api/v1/supplier-orders/" + order.orderId() + "/delivery")
-                    .header("Authorization", "Bearer " + order.buyer().token())).andReturn();
+            assignmentSweep.runOnce(java.time.Instant.now().plusSeconds(60));
 
             assertThat(attempts(deliveryId).get(0).get("ended_cause")).isEqualTo("ASSIGNMENT_TIMEOUT");
         }
@@ -1216,6 +1227,51 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
             assertThat(seen[1]).as("and is not yet due for the own-delivery offer").isFalse();
             assertThat(seen[2]).as("and the retry can be claimed").isTrue();
             assertThat(retries(id)).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("retries that keep finding nobody leave one failure row and one outbox event, not one per retry")
+        void aRepeatedFailureIsAnnouncedOnce() throws Exception {
+            var order = readyOrder();
+            long id = failedDelivery(order);
+            int rowsAfterFirst = jdbc.queryForObject("select count(*) from delivery_event where delivery_id = ?",
+                    Integer.class, id);
+            int outboxAfterFirst = jdbc.queryForObject("select count(*) from outbox_event where aggregate_id = ? "
+                    + "and event_type like 'Delivery%'", Integer.class, id);
+
+            for (int i = 0; i < 3; i++) {
+                express.arm(MockDeliveryProvider.Failure.QUOTE_FAILS);
+                saver.arm(MockDeliveryProvider.Failure.QUOTE_FAILS);
+                jdbc.update("update delivery set last_retry_at = now(6) - interval 3 minute where id = ?", id);
+                retryJobs.runOnce();
+            }
+
+            assertThat(status(id)).isEqualTo("QUOTE_FAILED");
+            assertThat(retries(id)).as("it did keep trying").isGreaterThanOrEqualTo(2);
+            assertThat(jdbc.queryForObject("select count(*) from delivery_event where delivery_id = ?", Integer.class, id))
+                    .as("but said so once").isEqualTo(rowsAfterFirst);
+            assertThat(jdbc.queryForObject("select count(*) from outbox_event where aggregate_id = ? "
+                    + "and event_type like 'Delivery%'", Integer.class, id)).isEqualTo(outboxAfterFirst);
+        }
+
+        @Test
+        @DisplayName("a delivery waiting for an operator to reconcile an unknown booking is never retried automatically")
+        void aFlaggedDeliveryIsNotRetried() throws Exception {
+            var order = readyOrder();
+            long id = failedDelivery(order);
+            jdbc.update("update delivery set reconciliation_required = true, "
+                    + "reconciliation_reason = 'Booking outcome ambiguous' where id = ?", id);
+            partnersBack();
+            Integer attemptsBefore = jdbc.queryForObject("select count(*) from delivery_provider_attempt where delivery_id = ?",
+                    Integer.class, id);
+
+            retryJobs.runOnce();
+            retryJobs.runOnce();
+
+            assertThat(status(id)).isEqualTo("QUOTE_FAILED");
+            assertThat(retries(id)).isZero();
+            assertThat(jdbc.queryForObject("select count(*) from delivery_provider_attempt where delivery_id = ?",
+                    Integer.class, id)).as("no second courier was asked for").isEqualTo(attemptsBefore);
         }
 
         @Test

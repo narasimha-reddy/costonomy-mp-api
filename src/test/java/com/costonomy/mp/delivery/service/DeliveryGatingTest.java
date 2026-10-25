@@ -38,6 +38,9 @@ class DeliveryGatingTest {
     @Mock private AccessControlService accessControl;
     @Mock private AuditService auditService;
     @Mock private DeliveryRecoveryService recoveryService;
+    @Mock private OrderCancellationPort orderCancellationPort;
+    @Mock private SupplierCourierPayableSync payableSync;
+    @Mock private SupplierDeliveryMovementService movementService;
     private final PidgeProperties pidgeProperties = new PidgeProperties();
 
     private DeliveryService service;
@@ -48,6 +51,7 @@ class DeliveryGatingTest {
                 deliveries, events, locations, attempts, quoting, booking,
                 eventService, orderBridge, timeline, directory, registry,
                 accessControl, auditService, pidgeProperties, recoveryService,
+                orderCancellationPort, payableSync, movementService,
                 org.mockito.Mockito.mock(org.springframework.transaction.PlatformTransactionManager.class));
     }
 

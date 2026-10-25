@@ -122,4 +122,8 @@ public final class Permissions {
      * a payment as a refund source. Moves money. Its read side is PAYMENT_INSPECT. D-110, V48.
      */
     public static final String REFUND_OPERATE = "refunds.operate";
+    /** See courier payables, courier payments, gateway refunds and their queues. Internal, read-only. D-204, V104. */
+    public static final String DELIVERY_FINANCE_INSPECT = "delivery.finance_inspect";
+    /** Record a courier payment, retry, void or adjust a payable, retry or resolve a gateway refund. Moves money. D-204. */
+    public static final String DELIVERY_FINANCE_OPERATE = "delivery.finance_operate";
 }

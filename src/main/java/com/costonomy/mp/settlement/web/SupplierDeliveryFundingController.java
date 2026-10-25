@@ -37,6 +37,23 @@ public class SupplierDeliveryFundingController {
         return ApiResponse.ok(paymentService.listPending(ActorContext.requireUserId(), storeId));
     }
 
+    @GetMapping("/history")
+    @Operation(summary = "Every delivery funding line, in any state",
+            description = "Pending, paid directly, taken from a settlement, waived and credited, newest first, with the order "
+                    + "and delivery each belongs to and what to do next. Optional status filter; paged, at most 100 a page.")
+    public ApiResponse<List<DeliveryFundingLine>> history(
+            @PathVariable Long storeId, @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "25") int size) {
+        return ApiResponse.ok(paymentService.listHistory(ActorContext.requireUserId(), storeId, status, page, size));
+    }
+
+    @GetMapping("/summary")
+    @Operation(summary = "What the store owes, has paid directly, has had taken from payouts, and has been credited",
+            description = "Four separate buckets that do not overlap. None of it is a payment to a courier.")
+    public ApiResponse<DeliveryFundingSummary> summary(@PathVariable Long storeId) {
+        return ApiResponse.ok(paymentService.summary(ActorContext.requireUserId(), storeId));
+    }
+
     @PostMapping("/{deductionId}/pay")
     @Operation(summary = "Initiate direct payment for delivery fee",
             description = "Opens a Razorpay checkout authorization intent with auto-capture for the deduction amount.")

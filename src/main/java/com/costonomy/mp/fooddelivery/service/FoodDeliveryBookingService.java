@@ -19,7 +19,8 @@ import com.costonomy.mp.fooddelivery.repository.FoodDeliveryRepository;
 import com.costonomy.mp.fooddelivery.web.dto.FoodDeliveryDtos;
 import com.costonomy.mp.payment.provider.PaymentProvider;
 import com.costonomy.mp.payment.provider.PaymentProviderException;
-import com.costonomy.mp.payment.service.UnusablePaymentRefunds;
+import com.costonomy.mp.payment.domain.GatewayRefund;
+import com.costonomy.mp.payment.service.GatewayRefundService;
 import com.costonomy.mp.wallet.service.WalletService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -73,7 +74,7 @@ public class FoodDeliveryBookingService {
     private final ProviderReliabilityService reliability;
     private final DeliveryRecoveryService recoveryService;
     private final PaymentProvider paymentProvider;
-    private final UnusablePaymentRefunds gatewayRefunds;
+    private final GatewayRefundService gatewayRefunds;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
 
@@ -84,7 +85,7 @@ public class FoodDeliveryBookingService {
                                       FoodDeliveryProperties properties, ProviderReliabilityService reliability,
                                       DeliveryRecoveryService recoveryService,
                                       PaymentProvider paymentProvider,
-                                      UnusablePaymentRefunds gatewayRefunds,
+                                      GatewayRefundService gatewayRefunds,
                                       JdbcTemplate jdbc, PlatformTransactionManager txManager) {
         this.deliveries = deliveries;
         this.attempts = attempts;
@@ -614,6 +615,7 @@ public class FoodDeliveryBookingService {
      */
     public void retry(Long id) {
         // Phase 1: Reserve under short lock
+        var walletRefund = new java.util.concurrent.atomic.AtomicReference<WalletRefund>();
         FoodDelivery snapshot = tx.execute(status -> {
             var d = deliveries.lockById(id).orElse(null);
             if (d == null || (d.getStatus() != FoodDeliveryStatus.PROVIDER_UNAVAILABLE
@@ -623,7 +625,7 @@ public class FoodDeliveryBookingService {
             Instant now = Instant.now();
             Instant baseTime = d.getPaidAt() != null ? d.getPaidAt() : d.getRequestedAt();
             if (!now.isBefore(baseTime.plus(properties.getRetryWindow()))) {
-                failNoCourier(d);
+                walletRefund.set(failNoCourier(d));
                 return null;
             }
             d.setRoundStartedAt(now);
@@ -632,6 +634,7 @@ public class FoodDeliveryBookingService {
         });
 
         if (snapshot == null) {
+            payWalletRefund(walletRefund.get());
             return;
         }
 
@@ -659,14 +662,87 @@ public class FoodDeliveryBookingService {
         }
     }
 
-    private void failNoCourier(FoodDelivery d) {
+    /**
+     * Inside the caller's locked transaction: end the delivery and make sure the fee goes back. Nothing here calls the
+     * wallet (a throw inside its joined {@code @Transactional} method would mark this transaction rollback-only, D-016):
+     * a gateway refund is recorded, a wallet refund is queued as a durable recovery task, and the caller then pays it
+     * with {@link #payWalletRefund} once its transaction has committed.
+     */
+    private WalletRefund failNoCourier(FoodDelivery d) {
         d.moveTo(FoodDeliveryStatus.FAILED);
         d.setFailureCode("NO_COURIER");
         d.setFailureReason("No delivery partner could take this delivery in time.");
         d.setTrackingExpiresAt(Instant.now().plus(Duration.ofHours(24)));
-        refundAll(d, "Food delivery could not be arranged");
+        var refund = refundAll(d, "Food delivery could not be arranged", "NO_COURIER", true);
         deliveries.save(d);
         timeline.record(d, FoodDeliveryStatus.FAILED, "No delivery partner could take this delivery in time; fee returned");
+        return refund;
+    }
+
+    /**
+     * Operations closes a delivery that failed after the courier had the food, as returned, and gives the restaurant its
+     * whole remaining hold back. This is a decision, never an automatic exit: by D-204 the restaurant keeps paying the
+     * fee it agreed for a failure after pickup, and the courier is still owed in full. Here Costonomy bears that cost
+     * instead, so the {@code fee} (the courier's cost) is left as it is and only what the restaurant paid goes back.
+     * Idempotent: a repeat finds it returned and refunds nothing twice. No wallet or gateway call is made inside a
+     * transaction.
+     */
+    public FoodDelivery returnAndRefund(Long id, String reason) {
+        var walletRefund = new java.util.concurrent.atomic.AtomicReference<WalletRefund>();
+        tx.executeWithoutResult(status -> {
+            var d = deliveries.lockById(id).orElseThrow(() -> new NotFoundException("FoodDelivery", id));
+            if (d.getStatus() == FoodDeliveryStatus.RETURNED) {
+                return;
+            }
+            if (d.getStatus() != FoodDeliveryStatus.FAILED || d.getPickedUpAt() == null) {
+                throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "Only a delivery that failed after pickup can be closed as returned.");
+            }
+            d.moveTo(FoodDeliveryStatus.RETURNED);
+            d.setFailureReason(reason);
+            d.setReconciliationRequired(false);
+            d.setReconciliationReason(null);
+            d.setTrackingExpiresAt(Instant.now().plus(Duration.ofHours(24)));
+            walletRefund.set(refundAll(d, reason, "OPERATOR_REFUND", false));
+            deliveries.save(d);
+            timeline.record(d, FoodDeliveryStatus.RETURNED, "Closed by operations: " + reason);
+        });
+        payWalletRefund(walletRefund.get());
+        return deliveries.findById(id).orElseThrow();
+    }
+
+    /** A wallet refund to make after the transaction that queued it has committed. */
+    private record WalletRefund(Long deliveryId, Long outletId, BigDecimal held, String reason) {}
+
+    /**
+     * The wallet refund queued by {@link #failNoCourier}, made outside any transaction. If it does not go through, the
+     * recovery task queued with the failure still holds it and retries, so nothing is lost or merely logged.
+     * Idempotent on the wallet reference, so the task finding it already made is harmless.
+     */
+    private void payWalletRefund(WalletRefund r) {
+        if (r == null) {
+            return;
+        }
+        boolean ok = false;
+        try {
+            ok = wallet.refundFoodDelivery(r.outletId(), r.deliveryId(), "refund", r.held(), r.reason());
+        } catch (Exception ex) {
+            log.warn("Wallet refund for food delivery {} did not go through; the recovery task will retry it: {}",
+                    r.deliveryId(), ex.getMessage());
+        }
+        if (!ok) {
+            return;
+        }
+        tx.executeWithoutResult(status -> deliveries.lockById(r.deliveryId()).ifPresent(d -> {
+            String ref = "food-delivery-" + d.getId() + "-refund";
+            if (!ref.equals(d.getFeeRefundRef())) {
+                d.setFeeRefundedAmount(d.getFeeRefundedAmount().add(r.held()));
+                d.setFeeRefundedAt(Instant.now());
+                d.setFeeRefundRef(ref);
+                deliveries.save(d);
+                timeline.refundRecorded(d);
+            }
+        }));
     }
 
     // ── A courier let go, or took too long ───────────────────────────────
@@ -734,7 +810,20 @@ public class FoodDeliveryBookingService {
 
         // Phase 3: Book next courier
         book(id, "REASSIGNMENT");
-        return deliveries.findById(id).map(d -> d.getProviderDeliveryId() != null).orElse(false);
+        var walletRefund = new java.util.concurrent.atomic.AtomicReference<WalletRefund>();
+        Boolean booked = tx.execute(status -> {
+            var cur = deliveries.lockById(id).orElse(null);
+            if (cur != null && cur.getProviderDeliveryId() == null && cur.getStatus() == FoodDeliveryStatus.PROVIDER_UNAVAILABLE) {
+                Instant base = cur.getPaidAt() != null ? cur.getPaidAt() : cur.getRequestedAt();
+                if (base == null || !Instant.now().isBefore(base.plus(properties.getRetryWindow()))) {
+                    walletRefund.set(failNoCourier(cur));
+                    return false;
+                }
+            }
+            return cur != null && cur.getProviderDeliveryId() != null;
+        });
+        payWalletRefund(walletRefund.get());
+        return Boolean.TRUE.equals(booked);
     }
 
     /** Hands a booking that never got a rider to the next courier. Called by the sweep. */
@@ -748,7 +837,7 @@ public class FoodDeliveryBookingService {
 
     // ── Money ────────────────────────────────────────────────────────────
 
-    private record SettleHoldInfo(Long outletId, BigDecimal unused) {}
+    private record SettleHoldInfo(Long outletId, BigDecimal unused, Long gatewayRefundId) {}
 
     /**
      * Return the unused part of the hold once the courier is fixed (the food has been picked up): the agreed maximum less
@@ -767,16 +856,26 @@ public class FoodDeliveryBookingService {
             }
             BigDecimal unused = d.netHeld().subtract(d.getFee());
             if (unused.signum() <= 0) {
-                return new SettleHoldInfo(d.getOutletId(), BigDecimal.ZERO);
+                return new SettleHoldInfo(d.getOutletId(), BigDecimal.ZERO, null);
             }
             if (d.getFeeRefundRef() != null && d.getFeeRefundRef().endsWith("-adjust")) {
-                return new SettleHoldInfo(d.getOutletId(), BigDecimal.ZERO);
+                return new SettleHoldInfo(d.getOutletId(), BigDecimal.ZERO, null);
             }
-            return new SettleHoldInfo(d.getOutletId(), unused);
+            if (d.isGatewayFunded()) {
+                // Paid at the gateway, so the unused part goes back to the gateway (a partial refund), not into the wallet.
+                Long refundId = reserveGatewayRefund(d, "adjust", unused, "Food delivery fee · unused part returned", "FEE_ADJUSTMENT");
+                deliveries.save(d);
+                return new SettleHoldInfo(d.getOutletId(), unused, refundId);
+            }
+            return new SettleHoldInfo(d.getOutletId(), unused, null);
         });
 
         if (info == null || info.unused().signum() <= 0) {
             return BigDecimal.ZERO;
+        }
+        if (info.gatewayRefundId() != null) {
+            gatewayRefunds.sendSoon(info.gatewayRefundId());
+            return info.unused();
         }
 
         // Phase 2: External wallet call outside database transaction and row lock
@@ -806,7 +905,8 @@ public class FoodDeliveryBookingService {
         });
     }
 
-    private record CancelHoldInfo(Long deliveryId, Long outletId, String providerCode, String providerDeliveryId, BigDecimal held) {}
+    private record CancelHoldInfo(Long deliveryId, Long outletId, String providerCode, String providerDeliveryId, BigDecimal held,
+                                  Long gatewayRefundId) {}
 
     /**
      * Cancel before pickup: the courier is stood down and the whole hold returned. After pickup the food is on the road
@@ -853,7 +953,13 @@ public class FoodDeliveryBookingService {
             deliveries.save(d);
             timeline.record(d, FoodDeliveryStatus.CANCELLED, reason == null ? "Cancelled" : reason);
 
-            return new CancelHoldInfo(d.getId(), d.getOutletId(), provCode, provDeliveryId, held);
+            Long gatewayRefundId = null;
+            if (held.signum() > 0 && d.isGatewayFunded()) {
+                // Paid at the gateway: the whole hold goes back to the gateway, recorded here with the cancellation.
+                gatewayRefundId = reserveGatewayRefund(d, "refund", held, "Food delivery cancelled", "CANCELLED");
+                deliveries.save(d);
+            }
+            return new CancelHoldInfo(d.getId(), d.getOutletId(), provCode, provDeliveryId, held, gatewayRefundId);
         });
 
         if (info == null) {
@@ -868,8 +974,10 @@ public class FoodDeliveryBookingService {
             }
         }
 
-        // Phase 3: External wallet refund outside database transaction and row lock
-        if (info.held().signum() > 0) {
+        // Phase 3: the refund, outside the database transaction and the row lock
+        if (info.gatewayRefundId() != null) {
+            gatewayRefunds.sendSoon(info.gatewayRefundId());
+        } else if (info.held().signum() > 0) {
             boolean ok = false;
             try {
                 ok = wallet.refundFoodDelivery(info.outletId(), info.deliveryId(), "refund", info.held(), "Food delivery cancelled");
@@ -895,25 +1003,45 @@ public class FoodDeliveryBookingService {
         return deliveries.findById(id).orElseThrow();
     }
 
-    /** Returns everything still held. Idempotent on the wallet reference, so a repeat pays nothing twice. */
-    private void refundAll(FoodDelivery d, String reason) {
+    /**
+     * Inside the caller's locked transaction: arrange for everything still held to go back, without calling the wallet.
+     * A gateway payment is recorded as a gateway refund and sent after commit; a wallet payment is queued as a durable
+     * recovery task (idempotent on the wallet reference) and returned for the caller to pay after commit.
+     */
+    private WalletRefund refundAll(FoodDelivery d, String reason, String purpose, boolean zeroFee) {
         BigDecimal held = d.netHeld();
-        if (held.signum() > 0) {
-            boolean ok = false;
-            try {
-                ok = wallet.refundFoodDelivery(d.getOutletId(), d.getId(), "refund", held, reason);
-            } catch (Exception ex) {
-                log.warn("Wallet refund threw for food delivery {}: {}", d.getId(), ex.getMessage());
-            }
-            if (ok) {
-                d.setFeeRefundedAmount(d.getFeeRefundedAmount().add(held));
-                d.setFeeRefundedAt(Instant.now());
-                d.setFeeRefundRef("food-delivery-" + d.getId() + "-refund");
-            } else {
-                recoveryService.scheduleRefund(d.getId(), d.getOutletId(), "refund", held, reason);
-            }
+        WalletRefund pending = null;
+        if (held.signum() > 0 && d.isGatewayFunded()) {
+            // Paid at the gateway: recorded now, with the failure, and sent once this transaction commits.
+            gatewayRefunds.sendSoon(reserveGatewayRefund(d, "refund", held, reason, purpose));
+        } else if (held.signum() > 0) {
+            recoveryService.scheduleRefund(d.getId(), d.getOutletId(), "refund", held, reason);
+            pending = new WalletRefund(d.getId(), d.getOutletId(), held, reason);
         }
-        d.setFee(BigDecimal.ZERO);
+        if (zeroFee) {
+            d.setFee(BigDecimal.ZERO);
+        }
+        return pending;
+    }
+
+    /**
+     * Inside the caller's locked transaction: record a gateway refund of part of what the restaurant paid, and count it as
+     * given back so nothing can refund it twice. Same key as the wallet reference it replaces, so a repeat is the same
+     * refund. The gateway is not called here.
+     */
+    private Long reserveGatewayRefund(FoodDelivery d, String tag, BigDecimal amount, String reason, String purpose) {
+        String key = "food-delivery-" + d.getId() + "-" + tag;
+        var existing = gatewayRefunds.find(key);
+        if (existing.isPresent()) {
+            return existing.get().getId();
+        }
+        var g = gatewayRefunds.record(new GatewayRefundService.Request(GatewayRefund.FOOD_DELIVERY, d.getId(), purpose,
+                d.getPaymentId(), d.getMaxFee(), amount, reason, key));
+        d.setFeeRefundedAmount(d.getFeeRefundedAmount().add(amount));
+        d.setGatewayRefundedAmount(d.getGatewayRefundedAmount().add(amount));
+        d.setFeeRefundedAt(Instant.now());
+        d.setFeeRefundRef(key);
+        return g.getId();
     }
 
     // ── Provider side ────────────────────────────────────────────────────
@@ -1271,18 +1399,19 @@ public class FoodDeliveryBookingService {
             return true;
         }
 
-        // Cannot be used. Back to where it came from, outside any transaction; the sweep retries what fails.
-        String refundId = gatewayRefunds.refundRest(paymentId, payment.capturedAmount(), "food-del-unusable-");
+        // Cannot be used. Recorded as a refund first (durable, and checked against what was captured), then sent outside any
+        // transaction; the sweep sends what could not go now.
+        Long refundId = tx.execute(status -> {
+            var row = deliveries.lockById(deliveryId).orElseThrow();
+            if (row.getGatewayRefundedAt() != null) {
+                return null;
+            }
+            return gatewayRefunds.record(new GatewayRefundService.Request(GatewayRefund.FOOD_DELIVERY, deliveryId,
+                    "UNUSABLE_PAYMENT", paymentId, payment.capturedAmount(), payment.capturedAmount(),
+                    "A payment that arrived too late, twice, or for the wrong amount", "food-del-unusable-" + paymentId)).getId();
+        });
         if (refundId != null) {
-            tx.executeWithoutResult(status -> {
-                var row = deliveries.lockById(deliveryId).orElseThrow();
-                if (row.getGatewayRefundedAt() == null) {
-                    row.setGatewayRefundId(refundId);
-                    row.setGatewayRefundedAt(Instant.now());
-                    deliveries.save(row);
-                    timeline.record(row, row.getStatus(), "A payment that arrived too late or twice was refunded to its source");
-                }
-            });
+            gatewayRefunds.send(refundId);
         }
         return false;
     }

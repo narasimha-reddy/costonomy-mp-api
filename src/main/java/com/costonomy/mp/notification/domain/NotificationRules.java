@@ -509,10 +509,13 @@ public final class NotificationRules {
         // silent on purpose; NotificationRulesTest keeps that list explicit.
 
         // ── Delivery ─────────────────────────────────────────────────────
+        // The plain rule is the supplier's own delivery (a partner delivery names the variant below), so it must not
+        // say "delivery partner": the supplier is bringing it themselves (D-204 audit, gap 12). Restaurant-facing text
+        // never says "driver" (NotificationWordingTest), so it does not say that either.
         add(rules, new NotificationRule("DriverAssigned", OUTLET, DELIVERY, true,
                 List.of(IN_APP, PUSH),
-                "Delivery partner on the way",
-                "A delivery partner is collecting your order.", "DELIVERY", "supplierOrderId"));
+                "Delivery on the way",
+                "Your supplier is delivering your order and is on the way.", "DELIVERY", "supplierOrderId"));
 
         // The supplier is told when a partner is on the way to their door, so the order is at the counter when the
         // rider arrives. Only for a partner delivery: DriverAssigned is also published when the supplier delivers
@@ -571,6 +574,69 @@ public final class NotificationRules {
                 "Your supplier is delivering",
                 "Your supplier will deliver this order themselves. The delivery charge is unchanged.",
                 "DELIVERY", "supplierOrderId"));
+
+        // D-204 audit, gap 12: the failure exits of a partner delivery. Each is told to the side that has to do something
+        // about it and no further, because the reassignment that follows ("DeliveryReassigned") already tells the
+        // restaurant the partner is changing; a second message for the same moment is how notifications get muted.
+        add(rules, new NotificationRule("DeliveryQuoteFailed", OUTLET, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Finding a delivery partner",
+                "No delivery partner covers your order right now. We'll keep trying. {description|}",
+                "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DeliveryDriverCancelled", SUPPLIER_STORE, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Delivery partner cancelled",
+                "The delivery partner for this order cancelled. We're arranging another; keep the order ready.",
+                "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DeliveryPickupFailed", SUPPLIER_STORE, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Pickup did not happen",
+                "The delivery partner could not collect this order. {description|We're arranging another.}",
+                "DELIVERY", "supplierOrderId"));
+
+        // The goods were collected and not delivered: a person on our side decides what happens, so both are told it is
+        // being looked at and neither is asked to act.
+        add(rules, new NotificationRule("DeliveryFailed", OUTLET, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Delivery problem",
+                "Your order could not be delivered. Our team is looking into it.",
+                "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DeliveryFailed", SUPPLIER_STORE, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Delivery problem",
+                "This order was collected but could not be delivered. Our team is looking into it. {description|}",
+                "DELIVERY", "supplierOrderId"));
+
+        // The order's own cancellation notice reaches the restaurant; the supplier is told the partner was stood down.
+        add(rules, new NotificationRule("DeliveryCancelled", SUPPLIER_STORE, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Delivery cancelled",
+                "The delivery for this order was cancelled, so no driver is coming.", "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DeliveryCancelledByOperations", OUTLET, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Order cancelled",
+                "Our team cancelled this order because it could not be delivered. Your payment is being returned.",
+                "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DeliveryCancelledByOperations", SUPPLIER_STORE, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Order cancelled",
+                "Our team cancelled this order because it could not be delivered.", "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DeliveryMarkedDeliveredByOperations", OUTLET, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Delivered",
+                "Our team confirmed your order was delivered. Check it in when you're ready.",
+                "DELIVERY", "supplierOrderId"));
+
+        add(rules, new NotificationRule("DeliveryMarkedDeliveredByOperations", SUPPLIER_STORE, DELIVERY, true,
+                List.of(IN_APP, PUSH),
+                "Delivered",
+                "Our team confirmed this order was delivered.", "DELIVERY", "supplierOrderId"));
 
         // ── Trust ────────────────────────────────────────────────────────
         add(rules, new NotificationRule("DisputeCreated", SUPPLIER_STORE, MARKETPLACE, true,

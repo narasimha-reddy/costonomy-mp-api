@@ -1,6 +1,12 @@
 package com.costonomy.mp.delivery.web;
 
+import com.costonomy.mp.access.domain.Permissions;
+import com.costonomy.mp.access.domain.ScopeType;
+import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.common.api.ApiResponse;
+import com.costonomy.mp.common.error.BusinessException;
+import com.costonomy.mp.common.error.ErrorCode;
+import com.costonomy.mp.delivery.provider.pidge.PidgeProperties;
 import com.costonomy.mp.delivery.service.AdminDeliveryService;
 import com.costonomy.mp.delivery.service.DeliveryStatsAggregationService;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
@@ -24,9 +30,12 @@ import java.util.Map;
 public class AdminDeliveryController {
 
     private final AdminDeliveryService adminDeliveryService;
+    private final com.costonomy.mp.delivery.service.DeliveryResolutionService resolutionService;
     private final DeliveryStatsAggregationService statsAggregationService;
     private final com.costonomy.mp.delivery.service.AdminDeliveryExportService exportService;
     private final com.costonomy.mp.delivery.provider.pidge.PidgeApiClient pidgeApiClient;
+    private final AccessControlService accessControl;
+    private final PidgeProperties pidgeProperties;
 
     @GetMapping
     @Operation(summary = "List deliveries with pagination and filters",
@@ -102,6 +111,47 @@ public class AdminDeliveryController {
         return ApiResponse.ok(adminDeliveryService.forceWaterfall(actorId, id, reason));
     }
 
+    @GetMapping("/exceptions")
+    @Operation(summary = "Orders that look finished or under way while delivery or money work is unresolved",
+               description = "Ready with no courier, on the road but failed, courier payments unresolved, and supplier shares "
+                       + "uncollected for weeks. Bounded at 50 per kind, oldest first. Requires DELIVERY_INSPECT.")
+    public ApiResponse<List<DeliveryDtos.JourneyException>> exceptions() {
+        return ApiResponse.ok(adminDeliveryService.journeyExceptions(ActorContext.requireUserId()));
+    }
+
+    public record ClosePickupRequest(@jakarta.validation.constraints.NotBlank(message = "Say why") String reason) {
+    }
+
+    @PostMapping("/orders/{orderId}/close-pickup")
+    @Operation(summary = "Cancel and refund a pickup order the restaurant never collected",
+               description = "A pickup order has no delivery to resolve and cannot be cancelled by either side once ready. "
+                       + "No timeout ends it automatically; this is the operator's exit. Reason required, audited, idempotent. "
+                       + "Requires DELIVERY_OPERATE permission at PLATFORM scope.")
+    public ApiResponse<Map<String, Object>> closePickup(@PathVariable Long orderId,
+                                                        @jakarta.validation.Valid @RequestBody ClosePickupRequest request) {
+        resolutionService.closeUncollectedPickup(ActorContext.requireUserId(), orderId, request.reason());
+        return ApiResponse.ok(Map.of("supplierOrderId", orderId, "status", "CANCELLED"));
+    }
+
+    @PostMapping("/{id}/resolve")
+    @Operation(summary = "Close or reconcile a delivery that cannot finish by itself",
+               description = "Cancel with refund, mark delivered, associate discovered consignment, or resume booking. Requires "
+                       + "DELIVERY_OPERATE permission at PLATFORM scope, and a reason.")
+    public ApiResponse<DeliveryDtos.DeliveryResponse> resolve(
+            @PathVariable Long id,
+            @jakarta.validation.Valid @RequestBody DeliveryDtos.ResolveDeliveryRequest request) {
+        Long actorId = ActorContext.requireUserId();
+        com.costonomy.mp.delivery.service.DeliveryResolutionService.Outcome outcome;
+        try {
+            outcome = com.costonomy.mp.delivery.service.DeliveryResolutionService.Outcome.valueOf(request.outcome());
+        } catch (IllegalArgumentException ex) {
+            throw new com.costonomy.mp.common.error.BusinessException(
+                    com.costonomy.mp.common.error.ErrorCode.VALIDATION_ERROR,
+                    "The outcome must be CANCEL_AND_REFUND, MARK_DELIVERED, ASSOCIATE_CONSIGNMENT, or RESUME_BOOKING.");
+        }
+        return ApiResponse.ok(resolutionService.resolve(actorId, id, outcome, request.reason(), request.providerDeliveryId()));
+    }
+
     // -----------------------------------------------------------------------
     // Provider reliability stats
     // -----------------------------------------------------------------------
@@ -132,8 +182,8 @@ public class AdminDeliveryController {
     public ApiResponse<Map<String, Object>> triggerAggregation(
             @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        // Access control handled inside aggregationService indirectly; require OPERATE here.
-        ActorContext.requireUserId();
+        Long actorId = ActorContext.requireUserId();
+        accessControl.require(actorId, Permissions.DELIVERY_OPERATE, ScopeType.PLATFORM, null);
         LocalDate target = date != null ? date : LocalDate.now().minusDays(1);
         int written = statsAggregationService.aggregate(target);
         return ApiResponse.ok(Map.of("windowDate", target.toString(), "rowsWritten", written));
@@ -200,20 +250,35 @@ public class AdminDeliveryController {
                description = "Calls Pidge staging dummy GET endpoint. Allowed statuses: cancelled, pending, " +
                              "fulfilled|registered, fulfilled|out for pickup, fulfilled|reached pickup, " +
                              "fulfilled|picked up, fulfilled|ofd, fulfilled|reached delivery, fulfilled|undelivered, " +
-                             "fulfilled|delivered, fulfilled|rto out for delivery, fulfilled|rto delivered.")
+                             "fulfilled|delivered, fulfilled|rto out for delivery, fulfilled|rto delivered. " +
+                             "Requires DELIVERY_OPERATE at PLATFORM scope and non-production/staging sandbox.")
     public ApiResponse<Object> simulatePidgeStatus(
             @RequestParam String pidgeDeliveryId,
             @RequestParam String dummyStatus) {
+        Long actorId = ActorContext.requireUserId();
+        accessControl.require(actorId, Permissions.DELIVERY_OPERATE, ScopeType.PLATFORM, null);
+        requireSandboxEnvironment();
         return ApiResponse.ok(pidgeApiClient.simulateOrderStatus(pidgeDeliveryId, dummyStatus));
     }
 
     @PostMapping("/pidge/sandbox/webhook")
     @Operation(summary = "Pidge Sandbox: trigger simulated webhook",
-               description = "Calls Pidge staging dummy webhook trigger endpoint to dispatch a simulated callback event.")
+               description = "Calls Pidge staging dummy webhook trigger endpoint to dispatch a simulated callback event. " +
+                             "Requires DELIVERY_OPERATE at PLATFORM scope and non-production/staging sandbox.")
     public ApiResponse<Object> triggerPidgeWebhook(
             @RequestParam String pidgeDeliveryId,
             @RequestParam String dummyStatus) {
+        Long actorId = ActorContext.requireUserId();
+        accessControl.require(actorId, Permissions.DELIVERY_OPERATE, ScopeType.PLATFORM, null);
+        requireSandboxEnvironment();
         return ApiResponse.ok(pidgeApiClient.triggerSandboxWebhook(pidgeDeliveryId, dummyStatus));
+    }
+
+    private void requireSandboxEnvironment() {
+        if (!pidgeProperties.isSandbox()) {
+            throw new BusinessException(ErrorCode.FORBIDDEN,
+                    "Pidge sandbox simulation is only permitted in non-production/staging environments.");
+        }
     }
 }
 

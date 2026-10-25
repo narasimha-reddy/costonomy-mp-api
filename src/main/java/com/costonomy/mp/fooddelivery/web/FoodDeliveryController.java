@@ -80,6 +80,15 @@ public class FoodDeliveryController {
         return ApiResponse.ok(queryService.get(actorId, outletId, id));
     }
 
+    @GetMapping("/{id}/financials")
+    @Operation(summary = "What this delivery cost the restaurant and where any refund stands",
+            description = "Charged, kept, refunded (to the wallet or to the original payment) and in progress. "
+                    + "Never shows the courier's cost.")
+    public ApiResponse<FoodDeliveryDtos.FoodDeliveryFinancialsResponse> financials(
+            @PathVariable Long outletId, @PathVariable Long id) {
+        return ApiResponse.ok(queryService.financials(ActorContext.requireUserId(), outletId, id));
+    }
+
     @GetMapping
     @Operation(summary = "List food deliveries for an outlet")
     public ApiResponse<List<FoodDeliveryDtos.FoodDeliverySummaryResponse>> list(

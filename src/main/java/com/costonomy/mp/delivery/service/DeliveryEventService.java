@@ -82,11 +82,10 @@ public class DeliveryEventService {
 
         record.setDisposition(backwards ? "OUT_OF_ORDER" : allowed ? "APPLIED" : "IGNORED");
 
-        try {
-            eventStore.record(record);
-        } catch (DataIntegrityViolationException ex) {
-            // uk_delivery_event_provider. A retry of an event we already have —
-            // replay protection, doc 06 §13.
+        // In this transaction, with the status change below: a failed apply rolls the row back too, so the provider's
+        // retry is applied rather than refused as a duplicate (gap 10).
+        if (eventStore.recordOrDetectDuplicate(record)) {
+            // uk_delivery_event_provider: an event we already have. Replay protection, doc 06 §13.
             log.debug("Duplicate delivery event {} ignored", event.providerEventId());
             return "DUPLICATE";
         }
@@ -215,8 +214,9 @@ public class DeliveryEventService {
             case DELIVERED -> {
                 delivery.setDeliveredAt(Instant.now());
                 delivery.setAssignmentDeadline(null);
+                supersedeFailure(delivery);
             }
-            case DRIVER_CANCELLED, PICKUP_FAILED, DELIVERY_FAILED -> {
+            case DRIVER_CANCELLED, PICKUP_FAILED -> {
                 delivery.setAssignmentDeadline(null);
                 delivery.setFailureCode(target.name());
                 delivery.setFailureReason(event.description());
@@ -225,6 +225,17 @@ public class DeliveryEventService {
                 delivery.setDriverName(null);
                 delivery.setDriverPhone(null);
                 delivery.setDriverVehicle(null);
+            }
+            case DELIVERY_FAILED -> {
+                delivery.setAssignmentDeadline(null);
+                delivery.setFailureCode(target.name());
+                delivery.setFailureReason(event.description());
+                delivery.setDriverName(null);
+                delivery.setDriverPhone(null);
+                delivery.setDriverVehicle(null);
+                delivery.setReconciliationRequired(true);
+                delivery.setReconciliationReason("Delivery failed after pickup: "
+                        + (event.description() != null ? event.description() : "Courier reported failure"));
             }
             default -> { }
         }
@@ -270,6 +281,9 @@ public class DeliveryEventService {
                 && (current == DeliveryStatus.DRIVER_CANCELLED || current == DeliveryStatus.PICKUP_FAILED)) {
             return current;
         }
+        if (target == DeliveryStatus.DELIVERY_FAILED && delivery.getPickedUpAt() == null && !current.isInFlight()) {
+            return DeliveryStatus.PICKUP_FAILED;
+        }
         if (target == DeliveryStatus.CANCELLED && !current.isTerminal()
                 && current.rank() < DeliveryStatus.PICKED_UP.rank()
                 && current != DeliveryStatus.DRIVER_CANCELLED && current != DeliveryStatus.PICKUP_FAILED) {
@@ -283,6 +297,29 @@ public class DeliveryEventService {
      * why it ended if it ended. {@code CANCELLED} from the provider (read as that courier standing down) is told apart
      * from the rider cancelling by the provider's own status, which {@link #providerStoodDown} did not change.
      */
+    /**
+     * The provider now confirms the goods were delivered, after having reported a failure. The delivery's live failure
+     * fields and the reconciliation flag described a state that no longer holds, so they are cleared; what happened is
+     * kept in the failure event, the delivered event and an audit row naming what was superseded (D-206).
+     */
+    private void supersedeFailure(Delivery delivery) {
+        boolean hadFailure = delivery.getFailureCode() != null || delivery.isReconciliationRequired();
+        if (!hadFailure) {
+            return;
+        }
+        String was = (delivery.getFailureCode() == null ? "" : delivery.getFailureCode()
+                + (delivery.getFailureReason() == null ? "" : " · " + delivery.getFailureReason()))
+                + (delivery.isReconciliationRequired() && delivery.getReconciliationReason() != null
+                ? " [flag: " + delivery.getReconciliationReason() + "]" : "");
+        delivery.setFailureCode(null);
+        delivery.setFailureReason(null);
+        delivery.setReconciliationRequired(false);
+        delivery.setReconciliationReason(null);
+        auditService.record(null, null, "DELIVERY_FAILURE_SUPERSEDED", "DELIVERY", delivery.getId(),
+                DeliveryStatus.DELIVERY_FAILED.name(), DeliveryStatus.DELIVERED.name(),
+                "The provider confirmed delivery after reporting a failure: " + was, "PROVIDER");
+    }
+
     private void recordOnAttempt(Delivery delivery, DeliveryStatus target, ProviderEvent event) {
         String cause = switch (target) {
             case DRIVER_CANCELLED -> event.status() == ProviderDeliveryStatus.CANCELLED
@@ -302,6 +339,9 @@ public class DeliveryEventService {
                 }
             } else if (attempt.getEndedCause() == null) {
                 attempt.setEndedCause(cause);
+            } else if (target == DeliveryStatus.DELIVERED && "DELIVERY_FAILED".equals(attempt.getEndedCause())) {
+                // It did arrive after all: the attempt completed, whatever was reported earlier.
+                attempt.setEndedCause("COMPLETED");
             }
             attempts.save(attempt);
         });

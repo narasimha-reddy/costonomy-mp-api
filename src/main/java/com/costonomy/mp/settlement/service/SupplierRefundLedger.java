@@ -163,13 +163,18 @@ public class SupplierRefundLedger {
      */
     @Transactional
     public int applyPending(Settlement settlement, Collection<Long> orderIds) {
-        if (orderIds.isEmpty()) {
-            return 0;
+        // Charges on this settlement's orders, if it has any. A settlement with none (made only to pay a credit owed to the
+        // store) still takes the store's credits below.
+        var pending = new java.util.ArrayList<SupplierDeduction>();
+        if (!orderIds.isEmpty()) {
+            pending.addAll(deductions.findByStatusAndSupplierOrderIdIn(SupplierDeduction.PENDING, orderIds));
         }
-        var pending = new java.util.ArrayList<>(
-                deductions.findByStatusAndSupplierOrderIdIn(SupplierDeduction.PENDING, orderIds));
         // Funded deliveries on credit orders, which no settlement of their own will ever pick up (D-203).
         deductions.findPendingCreditDeliveryFunding(settlement.getSupplierStoreId()).stream()
+                .filter(d -> pending.stream().noneMatch(p -> p.getId().equals(d.getId())))
+                .forEach(pending::add);
+        // Credits for charges the courier's final cost did not need (D-204): the store's, whichever order they came from.
+        deductions.findPendingCredits(settlement.getSupplierStoreId()).stream()
                 .filter(d -> pending.stream().noneMatch(p -> p.getId().equals(d.getId())))
                 .forEach(pending::add);
         // A charge whose gateway checkout was opened a moment ago is the supplier paying it right now: taking it from the
@@ -182,14 +187,21 @@ public class SupplierRefundLedger {
         return pending.size();
     }
 
+    /** Stores that are owed a credit, so a settlement is generated for them even with no order to settle (D-204). */
+    public java.util.List<Long> storesWithPendingCredits() {
+        return deductions.storesWithPendingCredits();
+    }
+
     private void apply(SupplierDeduction deduction, Settlement settlement) {
         var adjustment = new SettlementAdjustment();
         adjustment.setSettlementId(settlement.getId());
-        adjustment.setDirection("DEBIT");
+        boolean credit = SupplierDeduction.KIND_DELIVERY_FUNDING_CREDIT.equals(deduction.getKind());
+        adjustment.setDirection(credit ? "CREDIT" : "DEBIT");
         adjustment.setAmount(deduction.getAmount());
         boolean delivery = SupplierDeduction.KIND_DELIVERY_FUNDING.equals(deduction.getKind());
-        adjustment.setReasonCode(delivery ? "DELIVERY_FUNDING" : "REFUND");
-        adjustment.setReason(delivery ? "Delivery paid by you: " + deduction.getReason()
+        adjustment.setReasonCode(credit ? "DELIVERY_FUNDING_CORRECTION" : delivery ? "DELIVERY_FUNDING" : "REFUND");
+        adjustment.setReason(credit ? "Delivery share returned: " + deduction.getReason()
+                : delivery ? "Delivery paid by you: " + deduction.getReason()
                 : "Refund to the restaurant: " + deduction.getReason());
         adjustment.setSupplierOrderId(deduction.getSupplierOrderId());
         adjustments.save(adjustment);

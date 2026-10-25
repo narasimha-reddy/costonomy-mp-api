@@ -37,12 +37,13 @@ class DeliveryRecoveryServiceTest {
     @Mock private DeliveryRepository deliveries;
     @Mock private JdbcTemplate jdbc;
     @Mock private AuditService auditService;
+    @Mock private com.costonomy.mp.payment.service.GatewayRefundService gatewayRefunds;
 
     private DeliveryRecoveryService service;
 
     @BeforeEach
     void setUp() {
-        service = new DeliveryRecoveryService(tasks, registry, wallet, deliveries, jdbc, auditService);
+        service = new DeliveryRecoveryService(tasks, registry, wallet, deliveries, jdbc, auditService, gatewayRefunds);
     }
 
     @Test

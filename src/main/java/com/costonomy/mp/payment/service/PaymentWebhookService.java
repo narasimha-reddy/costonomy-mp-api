@@ -54,6 +54,13 @@ public class PaymentWebhookService {
     private final ObjectMapper json;
     /** Other modules' claims on payments that are not order payments (credit pay, D-199). May be empty. */
     private final List<ProviderPaymentListener> listeners;
+    /** Optional, so the constructors (and the tests that use them) are unchanged. */
+    private GatewayRefundService gatewayRefunds;
+
+    @Autowired(required = false)
+    public void setGatewayRefunds(GatewayRefundService gatewayRefunds) {
+        this.gatewayRefunds = gatewayRefunds;
+    }
 
     @Autowired
     public PaymentWebhookService(PaymentWebhookStore store, PaymentRepository payments, PaymentService paymentService,
@@ -172,6 +179,9 @@ public class PaymentWebhookService {
     }
 
     private void process(PaymentWebhookEvent event, JsonNode payload) {
+        if (event.getEventType() != null && event.getEventType().startsWith("refund.") && routeRefund(event, payload)) {
+            return;
+        }
         String providerPaymentId = extractPaymentId(payload);
         if (providerPaymentId == null) {
             event.setStatus("IGNORED");
@@ -211,6 +221,45 @@ public class PaymentWebhookService {
         try (var trace = PaymentTrace.of(payment)) {
             apply(payment, providerPaymentId);
         }
+    }
+
+    /**
+     * A refund event ({@code refund.created}, {@code refund.processed}, {@code refund.failed}; Razorpay carries the refund
+     * under {@code payload.refund.entity}). Applied only to a gateway refund of ours it can be matched to (see
+     * {@link GatewayRefundService#onGatewayEvent}); {@code refund.speed_changed} says nothing about state. Returns false
+     * when the refund is not one of these, so an order refund's event is handled as before. The scheduled poll remains the
+     * recovery mechanism: an event we cannot match safely is left to it rather than guessed at.
+     */
+    private boolean routeRefund(PaymentWebhookEvent event, JsonNode payload) {
+        if (gatewayRefunds == null || "refund.speed_changed".equals(event.getEventType())) {
+            return false;
+        }
+        var entity = payload.at("/payload/refund/entity");
+        if (entity.isMissingNode() || entity.isNull()) {
+            return false;
+        }
+        var status = switch (event.getEventType()) {
+            case "refund.processed" -> PaymentProvider.ProviderRefundStatus.COMPLETED;
+            case "refund.failed" -> PaymentProvider.ProviderRefundStatus.FAILED;
+            case "refund.created" -> PaymentProvider.ProviderRefundStatus.PENDING;
+            default -> null;
+        };
+        if (status == null) {
+            return false;
+        }
+        BigDecimal rupees = null;
+        if (entity.hasNonNull("amount")) {
+            rupees = new BigDecimal(entity.get("amount").asText()).movePointLeft(2);
+        }
+        String detail = text(entity, "error_description", "error_reason", "error_code");
+        var outcome = gatewayRefunds.onGatewayEvent(text(entity, "payment_id"), text(entity, "id"),
+                text(entity, "receipt"), rupees, status, detail);
+        if (outcome == GatewayRefundService.EventOutcome.UNMATCHED) {
+            return false;
+        }
+        event.setProviderPaymentId(text(entity, "payment_id"));
+        log.info("Webhook {} {} for gateway refund: {}", event.getProviderEventId(), event.getEventType(), outcome);
+        return true;
     }
 
     private void apply(com.costonomy.mp.payment.domain.Payment payment, String providerPaymentId) {

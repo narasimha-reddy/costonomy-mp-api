@@ -63,6 +63,8 @@ class FoodDeliveryOperationsRecoveryIT extends AbstractIntegrationTest {
     @Autowired private DeliveryRecoveryService recoveryService;
     @Autowired private DeliveryRecoveryTaskRepository recoveryTasks;
     @Autowired private WalletService wallet;
+    @Autowired private com.costonomy.mp.delivery.service.CourierPayableSyncService payableSyncService;
+    @Autowired private com.costonomy.mp.delivery.service.CourierPayableProperties payableProps;
     @Autowired private com.costonomy.mp.delivery.service.ReliabilityProperties reliability;
 
     @Autowired @Qualifier("mockExpressDeliveryProvider") private MockDeliveryProvider express;
@@ -653,5 +655,424 @@ class FoodDeliveryOperationsRecoveryIT extends AbstractIntegrationTest {
                         .content(json.writeValueAsString(Map.of("reason", "Cancelled"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("CANCELLED"));
+    }
+
+    private DeliveryProvider.ProviderEvent providerEvent(String id, DeliveryProvider.ProviderDeliveryStatus status, String why) {
+        return new DeliveryProvider.ProviderEvent(id, status, why, Instant.now());
+    }
+
+    /** A booked delivery the courier already has: picked up, with the courier's fee fixed. */
+    private FoodDelivery pickedUp(String fee) {
+        var d = bookingService.create(request());
+        d.setStatus(FoodDeliveryStatus.PICKED_UP);
+        d.setPickedUpAt(Instant.now());
+        d.setFee(new BigDecimal(fee));
+        return deliveries.save(d);
+    }
+
+    private BigDecimal refundedToWalletOrGateway(long id) {
+        return reload(id).getFeeRefundedAmount();
+    }
+
+    private List<Map<String, Object>> foodPayables(long id) {
+        return jdbc.queryForList("select state, due_reason, amount_due from courier_payable "
+                + "where delivery_id = ? and source_type = 'FOOD_DELIVERY' order by id", id);
+    }
+
+    private int gatewayRefundCount(long id) {
+        return jdbc.queryForObject("select count(*) from gateway_refund where source_type = 'FOOD_DELIVERY' and source_id = ?",
+                Integer.class, id);
+    }
+
+    @Test
+    @DisplayName("Provider CANCELLED before pickup: the consignment is stood down and the next courier is booked, with nothing refunded or flagged")
+    void providerCancellationBeforePickup_triggersRebooking() {
+        var d = bookingService.create(request());
+        assertThat(d.getStatus()).isEqualTo(FoodDeliveryStatus.PROVIDER_SELECTED);
+        String oldPid = d.getProviderDeliveryId();
+        BigDecimal refundedBefore = refundedToWalletOrGateway(d.getId());
+
+        String disposition = eventService.apply(d,
+                providerEvent("evt-cancel-pre-1", DeliveryProvider.ProviderDeliveryStatus.CANCELLED, "Rider unassigned by partner"),
+                d.getProviderCode(), null);
+        assertThat(disposition).isEqualTo("APPLIED");
+
+        var oldAttempt = jdbc.queryForMap(
+                "select outcome, ended_cause from food_delivery_attempt where food_delivery_id = ? and provider_delivery_id = ?",
+                d.getId(), oldPid);
+        assertThat(oldAttempt.get("outcome")).isEqualTo("CANCELLED");
+        assertThat(oldAttempt.get("ended_cause")).isEqualTo("PROVIDER_CANCELLED");
+        var reloaded = reload(d.getId());
+        assertThat(reloaded.getStatus()).isIn(FoodDeliveryStatus.PROVIDER_SELECTED, FoodDeliveryStatus.PROVIDER_UNAVAILABLE);
+        assertThat(reloaded.getProviderDeliveryId()).as("a new courier, or none yet, never the cancelled one")
+                .isNotEqualTo(oldPid);
+        assertThat(reloaded.isReconciliationRequired()).isFalse();
+        assertThat(reloaded.getFeeRefundedAmount()).as("the hold stays while another courier is found")
+                .isEqualByComparingTo(refundedBefore);
+        assertThat(foodPayables(d.getId())).as("a courier that never had the food is owed nothing")
+                .noneMatch(row -> "DUE".equals(row.get("state")) || "PAID".equals(row.get("state")));
+    }
+
+    @Test
+    @DisplayName("Provider CANCELLED after pickup: FAILED, flagged for operations, nothing refunded, courier payable DUE (D-204)")
+    void providerCancellationAfterPickup_isFlaggedAndTheCourierStaysOwed() {
+        var d = pickedUp("80.00");
+        BigDecimal balance = wallet.balanceOf(outletId);
+        BigDecimal refunded = refundedToWalletOrGateway(d.getId());
+
+        String disposition = eventService.apply(d,
+                providerEvent("evt-cancel-post-1", DeliveryProvider.ProviderDeliveryStatus.CANCELLED, "Vehicle broke down after pickup"),
+                d.getProviderCode(), null);
+        assertThat(disposition).isEqualTo("APPLIED");
+
+        var reloaded = reload(d.getId());
+        assertThat(reloaded.getStatus()).isEqualTo(FoodDeliveryStatus.FAILED);
+        assertThat(reloaded.getFailureCode()).isEqualTo("PROVIDER_CANCELLED_POST_PICKUP");
+        assertThat(reloaded.isReconciliationRequired()).as("operations can see it").isTrue();
+        assertThat(reloaded.getReconciliationReason()).contains("after pickup");
+        assertThat(reloaded.getFeeRefundedAmount()).as("no refund after pickup").isEqualByComparingTo(refunded);
+        assertThat(wallet.balanceOf(outletId)).isEqualByComparingTo(balance);
+        assertThat(gatewayRefundCount(d.getId())).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from delivery_recovery_task where task_type = 'WALLET_REFUND' "
+                + "and delivery_id = ?", Integer.class, d.getId())).isZero();
+
+        var payables = foodPayables(d.getId());
+        assertThat(payables).hasSize(1);
+        assertThat(payables.get(0)).containsEntry("state", "DUE").containsEntry("due_reason", "POST_PICKUP_FAILURE");
+        assertThat((BigDecimal) payables.get(0).get("amount_due")).isEqualByComparingTo("80.00");
+    }
+
+    @Test
+    @DisplayName("Provider DELIVERY_FAILED before pickup is a failed pickup: stand the courier down and rebook, no flag, no courier owed")
+    void deliveryFailedBeforePickup_isTreatedAsAFailedPickup() {
+        var d = bookingService.create(request());
+        String oldPid = d.getProviderDeliveryId();
+
+        String disposition = eventService.apply(d,
+                providerEvent("evt-df-pre-1", DeliveryProvider.ProviderDeliveryStatus.DELIVERY_FAILED, "Could not collect"),
+                d.getProviderCode(), null);
+        assertThat(disposition).isEqualTo("APPLIED");
+
+        var reloaded = reload(d.getId());
+        assertThat(reloaded.getStatus()).isNotEqualTo(FoodDeliveryStatus.FAILED);
+        assertThat(reloaded.getProviderDeliveryId()).isNotEqualTo(oldPid);
+        assertThat(reloaded.isReconciliationRequired()).isFalse();
+        assertThat(jdbc.queryForObject("select ended_cause from food_delivery_attempt where food_delivery_id = ? "
+                + "and provider_delivery_id = ?", String.class, d.getId(), oldPid)).isEqualTo("PICKUP_FAILED");
+        assertThat(foodPayables(d.getId())).noneMatch(row -> "DUE".equals(row.get("state")));
+    }
+
+    @Test
+    @DisplayName("Provider DELIVERY_FAILED after pickup: FAILED with the courier still owed, flagged, nothing refunded")
+    void deliveryFailedAfterPickup_isFlaggedAndTheCourierStaysOwed() {
+        var d = pickedUp("65.00");
+        BigDecimal refunded = refundedToWalletOrGateway(d.getId());
+
+        String disposition = eventService.apply(d,
+                providerEvent("evt-df-post-1", DeliveryProvider.ProviderDeliveryStatus.DELIVERY_FAILED, "Customer unreachable"),
+                d.getProviderCode(), null);
+        assertThat(disposition).isEqualTo("APPLIED");
+
+        var reloaded = reload(d.getId());
+        assertThat(reloaded.getStatus()).isEqualTo(FoodDeliveryStatus.FAILED);
+        assertThat(reloaded.getFailureCode()).isEqualTo("DELIVERY_FAILED");
+        assertThat(reloaded.isReconciliationRequired()).isTrue();
+        assertThat(reloaded.getFeeRefundedAmount()).isEqualByComparingTo(refunded);
+        assertThat(gatewayRefundCount(d.getId())).isZero();
+        var payables = foodPayables(d.getId());
+        assertThat(payables).hasSize(1);
+        assertThat(payables.get(0)).containsEntry("state", "DUE").containsEntry("due_reason", "POST_PICKUP_FAILURE");
+    }
+
+    // ── The operator's way out (D-204 audit, gaps 7 and 14) ──────────────
+
+    private org.springframework.test.web.servlet.ResultActions resolve(String token, long id, String outcome, String reason)
+            throws Exception {
+        return mvc.perform(post("/api/v1/admin/food-deliveries/" + id + "/resolve")
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(Map.of("outcome", outcome, "reason", reason))));
+    }
+
+    /** Picked up, settled down to the courier's fee, then the courier failed at hand-over: flagged, courier owed. */
+    private FoodDelivery failedAtHandOver() {
+        var d = pickedUp("80.00");
+        bookingService.settleFee(d.getId());
+        String disposition = eventService.apply(reload(d.getId()),
+                providerEvent("evt-ho-" + UUID.randomUUID(), DeliveryProvider.ProviderDeliveryStatus.DELIVERY_FAILED, "Customer unreachable"),
+                d.getProviderCode(), null);
+        assertThat(disposition).isEqualTo("APPLIED");
+        var failed = reload(d.getId());
+        assertThat(failed.getStatus()).isEqualTo(FoodDeliveryStatus.FAILED);
+        assertThat(failed.isReconciliationRequired()).isTrue();
+        return failed;
+    }
+
+    @Test
+    @DisplayName("a food delivery the courier later confirms delivered clears the stale failure and flag, keeps the history, and inspects as over")
+    void foodFailureThenDelivered() throws Exception {
+        var failed = failedAtHandOver();
+        var inspected = json.readTree(mvc.perform(get("/api/v1/admin/food-deliveries/" + failed.getId() + "/inspect")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).at("/data");
+        assertThat(inspected.get("nextAction").asText()).isEqualTo("OPERATOR_RECONCILIATION");
+        assertThat(inspected.at("/delivery/reconciliationRequired").asBoolean()).isTrue();
+
+        String disposition = eventService.apply(reload(failed.getId()),
+                providerEvent("evt-late-" + UUID.randomUUID(), DeliveryProvider.ProviderDeliveryStatus.DELIVERED, "Handed over after all"),
+                failed.getProviderCode(), null);
+        assertThat(disposition).isEqualTo("APPLIED");
+
+        var after = reload(failed.getId());
+        assertThat(after.getStatus()).isEqualTo(FoodDeliveryStatus.DELIVERED);
+        assertThat(after.getFailureCode()).isNull();
+        assertThat(after.getFailureReason()).isNull();
+        assertThat(after.isReconciliationRequired()).isFalse();
+        assertThat(after.getReconciliationReason()).isNull();
+        assertThat(after.getDeliveredAt()).isNotNull();
+
+        var over = json.readTree(mvc.perform(get("/api/v1/admin/food-deliveries/" + failed.getId() + "/inspect")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).at("/data");
+        assertThat(over.get("nextAction").asText()).isEqualTo("TERMINAL");
+        assertThat(over.at("/delivery/reconciliationRequired").asBoolean()).isFalse();
+        assertThat(over.at("/delivery/failureCode").isNull()).isTrue();
+
+        // The history stays: the failure event, the delivered event, and an audit row naming what was superseded.
+        assertThat(jdbc.queryForList("select status from food_delivery_event where food_delivery_id = ? "
+                + "and provider_event_id like 'evt-%' order by id", String.class, failed.getId()))
+                .endsWith("FAILED", "DELIVERED");
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where entity_type = 'FOOD_DELIVERY' and entity_id = ? "
+                + "and action = 'FOOD_DELIVERY_FAILURE_SUPERSEDED'", Integer.class, failed.getId())).isEqualTo(1);
+        assertThat(foodPayables(failed.getId()).get(0)).containsEntry("state", "DUE").containsEntry("due_reason", "DELIVERED");
+
+        // An operator's resolve afterwards finds nothing to do and refunds nothing.
+        resolve(adminToken, failed.getId(), "CLEAR_FLAG", "Already delivered").andExpect(status().isOk());
+        assertThat(reload(failed.getId()).getStatus()).isEqualTo(FoodDeliveryStatus.DELIVERED);
+    }
+
+    @Test
+    @DisplayName("a food delivery flagged after a failed hand-over is listed for operations, with what to do")
+    void aFlaggedFoodDeliveryIsListedInTheExceptions() throws Exception {
+        var failed = failedAtHandOver();
+
+        var res = mvc.perform(get("/api/v1/admin/deliveries/exceptions").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+
+        boolean listed = false;
+        for (JsonNode e : json.readTree(res).at("/data")) {
+            if ("FOOD_RECONCILIATION_REQUIRED".equals(e.get("kind").asText()) && e.get("deliveryId").asLong() == failed.getId()) {
+                listed = true;
+                assertThat(e.get("action").asText()).contains("/admin/food-deliveries/{id}/resolve");
+            }
+        }
+        assertThat(listed).isTrue();
+    }
+
+    @Test
+    @DisplayName("CLEAR_FLAG clears the flag with a note, changes nothing else, refunds nothing, and a repeat is harmless")
+    void clearFlagOnly() throws Exception {
+        var failed = failedAtHandOver();
+        BigDecimal refunded = reload(failed.getId()).getFeeRefundedAmount();
+
+        resolve(adminToken, failed.getId(), "CLEAR_FLAG", "Spoke to the restaurant; nothing to do")
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.reconciliationRequired").value(false))
+                .andExpect(jsonPath("$.data.status").value("FAILED"));
+        resolve(adminToken, failed.getId(), "CLEAR_FLAG", "Again").andExpect(status().isOk());
+
+        var after = reload(failed.getId());
+        assertThat(after.isReconciliationRequired()).isFalse();
+        assertThat(after.getFeeRefundedAmount()).isEqualByComparingTo(refunded);
+        assertThat(foodPayables(failed.getId()).get(0)).containsEntry("state", "DUE");
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where entity_type = 'FOOD_DELIVERY' and entity_id = ? "
+                + "and action = 'FOOD_DELIVERY_CLEAR_FLAG_BY_OPERATIONS'", Integer.class, failed.getId())).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("CANCEL_AND_REFUND after a failed hand-over closes it as returned, gives the restaurant its fee back once, and Costonomy bears the courier")
+    void cancelAndRefundAfterPickupRefundsOnceAndTheCourierStaysOwed() throws Exception {
+        var failed = failedAtHandOver();
+        BigDecimal held = failed.netHeld();
+        assertThat(held).isGreaterThan(BigDecimal.ZERO);
+        BigDecimal balance = wallet.balanceOf(outletId);
+
+        resolve(adminToken, failed.getId(), "CANCEL_AND_REFUND", "Customer never took the food")
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("RETURNED"));
+        resolve(adminToken, failed.getId(), "CANCEL_AND_REFUND", "Again").andExpect(status().isOk());
+
+        var after = reload(failed.getId());
+        assertThat(after.getStatus()).isEqualTo(FoodDeliveryStatus.RETURNED);
+        assertThat(after.isReconciliationRequired()).isFalse();
+        assertThat(after.netHeld()).isEqualByComparingTo("0");
+        assertThat(wallet.balanceOf(outletId).subtract(balance)).as("the fee, once").isEqualByComparingTo(held);
+        assertThat(jdbc.queryForObject("select count(*) from wallet_transaction where kind = 'FOOD_DELIVERY_REFUND' "
+                + "and reference = ?", Integer.class, "food-delivery-" + failed.getId() + "-refund")).isEqualTo(1);
+
+        var payable = jdbc.queryForMap("select state, amount_due, buyer_contribution, platform_funded from courier_payable "
+                + "where delivery_id = ? and source_type = 'FOOD_DELIVERY'", failed.getId());
+        assertThat(payable.get("state")).as("the courier is still owed").isEqualTo("DUE");
+        assertThat((BigDecimal) payable.get("amount_due")).isEqualByComparingTo("80.00");
+        assertThat((BigDecimal) payable.get("buyer_contribution")).as("the restaurant bears none of it").isEqualByComparingTo("0");
+        assertThat((BigDecimal) payable.get("platform_funded")).isEqualByComparingTo("80.00");
+    }
+
+    @Test
+    @DisplayName("MARK_DELIVERED after a failed hand-over completes it and clears the flag; before any courier had the food it is refused")
+    void markDeliveredNeedsACourierWhoHadTheFood() throws Exception {
+        var failed = failedAtHandOver();
+        resolve(adminToken, failed.getId(), "MARK_DELIVERED", "Restaurant confirmed the customer got it")
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DELIVERED"));
+        var after = reload(failed.getId());
+        assertThat(after.isReconciliationRequired()).isFalse();
+        assertThat(after.getDeliveredAt()).isNotNull();
+        assertThat(foodPayables(failed.getId()).get(0)).containsEntry("state", "DUE").containsEntry("due_reason", "DELIVERED");
+
+        var fresh = bookingService.create(request());
+        resolve(adminToken, fresh.getId(), "MARK_DELIVERED", "No courier had it").andExpect(status().isConflict());
+        assertThat(reload(fresh.getId()).getStatus()).isEqualTo(FoodDeliveryStatus.PROVIDER_SELECTED);
+    }
+
+    @Test
+    @DisplayName("CANCEL_AND_REFUND before pickup cancels, stands the courier down and returns the hold, once")
+    void cancelAndRefundBeforePickup() throws Exception {
+        var d = bookingService.create(request());
+        BigDecimal balance = wallet.balanceOf(outletId);
+        BigDecimal held = reload(d.getId()).netHeld();
+
+        resolve(adminToken, d.getId(), "CANCEL_AND_REFUND", "Restaurant closed").andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CANCELLED"));
+        resolve(adminToken, d.getId(), "CANCEL_AND_REFUND", "Again").andExpect(status().isOk());
+
+        assertThat(wallet.balanceOf(outletId).subtract(balance)).isEqualByComparingTo(held);
+        assertThat(foodPayables(d.getId())).noneMatch(row -> "DUE".equals(row.get("state")));
+    }
+
+    @Test
+    @DisplayName("only operations may resolve, a reason is required, and an unknown outcome is refused")
+    void resolveIsGuarded() throws Exception {
+        var failed = failedAtHandOver();
+        String restaurantToken = new ApiClient(mvc, json).loginFresh();
+
+        resolve(restaurantToken, failed.getId(), "CLEAR_FLAG", "I am the restaurant").andExpect(status().is4xxClientError());
+        resolve(adminToken, failed.getId(), "CLEAR_FLAG", " ").andExpect(status().isBadRequest());
+        resolve(adminToken, failed.getId(), "NOT_AN_OUTCOME", "x").andExpect(status().isBadRequest());
+
+        assertThat(reload(failed.getId()).isReconciliationRequired()).isTrue();
+    }
+
+    @Test
+    @DisplayName("food courier payables are rebuilt by the same cursor and backfill: more than one batch, rows beyond any lookback")
+    void foodPayablesAreRebuiltByTheCursorAndBackfill() {
+        var ids = new java.util.ArrayList<Long>();
+        for (int i = 0; i < 3; i++) {
+            ids.add(bookingService.create(request()).getId());
+        }
+        // Lose their payables, and make one of the deliveries older than any lookback.
+        for (long id : ids) {
+            jdbc.update("delete e from courier_payable_event e join courier_payable p on p.id = e.payable_id "
+                    + "where p.source_type = 'FOOD_DELIVERY' and p.delivery_id = ?", id);
+            jdbc.update("delete a from courier_payment_attempt a join courier_payable p on p.id = a.payable_id "
+                    + "where p.source_type = 'FOOD_DELIVERY' and p.delivery_id = ?", id);
+            jdbc.update("delete from courier_payable where source_type = 'FOOD_DELIVERY' and delivery_id = ?", id);
+        }
+        jdbc.update("update food_delivery set updated_at = ? where id = ?",
+                java.sql.Timestamp.from(Instant.now().minusSeconds(90L * 86_400)), ids.get(0));
+        assertThat(payableSyncService.audit().missingPayables()).as("the audit sees them").isGreaterThanOrEqualTo(3);
+
+        var original = new int[] {payableProps.getSyncBatch(), payableProps.getSyncMaxBatchesPerPass()};
+        var lag = payableProps.getSyncSettleLag();
+        try {
+            payableProps.setSyncSettleLag(java.time.Duration.ZERO);
+            payableProps.setSyncBatch(2);                      // fewer than the rows to reach: it takes several batches
+            payableProps.setSyncMaxBatchesPerPass(3);
+            payableSyncService.rewind("FOOD_DELIVERY");
+            int guard = 0;
+            while (!ids.stream().allMatch(id -> !foodPayables(id).isEmpty()) && guard++ < 200) {
+                payableSyncService.run();
+            }
+        } finally {
+            payableProps.setSyncBatch(original[0]);
+            payableProps.setSyncMaxBatchesPerPass(original[1]);
+            payableProps.setSyncSettleLag(lag);
+        }
+
+        assertThat(ids).allSatisfy(id -> assertThat(foodPayables(id)).as("food delivery %s", id).hasSize(1));
+
+        // And the backfill path, for rows the cursor was never going to show again.
+        for (long id : ids) {
+            jdbc.update("delete e from courier_payable_event e join courier_payable p on p.id = e.payable_id "
+                    + "where p.source_type = 'FOOD_DELIVERY' and p.delivery_id = ?", id);
+            jdbc.update("delete from courier_payable where source_type = 'FOOD_DELIVERY' and delivery_id = ?", id);
+        }
+        long after = 0;
+        com.costonomy.mp.delivery.service.CourierPayableSyncService.Backfill page;
+        int pages = 0;
+        do {
+            page = payableSyncService.backfill("FOOD_DELIVERY", after, 2);
+            after = page.nextAfterId();
+        } while (page.remaining() > 0 && pages++ < 200);
+        assertThat(ids).allSatisfy(id -> assertThat(foodPayables(id)).hasSize(1));
+    }
+
+    @Test
+    @DisplayName("Cancellation echo: provider CANCELLED after delivery already cancelled is applied without duplicate refund")
+    void cancellationEcho_appliedWithoutDuplicateRefund() {
+        var d = bookingService.create(request());
+        bookingService.cancel(d.getId(), "Customer cancelled");
+
+        var reloaded = reload(d.getId());
+        assertThat(reloaded.getStatus()).isEqualTo(FoodDeliveryStatus.CANCELLED);
+        BigDecimal refundedBefore = reloaded.getFeeRefundedAmount();
+
+        // Provider sends CANCELLED echo
+        var echoEvent = new DeliveryProvider.ProviderEvent(
+                "evt-echo-1",
+                DeliveryProvider.ProviderDeliveryStatus.CANCELLED,
+                "Cancelled as requested",
+                Instant.now()
+        );
+
+        String disposition = eventService.apply(reloaded, echoEvent, reloaded.getProviderCode(), null);
+        assertThat(disposition).isEqualTo("APPLIED");
+
+        var afterEcho = reload(d.getId());
+        assertThat(afterEcho.getStatus()).isEqualTo(FoodDeliveryStatus.CANCELLED);
+        // Refunded amount did not increase
+        assertThat(afterEcho.getFeeRefundedAmount()).isEqualByComparingTo(refundedBefore);
+    }
+
+    @Test
+    @DisplayName("Duplicate events: second identical event returns DUPLICATE")
+    void duplicateEvent_returnsDuplicate() {
+        var d = bookingService.create(request());
+        var event = new DeliveryProvider.ProviderEvent(
+                "evt-dup-1",
+                DeliveryProvider.ProviderDeliveryStatus.DRIVER_ASSIGNED,
+                "Driver assigned",
+                Instant.now()
+        );
+
+        String first = eventService.apply(d, event, d.getProviderCode(), null);
+        assertThat(first).isEqualTo("APPLIED");
+
+        String second = eventService.apply(d, event, d.getProviderCode(), null);
+        assertThat(second).isEqualTo("DUPLICATE");
+    }
+
+    @Test
+    @DisplayName("Stale consignment event from replaced provider delivery is IGNORED")
+    void staleConsignmentEvent_isIgnored() {
+        var d = bookingService.create(request());
+        // Active provider delivery is current
+        var event = new DeliveryProvider.ProviderEvent(
+                "evt-stale-1",
+                DeliveryProvider.ProviderDeliveryStatus.PICKED_UP,
+                "Picked up by old driver",
+                Instant.now()
+        );
+
+        // Apply with a different / replaced providerDeliveryId
+        String disposition = eventService.apply(d, d.getProviderCode(), "replaced-consignment-id-99", event, null);
+        assertThat(disposition).isEqualTo("IGNORED");
     }
 }

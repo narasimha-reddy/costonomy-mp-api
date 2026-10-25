@@ -29,6 +29,10 @@ public class SupplierDeduction extends BaseEntity {
 
     public static final String KIND_DISPUTE_REFUND = "DISPUTE_REFUND";
     public static final String KIND_DELIVERY_FUNDING = "DELIVERY_FUNDING";
+    /** A credit to the supplier: part of a delivery funding charge that the courier's final cost did not need (D-204). */
+    public static final String KIND_DELIVERY_FUNDING_CREDIT = "DELIVERY_FUNDING_CREDIT";
+    /** A charge reduced to nothing because the courier cost the supplier's share nothing. */
+    public static final String WAIVED = "WAIVED";
 
     /** Which of {@code disputeRefundId} or {@code deliveryId} says why. */
     @Column(name = "kind", nullable = false, length = 24)
@@ -36,6 +40,10 @@ public class SupplierDeduction extends BaseEntity {
 
     @Column(name = "delivery_id")
     private Long deliveryId;
+
+    /** For a credit: the charge it corrects. */
+    @Column(name = "corrects_deduction_id")
+    private Long correctsDeductionId;
 
     @Column(name = "supplier_store_id", nullable = false)
     private Long supplierStoreId;

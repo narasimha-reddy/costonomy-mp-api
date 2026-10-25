@@ -225,58 +225,13 @@ public class DeliveryBookingService {
                     }
 
                     curAttempt.setCallMs(callMs);
-                    curAttempt.setOutcome("BOOKED");
-                    curAttempt.setProviderDeliveryId(finalBooking.providerDeliveryId());
-                    attempts.save(curAttempt);
-
-                    curDelivery.setAttemptCount(attemptNumber);
-                    curDelivery.setDeliveryProviderId(quote.getDeliveryProviderId());
-                    curDelivery.setProviderCode(quote.getProviderCode());
-                    curDelivery.setProviderDeliveryId(finalBooking.providerDeliveryId());
-                    var bookedAmount = finalBooking.amount() != null ? finalBooking.amount() : quote.getAmount();
-                    var bookedCurrency = finalBooking.currency() != null ? finalBooking.currency() : quote.getCurrency();
-                    var bookedEta = finalBooking.etaMinutes() != null ? finalBooking.etaMinutes() : quote.getEtaMinutes();
-                    var bookedArrival = finalBooking.estimatedArrivalAt() != null ? finalBooking.estimatedArrivalAt()
-                            : bookedEta == null ? null : Instant.now().plusSeconds(bookedEta * 60L);
-                    curDelivery.setFee(bookedAmount);
-                    curDelivery.setCurrency(bookedCurrency);
-                    curDelivery.setEtaMinutes(bookedEta);
-                    curDelivery.setEstimatedArrivalAt(bookedArrival);
-                    if (finalBooking.trackingUrl() != null) {
-                        curDelivery.setTrackingUrl(finalBooking.trackingUrl());
-                    }
-                    curDelivery.setStatus(DeliveryStatus.PROVIDER_SELECTED);
-                    curDelivery.setBookedAt(Instant.now());
-                    java.time.Duration deadlineTimeout = (curDelivery.getVehicleType() == VehicleType.THREE_WHEELER
-                            || curDelivery.getVehicleType() == VehicleType.FOUR_WHEELER_TRUCK)
-                            ? truckAssignmentTimeout
-                            : bikeAssignmentTimeout;
-                    curDelivery.setAssignmentDeadline(Instant.now().plus(deadlineTimeout));
-                    curDelivery.setFailureCode(null);
-                    curDelivery.setFailureReason(null);
-                    curDelivery.clearNoPartner();
-                    deliveries.save(curDelivery);
-
-                    eventPublisher.publishEvent(new com.costonomy.mp.delivery.domain.DeliveryBookedEvent(
-                            curDelivery.getId(), curDelivery.getAssignmentDeadline()));
-
-                    var ledgerEntry = new DeliveryLedgerEntry();
-                    ledgerEntry.setDeliveryId(curDelivery.getId());
-                    ledgerEntry.setProviderCode(quote.getProviderCode());
-                    ledgerEntry.setProviderDeliveryId(finalBooking.providerDeliveryId());
-                    ledgerEntry.setEntryType("BOOKED");
-                    ledgerEntry.setAmount(bookedAmount);
-                    ledgerEntry.setCurrency(bookedCurrency);
-                    ledgerEntry.setDescription("Consignment booked with %s (Attempt %d)".formatted(quote.getProviderCode(), attemptNumber));
-                    ledger.save(ledgerEntry);
-
-                    timeline.record(curDelivery, DeliveryStatus.PROVIDER_SELECTED.eventName(),
-                            DeliveryStatus.PROVIDER_SELECTED, "Finding a driver");
-
-                    auditService.record(null, null, "DELIVERY_BOOKED", "DELIVERY",
-                            curDelivery.getId(), null, DeliveryStatus.PROVIDER_SELECTED.name(),
-                            "Attempt %d with %s".formatted(attemptNumber, quote.getProviderCode()),
-                            "SYSTEM");
+                    recordBooked(curDelivery, curAttempt, quote.getProviderCode(), quote.getDeliveryProviderId(),
+                            finalBooking.providerDeliveryId(),
+                            finalBooking.amount() != null ? finalBooking.amount() : quote.getAmount(),
+                            finalBooking.currency() != null ? finalBooking.currency() : quote.getCurrency(),
+                            finalBooking.etaMinutes() != null ? finalBooking.etaMinutes() : quote.getEtaMinutes(),
+                            finalBooking.estimatedArrivalAt(), finalBooking.trackingUrl(), attemptNumber,
+                            "Finding a driver");
                     return true;
                 });
                 if (!Boolean.TRUE.equals(accepted)) {
@@ -304,6 +259,63 @@ public class DeliveryBookingService {
 
         return tx.execute(status -> fail(deliveryId, DeliveryStatus.PROVIDER_UNAVAILABLE, "ALL_PROVIDERS_FAILED",
                 "No delivery partner could take this order."));
+    }
+
+    /**
+     * Record a courier as booked: the attempt, the delivery, the assignment deadline for its vehicle, the booked event,
+     * the ledger entry, the timeline row and the audit row. The one place a booking is written, so a booking recovered
+     * after a lost answer is recorded exactly as a normal one is (D-204 audit, gap 11). Runs in the caller's transaction.
+     */
+    private void recordBooked(Delivery d, DeliveryProviderAttempt attempt, String providerCode, Long deliveryProviderId,
+                              String providerDeliveryId, java.math.BigDecimal amount, String currency, Integer etaMinutes,
+                              Instant estimatedArrivalAt, String trackingUrl, int attemptNumber, String timelineNote) {
+        attempt.setOutcome("BOOKED");
+        attempt.setProviderDeliveryId(providerDeliveryId);
+        attempts.save(attempt);
+
+        Instant now = Instant.now();
+        d.setAttemptCount(Math.max(d.getAttemptCount(), attemptNumber));
+        d.setDeliveryProviderId(deliveryProviderId);
+        d.setProviderCode(providerCode);
+        d.setProviderDeliveryId(providerDeliveryId);
+        d.setFee(amount);
+        d.setCurrency(currency == null ? "INR" : currency);
+        d.setEtaMinutes(etaMinutes);
+        d.setEstimatedArrivalAt(estimatedArrivalAt != null ? estimatedArrivalAt
+                : etaMinutes == null ? null : now.plusSeconds(etaMinutes * 60L));
+        if (trackingUrl != null) {
+            d.setTrackingUrl(trackingUrl);
+        }
+        d.setStatus(DeliveryStatus.PROVIDER_SELECTED);
+        d.setBookedAt(now);
+        java.time.Duration deadlineTimeout = (d.getVehicleType() == VehicleType.THREE_WHEELER
+                || d.getVehicleType() == VehicleType.FOUR_WHEELER_TRUCK)
+                ? truckAssignmentTimeout
+                : bikeAssignmentTimeout;
+        d.setAssignmentDeadline(now.plus(deadlineTimeout));
+        d.setFailureCode(null);
+        d.setFailureReason(null);
+        d.clearNoPartner();
+        deliveries.save(d);
+
+        eventPublisher.publishEvent(new com.costonomy.mp.delivery.domain.DeliveryBookedEvent(
+                d.getId(), d.getAssignmentDeadline()));
+
+        var ledgerEntry = new DeliveryLedgerEntry();
+        ledgerEntry.setDeliveryId(d.getId());
+        ledgerEntry.setProviderCode(providerCode);
+        ledgerEntry.setProviderDeliveryId(providerDeliveryId);
+        ledgerEntry.setEntryType("BOOKED");
+        ledgerEntry.setAmount(amount);
+        ledgerEntry.setCurrency(d.getCurrency());
+        ledgerEntry.setDescription("Consignment booked with %s (Attempt %d)".formatted(providerCode, attemptNumber));
+        ledger.save(ledgerEntry);
+
+        timeline.record(d, DeliveryStatus.PROVIDER_SELECTED.eventName(), DeliveryStatus.PROVIDER_SELECTED, timelineNote);
+
+        auditService.record(null, null, "DELIVERY_BOOKED", "DELIVERY", d.getId(), null,
+                DeliveryStatus.PROVIDER_SELECTED.name(), "Attempt %d with %s".formatted(attemptNumber, providerCode),
+                "SYSTEM");
     }
 
     private record StaleSupplierPendingInfo(
@@ -374,31 +386,19 @@ public class DeliveryBookingService {
                 if (finalLookedUp.isPresent()) {
                     var booking = finalLookedUp.get();
                     log.info("Recovered accepted booking from {} for supplier delivery {}", curAttempt.getProviderCode(), delivery.getId());
-                    if (delivery.getStatus() == DeliveryStatus.DELIVERY_REQUESTED || delivery.getStatus() == DeliveryStatus.PROVIDER_UNAVAILABLE) {
-                        curAttempt.setOutcome("BOOKED");
-                        curAttempt.setProviderDeliveryId(booking.providerDeliveryId());
-                        curAttempt.setEndedAt(now);
-                        attempts.save(curAttempt);
-
-                        delivery.setDeliveryProviderId(curAttempt.getDeliveryProviderId());
-                        delivery.setProviderCode(curAttempt.getProviderCode());
-                        delivery.setProviderDeliveryId(booking.providerDeliveryId());
-                        var bookedAmount = curAttempt.getQuotedAmount();
-                        delivery.setFee(bookedAmount);
-                        delivery.setCurrency("INR");
-                        delivery.setEtaMinutes(booking.etaMinutes());
-                        delivery.setEstimatedArrivalAt(booking.estimatedArrivalAt() != null ? booking.estimatedArrivalAt()
-                                : booking.etaMinutes() == null ? null : now.plusSeconds(booking.etaMinutes() * 60L));
-                        delivery.setStatus(DeliveryStatus.PROVIDER_SELECTED);
-                        delivery.setBookedAt(now);
-                        delivery.setAssignmentDeadline(now.plus(bikeAssignmentTimeout));
-                        delivery.setFailureCode(null);
-                        delivery.setFailureReason(null);
-                        delivery.clearNoPartner();
-                        deliveries.save(delivery);
-
-                        timeline.record(delivery, DeliveryStatus.PROVIDER_SELECTED.eventName(),
-                                DeliveryStatus.PROVIDER_SELECTED, "Booking recovered from " + curAttempt.getProviderCode());
+                    // The attempt was reserved for this delivery while it wanted a courier, so adopt the booking in every
+                    // state that still wants one and holds none: requested, quoted, unavailable, or waiting for a
+                    // replacement after the rider cancelled or the pickup failed. Only a delivery that finished,
+                    // was taken over by the supplier, or already has a courier does not want it.
+                    boolean wanted = delivery.getMode() == DeliveryMode.COSTONOMY
+                            && !delivery.getStatus().isTerminal()
+                            && !delivery.getStatus().isInFlight()
+                            && delivery.getProviderDeliveryId() == null;
+                    if (wanted) {
+                        recordBooked(delivery, curAttempt, curAttempt.getProviderCode(), curAttempt.getDeliveryProviderId(),
+                                booking.providerDeliveryId(), curAttempt.getQuotedAmount(), "INR", booking.etaMinutes(),
+                                booking.estimatedArrivalAt(), null, curAttempt.getAttemptNumber(),
+                                "Booking recovered from " + curAttempt.getProviderCode());
                         return;
                     } else {
                         curAttempt.setOutcome("CANCELLED");
@@ -544,13 +544,18 @@ public class DeliveryBookingService {
             // recorded as failed by now, so a pending one is never ours.
             return false;
         }
+        // The same failure again (every auto-retry that finds nobody) is not news: no new timeline row and no new
+        // outbox event for it, or one delivery would announce "provider unavailable" up to fifteen times (gap 13).
+        boolean news = delivery.getStatus() != status || !java.util.Objects.equals(delivery.getFailureCode(), code);
         delivery.setStatus(status);
         delivery.markNoPartner(Instant.now());
         delivery.setFailureCode(code);
         delivery.setFailureReason(reason);
         deliveries.save(delivery);
 
-        timeline.record(delivery, status.eventName(), status, reason);
+        if (news) {
+            timeline.record(delivery, status.eventName(), status, reason);
+        }
         return false;
     }
 }

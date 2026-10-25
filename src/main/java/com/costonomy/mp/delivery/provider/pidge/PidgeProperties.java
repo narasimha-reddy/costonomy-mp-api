@@ -43,9 +43,6 @@ public class PidgeProperties {
     /** Max requests per second allowed to Pidge API (token bucket rate limit). */
     private int rateLimitRps = 20;
 
-    /** Default unassigned waterfall timeout before cascading. */
-    private Duration unassignedTimeout = Duration.ofMinutes(3);
-
     /** If true, enables Pidge Sandbox simulation endpoints (staging only). */
     private boolean sandbox = false;
 

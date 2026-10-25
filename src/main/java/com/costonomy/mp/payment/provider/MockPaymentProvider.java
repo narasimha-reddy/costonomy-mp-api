@@ -69,6 +69,35 @@ public class MockPaymentProvider implements PaymentProvider {
 
     /** Refund amount ending in this: accepted as PENDING, completed when fetched. */
     private static final String REFUND_PENDING_SUFFIX = "23";
+    /** Next refund(s) accepted as PENDING (any amount), completed when fetched. Test-facing (D-206). */
+    private final java.util.concurrent.atomic.AtomicInteger pendingNext = new java.util.concurrent.atomic.AtomicInteger();
+    /** Next refund(s) accepted as PENDING that the gateway later reports FAILED when fetched. Test-facing (D-206). */
+    private final java.util.concurrent.atomic.AtomicInteger pendingThenFailsNext = new java.util.concurrent.atomic.AtomicInteger();
+    /** Pending refunds that will fail when next asked about, with the payment each belongs to. */
+    private final Map<String, String> failsWhenFetched = new ConcurrentHashMap<>();
+    private final Map<String, String> paymentOfRefund = new ConcurrentHashMap<>();
+
+    private volatile java.util.concurrent.CountDownLatch holdRefundRelease;
+    private volatile java.util.concurrent.CountDownLatch holdRefundEntered;
+
+    /**
+     * The next refund is made at the gateway, then its answer is held until {@code release} counts down; {@code entered}
+     * counts down when the call reaches the hold. Test-facing (D-207): lets a lease expire while the call is out.
+     */
+    public void holdNextRefundAnswer(java.util.concurrent.CountDownLatch entered, java.util.concurrent.CountDownLatch release) {
+        this.holdRefundEntered = entered;
+        this.holdRefundRelease = release;
+    }
+
+    /** The next {@code count} refunds are accepted as PENDING and complete when fetched. */
+    public void nextRefundsArePending(int count) {
+        pendingNext.set(count);
+    }
+
+    /** The next {@code count} refunds are accepted as PENDING and are reported FAILED when fetched (a bank rejection). */
+    public void nextRefundsArePendingThenFail(int count) {
+        pendingThenFailsNext.set(count);
+    }
 
     @Override
     public String name() {
@@ -254,6 +283,11 @@ public class MockPaymentProvider implements PaymentProvider {
         if (replay != null) {
             return replay;
         }
+        // Test-facing faults (D-204): the request never reaches the gateway, or reaches it and the answer is lost.
+        RuntimeException lostBefore = faultsBeforeRefund.poll();
+        if (lostBefore != null) {
+            throw lostBefore;
+        }
         var payment = fetchPayment(providerPaymentId);
         if (payment.status() != ProviderPaymentStatus.CAPTURED) {
             throw new PaymentProviderException(
@@ -275,9 +309,15 @@ public class MockPaymentProvider implements PaymentProvider {
                     "REFUND_DECLINED", "The refund was declined by the gateway.");
         }
         String refundId = "mock_rfnd_" + UUID.randomUUID().toString().replace("-", "");
+        boolean thenFails = pendingThenFailsNext.getAndUpdate(n -> Math.max(0, n - 1)) > 0;
+        boolean pending = thenFails || pendingNext.getAndUpdate(n -> Math.max(0, n - 1)) > 0
+                || endsWith(amount, REFUND_PENDING_SUFFIX);
         var refund = new ProviderRefund(refundId,
-                endsWith(amount, REFUND_PENDING_SUFFIX) ? ProviderRefundStatus.PENDING
-                        : ProviderRefundStatus.COMPLETED, amount, null, null);
+                pending ? ProviderRefundStatus.PENDING : ProviderRefundStatus.COMPLETED, amount, null, null);
+        if (thenFails) {
+            failsWhenFetched.put(refundId, providerPaymentId);
+        }
+        paymentOfRefund.put(refundId, providerPaymentId);
         refunds.put(refundId, refund);
         refundsByKey.put(idempotencyKey, refund);
         refundedByPayment.merge(providerPaymentId, amount, BigDecimal::add);
@@ -286,7 +326,48 @@ public class MockPaymentProvider implements PaymentProvider {
                         options == null ? null : options.receipt(),
                         options == null || options.notes() == null ? null : options.notes().get("mandi_refund_id"),
                         java.time.Instant.now()));
+        var holdRelease = holdRefundRelease;
+        if (holdRelease != null) {
+            holdRefundRelease = null;
+            var entered = holdRefundEntered;
+            if (entered != null) {
+                entered.countDown();
+            }
+            try {
+                holdRelease.await(30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        RuntimeException lostAnswer = faultsAfterRefund.poll();
+        if (lostAnswer != null) {
+            throw lostAnswer;
+        }
         return refund;
+    }
+
+    private final java.util.Queue<RuntimeException> faultsBeforeRefund = new java.util.concurrent.ConcurrentLinkedQueue<>();
+    private final java.util.Queue<RuntimeException> faultsAfterRefund = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /** The next refund request is lost on the way: nothing is refunded. Test-facing (D-204). */
+    public void loseNextRefundRequest(RuntimeException error) {
+        faultsBeforeRefund.add(error);
+    }
+
+    /** The next refund goes through at the gateway but the answer never arrives. Test-facing (D-204). */
+    public void loseNextRefundAnswer(RuntimeException error) {
+        faultsAfterRefund.add(error);
+    }
+
+    /** Clears the faults above. */
+    public void clearRefundFaults() {
+        pendingNext.set(0);
+        pendingThenFailsNext.set(0);
+        holdRefundRelease = null;
+        holdRefundEntered = null;
+        failsWhenFetched.clear();
+        faultsBeforeRefund.clear();
+        faultsAfterRefund.clear();
     }
 
     /**
@@ -337,6 +418,23 @@ public class MockPaymentProvider implements PaymentProvider {
         var refund = refunds.get(providerRefundId);
         if (refund == null) {
             throw new PaymentProviderException("Unknown mock refund " + providerRefundId, false, "NOT_FOUND");
+        }
+        if (failsWhenFetched.remove(providerRefundId) != null) {
+            // The bank rejected it: the money was not returned, and the gateway no longer counts it as refunded.
+            var failed = new ProviderRefund(refund.providerRefundId(), ProviderRefundStatus.FAILED, refund.amount(),
+                    "REFUND_FAILED", "The bank rejected the refund.");
+            refunds.put(providerRefundId, failed);
+            String paymentId = paymentOfRefund.get(providerRefundId);
+            if (paymentId != null) {
+                refundedByPayment.merge(paymentId, refund.amount().negate(), BigDecimal::add);
+            }
+            entriesByPayment.values().forEach(list -> list.replaceAll(entry -> providerRefundId.equals(entry.providerRefundId())
+                    ? new ProviderRefundEntry(entry.providerRefundId(), entry.amount(), ProviderRefundStatus.FAILED,
+                            entry.receipt(), entry.mandiRefundId(), entry.createdAt()) : entry));
+            return failed;
+        }
+        if (refund.status() == ProviderRefundStatus.FAILED || refund.status() == ProviderRefundStatus.COMPLETED) {
+            return refund;
         }
         // A pending refund finishes by the time anyone asks again.
         var settled = new ProviderRefund(refund.providerRefundId(), ProviderRefundStatus.COMPLETED,

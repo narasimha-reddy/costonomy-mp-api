@@ -49,6 +49,9 @@ class DeliveryReassignAfterFailureTest {
     @Mock private AuditService auditService;
     @Mock private DeliveryProvider pidge;
     @Mock private DeliveryRecoveryService recoveryService;
+    @Mock private OrderCancellationPort orderCancellationPort;
+    @Mock private SupplierCourierPayableSync payableSync;
+    @Mock private SupplierDeliveryMovementService movementService;
 
     private DeliveryService service;
 
@@ -58,6 +61,7 @@ class DeliveryReassignAfterFailureTest {
                 deliveries, events, locations, attempts, quoting, booking,
                 eventService, orderBridge, timeline, directory, registry,
                 accessControl, auditService, new PidgeProperties(), recoveryService,
+                orderCancellationPort, payableSync, movementService,
                 org.mockito.Mockito.mock(org.springframework.transaction.PlatformTransactionManager.class));
     }
 

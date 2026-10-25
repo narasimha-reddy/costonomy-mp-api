@@ -2,23 +2,21 @@ package com.costonomy.mp.delivery.repository;
 
 import com.costonomy.mp.delivery.domain.DeliveryEvent;
 import lombok.RequiredArgsConstructor;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Stores a provider event in its own transaction, before anything acts on it.
+ * Stores a provider event <b>in the caller's transaction</b>, so the record and the status change it caused commit or
+ * roll back together (D-204 audit, gap 10).
  *
- * <p>The same rule as {@code PaymentWebhookStore}, for the same two reasons
- * (D-016, D-021). The event must survive processing that fails, or there is
- * nothing to replay. And {@code uk_delivery_event_provider} rejects a retry — in
- * MySQL that marks the whole transaction rollback-only, so a duplicate caught in
- * the caller's transaction still fails at commit.
+ * <p>It used to be stored in a transaction of its own, before anything acted on it, so that an event survived processing
+ * that failed. Nothing replayed it, though: when applying failed, the provider's retry found the stored row, was told
+ * {@code DUPLICATE}, and the change was lost for good. Now a failed apply leaves no row and the retry applies it.
  *
- * <p>The duplicate is <b>thrown out of this method rather than caught inside it</b>,
- * because a catch cannot un-doom a transaction that is already rolling back. The
- * caller catches it, once this transaction has finished.
+ * <p>The replay protection of {@code uk_delivery_event_provider} (doc 06 §13) is kept without a thrown error: the insert
+ * is {@code INSERT IGNORE}, so a duplicate is "0 rows" rather than an exception that would mark the caller's transaction
+ * rollback-only (D-016, D-021). A concurrent identical event waits on the unique index until the first commits, then
+ * is ignored.
  */
 @Service
 @RequiredArgsConstructor
@@ -26,11 +24,11 @@ public class DeliveryEventStore {
 
     private final DeliveryEventRepository events;
 
-    /**
-     * @throws DataIntegrityViolationException if this provider event is already stored
-     */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public DeliveryEvent record(DeliveryEvent event) {
-        return events.saveAndFlush(event);
+    /** @return true if this provider event was already stored (so nothing was written), false if it is new and stored now */
+    @Transactional
+    public boolean recordOrDetectDuplicate(DeliveryEvent e) {
+        return events.insertUnlessDuplicate(e.getDeliveryId(), e.getEventType(),
+                e.getStatus() == null ? null : e.getStatus().name(), e.getProviderCode(), e.getProviderEventId(),
+                e.getProviderStatus(), e.getDisposition(), e.getDescription(), e.getPayload(), e.getOccurredAt()) == 0;
     }
 }
