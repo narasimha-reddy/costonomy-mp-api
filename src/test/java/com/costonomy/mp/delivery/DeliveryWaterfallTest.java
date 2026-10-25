@@ -57,11 +57,15 @@ class DeliveryWaterfallTest {
         delivery.setProviderCode("PIDGE");
 
         when(deliveries.findById(deliveryId)).thenReturn(Optional.of(delivery));
+        when(deliveryService.reassignIfAssignmentExpired(eq(deliveryId), contains("Unassigned driver timeout")))
+                .thenReturn(true);
 
         boolean result = waterfallService.cascadeUnassigned(deliveryId);
 
         assertThat(result).isTrue();
-        verify(deliveryService).reassign(eq(null), eq(deliveryId), contains("Unassigned driver timeout"));
+        // The status, the deadline and the order are checked again under the row lock by the service (gap 2).
+        verify(deliveryService).reassignIfAssignmentExpired(eq(deliveryId), contains("Unassigned driver timeout"));
+        verify(deliveryService, never()).reassign(any(), any(), any());
     }
 
     @Test

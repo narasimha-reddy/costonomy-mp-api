@@ -478,6 +478,35 @@ class SupplierDeliveryFundingPaymentIT extends AbstractIntegrationTest {
                 .isEqualTo(paymentId);
     }
 
+    @Autowired private org.springframework.context.ApplicationEventPublisher eventPublisher;
+
+    @Test
+    @DisplayName("a directly paid share is partly refunded at the gateway when the courier cost less, once however often it is told")
+    void directPaymentIsPartlyRefundedWhenTheCourierCostLess() throws Exception {
+        var setup = createOrderWithDelivery("95.00");
+        long deductionId = createFundedDeduction(setup.seller().storeId(), setup.orderId(), setup.deliveryId(), "95.00");
+        String paymentId = payAtGateway(setup, deductionId);
+        api.post(setup.seller().token(), "/api/v1/supplier-stores/" + setup.seller().storeId()
+                + "/delivery-funding/" + deductionId + "/confirm",
+                Map.of("paymentId", paymentId, "signature", MockPaymentProvider.TEST_SIGNATURE));
+
+        var lower = new com.costonomy.mp.delivery.domain.SupplierShareReduced(setup.deliveryId(), setup.orderId(),
+                new BigDecimal("60.00"));
+        eventPublisher.publishEvent(lower);
+        eventPublisher.publishEvent(lower);
+
+        assertThat(paymentProvider.refundedOf(paymentId)).as("the 35 that was not needed").isEqualByComparingTo("35.00");
+        var refunds = jdbc.queryForList("select purpose, status, amount from gateway_refund where source_type = "
+                + "'SUPPLIER_DELIVERY_FUNDING' and source_id = ?", deductionId);
+        assertThat(refunds).hasSize(1);
+        assertThat(refunds.get(0)).containsEntry("purpose", "FEE_ADJUSTMENT").containsEntry("status", "SUCCEEDED");
+
+        // A later, lower figure refunds only the further difference.
+        eventPublisher.publishEvent(new com.costonomy.mp.delivery.domain.SupplierShareReduced(
+                setup.deliveryId(), setup.orderId(), new BigDecimal("50.00")));
+        assertThat(paymentProvider.refundedOf(paymentId)).isEqualByComparingTo("45.00");
+    }
+
     @Test
     @DisplayName("the supplier's payment is not entered against the courier in the delivery ledger")
     void supplierPaymentIsNotACourierCost() throws Exception {

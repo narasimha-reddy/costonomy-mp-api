@@ -119,7 +119,7 @@ class AdminDeliveryServiceTest {
         service.forceWaterfall(actorId, deliveryId, "Driver stalled");
 
         verify(accessControl).require(actorId, Permissions.DELIVERY_OPERATE, ScopeType.PLATFORM, null);
-        verify(waterfallService).forceEscalate(deliveryId, "Driver stalled");
+        verify(waterfallService).forceEscalate(actorId, deliveryId, "Driver stalled");
     }
 
     @Test
@@ -151,5 +151,36 @@ class AdminDeliveryServiceTest {
         verify(accessControl).require(actorId, Permissions.DELIVERY_INSPECT, ScopeType.PLATFORM, null);
         assertThat(result.totalElements()).isEqualTo(5);
         assertThat(result.hasNext()).isFalse();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(DeliveryStatus.class)
+    void everyStatusHasARealNextStepAndOnlyAFinishedDeliveryIsTerminal(DeliveryStatus status) {
+        var d = new Delivery();
+        d.setStatus(status);
+        d.setMode(DeliveryMode.COSTONOMY);
+
+        var next = AdminDeliveryService.nextStep(d);
+
+        assertThat(next.reason()).isNotBlank();
+        boolean finished = status == DeliveryStatus.DELIVERED || status == DeliveryStatus.CANCELLED;
+        assertThat("TERMINAL".equals(next.action())).as("%s", status).isEqualTo(finished);
+    }
+
+    @Test
+    void aFailedHandOverAsksTheOperatorAndAFlaggedDeliveryAsksForReconciliation() {
+        var d = new Delivery();
+        d.setMode(DeliveryMode.COSTONOMY);
+        d.setStatus(DeliveryStatus.DELIVERY_FAILED);
+        assertThat(AdminDeliveryService.nextStep(d).action()).isEqualTo("OPERATOR_RESOLVE");
+
+        d.setReconciliationRequired(true);
+        d.setReconciliationReason("Delivery failed after pickup: x");
+        assertThat(AdminDeliveryService.nextStep(d).action()).isEqualTo("OPERATOR_RECONCILIATION");
+
+        var own = new Delivery();
+        own.setMode(DeliveryMode.SUPPLIER_OWN);
+        own.setStatus(DeliveryStatus.DRIVER_ASSIGNED);
+        assertThat(AdminDeliveryService.nextStep(own).action()).isEqualTo("SUPPLIER_DELIVERS");
     }
 }

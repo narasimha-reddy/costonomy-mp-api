@@ -219,6 +219,8 @@ class MigrationIT extends AbstractIntegrationTest {
                         "food_delivery_attempt",
                         "food_delivery_event",
                         "food_delivery_location",
+                        // What happened to a courier payable, by whom: the history a payment is argued from (D-204).
+                        "courier_payable_event",
                         // The one-to-one boundary between a request and the order
                         // it became. Written once, at the moment the order is
                         // created, and never again: an updated_at here would mean

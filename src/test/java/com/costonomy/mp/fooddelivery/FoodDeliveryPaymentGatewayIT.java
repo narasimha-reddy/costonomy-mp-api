@@ -39,6 +39,11 @@ class FoodDeliveryPaymentGatewayIT extends AbstractIntegrationTest {
     @Autowired private FoodDeliveryRepository deliveries;
     @Autowired private WalletService wallet;
     @Autowired private MockPaymentProvider paymentProvider;
+    @Autowired private com.costonomy.mp.fooddelivery.service.FoodDeliveryJobs jobs;
+    @Autowired private com.costonomy.mp.payment.service.GatewayRefundService refundService;
+    @Autowired private com.costonomy.mp.delivery.service.DeliveryRecoveryService recovery;
+    @Autowired private com.costonomy.mp.fooddelivery.service.FoodCourierPayableSync payableSync;
+    @Autowired private com.costonomy.mp.delivery.service.CourierPayableService payables;
     @Autowired private com.costonomy.mp.delivery.service.ReliabilityProperties reliability;
 
     @Autowired @Qualifier("mockExpressDeliveryProvider") private MockDeliveryProvider express;
@@ -237,32 +242,237 @@ class FoodDeliveryPaymentGatewayIT extends AbstractIntegrationTest {
         assertThat(wallet.balanceOf(outletId)).isZero();
     }
 
-    @Test
-    @DisplayName("cancelling paid GATEWAY delivery refunds held fee to wallet")
-    void cancelPaidGatewayDeliveryRefundsWallet() throws Exception {
-        assertThat(wallet.balanceOf(outletId)).isZero();
+    /** A GATEWAY delivery paid and booked, ready for the money paths: its id, payment id and what was captured. */
+    private record Paid(long id, String paymentId, BigDecimal captured) {
+    }
 
+    private Paid paidAndBooked() throws Exception {
         var res = createDelivery(UUID.randomUUID().toString(), deliveryPayload("GATEWAY"));
         long deliveryId = res.at("/data/id").asLong();
-        String providerOrderId = res.at("/data/providerOrderId").asText();
-        double maxFee = res.at("/data/maxFee").asDouble();
+        var payment = paymentProvider.completeCheckout(res.at("/data/providerOrderId").asText(), "upi");
+        api.post(token, "/api/v1/outlets/" + outletId + "/food-deliveries/" + deliveryId + "/confirm", Map.of(
+                "paymentId", payment.providerPaymentId(), "signature", MockPaymentProvider.TEST_SIGNATURE));
+        return new Paid(deliveryId, payment.providerPaymentId(),
+                jdbc.queryForObject("select max_fee from food_delivery where id = ?", BigDecimal.class, deliveryId));
+    }
 
-        // 1. Pay via provider
-        var payment = paymentProvider.completeCheckout(providerOrderId, "upi");
-        String confirmUrl = "/api/v1/outlets/" + outletId + "/food-deliveries/" + deliveryId + "/confirm";
-        api.post(token, confirmUrl, Map.of(
-                "paymentId", payment.providerPaymentId(),
-                "signature", MockPaymentProvider.TEST_SIGNATURE
-        ));
+    private java.util.List<java.util.Map<String, Object>> gatewayRefunds(long deliveryId) {
+        return jdbc.queryForList("select purpose, status, amount, idempotency_key from gateway_refund "
+                + "where source_type = 'FOOD_DELIVERY' and source_id = ? order by id", deliveryId);
+    }
 
-        // 2. Cancel while waiting for driver pickup
-        String cancelUrl = "/api/v1/outlets/" + outletId + "/food-deliveries/" + deliveryId + "/cancel";
+    @Test
+    @DisplayName("cancelling a paid GATEWAY delivery refunds the whole fee to the gateway, not the wallet, once")
+    void cancelPaidGatewayDeliveryRefundsTheGateway() throws Exception {
+        var paid = paidAndBooked();
+        assertThat(paid.captured()).isGreaterThan(BigDecimal.ZERO);
+
+        String cancelUrl = "/api/v1/outlets/" + outletId + "/food-deliveries/" + paid.id() + "/cancel";
         var cancelRes = api.post(token, cancelUrl, Map.of("reason", "Food burned"));
-        assertThat(cancelRes.get("error").isNull()).isTrue();
-        assertThat(cancelRes.at("/data/status").asText()).isEqualTo("CANCELLED");
+        api.post(token, cancelUrl, Map.of("reason", "Food burned"));      // a repeat
 
-        // Wallet was credited with the maxFee that was paid!
-        assertThat(wallet.balanceOf(outletId)).isEqualByComparingTo(BigDecimal.valueOf(maxFee));
+        assertThat(cancelRes.at("/data/status").asText()).isEqualTo("CANCELLED");
+        assertThat(wallet.balanceOf(outletId)).as("the wallet is not touched by a gateway payment").isZero();
+        assertThat(paymentProvider.refundedOf(paid.paymentId())).isEqualByComparingTo(paid.captured());
+        var refunds = gatewayRefunds(paid.id());
+        assertThat(refunds).hasSize(1);
+        assertThat(refunds.get(0)).containsEntry("purpose", "CANCELLED").containsEntry("status", "SUCCEEDED");
+        assertThat(jdbc.queryForObject("select count(*) from wallet_transaction where reference like ?", Integer.class,
+                "food-delivery-" + paid.id() + "-%")).isZero();
+        assertThat(jdbc.queryForObject("select fee_refunded_amount from food_delivery where id = ?", BigDecimal.class,
+                paid.id())).isEqualByComparingTo(paid.captured());
+    }
+
+    @Test
+    @DisplayName("settling the fee after pickup refunds only the unused part, to the gateway, once")
+    void settlingRefundsThePartialUnusedFeeToTheGateway() throws Exception {
+        var paid = paidAndBooked();
+        jdbc.update("update food_delivery set status = 'PICKED_UP', fee = 49.00 where id = ?", paid.id());
+
+        BigDecimal returned = service.settleFee(paid.id());
+        BigDecimal again = service.settleFee(paid.id());
+
+        BigDecimal unused = paid.captured().subtract(new BigDecimal("49.00"));
+        assertThat(returned).isEqualByComparingTo(unused);
+        assertThat(again).isZero();
+        assertThat(paymentProvider.refundedOf(paid.paymentId())).as("a partial refund").isEqualByComparingTo(unused);
+        assertThat(gatewayRefunds(paid.id())).hasSize(1);
+        assertThat(gatewayRefunds(paid.id()).get(0)).containsEntry("purpose", "FEE_ADJUSTMENT");
+        assertThat(wallet.balanceOf(outletId)).isZero();
+    }
+
+    @Test
+    @DisplayName("when no courier is found the fee goes back to the gateway and the delivery ends")
+    void noCourierRefundsTheGateway() throws Exception {
+        saver.arm(com.costonomy.mp.delivery.provider.MockDeliveryProvider.Failure.BOOKING_FAILS);
+        express.arm(com.costonomy.mp.delivery.provider.MockDeliveryProvider.Failure.BOOKING_FAILS);
+        var paid = paidAndBooked();
+        assertThat(jdbc.queryForObject("select status from food_delivery where id = ?", String.class, paid.id()))
+                .isEqualTo("PROVIDER_UNAVAILABLE");
+
+        jdbc.update("update food_delivery set requested_at = utc_timestamp(6) - interval 10 minute, "
+                + "round_started_at = utc_timestamp(6) - interval 10 minute, paid_at = utc_timestamp(6) - interval 10 minute where id = ?", paid.id());
+        jobs.runRetry();
+        jobs.runRetry();
+
+        assertThat(jdbc.queryForObject("select status from food_delivery where id = ?", String.class, paid.id()))
+                .isEqualTo("FAILED");
+        assertThat(paymentProvider.refundedOf(paid.paymentId())).isEqualByComparingTo(paid.captured());
+        assertThat(gatewayRefunds(paid.id())).hasSize(1);
+        assertThat(gatewayRefunds(paid.id()).get(0)).containsEntry("purpose", "NO_COURIER");
+        assertThat(wallet.balanceOf(outletId)).isZero();
+    }
+
+    @Test
+    @DisplayName("a refund the gateway did not answer is recorded, looked up, and not paid twice")
+    void anUnansweredRefundIsReconciled() throws Exception {
+        var paid = paidAndBooked();
+        paymentProvider.loseNextRefundAnswer(com.costonomy.mp.payment.provider.PaymentProviderException
+                .unreachable("timeout", new RuntimeException("x")));
+
+        api.post(token, "/api/v1/outlets/" + outletId + "/food-deliveries/" + paid.id() + "/cancel", Map.of("reason", "x"));
+        assertThat(gatewayRefunds(paid.id()).get(0)).as("recorded before the gateway was asked")
+                .containsEntry("status", "AMBIGUOUS");
+
+        refundService.sweep();
+
+        assertThat(gatewayRefunds(paid.id()).get(0)).containsEntry("status", "SUCCEEDED");
+        assertThat(paymentProvider.refundedOf(paid.paymentId())).isEqualByComparingTo(paid.captured());
+        assertThat(paymentProvider.listRefunds(paid.paymentId())).hasSize(1);
+    }
+
+    private com.fasterxml.jackson.databind.JsonNode financials(long deliveryId) throws Exception {
+        return api.get(token, "/api/v1/outlets/" + outletId + "/food-deliveries/" + deliveryId + "/financials").path("data");
+    }
+
+    @Test
+    @DisplayName("the restaurant sees the fee held while the delivery runs, then refunded to its card, with the refund's progress")
+    void theRestaurantSeesWhatItPaidAndWhatCameBack() throws Exception {
+        var paid = paidAndBooked();
+
+        var held = financials(paid.id());
+        assertThat(held.path("chargeState").asText()).isEqualTo("HELD");
+        assertThat(held.path("keptByCostonomy").decimalValue()).isEqualByComparingTo(paid.captured());
+        assertThat(held.path("refundState").asText()).isEqualTo("NONE");
+        assertThat(held.has("quotedCost")).as("the courier's cost is never shown").isFalse();
+
+        paymentProvider.loseNextRefundAnswer(com.costonomy.mp.payment.provider.PaymentProviderException
+                .unreachable("timeout", new RuntimeException("x")));
+        api.post(token, "/api/v1/outlets/" + outletId + "/food-deliveries/" + paid.id() + "/cancel", Map.of("reason", "x"));
+
+        var pending = financials(paid.id());
+        assertThat(pending.path("refundState").asText()).as("recorded, not yet confirmed").isEqualTo("IN_PROGRESS");
+        assertThat(pending.path("refundInProgress").decimalValue()).isEqualByComparingTo(paid.captured());
+        assertThat(pending.path("refundedToWallet").decimalValue()).isEqualByComparingTo("0");
+
+        refundService.sweep();
+
+        var done = financials(paid.id());
+        assertThat(done.path("chargeState").asText()).isEqualTo("RELEASED");
+        assertThat(done.path("refundState").asText()).isEqualTo("COMPLETE");
+        assertThat(done.path("refundedToOriginalPayment").decimalValue()).isEqualByComparingTo(paid.captured());
+        assertThat(done.path("refundedToWallet").decimalValue()).isEqualByComparingTo("0");
+        assertThat(done.path("refundInProgress").decimalValue()).isEqualByComparingTo("0");
+        assertThat(done.path("keptByCostonomy").decimalValue()).isEqualByComparingTo("0");
+        assertThat(api.getStatus(api.loginFresh(), "/api/v1/outlets/" + outletId + "/food-deliveries/" + paid.id()
+                + "/financials")).as("another restaurant cannot read it").isIn(403, 404);
+    }
+
+    private com.costonomy.mp.delivery.domain.CourierPayable foodPayable(long deliveryId) {
+        payableSync.sync(deliveryId);
+        var all = payables.forDelivery("FOOD_DELIVERY", deliveryId);
+        assertThat(all).hasSize(1);
+        return all.get(0);
+    }
+
+    @Test
+    @DisplayName("a food delivery's courier is accrued at booking, owed at pickup, and the restaurant's fee is the whole of it")
+    void foodCourierIsOwedAtPickup() throws Exception {
+        var paid = paidAndBooked();
+
+        var booked = foodPayable(paid.id());
+        assertThat(booked.getState()).isEqualTo("ACCRUED");
+        assertThat(booked.getAmountDue()).isEqualByComparingTo("0");
+
+        jdbc.update("update food_delivery set status = 'PICKED_UP', picked_up_at = utc_timestamp(6) where id = ?", paid.id());
+        var due = foodPayable(paid.id());
+        assertThat(due.getState()).isEqualTo("DUE");
+        BigDecimal fee = jdbc.queryForObject("select fee from food_delivery where id = ?", BigDecimal.class, paid.id());
+        assertThat(due.getAmountDue()).isEqualByComparingTo(fee);
+        assertThat(due.getBuyerContribution()).isEqualByComparingTo(fee);
+        assertThat(due.getSupplierContribution()).isEqualByComparingTo("0");
+        assertThat(due.getPlatformFunded()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("a delivery that fails after the courier had the food still owes the courier, and the restaurant keeps paying the fee")
+    void failureAfterPickupStillOwesTheCourier() throws Exception {
+        var paid = paidAndBooked();
+        jdbc.update("update food_delivery set status = 'PICKED_UP', picked_up_at = utc_timestamp(6) where id = ?", paid.id());
+        service.settleFee(paid.id());
+        jdbc.update("update food_delivery set status = 'FAILED', failure_code = 'CUSTOMER_UNREACHABLE' where id = ?", paid.id());
+
+        var due = foodPayable(paid.id());
+        assertThat(due.getState()).as("the courier did the work").isEqualTo("DUE");
+        assertThat(due.getAmountDue()).isGreaterThan(BigDecimal.ZERO);
+
+        jdbc.update("update food_delivery set status = 'RETURNED' where id = ?", paid.id());
+        var returned = foodPayable(paid.id());
+        assertThat(returned.getId()).isEqualTo(due.getId());
+        assertThat(returned.getState()).isEqualTo("DUE");
+        assertThat(financials(paid.id()).path("chargeState").asText()).isEqualTo("CHARGED");
+        assertThat(financials(paid.id()).path("refundState").asText()).as("no refund is owed").isIn("NONE", "COMPLETE");
+        assertThat(gatewayRefunds(paid.id()).stream().filter(r -> "CANCELLED".equals(r.get("purpose"))).count()).isZero();
+    }
+
+    @Test
+    @DisplayName("a delivery cancelled before pickup owes the courier nothing, and one that no courier took has no payable at all")
+    void cancelledBeforePickupOwesNothing() throws Exception {
+        var paid = paidAndBooked();
+        api.post(token, "/api/v1/outlets/" + outletId + "/food-deliveries/" + paid.id() + "/cancel", Map.of("reason", "x"));
+
+        var p = foodPayable(paid.id());
+        assertThat(p.getState()).isEqualTo("VOID");
+        assertThat(p.getAmountDue()).isEqualByComparingTo("0");
+
+        saver.arm(com.costonomy.mp.delivery.provider.MockDeliveryProvider.Failure.BOOKING_FAILS);
+        express.arm(com.costonomy.mp.delivery.provider.MockDeliveryProvider.Failure.BOOKING_FAILS);
+        var nobody = paidAndBooked();
+        payableSync.sync(nobody.id());
+        assertThat(payables.forDelivery("FOOD_DELIVERY", nobody.id())).as("nothing was ever booked").isEmpty();
+    }
+
+    @Test
+    @DisplayName("a wallet-paid delivery is still refunded to the wallet, and no gateway refund is made")
+    void walletPaidStillRefundsTheWallet() {
+        wallet.topUp(outletId, new BigDecimal("500.00"), "test top-up");
+        BigDecimal before = wallet.balanceOf(outletId);
+        var d = service.create(new com.costonomy.mp.fooddelivery.service.FoodDeliveryBookingService.CreateRequest(
+                restaurantId, outletId, UUID.randomUUID().toString(), "POS-9", "Rohit", "+919876543210",
+                "Flat 102, Himayatnagar", "Near signal", new BigDecimal("17.4042"), new BigDecimal("78.4870"),
+                "Hyderabad", "Telangana", "500029", null, new BigDecimal("500"), new BigDecimal("2.0"), 45, null));
+        assertThat(wallet.balanceOf(outletId)).isLessThan(before);
+
+        service.cancel(d.getId(), "changed mind");
+
+        assertThat(wallet.balanceOf(outletId)).as("every rupee back in the wallet").isEqualByComparingTo(before);
+        assertThat(gatewayRefunds(d.getId())).isEmpty();
+    }
+
+    @Test
+    @DisplayName("an old wallet-refund recovery task for a gateway-paid delivery becomes a gateway refund and never credits the wallet")
+    void recoveryTaskForAGatewayPaymentDoesNotCreditTheWallet() throws Exception {
+        var paid = paidAndBooked();
+        jdbc.update("update food_delivery set status = 'CANCELLED', fee = 0 where id = ?", paid.id());
+        var task = recovery.scheduleRefund(paid.id(), outletId, "refund", paid.captured(), "Food delivery cancelled");
+
+        recovery.processDueTasks();
+
+        assertThat(wallet.balanceOf(outletId)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from wallet_transaction where reference = ?", Integer.class,
+                task.getIdempotencyRef())).isZero();
+        assertThat(paymentProvider.refundedOf(paid.paymentId())).isEqualByComparingTo(paid.captured());
+        assertThat(gatewayRefunds(paid.id())).hasSize(1);
     }
 
     @Test

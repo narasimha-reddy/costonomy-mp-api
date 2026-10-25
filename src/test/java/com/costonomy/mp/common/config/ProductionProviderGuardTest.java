@@ -30,6 +30,7 @@ class ProductionProviderGuardTest {
         prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
         prod.setProperty("costonomy.mp.providers.otp", "MSG91");
         prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        realDelivery(prod);
         realInvoices(prod);
         assertThatCode(() -> ProductionProviderGuard.check(prod)).doesNotThrowAnyException();
 
@@ -46,6 +47,7 @@ class ProductionProviderGuardTest {
         prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
         prod.setProperty("costonomy.mp.providers.otp", "MSG91");
         prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        realDelivery(prod);
         realInvoices(prod);
         prod.setProperty("costonomy.mp.otp.bcrypt-strength", "4");
         assertThatThrownBy(() -> ProductionProviderGuard.check(prod))
@@ -73,6 +75,7 @@ class ProductionProviderGuardTest {
         prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
         prod.setProperty("costonomy.mp.providers.otp", "MSG91");
         prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        realDelivery(prod);
         realInvoices(prod);
         prod.setProperty("costonomy.mp.wallet.withdraw-precheck", "false");
         assertThatThrownBy(() -> ProductionProviderGuard.check(prod))
@@ -99,6 +102,7 @@ class ProductionProviderGuardTest {
             prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
             prod.setProperty("costonomy.mp.providers.otp", "MSG91");
             prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+            realDelivery(prod);
             realInvoices(prod);
             prod.setProperty("costonomy.mp.wallet.withdraw-precheck", value);
             assertThatThrownBy(() -> ProductionProviderGuard.check(prod))
@@ -112,6 +116,7 @@ class ProductionProviderGuardTest {
             prod.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
             prod.setProperty("costonomy.mp.providers.otp", "MSG91");
             prod.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+            realDelivery(prod);
             realInvoices(prod);
             prod.setProperty("costonomy.mp.wallet.withdraw-precheck", value);
             assertThatCode(() -> ProductionProviderGuard.check(prod)).describedAs("value '%s'", value).doesNotThrowAnyException();
@@ -121,6 +126,7 @@ class ProductionProviderGuardTest {
         unset.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
         unset.setProperty("costonomy.mp.providers.otp", "MSG91");
         unset.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        realDelivery(unset);
         realInvoices(unset);
         assertThatCode(() -> ProductionProviderGuard.check(unset)).doesNotThrowAnyException();
     }
@@ -145,6 +151,7 @@ class ProductionProviderGuardTest {
         env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
         env.setProperty("costonomy.mp.providers.otp", "MSG91");
         env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        realDelivery(env);
         realInvoices(env);
         env.setProperty("costonomy.mp.quickscan.enabled", "true");
 
@@ -188,7 +195,16 @@ class ProductionProviderGuardTest {
         env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
         env.setProperty("costonomy.mp.providers.otp", "MSG91");
         env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        realDelivery(env);
+        realDelivery(env);
         return env;
+    }
+
+    /** A real delivery provider with the settings it needs, so a test about something else is not stopped by this check. */
+    private static void realDelivery(MockEnvironment env) {
+        env.setProperty("costonomy.mp.providers.delivery", "PIDGE");
+        env.setProperty("costonomy.mp.pidge.api-token", "placeholder-token");
+        env.setProperty("costonomy.mp.pidge.webhook-secret", "placeholder-not-a-secret");
     }
 
     @Test
@@ -326,6 +342,7 @@ class ProductionProviderGuardTest {
             env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
             env.setProperty("costonomy.mp.providers.otp", "MSG91");
             env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+            realDelivery(env);
             realInvoices(env);
             env.setProperty("costonomy.mp.jwt.secret", bad);
 
@@ -345,6 +362,7 @@ class ProductionProviderGuardTest {
         env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
         realInvoices(env);
         env.setProperty("costonomy.mp.providers.delivery", "PIDGE");
+        env.setProperty("costonomy.mp.pidge.api-token", "placeholder-token");
 
         assertThatThrownBy(() -> ProductionProviderGuard.check(env))
                 .isInstanceOf(IllegalStateException.class)
@@ -354,12 +372,57 @@ class ProductionProviderGuardTest {
         assertThatCode(() -> ProductionProviderGuard.check(env)).doesNotThrowAnyException();
     }
 
+    @Test
+    @DisplayName("D-207: production with the delivery provider unset (its MOCK default) or MOCK refuses to start, naming the property")
+    void productionOnMockDeliveryIsRefused() {
+        var unset = new MockEnvironment();
+        unset.setActiveProfiles("prod");
+        unset.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+        unset.setProperty("costonomy.mp.providers.otp", "MSG91");
+        unset.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        // delivery not set: the MOCK default is exactly the forgotten-setting case.
+        assertThatThrownBy(() -> ProductionProviderGuard.check(unset))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("costonomy.mp.providers.delivery")
+                .hasMessageContaining("MOCK");
+
+        var explicit = new MockEnvironment();
+        explicit.setActiveProfiles("production");
+        explicit.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
+        explicit.setProperty("costonomy.mp.providers.otp", "MSG91");
+        explicit.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        explicit.setProperty("costonomy.mp.providers.delivery", "MOCK");
+        assertThatThrownBy(() -> ProductionProviderGuard.check(explicit))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("costonomy.mp.providers.delivery");
+    }
+
+    @Test
+    @DisplayName("D-207: a real delivery provider with its settings starts; without its API token it is refused; local and test keep the mock")
+    void realDeliveryProviderStartsOnlyWithItsSettings() {
+        var env = prodReady();
+        assertThatCode(() -> ProductionProviderGuard.check(env)).doesNotThrowAnyException();
+
+        var noToken = prodReady();
+        noToken.setProperty("costonomy.mp.pidge.api-token", " ");
+        assertThatThrownBy(() -> ProductionProviderGuard.check(noToken))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("pidge.api-token");
+
+        var local = new MockEnvironment();
+        local.setActiveProfiles("local", "test");
+        assertThatCode(() -> ProductionProviderGuard.check(local)).doesNotThrowAnyException();
+        var none = new MockEnvironment();
+        assertThatCode(() -> ProductionProviderGuard.check(none)).doesNotThrowAnyException();
+    }
+
     private MockEnvironment prodReady() {
         var env = new MockEnvironment();
         env.setActiveProfiles("prod");
         env.setProperty("costonomy.mp.providers.payment", "RAZORPAY");
         env.setProperty("costonomy.mp.providers.otp", "MSG91");
         env.setProperty("costonomy.mp.providers.payout", "RAZORPAYX");
+        realDelivery(env);
         realInvoices(env);
         return env;
     }

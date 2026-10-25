@@ -30,9 +30,12 @@ import org.springframework.transaction.annotation.Transactional;
 public class DeliveryOrderBridge {
 
     private final JdbcTemplate jdbc;
+    private final SupplierCourierPayableSync courierPayables;
 
     @Transactional
     public void onDeliveryStatus(Delivery delivery, DeliveryStatus status) {
+        // Whatever the status, what Costonomy owes the courier may have changed (D-204). After commit, in its own transaction.
+        courierPayables.syncSoon(delivery.getId());
         // Any report that the goods are with a courier or delivered: a provider can skip the pickup stage (assigned,
         // then delivered), and the charge is once-only, so asking on each is safe.
         if (status.isInFlight() || status == DeliveryStatus.DELIVERED) {
@@ -53,6 +56,9 @@ public class DeliveryOrderBridge {
      *
      * <p>Once per delivery ({@code uk_supplier_deduction_delivery}), so a replayed pickup event charges nothing more.
      * Only for a Costonomy courier; the order's funded amount is cleared if the supplier carries it instead.
+     *
+     * <p>The charge is the share agreed at checkout, but never more than the courier actually cost ({@code d.fee}, the fee
+     * as booked): a supplier is not charged for a cost that did not happen, and the platform bears any difference (D-204).
      */
     private void chargeFundedDelivery(Delivery delivery) {
         if (delivery.getMode() != DeliveryMode.COSTONOMY) {
@@ -61,10 +67,11 @@ public class DeliveryOrderBridge {
         int recorded = jdbc.update("""
                 insert into supplier_deduction
                     (supplier_store_id, supplier_order_id, dispute_refund_id, amount, reason, status, kind, delivery_id)
-                select so.supplier_store_id, so.id, null, so.delivery_funded_amount,
-                       concat('Costonomy delivery for order ', so.order_number), 'PENDING', 'DELIVERY_FUNDING', ?
+                select so.supplier_store_id, so.id, null, least(so.delivery_funded_amount, d.fee),
+                       concat('Costonomy delivery for order ', so.order_number), 'PENDING', 'DELIVERY_FUNDING', d.id
                   from supplier_order so
-                 where so.id = ? and so.delivery_funded_amount > 0
+                  join delivery d on d.id = ?
+                 where so.id = ? and so.delivery_funded_amount > 0 and d.fee > 0
                 on duplicate key update delivery_id = delivery_id
                 """, delivery.getId(), delivery.getSupplierOrderId());
         if (recorded > 0) {

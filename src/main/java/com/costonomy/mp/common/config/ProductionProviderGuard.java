@@ -26,10 +26,14 @@ public class ProductionProviderGuard {
     /** Profiles that mean real customers. */
     static final Set<String> PRODUCTION_PROFILES = Set.of("prod", "production");
 
-    /** Providers that must never be the mock where money and identity are real. */
+    /**
+     * Providers that must never be the mock where money and identity are real. The delivery provider is here because its
+     * default is MOCK: a production deploy that forgot {@code DELIVERY_PROVIDER} would book mock couriers that never come,
+     * charge restaurants for them and owe real courier payables for nothing (D-207).
+     */
     static final List<String> GUARDED = List.of(
             "costonomy.mp.providers.payment", "costonomy.mp.providers.otp",
-            "costonomy.mp.providers.payout");
+            "costonomy.mp.providers.payout", "costonomy.mp.providers.delivery");
 
     /** Signing keys that were once defaults in application.properties. */
     static final Set<String> LEAKED_JWT_SECRETS = Set.of("SWt/kWYyraXKIm3nlqnJSL9vSqmPLkCT7GdZyKa4jDU=");
@@ -129,6 +133,13 @@ public class ProductionProviderGuard {
                     environment.getProperty("costonomy.mp.invoices.cost-outlet-map"));
         } catch (IllegalStateException e) {
             throw new IllegalStateException(e.getMessage() + " (under a production profile)");
+        }
+        // Pidge with no API token cannot quote or book: every delivery would fail at the first call. Refuse to start rather
+        // than discover it from the first stuck order.
+        if ("PIDGE".equalsIgnoreCase(environment.getProperty("costonomy.mp.providers.delivery", "").trim())
+                && blank(environment.getProperty("costonomy.mp.pidge.api-token"))) {
+            throw new IllegalStateException("costonomy.mp.pidge.api-token is not set while Pidge is the delivery "
+                    + "provider under a production profile. Set PIDGE_API_TOKEN.");
         }
         // An enabled Pidge with no webhook secret would reject every status update (the webhook fails
         // closed), leaving deliveries stuck; refuse to start rather than discover it from a stuck order.

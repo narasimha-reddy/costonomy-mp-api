@@ -79,12 +79,15 @@ public class SettlementService {
         var withPayouts = new java.util.HashSet<>(repaymentPayouts.storesWithPending(periodEnd));
         var storeIds = new java.util.LinkedHashSet<>(directory.storesWithSettleableOrders(periodStart, periodEnd));
         storeIds.addAll(withPayouts);
+        // A credit owed to a store is money it is owed whether or not it has an order to settle (D-204).
+        var withCredits = new java.util.HashSet<>(refundLedger.storesWithPendingCredits());
+        storeIds.addAll(withCredits);
 
         for (Long storeId : storeIds) {
             var orders = directory.settleableOrders(periodStart, periodEnd).stream()
                     .filter(order -> order.supplierStoreId().equals(storeId))
                     .toList();
-            if (orders.isEmpty() && !withPayouts.contains(storeId)) {
+            if (orders.isEmpty() && !withPayouts.contains(storeId) && !withCredits.contains(storeId)) {
                 continue;
             }
 

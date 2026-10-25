@@ -47,6 +47,7 @@ class SettlementFlowIT extends AbstractIntegrationTest {
     @Autowired private MockPaymentProvider paymentProvider;
     @Autowired private PaymentJobs paymentJobs;
     @Autowired private SettlementService settlementService;
+    @Autowired private org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     private ApiClient api;
     private TestCheckout checkout;
@@ -438,6 +439,53 @@ class SettlementFlowIT extends AbstractIntegrationTest {
                     """, String.class, settlement.get("id").asLong(), order.orderId())).isEqualTo("DEBIT:DELIVERY_FUNDING");
             assertThat(jdbc.queryForObject("select status from supplier_deduction where supplier_order_id = ?",
                     String.class, order.orderId())).isEqualTo("APPLIED");
+        }
+
+        @Test
+        @DisplayName("a credit for a share the courier did not need is applied when the open settlement is approved, once")
+        void aCorrectionCreditIsAppliedAtApproval() throws Exception {
+            var order = completedOrder(10, "400");
+            long deliveryId = fundedDelivery(order.orderId(), "76.00");
+            generate();
+            assertThat(settlementFor(order.seller()).get("netAmount").asDouble()).isEqualTo(3884.00);
+            long settlementId = settlementFor(order.seller()).get("id").asLong();
+
+            eventPublisher.publishEvent(new com.costonomy.mp.delivery.domain.SupplierShareReduced(
+                    deliveryId, order.orderId(), new java.math.BigDecimal("56.00")));
+            var approved = api.post(operator("OPS_FINANCE"), "/api/v1/admin/settlements/" + settlementId + "/approve",
+                    Map.of("note", "Checked")).at("/data");
+
+            // 3,884 plus the 20 the supplier should not have paid.
+            assertThat(approved.get("netAmount").asDouble()).isEqualTo(3904.00);
+            assertThat(jdbc.queryForObject("select concat(direction, ':', reason_code) from settlement_adjustment "
+                    + "where supplier_order_id = ? and reason_code = 'DELIVERY_FUNDING_CORRECTION'", String.class,
+                    order.orderId())).isEqualTo("CREDIT:DELIVERY_FUNDING_CORRECTION");
+            assertThat(jdbc.queryForObject("select count(*) from supplier_deduction where kind = 'DELIVERY_FUNDING_CREDIT' "
+                    + "and supplier_order_id = ? and status = 'APPLIED'", Integer.class, order.orderId())).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("a store owed a credit with no order to settle still gets a settlement that pays it")
+        void aCreditWithNoUpcomingSettlementIsStillPaid() throws Exception {
+            var order = completedOrder(10, "400");
+            long deliveryId = fundedDelivery(order.orderId(), "76.00");
+            generate();
+            long first = settlementFor(order.seller()).get("id").asLong();
+            // That settlement is signed off and paid; a correction then arrives for it.
+            String finance = operator("OPS_FINANCE");
+            api.post(finance, "/api/v1/admin/settlements/" + first + "/approve", Map.of("note", "ok"));
+            eventPublisher.publishEvent(new com.costonomy.mp.delivery.domain.SupplierShareReduced(
+                    deliveryId, order.orderId(), new java.math.BigDecimal("56.00")));
+
+            // The next run has no order to settle for this store, but is owed 20.
+            settlementService.generate(Instant.now().plus(Duration.ofDays(2)), Instant.now().plus(Duration.ofDays(3)));
+
+            var created = jdbc.queryForMap("select net_amount, gross_amount, status from settlement "
+                    + "where supplier_store_id = ? and id <> ?", order.seller().storeId(), first);
+            assertThat(((java.math.BigDecimal) created.get("net_amount")).doubleValue()).isEqualTo(20.00);
+            assertThat(((java.math.BigDecimal) created.get("gross_amount")).doubleValue()).isZero();
+            assertThat(jdbc.queryForObject("select count(*) from supplier_deduction where kind = 'DELIVERY_FUNDING_CREDIT' "
+                    + "and status = 'PENDING' and supplier_store_id = ?", Integer.class, order.seller().storeId())).isZero();
         }
 
         @Test

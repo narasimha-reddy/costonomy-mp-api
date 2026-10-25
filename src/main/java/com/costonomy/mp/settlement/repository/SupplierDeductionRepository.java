@@ -16,6 +16,23 @@ public interface SupplierDeductionRepository extends JpaRepository<SupplierDeduc
 
     Optional<SupplierDeduction> findByProviderOrderId(String providerOrderId);
 
+    Optional<SupplierDeduction> findByDeliveryId(Long deliveryId);
+
+    /** Credits waiting for this store's next settlement. */
+    @Query(value = "select * from supplier_deduction where kind = 'DELIVERY_FUNDING_CREDIT' and status = 'PENDING' "
+            + "and supplier_store_id = :storeId", nativeQuery = true)
+    List<SupplierDeduction> findPendingCredits(@Param("storeId") Long storeId);
+
+    /** Stores owed a credit, so a settlement is made for them even with no order to settle. */
+    @Query(value = "select distinct supplier_store_id from supplier_deduction "
+            + "where kind = 'DELIVERY_FUNDING_CREDIT' and status = 'PENDING'", nativeQuery = true)
+    List<Long> storesWithPendingCredits();
+
+    /** What has already been credited back for one charge, pending or applied. */
+    @Query(value = "select coalesce(sum(amount), 0) from supplier_deduction where kind = 'DELIVERY_FUNDING_CREDIT' "
+            + "and corrects_deduction_id = :deductionId", nativeQuery = true)
+    BigDecimal sumCreditsFor(@Param("deductionId") Long deductionId);
+
     Optional<SupplierDeduction> findByPaymentId(String paymentId);
 
     /**

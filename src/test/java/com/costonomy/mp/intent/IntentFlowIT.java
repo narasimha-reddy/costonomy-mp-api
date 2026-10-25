@@ -919,14 +919,19 @@ class IntentFlowIT extends AbstractIntegrationTest {
 
         /** A courier delivery row for the order, as booking would have made, so a pickup has something to attach to. */
         private long courierDeliveryFor(long orderId) {
+            return courierDeliveryFor(orderId, new java.math.BigDecimal("60.00"));
+        }
+
+        /** The courier booked at {@code fee}: the figure the supplier's share is capped at (D-204). */
+        private long courierDeliveryFor(long orderId, java.math.BigDecimal fee) {
             var order = jdbc.queryForMap("select outlet_id, supplier_store_id from supplier_order where id = ?", orderId);
             jdbc.update("""
                     insert into delivery (supplier_order_id, outlet_id, supplier_store_id, mode, status,
                                           provider_code, provider_delivery_id, fee, currency,
                                           pickup_address, drop_address, requested_at, created_at, updated_at, version)
-                    values (?, ?, ?, 'COSTONOMY', 'DRIVER_ASSIGNED', 'MOCK_EXPRESS', ?, 60.0000, 'INR',
+                    values (?, ?, ?, 'COSTONOMY', 'DRIVER_ASSIGNED', 'MOCK_EXPRESS', ?, ?, 'INR',
                             'Pickup', 'Drop', now(6), now(6), now(6), 0)
-                    """, orderId, order.get("outlet_id"), order.get("supplier_store_id"), "mock-" + orderId);
+                    """, orderId, order.get("outlet_id"), order.get("supplier_store_id"), "mock-" + orderId, fee);
             return jdbc.queryForObject("select id from delivery where supplier_order_id = ?", Long.class, orderId);
         }
 
@@ -960,7 +965,7 @@ class IntentFlowIT extends AbstractIntegrationTest {
             assertThat(jdbc.queryForObject("select count(*) from supplier_deduction where supplier_order_id = ?",
                     Integer.class, orderId)).as("nothing is taken before a courier has the goods").isZero();
 
-            long deliveryId = courierDeliveryFor(orderId);
+            long deliveryId = courierDeliveryFor(orderId, java.math.BigDecimal.valueOf(courierFee));
             courierPicksUp(orderId, deliveryId);
             courierPicksUp(orderId, deliveryId); // a replayed pickup event
 
@@ -973,6 +978,23 @@ class IntentFlowIT extends AbstractIntegrationTest {
                     .isCloseTo(courierFee, org.assertj.core.data.Offset.offset(0.001));
             assertThat(((Number) rows.get(0).get("delivery_id")).longValue()).isEqualTo(deliveryId);
             assertThat(rows.get(0).get("dispute_refund_id")).isNull();
+        }
+
+        @Test
+        @DisplayName("the supplier is charged no more than the courier actually cost, even if the quote and their share were higher")
+        void supplierIsNeverChargedMoreThanTheCourierCost() throws Exception {
+            var open = answered("COSTONOMY", 1, 1);
+            fundsRiders(open, true, "100", "1000");
+            var quote = riderQuote(open);
+            long orderId = orderWith(open, "COSTONOMY_DELIVERY", quote.at("/data/quoteReference").asText())
+                    .at("/data/supplierOrderId").asLong();
+            // The order agreed to pay the whole quote, but the courier booked for less.
+            long deliveryId = courierDeliveryFor(orderId, new java.math.BigDecimal("30.00"));
+
+            courierPicksUp(orderId, deliveryId);
+
+            assertThat(jdbc.queryForObject("select amount from supplier_deduction where supplier_order_id = ?",
+                    java.math.BigDecimal.class, orderId)).isEqualByComparingTo("30.00");
         }
 
         @Test

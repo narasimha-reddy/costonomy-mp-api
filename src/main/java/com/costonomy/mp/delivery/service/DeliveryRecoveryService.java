@@ -35,6 +35,7 @@ public class DeliveryRecoveryService {
     private final DeliveryRepository deliveries;
     private final JdbcTemplate jdbc;
     private final AuditService auditService;
+    private final com.costonomy.mp.payment.service.GatewayRefundService gatewayRefunds;
 
     private static final java.time.Duration LEASE_DURATION = java.time.Duration.ofMinutes(2);
     private static final int BATCH_SIZE = 50;
@@ -167,6 +168,16 @@ public class DeliveryRecoveryService {
             return false;
         }
         String ref = task.getIdempotencyRef();
+        // The money goes back the way it came (D-204). A delivery paid at the gateway is never credited to the wallet,
+        // whatever the task is called: it becomes a recorded gateway refund, which owns the retries from here.
+        var paid = jdbc.queryForList("""
+                select payment_method, payment_id, max_fee from food_delivery
+                 where id = ? and payment_method = 'GATEWAY' and payment_id is not null and paid_at is not null
+                """, task.getDeliveryId());
+        if (!paid.isEmpty()) {
+            return handOverToGatewayRefund(task, ref, (String) paid.get(0).get("payment_id"),
+                    (java.math.BigDecimal) paid.get(0).get("max_fee"));
+        }
         String tag = ref != null && ref.endsWith("-adjust") ? "adjust" : "refund";
         boolean ok = wallet.refundFoodDelivery(task.getOutletId(), task.getDeliveryId(), tag, task.getAmount(), task.getReason());
         if (ok) {
@@ -179,6 +190,24 @@ public class DeliveryRecoveryService {
             return true;
         }
         return false;
+    }
+
+    private boolean handOverToGatewayRefund(DeliveryRecoveryTask task, String ref, String paymentId,
+                                            java.math.BigDecimal captured) {
+        if (gatewayRefunds.find(ref).isPresent()) {
+            return true;      // already recorded: the gateway refund owns it
+        }
+        var g = gatewayRefunds.record(new com.costonomy.mp.payment.service.GatewayRefundService.Request(
+                com.costonomy.mp.payment.domain.GatewayRefund.FOOD_DELIVERY, task.getDeliveryId(), "FEE_ADJUSTMENT",
+                paymentId, captured, task.getAmount(), task.getReason(), ref));
+        jdbc.update("""
+                update food_delivery set fee_refunded_amount = least(max_fee, fee_refunded_amount + ?),
+                       gateway_refunded_amount = gateway_refunded_amount + ?, fee_refunded_at = now(6),
+                       fee_refund_ref = ?, version = version + 1, updated_at = now(6)
+                 where id = ?
+                """, task.getAmount(), task.getAmount(), ref, task.getDeliveryId());
+        gatewayRefunds.sendSoon(g.getId());
+        return true;
     }
 
     private boolean walletTransactionExists(String reference) {

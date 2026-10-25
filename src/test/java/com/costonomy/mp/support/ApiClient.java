@@ -65,9 +65,28 @@ public final class ApiClient {
         return json.readTree(response);
     }
 
+    public JsonNode postWithHeader(String token, String path, Object body, String headerName, String headerValue) throws Exception {
+        String response = mvc.perform(MockMvcRequestBuilders.post(path)
+                        .header("Authorization", "Bearer " + token)
+                        .header(headerName, headerValue)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(body)))
+                .andReturn().getResponse().getContentAsString();
+        return json.readTree(response);
+    }
+
     public int postStatus(String token, String path, Object body) throws Exception {
         return mvc.perform(MockMvcRequestBuilders.post(path)
                         .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(body)))
+                .andReturn().getResponse().getStatus();
+    }
+
+    public int postStatusWithHeader(String token, String path, Object body, String headerName, String headerValue) throws Exception {
+        return mvc.perform(MockMvcRequestBuilders.post(path)
+                        .header("Authorization", "Bearer " + token)
+                        .header(headerName, headerValue)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json.writeValueAsString(body)))
                 .andReturn().getResponse().getStatus();

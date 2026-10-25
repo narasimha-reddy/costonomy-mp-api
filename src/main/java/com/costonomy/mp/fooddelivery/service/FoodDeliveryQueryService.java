@@ -35,6 +35,8 @@ public class FoodDeliveryQueryService {
     private final FoodDeliveryLocationRepository locations;
     private final AccessControlService accessControl;
     private final DeliveryRecoveryService recoveryService;
+    private final com.costonomy.mp.payment.service.GatewayRefundService gatewayRefunds;
+    private final com.costonomy.mp.payment.service.GatewayRefundProperties gatewayRefundProps;
 
     @Transactional(readOnly = true)
     public FoodDeliveryDtos.FoodDeliveryResponse get(Long actorId, Long outletId, Long id) {
@@ -43,6 +45,60 @@ public class FoodDeliveryQueryService {
                 .filter(d -> d.getOutletId().equals(outletId))
                 .orElseThrow(() -> new NotFoundException("FoodDelivery", id));
         return toResponse(delivery);
+    }
+
+    /** The restaurant's own money on one delivery: what was taken, what was kept, what came back and where it stands. */
+    @Transactional(readOnly = true)
+    public FoodDeliveryDtos.FoodDeliveryFinancialsResponse financials(Long actorId, Long outletId, Long id) {
+        accessControl.requireScoped(actorId, Permissions.OUTLET_VIEW, ScopeType.OUTLET, outletId, "FoodDelivery");
+        var d = deliveries.findById(id)
+                .filter(x -> x.getOutletId().equals(outletId))
+                .orElseThrow(() -> new NotFoundException("FoodDelivery", id));
+        var zero = java.math.BigDecimal.ZERO;
+        var refunds = gatewayRefunds.forSource(com.costonomy.mp.payment.domain.GatewayRefund.FOOD_DELIVERY, id);
+        var toCard = refunds.stream().map(com.costonomy.mp.payment.domain.GatewayRefund::getAmount)
+                .reduce(zero, java.math.BigDecimal::add);
+        var inProgress = refunds.stream()
+                .filter(r -> !com.costonomy.mp.payment.domain.GatewayRefund.SUCCEEDED.equals(r.getStatus()))
+                .map(com.costonomy.mp.payment.domain.GatewayRefund::getAmount).reduce(zero, java.math.BigDecimal::add);
+        // An unanswered refund is still being looked up by the system; it needs a person only when the lookups run out.
+        boolean needsReview = refunds.stream().anyMatch(r ->
+                com.costonomy.mp.payment.domain.GatewayRefund.EXHAUSTED.equals(r.getStatus())
+                        || ((com.costonomy.mp.payment.domain.GatewayRefund.AMBIGUOUS.equals(r.getStatus())
+                        || com.costonomy.mp.payment.domain.GatewayRefund.PENDING.equals(r.getStatus()))
+                        && r.getLookupCount() >= gatewayRefundProps.getMaxLookups()));
+        boolean paid = d.getFeeDebitedAt() != null || d.getPaidAt() != null;
+        var refundedTotal = d.getFeeRefundedAmount();
+        var toWallet = refundedTotal.subtract(d.getGatewayRefundedAmount()).max(zero);
+        var kept = d.netHeld();
+        var status = d.getStatus();
+        String chargeState;
+        if (!paid) {
+            chargeState = "NOT_CHARGED";
+        } else if (status.isTerminal() || status == com.costonomy.mp.fooddelivery.domain.FoodDeliveryStatus.FAILED) {
+            chargeState = kept.signum() > 0 ? "CHARGED" : "RELEASED";
+        } else {
+            chargeState = "HELD";
+        }
+        // Cancelled, or failed with no courier ever having the food: the fee should have come back whole, so anything
+        // still held is a refund due. A delivery that failed after pickup keeps the courier's fee by design.
+        boolean refundDue = paid && kept.signum() > 0
+                && (status == com.costonomy.mp.fooddelivery.domain.FoodDeliveryStatus.CANCELLED
+                || (status == com.costonomy.mp.fooddelivery.domain.FoodDeliveryStatus.FAILED && d.getPickedUpAt() == null));
+        String refundState = needsReview ? "NEEDS_REVIEW"
+                : inProgress.signum() > 0 || refundDue ? "IN_PROGRESS"
+                : refundedTotal.signum() > 0 ? "COMPLETE" : "NONE";
+        String next = switch (refundState) {
+            case "NEEDS_REVIEW" -> "Our team is looking at your refund and will complete it; you do not need to do anything.";
+            case "IN_PROGRESS" -> "Your refund is on its way.";
+            default -> "";
+        };
+        if (kept.signum() > 0 && !refundDue && "HELD".equals(chargeState)) {
+            next = "Held until the delivery finishes; any unused part is returned.";
+        }
+        return new FoodDeliveryDtos.FoodDeliveryFinancialsResponse(d.getId(), d.getCurrency(), d.getPaymentMethod(),
+                chargeState, d.getMaxFee(), "RELEASED".equals(chargeState) || !paid ? zero : kept, refundedTotal,
+                toWallet, d.getGatewayRefundedAmount(), inProgress, refundState, next);
     }
 
     @Transactional(readOnly = true)
@@ -165,9 +221,22 @@ public class FoodDeliveryQueryService {
         } else if (delivery.getStatus() == FoodDeliveryStatus.PROVIDER_UNAVAILABLE) {
             nextAction = "RETRY_JOB";
             nextReason = "Scheduled retry within retry window";
+        } else if (delivery.getStatus() == FoodDeliveryStatus.QUOTE_FAILED) {
+            nextAction = "RETRY_JOB";
+            nextReason = "No courier quoted; the retry job asks again within the window";
+        } else if (delivery.getStatus() == FoodDeliveryStatus.DRIVER_ASSIGNED
+                || delivery.getStatus() == FoodDeliveryStatus.AT_PICKUP) {
+            nextAction = "AWAIT_PICKUP";
+            nextReason = "A courier is on the way to collect it; the poll and webhooks report the pickup";
         } else if (delivery.getStatus().isInFlight()) {
             nextAction = "IN_TRANSIT_POLL";
             nextReason = "Active delivery in progress; polling/webhooks active";
+        } else if (delivery.getStatus() == FoodDeliveryStatus.FAILED && delivery.getPickedUpAt() != null) {
+            nextAction = "OPERATOR_RESOLVE";
+            nextReason = "The courier had the food and could not hand it over. Resolve it: return and refund, mark delivered, or clear the flag.";
+        } else if (delivery.getStatus() == FoodDeliveryStatus.FAILED) {
+            nextAction = "TERMINAL";
+            nextReason = "No courier took it and the fee was returned";
         } else {
             nextAction = "TERMINAL";
             nextReason = "Delivery reached terminal status " + delivery.getStatus();

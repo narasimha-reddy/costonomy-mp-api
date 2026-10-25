@@ -19,6 +19,7 @@ import java.time.Instant;
 public class FoodDeliveryTimeline {
 
     private final FoodDeliveryEventRepository events;
+    private final FoodCourierPayableSync courierPayables;
 
     public FoodDeliveryEvent record(FoodDelivery delivery, FoodDeliveryStatus status, String description) {
         return record(delivery, status.eventName(), status, description);
@@ -32,6 +33,17 @@ public class FoodDeliveryTimeline {
         event.setProviderCode(delivery.getProviderCode());
         event.setDescription(description);
         event.setOccurredAt(Instant.now());
-        return events.save(event);
+        var saved = events.save(event);
+        // Whatever the status, what Costonomy owes the courier may have changed (D-204). After commit, in its own transaction.
+        courierPayables.syncSoon(delivery.getId());
+        return saved;
+    }
+
+    /**
+     * What was refunded to the restaurant changed after the status row was written (a wallet refund made after commit):
+     * bring the courier payable's funding split up to date, after commit and in its own transaction.
+     */
+    public void refundRecorded(FoodDelivery delivery) {
+        courierPayables.syncSoon(delivery.getId());
     }
 }

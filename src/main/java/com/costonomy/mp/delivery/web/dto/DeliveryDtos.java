@@ -24,7 +24,13 @@ public final class DeliveryDtos {
     }
 
     public record CancelDeliveryRequest(
-            @NotBlank(message = "Give a reason") @Size(max = 500) String reason) {
+            @NotBlank(message = "Give a reason") @Size(max = 500) String reason,
+            /**
+             * Defaults to true: cancelling the delivery cancels its order and returns the money. {@code false} is
+             * refused while the order is still active, because the order would be left ready with no delivery that can
+             * be rebooked; it is accepted only once the order has ended (D-206).
+             */
+            Boolean cancelOrder) {
     }
 
     public record ReassignDeliveryRequest(
@@ -89,7 +95,13 @@ public final class DeliveryDtos {
             /** Supplier store coordinates. Null unless both latitude and longitude are stored. */
             LatLngResponse pickupLocation,
             /** Buyer outlet coordinates. Null unless both latitude and longitude are stored. */
-            LatLngResponse dropLocation) {
+            LatLngResponse dropLocation,
+            /**
+             * Our team is looking at this delivery (it failed after pickup, or a booking's outcome is unknown). Nothing
+             * the app does can fix it, and it must not offer to ask for another partner: that could send a second
+             * courier. The reason is internal and never sent. Cleared when the delivery is resolved (D-206).
+             */
+            boolean underReview) {
     }
 
     /** A fixed point (pickup or drop), unlike {@link LocationResponse} which is a rider fix. */
@@ -129,6 +141,13 @@ public final class DeliveryDtos {
     }
 
     // ── Supplier delivery policy ─────────────────────────────────────────
+
+    /** An operator's decision on a delivery that cannot complete by itself (D-204). */
+    public record ResolveDeliveryRequest(
+            @jakarta.validation.constraints.NotBlank(message = "Choose an outcome") String outcome,
+            @jakarta.validation.constraints.NotBlank(message = "Say why") String reason,
+            String providerDeliveryId) {
+    }
 
     public record DeliveryPolicyResponse(
             Long supplierStoreId,
@@ -364,5 +383,19 @@ public final class DeliveryDtos {
             RadarSummaryResponse summary,
             List<OutletDeliveryRadarItemResponse> items
     ) {}
-}
 
+    /**
+     * An order that looks finished or on its way while delivery or money work is unresolved (D-204). {@code action}
+     * names what an operator does about it; the order and delivery ids are there to do it.
+     */
+    public record JourneyException(
+            String kind,
+            Long supplierOrderId,
+            Long deliveryId,
+            String orderStatus,
+            String deliveryStatus,
+            long ageMinutes,
+            String detail,
+            String action) {
+    }
+}

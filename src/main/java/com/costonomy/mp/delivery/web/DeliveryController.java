@@ -96,7 +96,7 @@ public class DeliveryController {
     public ApiResponse<DeliveryDtos.DeliveryResponse> cancel(
             @PathVariable Long id,
             @Valid @RequestBody DeliveryDtos.CancelDeliveryRequest body) {
-        return ApiResponse.ok(deliveries.cancel(ActorContext.requireUserId(), id, body.reason()));
+        return ApiResponse.ok(deliveries.cancel(ActorContext.requireUserId(), id, body.reason(), body.cancelOrder()));
     }
 
     @PostMapping("/deliveries/{id}/reassign")

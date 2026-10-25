@@ -10,7 +10,8 @@ import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.common.logging.TraceScope;
 import com.costonomy.mp.payment.provider.PaymentProvider;
 import com.costonomy.mp.payment.provider.PaymentProviderException;
-import com.costonomy.mp.payment.service.UnusablePaymentRefunds;
+import com.costonomy.mp.payment.domain.GatewayRefund;
+import com.costonomy.mp.payment.service.GatewayRefundService;
 import com.costonomy.mp.settlement.domain.SupplierDeduction;
 import com.costonomy.mp.settlement.repository.SupplierDeductionRepository;
 import com.costonomy.mp.settlement.web.dto.SettlementDtos.*;
@@ -53,7 +54,7 @@ public class SupplierDeliveryFundingPaymentService {
 
     private final SupplierDeductionRepository deductions;
     private final PaymentProvider paymentProvider;
-    private final UnusablePaymentRefunds gatewayRefunds;
+    private final GatewayRefundService gatewayRefunds;
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final JdbcTemplate jdbc;
@@ -61,7 +62,7 @@ public class SupplierDeliveryFundingPaymentService {
 
     public SupplierDeliveryFundingPaymentService(SupplierDeductionRepository deductions,
                                                  PaymentProvider paymentProvider,
-                                                 UnusablePaymentRefunds gatewayRefunds,
+                                                 GatewayRefundService gatewayRefunds,
                                                  AccessControlService accessControl,
                                                  AuditService auditService,
                                                  JdbcTemplate jdbc,
@@ -106,6 +107,85 @@ public class SupplierDeliveryFundingPaymentService {
                 rs.getString(9),
                 rs.getTimestamp(10).toInstant()
         ), storeId);
+    }
+
+    /**
+     * Every delivery-funding line for this store, in any state, newest first. Bounded: the supplier asks for a page.
+     * Pending lines come with what to do about them; the others say where the money went.
+     */
+    @Transactional(readOnly = true)
+    public List<DeliveryFundingLine> listHistory(Long actorId, Long storeId, String status, int page, int size) {
+        accessControl.requireScoped(actorId, Permissions.STORE_VIEW,
+                ScopeType.SUPPLIER_STORE, storeId, "SupplierStore");
+        int limit = Math.max(1, Math.min(size, 100));
+        return jdbc.query("""
+                select d.id, d.kind, d.supplier_order_id, so.order_number, d.delivery_id, d.amount, d.status,
+                       coalesce(so.payment_method, 'PREPAID'), d.settlement_id, d.applied_at, d.paid_at, d.reason,
+                       d.created_at
+                  from supplier_deduction d
+                  join supplier_order so on so.id = d.supplier_order_id
+                 where d.supplier_store_id = ?
+                   and d.kind in ('DELIVERY_FUNDING', 'DELIVERY_FUNDING_CREDIT')
+                   and (? is null or d.status = ?)
+                 order by d.id desc
+                 limit ? offset ?
+                """, (rs, rowNum) -> {
+            String kind = rs.getString(2);
+            String st = rs.getString(7);
+            String method = rs.getString(8);
+            return new DeliveryFundingLine(rs.getLong(1), kind, rs.getLong(3), rs.getString(4),
+                    rs.getObject(5) != null ? rs.getLong(5) : null, rs.getBigDecimal(6), st,
+                    outcome(kind, st), nextAction(kind, st, method), method,
+                    rs.getObject(9) != null ? rs.getLong(9) : null,
+                    rs.getTimestamp(10) != null ? rs.getTimestamp(10).toInstant() : null,
+                    rs.getTimestamp(11) != null ? rs.getTimestamp(11).toInstant() : null, rs.getString(12),
+                    rs.getTimestamp(13).toInstant());
+        }, storeId, blank(status), blank(status), limit, (long) Math.max(page, 0) * limit);
+    }
+
+    @Transactional(readOnly = true)
+    public DeliveryFundingSummary summary(Long actorId, Long storeId) {
+        accessControl.requireScoped(actorId, Permissions.STORE_VIEW,
+                ScopeType.SUPPLIER_STORE, storeId, "SupplierStore");
+        return jdbc.queryForObject("""
+                select
+                  coalesce(sum(case when kind = 'DELIVERY_FUNDING' and status = 'PENDING' then amount end), 0),
+                  coalesce(sum(case when kind = 'DELIVERY_FUNDING' and status = 'PAID_DIRECTLY' then amount end), 0),
+                  coalesce(sum(case when kind = 'DELIVERY_FUNDING' and status = 'APPLIED' then amount end), 0),
+                  coalesce(sum(case when kind = 'DELIVERY_FUNDING' and status = 'WAIVED' then amount end), 0),
+                  coalesce(sum(case when kind = 'DELIVERY_FUNDING_CREDIT' and status = 'PENDING' then amount end), 0),
+                  coalesce(sum(case when kind = 'DELIVERY_FUNDING_CREDIT' and status = 'APPLIED' then amount end), 0),
+                  coalesce(sum(case when kind = 'DELIVERY_FUNDING' and status = 'PENDING' then 1 end), 0)
+                  from supplier_deduction
+                 where supplier_store_id = ? and kind in ('DELIVERY_FUNDING', 'DELIVERY_FUNDING_CREDIT')
+                """, (rs, n) -> new DeliveryFundingSummary(rs.getBigDecimal(1), rs.getBigDecimal(2), rs.getBigDecimal(3),
+                rs.getBigDecimal(4), rs.getBigDecimal(5), rs.getBigDecimal(6), rs.getLong(7)), storeId);
+    }
+
+    private static String blank(String v) {
+        return v == null || v.isBlank() ? null : v.trim();
+    }
+
+    private static String outcome(String kind, String status) {
+        boolean credit = SupplierDeduction.KIND_DELIVERY_FUNDING_CREDIT.equals(kind);
+        return switch (status) {
+            case SupplierDeduction.PENDING -> credit ? "CREDIT_WAITING_FOR_SETTLEMENT" : "OWED";
+            case SupplierDeduction.APPLIED -> credit ? "CREDITED_IN_SETTLEMENT" : "TAKEN_FROM_SETTLEMENT";
+            case SupplierDeduction.PAID_DIRECTLY -> "PAID_DIRECTLY";
+            case SupplierDeduction.WAIVED -> "WAIVED";
+            default -> status;
+        };
+    }
+
+    /** What the supplier can do. A credit order has no payout to take it from, so paying directly is the way. */
+    private static String nextAction(String kind, String status, String paymentMethod) {
+        if (!SupplierDeduction.PENDING.equals(status)) {
+            return "NONE";
+        }
+        if (SupplierDeduction.KIND_DELIVERY_FUNDING_CREDIT.equals(kind)) {
+            return "NONE";
+        }
+        return "CREDIT".equalsIgnoreCase(paymentMethod) ? "PAY_DIRECTLY" : "PAY_DIRECTLY_OR_DEDUCTED_FROM_NEXT_SETTLEMENT";
     }
 
     /**
@@ -376,18 +456,20 @@ public class SupplierDeliveryFundingPaymentService {
      * transaction. If the provider cannot do it now, nothing is marked and the sweep finds it again.
      */
     private boolean refundUnusablePayment(Long deductionId, String paymentId, BigDecimal capturedAmount) {
-        String refundId = gatewayRefunds.refundRest(paymentId, capturedAmount, "del-funding-unusable-");
-        if (refundId == null) {
-            return false;
+        String key = "del-funding-unusable-" + paymentId;
+        // Recorded first, so an unknown outcome is found again and never sent twice; then sent with no transaction open.
+        Long refundId = tx.execute(s -> gatewayRefunds.record(new GatewayRefundService.Request(
+                GatewayRefund.SUPPLIER_DELIVERY_FUNDING, deductionId, "UNUSABLE_PAYMENT", paymentId,
+                capturedAmount, capturedAmount,
+                "The charge could not take this payment: already deducted from a settlement, paid twice, or the wrong amount",
+                key)).getId());
+        gatewayRefunds.send(refundId);
+        boolean done = gatewayRefunds.find(key).map(r -> GatewayRefund.SUCCEEDED.equals(r.getStatus())).orElse(false);
+        if (done) {
+            auditService.record(null, null, "DELIVERY_FUNDING_PAYMENT_REFUNDED", "SUPPLIER_DEDUCTION", deductionId,
+                    null, null, "Payment %s refunded: the charge could not take it".formatted(paymentId), "SYSTEM");
         }
-        jdbc.update("""
-                update supplier_deduction
-                   set gateway_refund_id = ?, gateway_refunded_at = now(6), updated_at = now(6), version = version + 1
-                 where id = ? and gateway_refunded_at is null
-                """, refundId, deductionId);
-        auditService.record(null, null, "DELIVERY_FUNDING_PAYMENT_REFUNDED", "SUPPLIER_DEDUCTION", deductionId,
-                null, null, "Payment %s refunded (%s): the charge could not take it".formatted(paymentId, refundId), "SYSTEM");
-        return true;
+        return done;
     }
 
     /**

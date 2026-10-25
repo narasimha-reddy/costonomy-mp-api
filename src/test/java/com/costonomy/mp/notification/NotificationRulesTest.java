@@ -392,14 +392,16 @@ class NotificationRulesTest {
         }
 
         @Test
-        @DisplayName("the restaurant's wording on a partner delivery is exactly what it was")
+        @DisplayName("the restaurant's wording on a partner delivery is exactly what it was; only the plain (own delivery) rule changed")
         void restaurantWordingUnchanged() {
             var before = NotificationRules.forEvent("DriverAssigned").get(0);
             var restaurant = NotificationRules.forEvent("DriverAssigned", "COSTONOMY_DELIVERY").stream()
                     .filter(r -> r.audience() == NotificationRule.Audience.OUTLET).findFirst().orElseThrow();
 
-            assertThat(restaurant.title()).isEqualTo(before.title());
-            assertThat(restaurant.body()).isEqualTo(before.body());
+            assertThat(restaurant.title()).isEqualTo("Delivery partner on the way");
+            assertThat(restaurant.body()).isEqualTo("A delivery partner is collecting your order.");
+            // The plain rule serves the supplier's own delivery and no longer claims a partner (gap 12).
+            assertThat(before.title()).isEqualTo("Delivery on the way");
             assertThat(restaurant.critical()).isEqualTo(before.critical());
             assertThat(restaurant.channels()).isEqualTo(before.channels());
         }
@@ -428,6 +430,62 @@ class NotificationRulesTest {
             assertThat(supplier.render(Map.of("description", "Finding another driver")))
                     .contains("changed").contains("Finding another driver");
             assertThat(supplier.render(Map.of())).contains("A new one is being arranged.").doesNotContain("{");
+        }
+    }
+
+    @Nested
+    @DisplayName("the delivery failure exits are in the catalogue (D-204 audit, gap 12)")
+    class DeliveryFailureExits {
+
+        private java.util.Set<NotificationRule.Audience> audiences(String event) {
+            return NotificationRules.forEvent(event).stream().map(NotificationRule::audience)
+                    .collect(java.util.stream.Collectors.toSet());
+        }
+
+        @Test
+        @DisplayName("every failure event a delivery raises has a rule, named by the status that raises it")
+        void everyFailureEventHasARule() {
+            for (String event : List.of(DeliveryStatus.QUOTE_FAILED.eventName(), DeliveryStatus.DRIVER_CANCELLED.eventName(),
+                    DeliveryStatus.PICKUP_FAILED.eventName(), DeliveryStatus.DELIVERY_FAILED.eventName(),
+                    DeliveryStatus.CANCELLED.eventName(), "DeliveryCancelledByOperations",
+                    "DeliveryMarkedDeliveredByOperations")) {
+                assertThat(NotificationRules.forEvent(event)).as(event).isNotEmpty();
+            }
+        }
+
+        @Test
+        @DisplayName("a driver who cancelled or failed pickup tells the supplier, not the restaurant: the reassignment tells them")
+        void driverExitsTellOnlyTheSupplier() {
+            assertThat(audiences("DeliveryDriverCancelled")).containsExactly(NotificationRule.Audience.SUPPLIER_STORE);
+            assertThat(audiences("DeliveryPickupFailed")).containsExactly(NotificationRule.Audience.SUPPLIER_STORE);
+            assertThat(audiences("DeliveryReassigned")).contains(NotificationRule.Audience.OUTLET);
+        }
+
+        @Test
+        @DisplayName("a failure after pickup and an operator's decision tell both sides")
+        void failureAndOperatorDecisionsTellBoth() {
+            for (String event : List.of("DeliveryFailed", "DeliveryCancelledByOperations", "DeliveryMarkedDeliveredByOperations")) {
+                assertThat(audiences(event)).as(event)
+                        .containsExactlyInAnyOrder(NotificationRule.Audience.OUTLET, NotificationRule.Audience.SUPPLIER_STORE);
+            }
+        }
+
+        @Test
+        @DisplayName("the plain DriverAssigned rule (the supplier's own delivery) does not say a delivery partner is coming")
+        void ownDeliveryWordingIsNotAPartner() {
+            var plain = NotificationRules.forEvent("DriverAssigned");
+            assertThat(plain).isNotEmpty();
+            assertThat(plain).allSatisfy(rule -> assertThat(rule.title() + " " + rule.body()).doesNotContain("partner"));
+            assertThat(NotificationRules.forEvent("DriverAssigned", "COSTONOMY_DELIVERY").stream()
+                    .anyMatch(rule -> rule.body().contains("delivery partner"))).isTrue();
+        }
+
+        @Test
+        @DisplayName("the restaurant's failure notice never carries the provider's own words")
+        void restaurantFailureNoticeHasNoProviderText() {
+            NotificationRules.forEvent("DeliveryFailed").stream()
+                    .filter(rule -> rule.audience() == NotificationRule.Audience.OUTLET)
+                    .forEach(rule -> assertThat(rule.body()).doesNotContain("{description"));
         }
     }
 }

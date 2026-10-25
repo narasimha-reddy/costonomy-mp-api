@@ -171,6 +171,10 @@ public class FoodDelivery extends BaseEntity {
     @Column(name = "gateway_refund_id", length = 200)
     private String gatewayRefundId;
 
+    /** Of {@code feeRefundedAmount}, the part returned (or on its way) to the gateway rather than the wallet (D-204). */
+    @Column(name = "gateway_refunded_amount", nullable = false, precision = 19, scale = 4)
+    private BigDecimal gatewayRefundedAmount = BigDecimal.ZERO;
+
     @Column(name = "gateway_refunded_at")
     private Instant gatewayRefundedAt;
 
@@ -269,6 +273,14 @@ public class FoodDelivery extends BaseEntity {
                     "Food delivery " + getId() + " cannot go from " + status + " to " + target);
         }
         this.status = target;
+    }
+
+    /**
+     * Whether the fee was paid at the gateway and not from the wallet (D-204). It decides where every refund goes: a
+     * gateway payment is refunded to the gateway, never credited to the wallet.
+     */
+    public boolean isGatewayFunded() {
+        return "GATEWAY".equalsIgnoreCase(paymentMethod) && paymentId != null && paidAt != null;
     }
 
     /** What is still held from the restaurant's wallet: the agreed maximum less whatever has been given back. */

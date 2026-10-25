@@ -57,6 +57,9 @@ public class DeliveryService {
     private final AuditService auditService;
     private final PidgeProperties pidgeProperties;
     private final DeliveryRecoveryService recoveryService;
+    private final OrderCancellationPort orders;
+    private final SupplierCourierPayableSync payableSync;
+    private final SupplierDeliveryMovementService movementService;
     private final PlatformTransactionManager txManager;
 
     record CancelPlan(Long deliveryId, String providerCode, String providerDeliveryId, String reason) {}
@@ -101,7 +104,7 @@ public class DeliveryService {
      * Provider cancellation step, run with no transaction open. If provider cancellation fails or throws,
      * a durable recovery task is scheduled to retry it.
      */
-    private void cancelAtProvider(CancelPlan plan) {
+    void cancelAtProvider(CancelPlan plan) {
         if (plan == null || plan.providerDeliveryId() == null) {
             return;
         }
@@ -170,8 +173,10 @@ public class DeliveryService {
                 return false;
             }
             if (outcome == null || !outcome.anyServiceable()) {
+                boolean alreadyQuoteFailed = delivery.getStatus() == DeliveryStatus.QUOTE_FAILED;
                 delivery.setStatus(DeliveryStatus.QUOTE_FAILED);
                 delivery.markNoPartner(Instant.now());
+                String previousCode = delivery.getFailureCode();
                 if (delivery.isRequiresColdChain()) {
                     delivery.setFailureCode("NO_COLD_CHAIN_CARRIER");
                     delivery.setFailureReason("No delivery partner with verified temperature-controlled transport "
@@ -181,9 +186,12 @@ public class DeliveryService {
                     delivery.setFailureReason("No delivery partner covers this route right now.");
                 }
                 deliveries.save(delivery);
-                timeline.record(delivery, DeliveryStatus.QUOTE_FAILED.eventName(),
-                        DeliveryStatus.QUOTE_FAILED,
-                        delivery.getFailureReason());
+                // A repeat of the same failure on each retry is not announced again (gap 13).
+                if (!alreadyQuoteFailed || !java.util.Objects.equals(previousCode, delivery.getFailureCode())) {
+                    timeline.record(delivery, DeliveryStatus.QUOTE_FAILED.eventName(),
+                            DeliveryStatus.QUOTE_FAILED,
+                            delivery.getFailureReason());
+                }
                 return false;
             }
 
@@ -525,7 +533,7 @@ public class DeliveryService {
      * rates meaningless.
      */
     public DeliveryDtos.DeliveryResponse reassign(Long actorId, Long deliveryId, String reason) {
-        var prepared = inTx(() -> prepareReassign(actorId, deliveryId, reason));
+        var prepared = inTx(() -> prepareReassign(actorId, deliveryId, reason, false));
         executePrepared(prepared);
         return inTx(() -> {
             var delivery = deliveries.findById(deliveryId).orElseThrow();
@@ -544,23 +552,75 @@ public class DeliveryService {
         });
     }
 
-    private Prepared prepareReassign(Long actorId, Long deliveryId, String reason) {
+    /**
+     * The assignment timer and the sweep: hand the delivery to another courier <b>only if</b> it is still waiting for a
+     * driver past its deadline, with the order still ready for pickup. Every one of those is checked again under the row
+     * lock, because the caller's own look was made before it: a driver assigned between that look and this lock must not
+     * be released, and an order cancelled meanwhile must not get a new courier (D-204 audit, gap 2).
+     *
+     * @return true if another courier was booked; false if there was nothing to do
+     */
+    public boolean reassignIfAssignmentExpired(Long deliveryId, String reason) {
+        var prepared = inTx(() -> prepareReassign(null, deliveryId, reason, true));
+        if (prepared == null) {
+            return false;
+        }
+        executePrepared(prepared);
+        return inTx(() -> {
+            var delivery = deliveries.findById(deliveryId).orElseThrow();
+            boolean booked = delivery.getStatus() == DeliveryStatus.PROVIDER_SELECTED;
+            auditService.record(null, null, "DELIVERY_REASSIGNED_AUTO", "DELIVERY", deliveryId,
+                    null, delivery.getStatus().name(), reason, "SYSTEM");
+            timeline.record(delivery, "DeliveryReassigned", delivery.getStatus(),
+                    booked ? "Finding another driver" : "No other driver is available yet");
+            return booked;
+        });
+    }
+
+    /**
+     * @param onlyIfAssignmentExpired the timer and the sweep: do nothing (return null) unless the delivery is still
+     *                                waiting for a driver, past its deadline, for an order still ready for pickup
+     */
+    private Prepared prepareReassign(Long actorId, Long deliveryId, String reason, boolean onlyIfAssignmentExpired) {
         // Locked, so a manual retry and the automatic one (D-185) cannot both start a booking. Once this commits the
         // lock is gone while the courier is called, so a second caller is stopped by the pending attempt instead.
         var delivery = loadLockedForEitherSide(actorId, deliveryId);
+        if (onlyIfAssignmentExpired) {
+            if (delivery.getMode() != DeliveryMode.COSTONOMY
+                    || delivery.getStatus() != DeliveryStatus.PROVIDER_SELECTED
+                    || delivery.getAssignmentDeadline() == null
+                    || delivery.getAssignmentDeadline().isAfter(Instant.now())
+                    || delivery.isReconciliationRequired()
+                    // Releasing a courier clears this id and leaves the status and the old deadline in place until the
+                    // next one is booked: a second caller arriving in that window finds no courier to release and must
+                    // not release (and audit) anything again.
+                    || delivery.getProviderDeliveryId() == null
+                    || attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
+                return null;
+            }
+            var ready = directory.order(delivery.getSupplierOrderId());
+            if (ready == null || !"READY_FOR_PICKUP".equals(ready.status())) {
+                return null;
+            }
+        }
         delivery.setLastRetryAt(Instant.now());
 
         if (delivery.getMode() == DeliveryMode.SUPPLIER_OWN) {
             throw new BusinessException(ErrorCode.DELIVERY_REASSIGNMENT_FAILED,
                     "This order is being delivered by the supplier.");
         }
+        if (delivery.isReconciliationRequired()) {
+            throw new BusinessException(ErrorCode.PAYMENT_STATE_CONFLICT,
+                    "This delivery requires manual reconciliation before it can be reassigned.");
+        }
         if (delivery.getStatus().isTerminal()) {
             throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
                     "This delivery is already " + delivery.getStatus() + ".");
         }
-        if (delivery.getStatus().isInFlight()) {
-            // Past pickup the goods are on a vehicle. Reassigning would mean asking
-            // a second courier to collect something the first one already has.
+        if (delivery.getStatus().isInFlight() || delivery.getStatus() == DeliveryStatus.DELIVERY_FAILED
+                || delivery.getPickedUpAt() != null) {
+            // Past pickup the goods are on a vehicle (or came back from a failed hand-over). Reassigning would mean
+            // asking a second courier to collect something the first one already has. Operations closes it instead.
             throw new BusinessException(ErrorCode.DELIVERY_REASSIGNMENT_FAILED,
                     "This order has already been picked up.");
         }
@@ -732,6 +792,9 @@ public class DeliveryService {
         var prepared = inTx(() -> {
             var delivery = deliveries.lockById(deliveryId).orElse(null);
             if (delivery == null || !isNoPartner(delivery)
+                    // An earlier booking whose outcome we could not learn may have produced a courier: asking another
+                    // could put two at one door. A person settles that first (gap 1).
+                    || delivery.isReconciliationRequired()
                     || attempts.existsByDeliveryIdAndOutcome(deliveryId, "PENDING")) {
                 return null;
             }
@@ -785,6 +848,12 @@ public class DeliveryService {
                         delivery.getStatus().isTerminal() ? "This delivery is already " + delivery.getStatus() + "."
                                 : "A delivery partner has been found for this order.");
             }
+            if (delivery.isReconciliationRequired()) {
+                // A booking whose outcome is unknown may have produced a courier; switching would send a second carrier
+                // for the same goods. Our team settles it first.
+                throw new BusinessException(ErrorCode.PAYMENT_STATE_CONFLICT,
+                        "Our team is checking this delivery's booking. Please wait; this page updates when it is settled.");
+            }
             if (delivery.getOwnDeliveryOfferedAt() == null) {
                 throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
                         "We're still looking for a delivery partner.");
@@ -829,13 +898,38 @@ public class DeliveryService {
     }
 
     public DeliveryDtos.DeliveryResponse cancel(Long actorId, Long deliveryId, String reason) {
+        return cancel(actorId, deliveryId, reason, true);
+    }
+
+    public DeliveryDtos.DeliveryResponse cancel(Long actorId, Long deliveryId, String reason, Boolean cancelOrder) {
         var cancelPlan = inTx(() -> {
-            var delivery = loadForEitherSide(actorId, deliveryId);
+            var delivery = deliveries.lockById(deliveryId)
+                    .orElseThrow(() -> new NotFoundException("Delivery", deliveryId));
+
+            requireCancelPermission(actorId, delivery.getOutletId(), delivery.getSupplierStoreId(), deliveryId);
+
+            // A delivery cannot be cancelled on its own while its order is still active: the order would stay ready with a
+            // cancelled delivery and nothing that can book another courier (reassign refuses a cancelled delivery, and the
+            // supplier's takeover needs one that is still searching). The order is cancelled with it, a courier is found
+            // by reassign, or the supplier takes over with switch-to-own (D-206).
+            if (Boolean.FALSE.equals(cancelOrder)) {
+                var order = directory.order(delivery.getSupplierOrderId());
+                if (order != null && !List.of("CANCELLED", "DELIVERED", "COMPLETED").contains(order.status())) {
+                    throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                            "A delivery can't be cancelled on its own while its order is still active: nothing would be "
+                                    + "left to carry it. Cancel the order, ask for another delivery partner, or let the "
+                                    + "supplier deliver it themselves.");
+                }
+            }
 
             if (delivery.getStatus() == DeliveryStatus.CANCELLED) {
+                if (cancelOrder == null || Boolean.TRUE.equals(cancelOrder)) {
+                    orders.cancelForOperations(actorId, delivery.getSupplierOrderId(), reason);
+                }
                 return null;
             }
-            if (!delivery.getStatus().canTransitionTo(DeliveryStatus.CANCELLED)) {
+            if (delivery.getPickedUpAt() != null || delivery.getStatus().isInFlight()
+                    || !delivery.getStatus().canTransitionTo(DeliveryStatus.CANCELLED)) {
                 throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
                         "This delivery can't be cancelled once the goods have been picked up.");
             }
@@ -845,6 +939,8 @@ public class DeliveryService {
             delivery.setStatus(DeliveryStatus.CANCELLED);
             delivery.setCancelledAt(Instant.now());
             delivery.setFailureReason(reason);
+            delivery.setReconciliationRequired(false);
+            delivery.setReconciliationReason(null);
             deliveries.save(delivery);
 
             timeline.record(delivery, DeliveryStatus.CANCELLED.eventName(),
@@ -852,21 +948,36 @@ public class DeliveryService {
             auditService.record(actorId, null, "DELIVERY_CANCELLED", "DELIVERY", deliveryId,
                     null, DeliveryStatus.CANCELLED.name(), reason, "API");
 
+            if (cancelOrder == null || Boolean.TRUE.equals(cancelOrder)) {
+                orders.cancelForOperations(actorId, delivery.getSupplierOrderId(), reason);
+            }
+
             return plan;
         });
 
         if (cancelPlan != null) {
             cancelAtProvider(cancelPlan);
         }
+        payableSync.syncSoon(deliveryId);
 
         return inTx(() -> toResponse(deliveries.findById(deliveryId).orElseThrow(), null));
+    }
+
+    private void requireCancelPermission(Long actorId, Long outletId, Long storeId, Long deliveryId) {
+        if (accessControl.has(actorId, Permissions.DELIVERY_OPERATE, ScopeType.PLATFORM, null)
+                || accessControl.has(actorId, Permissions.ORDER_CANCEL, ScopeType.OUTLET, outletId)
+                || accessControl.has(actorId, Permissions.ORDER_CANCEL, ScopeType.SUPPLIER_STORE, storeId)) {
+            return;
+        }
+        log.warn("Permission violation on cancel: user={} delivery={}", actorId, deliveryId);
+        throw new BusinessException(ErrorCode.FORBIDDEN, "You do not have permission to cancel this delivery.");
     }
 
     /**
      * Close the current courier attempt in the database and clear driver fields under lock.
      * Returns a CancelPlan to cancel at the provider outside the transaction, or null if no provider was booked.
      */
-    private CancelPlan releaseCurrentProviderInDb(Delivery delivery, String reason, String cause) {
+    CancelPlan releaseCurrentProviderInDb(Delivery delivery, String reason, String cause) {
         if (delivery.getProviderDeliveryId() == null) {
             return null;
         }
@@ -922,67 +1033,25 @@ public class DeliveryService {
     @Transactional
     public DeliveryDtos.DeliveryResponse supplierReports(Long actorId, Long deliveryId,
                                                         DeliveryStatus target) {
-        var delivery = deliveries.findById(deliveryId)
-                .orElseThrow(() -> new NotFoundException("Delivery", deliveryId));
-
-        accessControl.requireScoped(actorId, Permissions.ORDER_READY,
-                ScopeType.SUPPLIER_STORE, delivery.getSupplierStoreId(), "Delivery");
-
-        if (!delivery.getMode().isSupplierReported()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN,
-                    "A delivery partner is carrying this order, so its progress comes from them.");
-        }
-        if (delivery.getStatus() == target) {
-            return toResponse(delivery, null);
-        }
-        if (!delivery.getStatus().canTransitionTo(target)) {
-            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
-                    "This delivery can't move from %s to %s."
-                            .formatted(delivery.getStatus(), target));
-        }
-
-        var previous = delivery.getStatus();
-        delivery.setStatus(target);
-        if (target == DeliveryStatus.PICKED_UP) {
-            delivery.setPickedUpAt(Instant.now());
-        }
-        if (target == DeliveryStatus.DELIVERED) {
-            delivery.setDeliveredAt(Instant.now());
-        }
-        deliveries.save(delivery);
-
-        timeline.record(delivery, target.eventName(), target, null);
-        auditService.record(actorId, null, "DELIVERY_" + target.name(), "DELIVERY",
-                deliveryId, previous.name(), target.name(), "Supplier own delivery", "API");
-
-        orderBridge.onDeliveryStatus(delivery, target);
+        var delivery = movementService.reportByDelivery(actorId, deliveryId, target);
         return toResponse(delivery, null);
     }
 
     // ── Reading ──────────────────────────────────────────────────────────
 
-    @Transactional
+    /**
+     * A read. It never reassigns, books or calls a provider: an expired assignment is the sweep's to move (D-204 audit,
+     * gap 16), so opening a screen can neither spend money nor release a driver.
+     */
+    @Transactional(readOnly = true)
     public DeliveryDtos.DeliveryResponse get(Long actorId, Long deliveryId) {
         var delivery = loadForEitherSide(actorId, deliveryId);
-
-        // Lazy check: if the delivery timed out in PROVIDER_SELECTED (> 3 mins), cascade immediately
-        if (delivery.getStatus() == DeliveryStatus.PROVIDER_SELECTED
-                && delivery.getAssignmentDeadline() != null
-                && delivery.getAssignmentDeadline().isBefore(Instant.now())) {
-            log.warn("Delivery {} assignment deadline expired on read; triggering waterfall cascade", deliveryId);
-            try {
-                reassign(null, deliveryId, "Unassigned driver timeout (waterfall cascade on read)");
-                delivery = deliveries.findById(deliveryId).orElse(delivery);
-            } catch (Exception ex) {
-                log.error("Lazy waterfall cascade failed on read for delivery {}: {}", deliveryId, ex.getMessage());
-            }
-        }
 
         var order = directory.order(delivery.getSupplierOrderId());
         return toResponse(delivery, order == null ? null : order.orderNumber());
     }
 
-    @Transactional
+    @Transactional(readOnly = true)
     public DeliveryDtos.DeliveryResponse forOrder(Long actorId, Long supplierOrderId) {
         var delivery = deliveries.findBySupplierOrderId(supplierOrderId)
                 .orElseThrow(() -> new NotFoundException("Delivery", supplierOrderId));
@@ -1016,7 +1085,9 @@ public class DeliveryService {
     }
 
     private void requireEitherSide(Long actorId, Long outletId, Long storeId, Long orderId) {
-        if (accessControl.has(actorId, Permissions.ORDER_VIEW, ScopeType.OUTLET, outletId)
+        if (accessControl.has(actorId, Permissions.DELIVERY_OPERATE, ScopeType.PLATFORM, null)
+                || accessControl.has(actorId, Permissions.DELIVERY_INSPECT, ScopeType.PLATFORM, null)
+                || accessControl.has(actorId, Permissions.ORDER_VIEW, ScopeType.OUTLET, outletId)
                 || accessControl.has(actorId, Permissions.ORDER_VIEW,
                 ScopeType.SUPPLIER_STORE, storeId)) {
             return;
@@ -1083,12 +1154,13 @@ public class DeliveryService {
                 isNoPartner(delivery) && delivery.getNoPartnerSince() != null
                         ? delivery.getNoPartnerSince().plus(retryWindow) : null,
                 isNoPartner(delivery) ? delivery.getNoPartnerSince() : null,
-                isNoPartner(delivery) && delivery.getOwnDeliveryOfferedAt() != null,
+                isNoPartner(delivery) && delivery.getOwnDeliveryOfferedAt() != null && !delivery.isReconciliationRequired(),
                 sandboxControls,
                 sandboxControls && pidgeProperties.isSandboxAutoAdvanceActive()
                         ? (int) pidgeProperties.getSandboxAutoAdvance().toSeconds() : null,
                 latLng(delivery.getPickupLatitude(), delivery.getPickupLongitude()),
-                latLng(delivery.getDropLatitude(), delivery.getDropLongitude()));
+                latLng(delivery.getDropLatitude(), delivery.getDropLongitude()),
+                delivery.isReconciliationRequired() && !delivery.getStatus().isTerminal());
     }
 
     private static DeliveryDtos.LatLngResponse latLng(BigDecimal latitude, BigDecimal longitude) {

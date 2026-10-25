@@ -52,28 +52,26 @@ public class DeliveryWaterfallService {
             return false;
         }
 
-        // Only cascade if still in PROVIDER_SELECTED and deadline has actually elapsed
+        // A cheap look to skip the obvious. It is not the decision: DeliveryService re-checks the status, the deadline
+        // and the order under the row lock, so a driver assigned after this look is not released.
         if (delivery.getStatus() != DeliveryStatus.PROVIDER_SELECTED) {
             log.debug("Delivery {} is in status {}, skipping waterfall timeout cascade",
                     deliveryId, delivery.getStatus());
             return false;
         }
-
         if (delivery.getAssignmentDeadline() != null && delivery.getAssignmentDeadline().isAfter(Instant.now())) {
             log.debug("Delivery {} assignment deadline is still in the future", deliveryId);
             return false;
         }
 
-        log.warn("Delivery {} timed out in PROVIDER_SELECTED (> 3 mins) with provider {}; triggering waterfall cascade",
-                deliveryId, delivery.getProviderCode());
-
-        auditService.record(null, null, "DELIVERY_WATERFALL_TIMEOUT", "DELIVERY",
-                deliveryId, delivery.getStatus().name(), DeliveryStatus.PROVIDER_SELECTED.name(),
-                "Driver unassigned timeout expired for provider " + delivery.getProviderCode(), "SYSTEM");
-
         try {
-            deliveryService.reassign(null, deliveryId, "Unassigned driver timeout (waterfall cascade)");
-            return true;
+            boolean moved = deliveryService.reassignIfAssignmentExpired(deliveryId,
+                    "Unassigned driver timeout (waterfall cascade)");
+            if (moved) {
+                log.warn("Delivery {} timed out waiting for a driver with provider {}; booked another courier",
+                        deliveryId, delivery.getProviderCode());
+            }
+            return moved;
         } catch (Exception ex) {
             log.error("Waterfall cascade failed for delivery {}: {}", deliveryId, ex.getMessage());
             return false;
@@ -81,27 +79,30 @@ public class DeliveryWaterfallService {
     }
 
     /**
-     * Manually force carrier escalation (e.g. from operations console).
+     * Manually force carrier escalation (from the operations console). Not transactional, like the timeout cascade:
+     * the audit rows are written in transactions of their own, so a failed reassignment cannot take its own audit row
+     * down with it, and the failure is thrown to the operator rather than swallowed (D-204 audit, gap 9).
+     *
+     * @param actorId the operator; recorded on every audit row
+     * @throws com.costonomy.mp.common.error.BusinessException if the delivery could not be given to another courier
      */
-    public boolean forceEscalate(Long deliveryId, String reason) {
-        var delivery = deliveries.findById(deliveryId).orElse(null);
-        if (delivery == null) {
-            return false;
-        }
+    public void forceEscalate(Long actorId, Long deliveryId, String reason) {
+        var delivery = deliveries.findById(deliveryId)
+                .orElseThrow(() -> new com.costonomy.mp.common.error.NotFoundException("Delivery", deliveryId));
+        String before = delivery.getStatus().name();
 
-        log.warn("Force escalating delivery {} with provider {}: {}", deliveryId, delivery.getProviderCode(), reason);
-
-        auditService.record(null, null, "DELIVERY_WATERFALL_MANUAL", "DELIVERY",
-                deliveryId, delivery.getStatus().name(), DeliveryStatus.PROVIDER_SELECTED.name(),
-                reason, "ADMIN");
-
+        log.warn("Operator {} forcing carrier escalation of delivery {} with provider {}: {}", actorId, deliveryId,
+                delivery.getProviderCode(), reason);
         try {
             deliveryService.reassign(null, deliveryId, reason);
-            return true;
-        } catch (Exception ex) {
+        } catch (RuntimeException ex) {
+            auditService.record(actorId, null, "DELIVERY_WATERFALL_MANUAL_FAILED", "DELIVERY", deliveryId, before, before,
+                    reason + " · " + ex.getMessage(), "ADMIN");
             log.error("Manual waterfall cascade failed for delivery {}: {}", deliveryId, ex.getMessage());
-            return false;
+            throw ex;
         }
+        var after = deliveries.findById(deliveryId).map(d -> d.getStatus().name()).orElse(before);
+        auditService.record(actorId, null, "DELIVERY_WATERFALL_MANUAL", "DELIVERY", deliveryId, before, after,
+                reason, "ADMIN");
     }
 }
-
