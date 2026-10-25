@@ -113,6 +113,9 @@ SUPPLIERS = [
         "store": "Domlur",
         "lat": "12.9611", "lng": "77.6387",
         "multiplier": 1.00,
+        # D-203: pays the rider on big orders, so the funded-delivery paths
+        # (checkout split, the "Delivery charges" screen) have something to show.
+        "free_delivery_from": "2000.00", "fund_delivery_cap": "60.00",
     },
     {
         "phone": "+919876511002",
@@ -120,6 +123,9 @@ SUPPLIERS = [
         "store": "Koramangala",
         "lat": "12.9352", "lng": "77.6245",
         "multiplier": 0.94,
+        # Free delivery on big orders, paid by the restaurant's side of the split:
+        # the contrast case to the funded store above.
+        "free_delivery_from": "3000.00",
     },
     {
         "phone": "+919876511003",
@@ -313,8 +319,37 @@ def stock_store(token, supplier_id, store_id, spec):
                     raise
 
     enable_credit(token, store_id)
+    set_delivery_terms(token, store_id, spec)
     print(f"  {spec['name']}: supplier {supplier_id}, store {store_id}, {stocked} SKUs")
     return supplier_id
+
+
+def set_delivery_terms(token, store_id, spec):
+    """Give the demo stores their delivery-funding terms (D-203).
+
+    The policy PUT replaces every field, so the current policy is read first and
+    only the free-delivery threshold and the funding switch are changed; a store's
+    own fee, minimums and radius survive a re-run. A store with neither key in its
+    spec keeps whatever it has.
+    """
+    threshold = spec.get("free_delivery_from")
+    if threshold is None:
+        return
+    current = call(f"/supplier-stores/{store_id}/delivery-policy", token=token)
+    funded = spec.get("fund_delivery_cap")
+    call(f"/supplier-stores/{store_id}/delivery-policy", {
+        "ownDeliveryEnabled": current.get("ownDeliveryEnabled", False),
+        "costonomyDeliveryEnabled": True,  # funding needs riders on offer
+        "ownDeliveryFee": current.get("ownDeliveryFee"),
+        "ownDeliveryMinOrderValue": current.get("ownDeliveryMinOrderValue"),
+        "minOrderValue": current.get("minOrderValue"),
+        "freeDeliveryThreshold": threshold,
+        "maxDeliveryRadiusKm": current.get("maxDeliveryRadiusKm"),
+        "fundCostonomyDelivery": funded is not None,
+        "fundedDeliveryCap": funded,
+    }, token=token, method="PUT")
+    print(f"    delivery: free from {threshold}"
+          + (f", supplier pays the rider up to {funded}" if funded else ""))
 
 
 def enable_credit(token, store_id):
