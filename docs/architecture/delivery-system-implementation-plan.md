@@ -1,5 +1,25 @@
 # Production-Grade Multi-Provider Delivery Orchestration Platform
 
+> **Status of this document (audited 2026-10-25).** This is the original **design brief** written as an instruction to an implementing agent. It is not a status tracker, and parts are **superseded** by the code: the lifecycle names and `POST /delivery/create` below were replaced by the real `DeliveryStatus` enum (15 values) and `POST /api/v1/supplier-orders/{id}/delivery`. For the current design see [`docs/delivery/DIAGRAMS.md`](../delivery/DIAGRAMS.md); for what exists, is tested and is visible, see [`docs/delivery/CURRENT_STATE.md`](../delivery/CURRENT_STATE.md). **Nothing here is evidence of deployment.** Words such as "production-grade" describe the intent of the brief.
+>
+> | Plan section | Status | Evidence / note |
+> |---|---|---|
+> | 1–3 Objective, concept, principles | **Completed** | provider-agnostic domain + `DeliveryProvider` port |
+> | 4 Pidge | **Completed** (real adapter off unless `providers.delivery=PIDGE`) | `PidgeDeliveryProvider`, `/webhooks/delivery/pidge`, sandbox |
+> | 5 Unified API (`POST /delivery/create`, `DISPATCHING`) | **Superseded** | `DeliveryController` endpoints |
+> | 6 Lifecycle (`CREATED … FALLBACK`) | **Superseded** | `DeliveryStatus` enum |
+> | 7–11 Order integration, quote/selection, waterfall, vehicles | **Completed** | `DeliveryOrderBridge`, `DeliveryBookingService`, `ReliabilityRanking`; vehicle limits 20/100 kg |
+> | 12–15 Failure handling, webhooks, ordering | **Completed for Pidge only**; other providers are polled | webhook for the other eight **blocked** on unverified contracts (traceability DEL-004…021) |
+> | 16–17 Tracking, notifications | **Partial** | tracking done; notification rules missing for most failure events |
+> | 18 Central wallet / billing | **Superseded** by D-204 (`courier_payable`, `delivery_ledger`); provider wallets / real provider payment API **not built** (only `MANUAL` and `MOCK_API` rails) | `CURRENT_STATE.md` M5–M7 |
+> | 19–36 Data model, idempotency, retry, observability, DLQ, admin, audit | **Largely completed** | outbox, ShedLock, recovery tasks, admin queues; "Kafka" in the brief is only a "domain must not depend on" example — the system uses the MySQL outbox |
+> | 37 Phase 1 Domain, 2 Pidge, 3 Dispatch engine | **Completed** | |
+> | 37 Phase 4 more providers | **Completed except Rapido** (no adapter); Shiprocket, Blowhorn, Delhivery, Xpressbees were added beyond the plan; Borzo webhook **blocked** | |
+> | 37 Phase 5 Notifications | **Partial** | |
+> | 37 Phase 6 Wallet and billing | **Partial / superseded** | D-204 |
+> | 37 Phase 7 Production hardening | **Partial**; no load/chaos evidence, no deployment | sweeps, ShedLock, reliability breaker exist |
+> | Not in this plan | **Future/added later** | food delivery (D-201), supplier-funded delivery (D-203), courier payable and gateway refunds (D-204) |
+
 ## 1. Objective
 
 Design and implement a **production-grade Delivery Orchestration & Smart Dispatch platform** for a restaurant and marketplace ecosystem.

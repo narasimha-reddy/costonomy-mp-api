@@ -114,7 +114,7 @@ Record failure reason and retry according to policy. Handled as driver cancellat
 
 ### Delivery failure
 
-Escalate/retry/reassign according to policy.
+Before pickup, a failed delivery is treated as a pickup failure: the courier is stood down and the next one is booked automatically. After pickup the goods are with the courier, so nothing is rebooked: the delivery stays `DELIVERY_FAILED`, is flagged `reconciliation_required` (tenants see "under review"), the order stays `OUT_FOR_DELIVERY`, a manual reassign is refused, and the courier stays owed. An operator closes it with `POST /api/v1/admin/deliveries/{id}/resolve` (cancel and refund, or mark delivered). A later courier `DELIVERED` supersedes the failure and clears the flag (D-205, D-206).
 
 All attempts remain auditable.
 
@@ -181,6 +181,23 @@ to pay for the rider on orders whose goods, before GST, reach the threshold.
 - Nothing is charged for an order cancelled before pickup or one the supplier carries themselves (the amount is cleared when the order
   becomes `SUPPLIER_DELIVERY`).
 - Own delivery: a `SELF` answer with no charge named is free once the goods reach the threshold, and stays free only while the order does.
+
+### Journeys and exits (D-204)
+
+| Mode | Entry | Money in | Normal exit | Failure exits |
+|---|---|---|---|---|
+| Pickup (restaurant collects) | order confirmed | payment held, captured at ready (D-103) | order completes at pickup | cancel before ready releases the hold |
+| Supplier delivery (own) | supplier answers `SELF` | as above, plus any charge the supplier named | supplier marks delivered | order cancelled: refund per D-104 |
+| Costonomy courier (supplier order) | quote, then book with fallback | fee held with the order; supplier share charged when the courier has the goods | courier events move the order to `OUT_FOR_DELIVERY` and `DELIVERED`; courier payable becomes `DUE` at pickup | no courier / failure after pickup: supplier takes over, or operations `resolve` (cancel and refund, or mark delivered); duplicate or out-of-order events cannot move a delivery backwards; an unknown booking outcome is reconciled, not rebooked blindly |
+| Costonomy courier (food) | create, fee held from wallet or paid at the gateway | fee as booked; unused part returned at pickup | delivered; courier payable `DUE` at pickup | cancel before pickup or no courier: whole fee back to where it came from; failure after pickup: fee kept, courier still owed; flagged, and an operator may close it (`POST /admin/food-deliveries/{id}/resolve`: return the fee, mark delivered, or clear the flag) (D-205) |
+
+Reads never reassign or book (the sweep does), a manual reassign is refused once the goods were collected, and a pickup order nobody collects has an operator exit (`close-pickup`) but no automatic timeout (D-205). No order is complete while money or delivery work is unresolved: `GET /api/v1/admin/deliveries/exceptions` lists the ones that look complete or under way but are not.
+
+### Courier payable and refunds (D-204)
+
+What Costonomy owes a courier is `courier_payable`, one row per booking that reached the provider (so a reassignment makes a second row). It is derived from the delivery and kept in step by an idempotent sync. Funding: the restaurant's fee and the supplier's agreed share are fixed at checkout and never change; the supplier pays `min(agreed, courier cost)`; Costonomy bears any overrun, a cancellation fee, a failed pickup and a failure after pickup, and keeps any underrun. A provider credit reduces what is owed. Payment is leased, retried a bounded number of times, never repeated when the outcome is unknown, and finance can record a bank or invoice payment, retry, void or adjust, with a note and an audit entry. Queues for finance are under `/api/v1/admin/delivery-finance`.
+
+A refund of a payment made at the gateway goes back to the gateway through `gateway_refund`: recorded first, bounded by the amount captured, reconciled when unanswered, retried and then escalated. Wallet payments are credited back to the wallet. A supplier's delivery charge is taken once, by the settlement or by direct payment, and is waived, credited or partly refunded if the courier turns out to cost less or the order is cancelled.
 
 ## 11. Mock provider
 
@@ -261,11 +278,12 @@ Append-only financial audit table `delivery_ledger` tracks:
 - Margin accounting and drawdowns.
 - Auditable by operations via `GET /api/v1/admin/deliveries/{id}/ledger` (`DELIVERY_INSPECT` permission).
 - Manual waterfall override via `POST /api/v1/admin/deliveries/{id}/force-waterfall` (`DELIVERY_OPERATE` permission).
+- The ledger records what a courier *quoted* and *booked*; what is *owed and paid* to the courier is `courier_payable` (D-204, §10).
 
 ## 16. Food delivery (restaurant to customer)
 
-> **Status: complete and hardened (D-197).**
-> **Built and tested:** schema (V91, V94, V97, V98), domain and repositories, creating a delivery (validation, idempotency), quoting
+> **Status (audited 2026-10-25): booking, payment, events, API and tracking are built and tested; handover code, notifications and an admin resolve tool are not (see "Handover" and `docs/delivery/CURRENT_STATE.md` §2.2). Deployed and app-visible: unknown / no mobile usage found.**
+> **Built and tested:** schema (V88, V91, V94, V95), domain and repositories, creating a delivery (validation, idempotency), quoting
 > every food-capable courier, holding the fee, booking with fallback in the order of §17, the 5-minute retry window and
 > ending `FAILED` (NO_COURIER) with a full refund, cancelling before pickup with a full refund, settling the unused part
 > of the hold after pickup without nested-transaction lock waits, and handing a booking that never got a rider (or whose rider let go) to the next courier.
@@ -279,7 +297,7 @@ Append-only financial audit table `delivery_ledger` tracks:
 ### Scope
 - **Created by** the restaurant's own system (POS or website) through the API, or by outlet staff in the Mandi app.
   Mandi has no customer ordering flow; the customer appears only as a drop-off contact.
-- **Fee** is paid by the restaurant from its wallet. **No cash on delivery**: the courier carries food, not money.
+- **Fee** is paid by the restaurant from its wallet, or at the payment gateway (`paymentMethod=GATEWAY`; the courier is not asked until the payment is captured; an unpaid checkout is cancelled after 30 minutes). **No cash on delivery**: the courier carries food, not money.
 - **Not in scope**: customer accounts, menus, food orders, payments from the customer.
 
 ### Model
@@ -291,14 +309,13 @@ mirror §5's. The supplier `delivery` tables are not changed.
 Only providers with `delivery_provider.supports_food_delivery = 1` are asked. No single provider is required: the
 quote is gathered from all eligible ones, the best meeting the ETA ceiling is booked, and if none takes it within the
 3-minute assignment deadline (§14) the waterfall moves to the next, excluding the one that failed. If every eligible
-provider fails the delivery ends `PROVIDER_UNAVAILABLE`, the fee is not taken, and the restaurant is told at once.
+provider fails the delivery goes to `PROVIDER_UNAVAILABLE` and the retry window below applies; a request that cannot be quoted at all is refused at creation and nothing is created or debited. (The restaurant is **not** notified by push: food deliveries publish no notification or realtime events.)
 
 ### When no courier will take it
 Food does not wait the way raw material does. If every eligible provider refuses or times out, the delivery is
 retried against all of them for **5 minutes** (not the 30 minutes and "deliver it yourself" offer of §7, which suit
 a supplier's pallet and not a hot meal). If nobody has taken it by then it ends `FAILED` with `failure_code =
-NO_COURIER`, the fee hold is refunded in full, and the restaurant is notified so it can call the customer or book
-another way. A timed-out booking is found by a database sweep on `assignment_deadline`, not by an in-memory timer, so
+NO_COURIER`, the fee hold is refunded in full (to the wallet, or to the gateway for a gateway-paid delivery), and the restaurant sees it in `GET …/{id}` and `…/financials`; no notification is sent. A timed-out booking is found by a database sweep on `assignment_deadline`, not by an in-memory timer, so
 a restart cannot strand it.
 
 ### Food rules
@@ -325,7 +342,7 @@ and the pickup address. It never returns the fee, the provider, the drop address
 accepts a numeric id.
 
 ### Handover
-A 4-digit code is sent to the customer; the rider enters it at handover. Only its hash is stored, and after 5 wrong
+**Not built.** The `FoodDelivery` entity has `deliveryOtpHash`/`deliveryOtpAttempts` columns, but no code generates, sends or verifies a code. The intended design: a 4-digit code is sent to the customer; the rider enters it at handover. Only its hash is stored, and after 5 wrong
 tries it is locked and the restaurant is told.
 
 ### API (restaurant)
@@ -333,7 +350,10 @@ tries it is locked and the restaurant is told.
 `GET /api/v1/outlets/{outletId}/food-deliveries/{id}` (`OUTLET_VIEW`),
 `GET /api/v1/outlets/{outletId}/food-deliveries` (`OUTLET_VIEW`),
 `POST /api/v1/outlets/{outletId}/food-deliveries/{id}/cancel` (`OUTLET_EDIT`),
-`GET /api/v1/outlets/{outletId}/food-deliveries/{id}/timeline` (`OUTLET_VIEW`).
+`GET /api/v1/outlets/{outletId}/food-deliveries/{id}/timeline` (`OUTLET_VIEW`),
+`POST /api/v1/outlets/{outletId}/food-deliveries/{id}/pay` and `.../confirm` (`OUTLET_EDIT`; gateway-paid fees),
+`GET /api/v1/outlets/{outletId}/food-deliveries/{id}/financials` (`OUTLET_VIEW`: held / kept / refunded to wallet or gateway).
+Admin: `GET /api/v1/admin/food-deliveries/{id}/inspect` and `GET /api/v1/admin/deliveries/operational-alerts` (`DELIVERY_INSPECT`).
 
 ## 17. Courier reliability and the decision record
 

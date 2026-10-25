@@ -60,3 +60,75 @@ For each confirmed issue:
 4. Validate the full current migration chain on a clean database, run the focused delivery tests, and compare EXPLAIN plans before/after where an index changes. Do not reset the developer's local database as a test strategy.
 
 Do not refactor unrelated provider flows or complete the explicitly unfinished food-delivery API/webhook work as part of this task. In the final report, rank findings by severity, name every migration/index added, list exact checks and outcomes, state any data or product decisions still needed, and identify any risk that remains unverified.
+
+
+Do we have end to end functional state while carrying any activity Like earlier there is no option to move money from supplier to delivery provider Do we have other places where we have complete logical flow to carryout functionality offer by our system
+ money movement across the state and  visibility observability of states
+
+
+ Complete the marketplace delivery journeys so every order has a valid entry path, an observable operational state, and a financially correct exit path.
+
+Start by inspecting the current code, migrations, tests, API responses, admin views, and delivery/payment documentation. The workspace contains uncommitted changes: preserve them and build on them. Summarize the existing journeys and identify missing transitions before editing. Then implement the fixes; do not stop at a proposal.
+
+## 1. Map and validate every delivery journey
+
+Cover pickup, supplier delivery, and Costonomy courier delivery from checkout through completion, cancellation, failure, refund, settlement, and reconciliation.
+
+For each path, define and enforce:
+- valid delivery and order state transitions;
+- who owns the next action: customer, supplier, courier, scheduled job, or operator;
+- when customer and supplier charges become due;
+- what happens when a quote, booking, assignment, pickup, delivery, cancellation, or refund fails;
+- the final state and next action visible to each party.
+
+Include retries, duplicate requests and webhooks, out-of-order events, provider timeouts with unknown outcomes, supplier takeover, cancellation races, and failure after pickup. Ensure no path can leave an order appearing complete while money or delivery work is unresolved.
+
+## 2. Complete courier payable and provider payment
+
+Supplier deductions and direct supplier payments are collections; they do not prove the courier was paid.
+
+Implement a durable courier payable linked to the delivery, order, provider, booking attempt, and funding sources. Track quoted cost, final provider cost, buyer contribution, supplier contribution, any platform-funded difference, currency, amount due, amount paid, payment references, timestamps, attempts, errors, and reconciliation state.
+
+Add an idempotent provider payment lifecycle with safe claims/leases, bounded retries, ambiguous-outcome reconciliation, audit history, and operator actions for manual bank or invoice payments if providers cannot be paid through an API. Keep external calls outside database locks.
+
+Define and document who bears differences between quoted and final courier charges, and how cancellation fees, provider credits, reassignment, failed pickup, and post-pickup failure affect the payable. Never silently change an agreed customer price or overcharge a supplier.
+
+## 3. Match refunds to the original payment method
+
+Audit every delivery cancellation, no-provider outcome, partial fee adjustment, and post-pickup failure.
+
+- Wallet-funded fees must use idempotent wallet credits.
+- Gateway-funded fees must use durable gateway refunds, including partial refunds.
+- Refund requests must be recorded before external calls and reconciled after timeouts or missing client confirmation.
+- Prevent duplicate refunds and refunds exceeding the captured or held amount.
+- Ensure recovery jobs know the payment method and cannot route a gateway payment through the wallet-only refund path.
+
+For supplier delivery-funding payments, prevent a deduction from being both collected directly and applied to a settlement. Handle concurrent confirmations, duplicate captured payments, and payment success without client confirmation. If money is captured after another path won, refund it through the durable refund workflow. Do not call the gateway from inside a database transaction or merely log a failed refund.
+
+## 4. Make states observable and actionable
+
+Provide role-appropriate customer, supplier, operations, and finance views that show the linked order and delivery, payer, payee, amount, currency, payment method, provider references, current state, state history, timestamps, retries, last error, next retry, and required action.
+
+Add bounded queues for overdue, exhausted, ambiguous, and unreconciled delivery payments and refunds. Clearly distinguish:
+- supplier amount pending, collected, or applied to settlement;
+- courier amount due, processing, paid, or requiring reconciliation;
+- customer amount captured, held, refunded, or requiring reconciliation.
+
+A collection or settlement must never be shown as a courier payment.
+
+## 5. Tests, migrations, and verification
+
+Add backward-compatible migrations and tests for:
+- every delivery mode’s happy path and exit paths;
+- wallet and gateway fees, full and partial refunds;
+- supplier deductions via settlement and direct payment;
+- courier payable creation, payment, retries, ambiguity, and reconciliation;
+- quote/final amount differences and cancellation fees;
+- races among settlement, direct payment, cancellation, booking, and webhook processing;
+- duplicate/out-of-order events and payment confirmations;
+- credit orders and suppliers with no upcoming settlement;
+- role-based visibility and operator actions.
+
+Run the focused unit and integration suites, then relevant broader suites. Report commands and results. Review the final diff for missing transitions, double-debit/credit risks, orphaned money states, unsafe retries, migration issues, and journeys that have no owner or next action.
+
+At the end, list any remaining decisions that require product or finance input, especially provider payment rails and who bears courier cost differences. Do not leave known refund or payable gaps as documentation-only follow-ups.

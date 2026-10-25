@@ -13,7 +13,7 @@ sequenceDiagram
     actor Buyer as Restaurant Buyer
     participant DC as DiscoveryController
     participant DS as DiscoveryService
-    participant DB as PostgreSQL (sku, store, address)
+    participant DB as MySQL (sku, store, address)
 
     Buyer->>DC: GET /api/v1/search/skus?q=onion&outletId=101&page=0&size=20
     DC->>DS: searchSkus(query, outletId, pageable)
@@ -35,7 +35,7 @@ sequenceDiagram
     actor Buyer as Restaurant Buyer
     participant DC as DiscoveryController
     participant DS as DiscoveryService
-    participant DB as PostgreSQL (supplier_store, category, rating)
+    participant DB as MySQL (supplier_store, category, rating)
 
     Buyer->>DC: GET /api/v1/supplier-stores/{storeId}/storefront
     DC->>DS: getStorefront(storeId)
@@ -57,7 +57,7 @@ sequenceDiagram
     actor Supplier as Supplier Seller
     participant SCC as SupplierCatalogController
     participant SCS as SupplierCatalogService
-    participant DB as PostgreSQL (supplier_sku, sku_inventory)
+    participant DB as MySQL (supplier_sku, sku_inventory)
 
     Supplier->>SCC: POST /api/v1/supplier-stores/{storeId}/skus (productId, price, unit, packSize, gstRate)
     SCC->>SCS: createSku(storeId, skuDto, principal)

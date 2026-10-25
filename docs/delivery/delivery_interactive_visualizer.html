@@ -49,6 +49,12 @@
       </div>
     </div>
 
+    <!-- Scope banner -->
+    <div class="p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-[var(--foreground)]">
+      <span class="font-semibold">Product walkthrough only.</span>
+      <span class="text-[var(--muted-foreground)]"> Carriers, fares, ETAs and the cold-chain table are illustrative, and the timings shown are shortened for the demo. This page covers the supplier-order delivery journey (Costonomy courier and supplier-own) and four failure paths. It does <b>not</b> show money movement (supplier deductions, courier payables, refunds), food delivery, or ops resolution, and it is not the source of truth for states or timings. Authoritative: <code>DIAGRAMS.md</code> (states &sect;2, money &sect;3, architecture &sect;4) and <code>CURRENT_STATE.md</code> in this folder.</span>
+    </div>
+
     <!-- Stepper Pipeline -->
     <div>
       <div class="flex items-center justify-between mb-2">
@@ -406,7 +412,7 @@
       providersData[0].status = 'TIMEOUT';
       providersData[1].status = 'WINNER';
       renderCarriers();
-      addEvent('DELIVERY_WATERFALL_TIMEOUT', `Assignment deadline expired with Pidge (>3m). Cascaded to Borzo (Attempt ${attemptCount}). Delivery ID preserved!`);
+      addEvent('DeliveryReassigned', `Assignment deadline expired with Pidge (>3m). Cascaded to Borzo (Attempt ${attemptCount}). Delivery ID preserved!`);
       document.getElementById('driverName').textContent = 'Borzo Dispatch';
       document.getElementById('driverPhone').textContent = 'Reassigning driver...';
       renderStepper();
@@ -414,7 +420,7 @@
 
     function triggerDriverCancel() {
       attemptCount++;
-      addEvent('DELIVERY_DRIVER_CANCELLED', `Driver Ramesh cancelled booking. Waterfall auto-reassigned consignment to Borzo (Attempt ${attemptCount}).`);
+      addEvent('DeliveryDriverCancelled', `Driver Ramesh cancelled booking. Waterfall auto-reassigned consignment to Borzo (Attempt ${attemptCount}).`);
       updateDriverBox();
     }
 
@@ -422,7 +428,7 @@
       currentStepIndex = 1;
       providersData.forEach(p => p.status = 'UNAVAILABLE');
       renderCarriers();
-      addEvent('DELIVERY_PROVIDER_UNAVAILABLE', 'All providers declined booking. 30-min auto-retry window started. Pushed offer to Supplier: "Deliver Order Yourself".');
+      addEvent('DeliveryProviderUnavailable', 'All providers declined booking. Auto-retry runs every 2 min for 30 min; at 45 min the supplier is offered "Deliver Order Yourself" (shortened in this demo).');
       
       const container = document.getElementById('actionButtons');
       container.innerHTML = `
@@ -434,7 +440,7 @@
 
     function acceptSupplierFallback() {
       setMode('SUPPLIER_OWN');
-      addEvent('DELIVERY_SWITCHED_TO_OWN', 'Supplier accepted self-fulfillment. Fee ₹120 preserved with zero buyer repricing (D-185, §23A.16).');
+      addEvent('DeliverySwitchedToSupplier', 'Supplier accepted self-fulfillment. Fee ₹120 preserved with zero buyer repricing (D-185, §23A.16).');
     }
 
     function resetFlow() {

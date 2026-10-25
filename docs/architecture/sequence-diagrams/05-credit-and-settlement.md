@@ -2,6 +2,8 @@
 
 This document details the exact runtime request/response sequence diagrams for all endpoints in the **Credit Ledger** and **Supplier Settlement** modules.
 
+> **Accuracy notice (2026-10-25).** Sections 1 and 2 below are **conceptual**: the endpoints `POST /restaurants/{id}/credit/reserve|utilize|repay` and the table `credit_line` do not exist. Credit is reserved and utilised inside order submission/acceptance through `CreditFundingAdapter` (an `OrderFundingPort`) and `CreditExposureStore`, on `credit_agreement`/`credit_reservation`/`credit_transaction`. The real credit endpoints are in `credit/web/CreditController` (`/credit/requests`, `/credit/agreements/{id}/{approve,reject,modify,accept,suspend,reinstate}`, `/credit/invoices/{id}/payments`, `/credit/invoices/{id}/claims`). Delivery-related deductions (`supplier_deduction` kind `DELIVERY_FUNDING`, direct payment, correction credits) are drawn in [`docs/delivery/DIAGRAMS.md` §3](../../delivery/DIAGRAMS.md#3-money-movement).
+
 ---
 
 ## 1. `POST /api/v1/restaurants/{id}/credit/reserve` & `utilize`
@@ -13,7 +15,7 @@ sequenceDiagram
     actor Service as Order Service / Client
     participant CC as CreditController
     participant CLS as CreditLedgerService
-    participant DB as PostgreSQL (credit_line, credit_reservation, credit_transaction)
+    participant DB as MySQL (credit_line, credit_reservation, credit_transaction)
 
     Service->>CC: POST /api/v1/restaurants/{id}/credit/reserve (orderId, amount)
     CC->>CLS: reserveCredit(restaurantId, orderId, amount)
@@ -50,7 +52,7 @@ sequenceDiagram
     actor Admin as Finance Admin / Payment Gateway
     participant CC as CreditController
     participant CLS as CreditLedgerService
-    participant DB as PostgreSQL
+    participant DB as MySQL
 
     Admin->>CC: POST /api/v1/restaurants/{id}/credit/repay (amount, paymentRef)
     CC->>CLS: recordRepayment(restaurantId, amount, paymentRef)
@@ -72,7 +74,7 @@ sequenceDiagram
     actor Supplier as Supplier Seller
     participant SC as SettlementController
     participant SS as SettlementService
-    participant DB as PostgreSQL (settlement, supplier_order, supplier_deduction)
+    participant DB as MySQL (settlement, supplier_order, supplier_deduction)
 
     Supplier->>SC: GET /api/v1/supplier-stores/{storeId}/settlements
     SC->>SS: listSettlements(storeId)
@@ -100,7 +102,7 @@ sequenceDiagram
     actor Finance as Ops Finance Admin
     participant SC as SettlementController
     participant SS as SettlementService
-    participant DB as PostgreSQL
+    participant DB as MySQL
 
     Finance->>SC: POST /api/v1/admin/settlements/{id}/approve
     SC->>SS: approveSettlement(id, principal)

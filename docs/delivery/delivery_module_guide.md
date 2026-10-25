@@ -2,6 +2,8 @@
 
 This document visualizes the end-to-end architecture, lifecycle state machine, carrier waterfall orchestration, and operational guardrails of the **Costonomy Delivery Module**.
 
+> **Orientation guide, corrected 2026-10-25.** It covers the supplier-order delivery journey only. For exact states, money movement, food delivery and what is tested/deployed/app-visible, use [DIAGRAMS.md](DIAGRAMS.md) and [CURRENT_STATE.md](CURRENT_STATE.md). Nothing here implies deployment (no deployment evidence exists).
+
 ---
 
 ## 1. Executive Summary & Core Delivery Modes
@@ -55,59 +57,25 @@ flowchart TD
 
 ## 2. End-to-End Delivery Lifecycle & State Machine
 
-The delivery state machine is strictly monotonic. Out-of-order webhook events cannot rewind progress, and non-terminal failures trigger automated cascading rather than failing the order.
+Provider events cannot rewind progress (they are stored `OUT_OF_ORDER` instead), and most non-terminal failures trigger automatic cascading rather than failing the order.
 
-```mermaid
-stateDiagram-v2
-    [*] --> DELIVERY_REQUESTED: Order marked READY_FOR_PICKUP
-
-    DELIVERY_REQUESTED --> QUOTE_RECEIVED: Multi-carrier quotes gathered
-    DELIVERY_REQUESTED --> QUOTE_FAILED: No carrier serviceable / out of radius
-    DELIVERY_REQUESTED --> CANCELLED: Order cancelled before pickup
-
-    QUOTE_FAILED --> QUOTE_RECEIVED: Background Auto-Retry (30m window)
-    QUOTE_FAILED --> DRIVER_ASSIGNED: Supplier switches to Own Delivery (Fallback)
-
-    QUOTE_RECEIVED --> PROVIDER_SELECTED: Carrier booked (cheapest qualifying)
-    QUOTE_RECEIVED --> PROVIDER_UNAVAILABLE: All carriers rejected booking
-
-    PROVIDER_UNAVAILABLE --> PROVIDER_SELECTED: Waterfall cascade to alternative carrier
-    PROVIDER_UNAVAILABLE --> DRIVER_ASSIGNED: Supplier switches to Own Delivery (Fallback)
-
-    PROVIDER_SELECTED --> DRIVER_ASSIGNED: Driver accepted assignment
-    PROVIDER_SELECTED --> PROVIDER_SELECTED: Timeout expired (Bike 3m / Truck 12m) -> Cascade
-    PROVIDER_SELECTED --> DRIVER_CANCELLED: Driver rejected assignment -> Cascade
-
-    DRIVER_ASSIGNED --> DRIVER_AT_PICKUP: Courier arrives at supplier warehouse
-    DRIVER_ASSIGNED --> PICKUP_FAILED: Consignment not ready / vehicle mismatch
-
-    DRIVER_AT_PICKUP --> PICKED_UP: Consignment collected (Order becomes OUT_FOR_DELIVERY)
-    DRIVER_AT_PICKUP --> PICKUP_FAILED: Driver leaves without goods -> Reassign
-
-    PICKED_UP --> IN_TRANSIT: Driver en route to restaurant
-    IN_TRANSIT --> ARRIVED_AT_DESTINATION: Driver arrives at restaurant outlet
-
-    ARRIVED_AT_DESTINATION --> DELIVERED: Proof of delivery confirmed (Order DELIVERED)
-    IN_TRANSIT --> DELIVERY_FAILED: Outlet closed / recipient unavailable
-    DELIVERY_FAILED --> IN_TRANSIT: Re-attempt delivery
-
-    DELIVERED --> [*]
-    CANCELLED --> [*]
-```
+The exact state diagram, with the actor or job that advances each edge, is in [DIAGRAMS.md §2a](DIAGRAMS.md#2a-supplier-order-delivery-deliverystatus). (The diagram previously drawn here showed edges the code does not allow, such as `QUOTE_FAILED → DRIVER_ASSIGNED`, `PROVIDER_SELECTED → PROVIDER_SELECTED` and `DELIVERY_FAILED → IN_TRANSIT` by event; supplier takeover writes `DRIVER_ASSIGNED` directly and flips the mode.)
 
 ### State Classification
 
 *   **Initial:** `DELIVERY_REQUESTED`
 *   **Carrier Quoting & Selection:** `QUOTE_RECEIVED`, `PROVIDER_SELECTED`
 *   **Execution & Fulfillment:** `DRIVER_ASSIGNED`, `DRIVER_AT_PICKUP`, `PICKED_UP`, `IN_TRANSIT`, `ARRIVED_AT_DESTINATION`
-*   **Recoverable Setbacks (Auto-cascade/reassign):** `QUOTE_FAILED`, `PROVIDER_UNAVAILABLE`, `DRIVER_CANCELLED`, `PICKUP_FAILED`, `DELIVERY_FAILED`
+*   **Recoverable Setbacks (Auto-cascade/reassign):** `QUOTE_FAILED`, `PROVIDER_UNAVAILABLE`, `DRIVER_CANCELLED`, `PICKUP_FAILED`
+*   **Operator-only setback:** `DELIVERY_FAILED` (after pickup, the goods are with the courier)
 *   **Terminal States (Only 2):** `DELIVERED`, `CANCELLED`
+*   Note: `DELIVERY_FAILED` is never rebooked automatically and manual reassign is refused; it is flagged for review and operations resolves it (`POST /api/v1/admin/deliveries/{id}/resolve`: cancel and refund, or mark delivered).
 
 ---
 
 ## 3. Carrier Selection & Waterfall Cascading Engine
 
-Costonomy integrates 9 logistics providers. When an order is ready, all available providers are queried simultaneously.
+Costonomy has adapters for 9 logistics providers (Pidge, Borzo, Shadowfax, Porter, Shiprocket, LoadShare, Blowhorn, Delhivery, Xpressbees). Only Pidge is a real adapter by default when `providers.delivery=PIDGE`; the other eight are off by default, and the mock couriers are the default. When an order is ready, enabled providers are queried and the cheapest usable quote is booked first.
 
 ```mermaid
 sequenceDiagram
@@ -134,7 +102,7 @@ sequenceDiagram
     DS->>BS: Book Carrier A
     BS->>3PL: Book Consignment
     3PL-->>BS: Booking confirmed + ProviderDeliveryId
-    BS->>WF: Start assignment SLA timer (Bike: 3m, Truck: 12m)
+    BS->>WF: Start assignment SLA timer (two-wheeler: 3 min, larger vehicles: 12 min)
     BS->>Buyer: Push "Finding a driver" update
 
     alt Carrier A Assigns Driver within SLA
@@ -153,9 +121,9 @@ sequenceDiagram
 1.  **Strictly Lowest Cost meeting ETA**: Commission or margin plays zero part. Guardrail ensures the platform does not pass higher fees to buyers.
 2.  **Fallback to Fastest**: If no courier meets the required ETA, the system selects the fastest available courier, prioritizing arrival over price.
 3.  **Vehicle Type Classification**:
-    *   `BIKE`: < 20 kg
-    *   `THREE_WHEELER`: 20 kg – 500 kg
-    *   `FOUR_WHEELER_TRUCK`: > 500 kg
+    *   `TWO_WHEELER`: up to 20 kg
+    *   `THREE_WHEELER`: 20 kg – 100 kg
+    *   `FOUR_WHEELER_TRUCK`: over 100 kg (`VehicleType.java`)
 4.  **Intra-City Radius Gate**: Capped at 30 km max radius. Orders beyond 30 km are flagged `UNSERVICEABLE` before external queries.
 5.  **Cold Chain Verification**: For temperature-sensitive perishable items, carriers must hold verified cold-chain equipment for the specific vehicle category.
 
@@ -167,14 +135,14 @@ To provide a seamless Uber-like tracking experience, incoming webhook events fro
 
 ```mermaid
 flowchart TD
-    WebhookIn["Incoming Provider Webhook (Pidge, Borzo, etc.)"] --> AuthCheck{"Signature & IP Verified?"}
+    WebhookIn["Incoming Pidge webhook (the only webhook route; other providers are polled every 30 s)"] --> AuthCheck{"Signature & IP Verified?"}
     AuthCheck -->|No| Reject401["Reject 401 Unauthorized"]
     AuthCheck -->|Yes| IdempotencyCheck{"providerEventId exists?"}
     
-    IdempotencyCheck -->|Yes (Duplicate)| Duplicate200["Ignore & Return 200 OK (Replay Protection)"]
+    IdempotencyCheck -->|"Yes (Duplicate)"| Duplicate200["Ignore & Return 200 OK (Replay Protection)"]
     IdempotencyCheck -->|No| OrderCheck{"Is Event Moving Backward in Rank?"}
     
-    OrderCheck -->|Yes (Out of order)| StoreOutOfOrder["Store as OUT_OF_ORDER (Do not apply to UI)"]
+    OrderCheck -->|"Yes (Out of order)"| StoreOutOfOrder["Store as OUT_OF_ORDER (Do not apply to UI)"]
     OrderCheck -->|No| ApplyEvent["Advance Delivery Status"]
 
     ApplyEvent --> GPSCheck{"Has Driver Location (Lat/Lng)?"}
@@ -195,26 +163,26 @@ When no third-party logistics partner can accept the delivery (e.g., peak demand
 ```mermaid
 flowchart LR
     AllFail["All Carrier Quotes/Bookings Fail"] --> StatusNoPartner["Status: QUOTE_FAILED / PROVIDER_UNAVAILABLE"]
-    StatusNoPartner --> Timer30["30-Minute Auto-Retry Window"]
+    StatusNoPartner --> Timer30["30-minute auto-retry window"]
     
-    Timer30 --> LoopRetry{"Auto-retry every 5m"}
+    Timer30 --> LoopRetry{"Auto-retry every 2 min, at most 15 tries"}
     LoopRetry -->|Partner Found| SuccessBook["Book Partner & Proceed"]
     
-    StatusNoPartner --> OfferSupplier["Push Offer to Supplier: 'Deliver Order Yourself'"]
+    StatusNoPartner --> OfferSupplier["At 45 min: offer to supplier 'Deliver Order Yourself'"]
     OfferSupplier --> SupplierAccepts{"Supplier Accepts?"}
     
     SupplierAccepts -->|Yes| SwitchMode["Switch Mode to SUPPLIER_OWN"]
     SwitchMode --> RetainFee["Buyer fee remains unchanged (No silent repricing)"]
     SwitchMode --> SupplierFleet["Supplier Dispatches Own Vehicle"]
     
-    LoopRetry -->|Window Expires| Escalation["Operations Admin Radar Alert"]
+    LoopRetry -->|Window Expires| Escalation["Ops exceptions list (READY_WITHOUT_COURIER after 30 min)"]
 ```
 
 ### Safety & Integrity Rules
 
 *   **Single Delivery Identity (D-026)**: Cascading or switching to supplier-own mode **never** creates a second `delivery` row. The same delivery ID is maintained throughout so order history, invoices, and analytics remain consistent.
 *   **No Silent Reprice (§23A.16)**: When switching from Costonomy to supplier-own delivery after a partner failure, the delivery fee paid by the buyer is preserved exactly as quoted at checkout.
-*   **Strict Access Control (§23A.38)**: On Costonomy-managed deliveries, suppliers are blocked from manually clicking "Delivered". Only verified 3PL telemetry or delivery OTP can mark fulfillment.
+*   **Strict Access Control (§23A.38)**: On Costonomy-managed deliveries, suppliers are blocked from manually clicking "Delivered". Only courier (3PL) events or an operator resolution can mark fulfillment; there is no delivery-OTP check in the code.
 
 ---
 
