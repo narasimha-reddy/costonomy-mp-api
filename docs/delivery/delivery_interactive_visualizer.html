@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Costonomy Delivery Module Visualizer</title>
+  <title>Costonomy Delivery Module Interactive Visualizer</title>
   <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
   <style>
     .transition-all-200 { transition: all 0.2s ease-in-out; }
@@ -15,92 +15,126 @@
     }
   </style>
 </head>
-<body class="bg-transparent text-[var(--foreground)] antialiased p-4">
-  <div class="bg-[var(--card)] text-[var(--foreground)] border border-[var(--border)] rounded-2xl p-6 shadow-md max-w-5xl mx-auto space-y-6">
+<body class="bg-slate-50 dark:bg-zinc-950 text-slate-900 dark:text-zinc-100 antialiased p-3 sm:p-6">
+  <div class="max-w-6xl mx-auto space-y-6">
     
     <!-- Header -->
-    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-[var(--border)]">
-      <div>
-        <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 mb-2">
-          <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-dot"></span>
-          Interactive Product Simulator
+    <div class="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-5 shadow-sm space-y-4">
+      <div class="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 pb-4 border-b border-slate-100 dark:border-zinc-800">
+        <div>
+          <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 mb-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-dot"></span>
+            Interactive Product & Finance Simulator
+          </div>
+          <h1 class="text-xl sm:text-2xl font-bold tracking-tight">Delivery Module Orchestration & Money Movement</h1>
+          <p class="text-xs sm:text-sm text-slate-500 dark:text-zinc-400 mt-0.5">Explore multi-carrier waterfalls, courier payables, supplier delivery funding, and operational failure exits.</p>
         </div>
-        <h1 class="text-xl font-bold tracking-tight text-[var(--foreground)]">Delivery Module Flow & Orchestration</h1>
-        <p class="text-xs text-[var(--muted-foreground)] mt-0.5">Explore how orders transition from kitchen readiness through multi-carrier waterfall to doorstep delivery.</p>
+
+        <!-- Top-level Journey Selector -->
+        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          <div class="flex items-center bg-slate-100 dark:bg-zinc-800 p-1 rounded-xl border border-slate-200 dark:border-zinc-700">
+            <button id="journeyB2B" onclick="setJourney('SUPPLIER_B2B')" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 text-white shadow-xs transition-all-200">
+              Supplier Order (B2B)
+            </button>
+            <button id="journeyFood" onclick="setJourney('FOOD_DELIVERY')" class="px-3.5 py-1.5 text-xs font-medium rounded-lg text-slate-600 dark:text-zinc-300 hover:text-slate-900 dark:hover:text-white transition-all-200">
+              Food Delivery (B2C)
+            </button>
+          </div>
+
+          <!-- Sub-mode selector (Contextual) -->
+          <div id="subModeContainer" class="flex items-center bg-slate-100 dark:bg-zinc-800 p-1 rounded-xl border border-slate-200 dark:border-zinc-700">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
       </div>
 
-      <!-- Mode Selector -->
-      <div class="flex items-center bg-[var(--background)] p-1 rounded-xl border border-[var(--border)]">
-        <button id="modeCostonomy" onclick="setMode('COSTONOMY')" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] shadow-xs transition-all-200">
-          Costonomy 3PL Mode
-        </button>
-        <button id="modeSupplier" onclick="setMode('SUPPLIER_OWN')" class="px-3.5 py-1.5 text-xs font-medium rounded-lg text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all-200">
-          Supplier Own Delivery
-        </button>
+      <!-- Mode & Scope Summary Banner -->
+      <div id="modeDescription" class="p-3.5 rounded-xl border text-xs flex items-start gap-3">
+        <!-- Rendered by JS -->
       </div>
-    </div>
-
-    <!-- Mode Comparison Banner -->
-    <div id="modeDescription" class="p-3.5 rounded-xl border border-blue-500/20 bg-blue-500/5 text-xs text-[var(--foreground)] flex items-start gap-3">
-      <div class="p-1.5 rounded-lg bg-blue-500/20 text-blue-600 dark:text-blue-400 mt-0.5 font-bold">3PL</div>
-      <div>
-        <span class="font-semibold text-blue-600 dark:text-blue-400">Costonomy Orchestrated Delivery:</span>
-        <span class="text-[var(--muted-foreground)]"> Multi-carrier engine (Blowhorn, Delhivery, Pidge, Porter, etc.). Platform quotes upfront fee, automatically waterfalls through carriers, manages driver assignment SLA timers, and streams live telemetry to the restaurant.</span>
-      </div>
-    </div>
-
-    <!-- Scope banner -->
-    <div class="p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/5 text-xs text-[var(--foreground)]">
-      <span class="font-semibold">Product walkthrough only.</span>
-      <span class="text-[var(--muted-foreground)]"> Carriers, fares, ETAs and the cold-chain table are illustrative, and the timings shown are shortened for the demo. This page covers the supplier-order delivery journey (Costonomy courier and supplier-own) and four failure paths. It does <b>not</b> show money movement (supplier deductions, courier payables, refunds), food delivery, or ops resolution, and it is not the source of truth for states or timings. Authoritative: <code>DIAGRAMS.md</code> (states &sect;2, money &sect;3, architecture &sect;4) and <code>CURRENT_STATE.md</code> in this folder.</span>
     </div>
 
     <!-- Stepper Pipeline -->
-    <div>
-      <div class="flex items-center justify-between mb-2">
-        <span class="text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Lifecycle State Machine</span>
-        <span id="currentStatusBadge" class="text-xs font-mono font-bold px-2.5 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400">
-          DELIVERY_REQUESTED
-        </span>
+    <div class="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-5 shadow-sm space-y-3">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-zinc-400">Lifecycle State Machine</span>
+        <div class="flex items-center gap-2">
+          <span id="reviewWarningBadge" class="hidden text-xs font-bold px-2 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+            underReview: true
+          </span>
+          <span id="currentStatusBadge" class="text-xs font-mono font-bold px-2.5 py-0.5 rounded-md bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
+            DELIVERY_REQUESTED
+          </span>
+        </div>
       </div>
 
-      <div class="grid grid-cols-4 sm:grid-cols-7 gap-1.5 text-center" id="stateStepper">
+      <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2 text-center" id="stateStepper">
         <!-- Rendered via JS -->
       </div>
     </div>
 
     <!-- Main Interactive Area: Two Columns -->
-    <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
       
-      <!-- Left Column: Controls & Simulation (7 cols) -->
-      <div class="lg:col-span-7 space-y-4">
+      <!-- Left Column: Controls, Waterfall & Ops Resolution (7 cols) -->
+      <div class="lg:col-span-7 space-y-5">
         
         <!-- Simulation Controls Card -->
-        <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)] space-y-3">
+        <div class="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-sm space-y-4">
           <div class="flex items-center justify-between">
-            <span class="text-xs font-semibold text-[var(--foreground)]">Simulation Actions</span>
-            <span class="text-xs text-[var(--muted-foreground)]">Step through the flow</span>
+            <span class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400">Simulation Controls</span>
+            <span class="text-xs text-slate-400 dark:text-zinc-500">Advance step-by-step</span>
           </div>
 
-          <div class="flex flex-wrap gap-2" id="actionButtons">
+          <div class="flex flex-wrap items-center gap-2.5" id="actionButtons">
             <!-- Dynamic Actions -->
           </div>
         </div>
 
-        <!-- Waterfall / Carrier Decision Engine -->
-        <div id="carrierWaterfallSection" class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)] space-y-3">
+        <!-- Operations Exception & Resolution Banner (Appears on failure / review) -->
+        <div id="opsResolutionSection" class="hidden bg-amber-500/10 border-2 border-amber-500/40 p-4 rounded-2xl space-y-3">
+          <div class="flex items-start justify-between">
+            <div>
+              <div class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-bold bg-amber-500 text-white uppercase">
+                Operations Intervention Required
+              </div>
+              <h2 class="text-sm font-bold text-amber-900 dark:text-amber-200 mt-1">Delivery Stalled Post-Pickup (`DELIVERY_FAILED`)</h2>
+              <p class="text-xs text-amber-800 dark:text-amber-300 mt-0.5">Goods are in courier custody. Automatic rebooking is refused to prevent double dispatch. Resolve via Ops Tools:</p>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+            <button onclick="resolveOps('CANCEL_AND_REFUND')" class="p-2.5 rounded-xl bg-white dark:bg-zinc-900 border border-amber-300 dark:border-zinc-700 text-left hover:border-amber-500 transition-all-200">
+              <div class="text-xs font-bold text-rose-600 dark:text-rose-400">Cancel & Refund</div>
+              <div class="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">Refunds buyer via original payment rail. Courier still owed.</div>
+            </button>
+            <button onclick="resolveOps('MARK_DELIVERED')" class="p-2.5 rounded-xl bg-white dark:bg-zinc-900 border border-amber-300 dark:border-zinc-700 text-left hover:border-amber-500 transition-all-200">
+              <div class="text-xs font-bold text-emerald-600 dark:text-emerald-400">Mark Delivered</div>
+              <div class="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">Confirms manual recipient handover; clears flag.</div>
+            </button>
+            <button onclick="resolveOps('LATE_DELIVERED_EVENT')" class="p-2.5 rounded-xl bg-white dark:bg-zinc-900 border border-amber-300 dark:border-zinc-700 text-left hover:border-amber-500 transition-all-200">
+              <div class="text-xs font-bold text-indigo-600 dark:text-indigo-400">Late Delivered Event</div>
+              <div class="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">Courier delivers after failure; supersedes failure (D-206).</div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Multi-Carrier Waterfall Quoting Engine -->
+        <div id="carrierWaterfallSection" class="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-sm space-y-3">
           <div class="flex items-center justify-between">
-            <span class="text-xs font-semibold text-[var(--foreground)]">Multi-Carrier Waterfall Bidding (Doc 06 §4)</span>
-            <span id="waterfallTimerBadge" class="text-xs font-medium px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+            <div>
+              <span class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400">Multi-Carrier Waterfall Bidding (Doc 06 §4)</span>
+              <p class="text-xs text-slate-500 dark:text-zinc-400 mt-0.5">Carrier fares are internal secrets; restaurants pay fixed checkout fee.</p>
+            </div>
+            <span id="waterfallTimerBadge" class="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
               Assignment SLA: 3:00m
             </span>
           </div>
 
-          <!-- Carrier list table -->
           <div class="overflow-x-auto">
             <table class="w-full text-left text-xs">
               <thead>
-                <tr class="border-b border-[var(--border)] text-[var(--muted-foreground)]">
+                <tr class="border-b border-slate-100 dark:border-zinc-800 text-slate-400 dark:text-zinc-500 uppercase tracking-wider">
                   <th class="pb-2 font-medium">Provider</th>
                   <th class="pb-2 font-medium">Internal Fare</th>
                   <th class="pb-2 font-medium">ETA</th>
@@ -108,86 +142,110 @@
                   <th class="pb-2 font-medium">Outcome</th>
                 </tr>
               </thead>
-              <tbody id="carrierRows" class="divide-y divide-[var(--border)]">
+              <tbody id="carrierRows" class="divide-y divide-slate-100 dark:divide-zinc-800">
                 <!-- Injected via JS -->
               </tbody>
             </table>
           </div>
 
-          <div class="p-2.5 rounded-lg bg-[var(--card)] border border-[var(--border)] text-xs text-[var(--muted-foreground)]">
-            <span class="font-medium text-[var(--foreground)]">Product Rule:</span> Carrier quotes are strictly internal. Restaurants only see the fixed platform fee (₹120) guaranteed at checkout. Selection rule = <em>Lowest price meeting ETA</em>.
+          <div class="p-2.5 rounded-xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-100 dark:border-zinc-700/60 text-xs text-slate-600 dark:text-zinc-400">
+            <span class="font-semibold text-slate-900 dark:text-zinc-200">Selection Policy:</span> Lowest internal cost meeting ETA window. Costonomy absorbs courier quote overruns; margin is retained on underruns.
           </div>
         </div>
 
         <!-- Exception & Edge-Case Sandbox -->
-        <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)] space-y-3">
-          <span class="text-xs font-semibold text-[var(--foreground)]">Test Product Edge Cases & Recoveries</span>
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <button onclick="triggerWaterfallTimeout()" class="p-2.5 rounded-lg border border-amber-500/30 hover:bg-amber-500/10 text-left transition-all-200">
-              <div class="text-xs font-semibold text-amber-600 dark:text-amber-400">Driver Timeout (3m)</div>
-              <div class="text-xs text-[var(--muted-foreground)] mt-0.5">Cascades Carrier A &rarr; Carrier B automatically</div>
+        <div class="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-sm space-y-3">
+          <span class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400">Test Product Edge Cases & Fallbacks</span>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <button onclick="triggerWaterfallTimeout()" class="p-3 rounded-xl border border-amber-500/30 hover:bg-amber-500/5 text-left transition-all-200">
+              <div class="text-xs font-bold text-amber-600 dark:text-amber-400">1. Assignment Timeout (3m SLA)</div>
+              <div class="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">Cascades carrier A &rarr; carrier B under pessimistic row lock.</div>
             </button>
-            <button onclick="triggerDriverCancel()" class="p-2.5 rounded-lg border border-rose-500/30 hover:bg-rose-500/10 text-left transition-all-200">
-              <div class="text-xs font-semibold text-rose-600 dark:text-rose-400">Driver Cancels</div>
-              <div class="text-xs text-[var(--muted-foreground)] mt-0.5">Reassigns courier while preserving Delivery ID</div>
+            <button onclick="triggerDriverCancel()" class="p-3 rounded-xl border border-rose-500/30 hover:bg-rose-500/5 text-left transition-all-200">
+              <div class="text-xs font-bold text-rose-600 dark:text-rose-400">2. Driver Cancels / Pickup Fails</div>
+              <div class="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">Stands down carrier, auto-rebooks candidate without new delivery row.</div>
             </button>
-            <button onclick="triggerNoPartner()" class="p-2.5 rounded-lg border border-purple-500/30 hover:bg-purple-500/10 text-left transition-all-200">
-              <div class="text-xs font-semibold text-purple-600 dark:text-purple-400">No Partner Found</div>
-              <div class="text-xs text-[var(--muted-foreground)] mt-0.5">30m retry loop + offer Supplier Own fallback</div>
+            <button onclick="triggerNoPartner()" class="p-3 rounded-xl border border-purple-500/30 hover:bg-purple-500/5 text-left transition-all-200">
+              <div class="text-xs font-bold text-purple-600 dark:text-purple-400">3. No Partner Available</div>
+              <div class="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">B2B: 30m retry &rarr; 45m supplier takeover. Food: 5m retry &rarr; auto-refund.</div>
+            </button>
+            <button onclick="triggerPostPickupFailure()" class="p-3 rounded-xl border border-red-500/30 hover:bg-red-500/5 text-left transition-all-200">
+              <div class="text-xs font-bold text-red-600 dark:text-red-400">4. Post-Pickup Delivery Failure</div>
+              <div class="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">Flags reconciliation_required, alerts operations, suppresses rebooking.</div>
             </button>
           </div>
         </div>
 
       </div>
 
-      <!-- Right Column: Buyer Experience & Live Tracking View (5 cols) -->
-      <div class="lg:col-span-5 space-y-4">
+      <!-- Right Column: Financial Movement & Mobile Tracking (5 cols) -->
+      <div class="lg:col-span-5 space-y-5">
         
+        <!-- Financial Movement Ledger Card (D-204, D-206) -->
+        <div class="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-sm space-y-3.5">
+          <div class="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-zinc-800">
+            <div>
+              <span class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400">Money Movement & Payable Split</span>
+              <p class="text-[11px] text-slate-400 dark:text-zinc-500">Live ledger of who pays whom and what is owed</p>
+            </div>
+            <span class="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+              D-204 / D-206
+            </span>
+          </div>
+
+          <div class="space-y-2.5 text-xs" id="financialLedgerContent">
+            <!-- Populated via JS -->
+          </div>
+
+          <!-- Courier Payable status chip -->
+          <div class="p-3 rounded-xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-100 dark:border-zinc-700/60 space-y-1.5">
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-slate-500 dark:text-zinc-400">Courier Payable Lifecycle:</span>
+              <span id="payableStateBadge" class="font-mono font-bold px-2 py-0.5 rounded text-[11px] bg-slate-200 dark:bg-zinc-700 text-slate-700 dark:text-zinc-300">
+                ACCRUED
+              </span>
+            </div>
+            <p class="text-[11px] text-slate-500 dark:text-zinc-400" id="payableStateDesc">
+              Payable accrued upon booking; moves to DUE once courier picks up consignment.
+            </p>
+          </div>
+        </div>
+
         <!-- Live Buyer View Mockup -->
-        <div class="p-4 rounded-xl border border-[var(--border)] bg-[var(--background)] space-y-3">
-          <div class="flex items-center justify-between pb-2 border-b border-[var(--border)]">
-            <span class="text-xs font-semibold text-[var(--foreground)]">Restaurant Mobile View</span>
-            <span id="liveTrackStatus" class="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+        <div class="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-sm space-y-4">
+          <div class="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-zinc-800">
+            <span class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400">Restaurant Mobile View</span>
+            <span id="liveTrackStatus" class="inline-flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Live GPS
             </span>
           </div>
 
-          <!-- Order Summary Card -->
-          <div class="p-3 rounded-lg bg-[var(--card)] border border-[var(--border)] space-y-1.5">
-            <div class="flex justify-between items-center text-xs">
-              <span class="text-[var(--muted-foreground)]">Order: <strong class="text-[var(--foreground)] font-mono">#ORD-9042</strong></span>
-              <span class="font-semibold text-emerald-600 dark:text-emerald-400" id="buyerFeeDisplay">Delivery: ₹120</span>
-            </div>
-            <div class="text-xs text-[var(--muted-foreground)] flex items-center justify-between">
-              <span>Consignment: <strong>14.5 kg (Bike)</strong></span>
-              <span class="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs font-medium" id="coldChainBadge">Ambient</span>
-            </div>
-          </div>
-
           <!-- Driver & ETA Box -->
-          <div id="driverBox" class="p-3.5 rounded-xl bg-gradient-to-br from-emerald-500/10 to-teal-500/5 border border-emerald-500/20 space-y-2">
+          <div id="driverBox" class="p-4 rounded-xl bg-gradient-to-br from-emerald-500/10 to-teal-500/5 border border-emerald-500/20 space-y-2">
             <div class="flex items-center justify-between">
               <div>
-                <div class="text-xs text-[var(--muted-foreground)]">Estimated Arrival</div>
-                <div class="text-base font-bold text-emerald-600 dark:text-emerald-400" id="etaDisplay">22 mins</div>
+                <div class="text-[11px] text-slate-500 dark:text-zinc-400 font-medium">Estimated Arrival</div>
+                <div class="text-lg font-bold text-emerald-600 dark:text-emerald-400" id="etaDisplay">22 mins</div>
               </div>
               <div class="text-right">
-                <div class="text-xs font-medium text-[var(--foreground)]" id="driverName">Ramesh Kumar</div>
-                <div class="text-xs text-[var(--muted-foreground)]" id="driverPhone">+91 98765 43210</div>
+                <div class="text-xs font-semibold text-slate-900 dark:text-zinc-100" id="driverName">Ramesh Kumar</div>
+                <div class="text-[11px] text-slate-500 dark:text-zinc-400" id="driverPhone">+91 98765 43210</div>
               </div>
             </div>
             
-            <!-- Telemetry / Stale indicator -->
-            <div class="pt-2 border-t border-emerald-500/15 flex items-center justify-between text-xs text-[var(--muted-foreground)]">
+            <div class="pt-2 border-t border-emerald-500/15 flex items-center justify-between text-[11px] text-slate-500 dark:text-zinc-400">
               <span id="telemetryStatus">GPS update received 4s ago</span>
-              <span class="font-mono text-xs">28.4595° N, 77.0266° E</span>
+              <span class="font-mono">28.4595° N, 77.0266° E</span>
             </div>
           </div>
 
           <!-- Real-Time Timeline Events -->
-          <div class="space-y-2 pt-2">
-            <span class="text-xs font-semibold text-[var(--foreground)]">Audit Timeline</span>
-            <div class="space-y-1.5 max-h-48 overflow-y-auto pr-1" id="timelineList">
+          <div class="space-y-2 pt-1">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400">Audit Trail Events</span>
+              <span class="text-[11px] text-slate-400 dark:text-zinc-500">Immutable ledger</span>
+            </div>
+            <div class="space-y-1.5 max-h-56 overflow-y-auto pr-1" id="timelineList">
               <!-- Events appended via JS -->
             </div>
           </div>
@@ -201,86 +259,184 @@
   </div>
 
   <script>
-    const COSTONOMY_STAGES = [
+    // State definitions
+    const B2B_COSTONOMY_STAGES = [
       { id: 'DELIVERY_REQUESTED', label: 'Requested' },
       { id: 'QUOTE_RECEIVED', label: 'Quoted' },
-      { id: 'PROVIDER_SELECTED', label: 'Assigned' },
-      { id: 'DRIVER_ASSIGNED', label: 'Driver en route' },
+      { id: 'PROVIDER_SELECTED', label: 'Booked' },
+      { id: 'DRIVER_ASSIGNED', label: 'Assigned' },
       { id: 'PICKED_UP', label: 'Picked Up' },
       { id: 'IN_TRANSIT', label: 'In Transit' },
       { id: 'DELIVERED', label: 'Delivered' }
     ];
 
-    const SUPPLIER_STAGES = [
+    const B2B_SUPPLIER_STAGES = [
       { id: 'DELIVERY_REQUESTED', label: 'Ready' },
-      { id: 'DRIVER_ASSIGNED', label: 'Assigned' },
+      { id: 'DRIVER_ASSIGNED', label: 'Self Assigned' },
       { id: 'PICKED_UP', label: 'Out for Delivery' },
       { id: 'DELIVERED', label: 'Delivered' }
     ];
 
-    let currentMode = 'COSTONOMY';
+    const FOOD_STAGES = [
+      { id: 'REQUESTED', label: 'Requested' },
+      { id: 'QUOTED', label: 'Quoted' },
+      { id: 'PROVIDER_SELECTED', label: 'Booked' },
+      { id: 'DRIVER_ASSIGNED', label: 'Assigned' },
+      { id: 'PICKED_UP', label: 'Picked Up' },
+      { id: 'DELIVERED', label: 'Delivered' }
+    ];
+
+    // Global simulation state
+    let journey = 'SUPPLIER_B2B'; // 'SUPPLIER_B2B' or 'FOOD_DELIVERY'
+    let subMode = 'COSTONOMY'; // For B2B: 'COSTONOMY' or 'SUPPLIER_OWN'. For Food: 'WALLET' or 'GATEWAY'
     let currentStepIndex = 0;
     let attemptCount = 1;
     let events = [];
-    let activeProvider = 'Pidge';
+    let isUnderReview = false;
+    let failureState = null; // null or 'DELIVERY_FAILED' or 'NO_COURIER'
 
-    const providersData = [
-      { code: 'PIDGE', name: 'Pidge', fare: '₹84', eta: '25m', coldChain: 'Verified', status: 'WINNER' },
-      { code: 'BORZO', name: 'Borzo', fare: '₹92', eta: '30m', coldChain: 'Verified', status: 'STANDBY' },
-      { code: 'DELHIVERY', name: 'Delhivery', fare: '₹110', eta: '45m', coldChain: 'Ambient only', status: 'EXCLUDED' },
-      { code: 'PORTER', name: 'Porter', fare: '₹135', eta: '20m', coldChain: 'Verified', status: 'STANDBY' }
+    // Mock carrier pool
+    let providersData = [
+      { code: 'PIDGE', name: 'Pidge', fare: 84, eta: '25m', coldChain: 'Verified', status: 'WINNER' },
+      { code: 'BORZO', name: 'Borzo', fare: 92, eta: '30m', coldChain: 'Verified', status: 'STANDBY' },
+      { code: 'DELHIVERY', name: 'Delhivery', fare: 110, eta: '45m', coldChain: 'Ambient only', status: 'EXCLUDED' },
+      { code: 'PORTER', name: 'Porter', fare: 135, eta: '20m', coldChain: 'Verified', status: 'STANDBY' }
     ];
 
-    function setMode(mode) {
-      currentMode = mode;
+    function setJourney(j) {
+      journey = j;
+      if (journey === 'SUPPLIER_B2B') {
+        subMode = 'COSTONOMY';
+      } else {
+        subMode = 'GATEWAY';
+      }
+      resetFlow();
+    }
+
+    function setSubMode(m) {
+      subMode = m;
+      resetFlow();
+    }
+
+    function resetFlow() {
       currentStepIndex = 0;
       attemptCount = 1;
       events = [];
-      
-      const btnCost = document.getElementById('modeCostonomy');
-      const btnSupp = document.getElementById('modeSupplier');
-      const desc = document.getElementById('modeDescription');
-      const carrierSec = document.getElementById('carrierWaterfallSection');
-      const feeDisplay = document.getElementById('buyerFeeDisplay');
-      const liveTrack = document.getElementById('liveTrackStatus');
+      isUnderReview = false;
+      failureState = null;
+      document.getElementById('opsResolutionSection').classList.add('hidden');
+      document.getElementById('reviewWarningBadge').classList.add('hidden');
 
-      if (mode === 'COSTONOMY') {
-        btnCost.className = "px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] shadow-xs transition-all-200";
-        btnSupp.className = "px-3.5 py-1.5 text-xs font-medium rounded-lg text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all-200";
-        desc.innerHTML = `
-          <div class="p-1.5 rounded-lg bg-blue-500/20 text-blue-600 dark:text-blue-400 mt-0.5 font-bold">3PL</div>
-          <div>
-            <span class="font-semibold text-blue-600 dark:text-blue-400">Costonomy Orchestrated Delivery:</span>
-            <span class="text-[var(--muted-foreground)]"> Multi-carrier engine (Blowhorn, Delhivery, Pidge, Porter, etc.). Platform quotes upfront fee, automatically waterfalls through carriers, manages driver assignment SLA timers, and streams live telemetry to the restaurant.</span>
-          </div>`;
-        carrierSec.style.display = 'block';
-        feeDisplay.textContent = 'Delivery: ₹120';
-        liveTrack.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Live GPS';
-        addEvent('DELIVERY_REQUESTED', 'Automated dispatch initiated for #ORD-9042');
-      } else {
-        btnSupp.className = "px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] shadow-xs transition-all-200";
-        btnCost.className = "px-3.5 py-1.5 text-xs font-medium rounded-lg text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-all-200";
-        desc.innerHTML = `
-          <div class="p-1.5 rounded-lg bg-amber-500/20 text-amber-600 dark:text-amber-400 mt-0.5 font-bold">OWN</div>
-          <div>
-            <span class="font-semibold text-amber-600 dark:text-amber-400">Supplier Own Delivery:</span>
-            <span class="text-[var(--muted-foreground)]"> Supplier fulfills using their own staff or fleet. No provider bidding, restaurant pays ₹0 delivery fee by default, and supplier manually updates status. No live GPS is fabricated (§23A.38).</span>
-          </div>`;
-        carrierSec.style.display = 'none';
-        feeDisplay.textContent = 'Delivery: ₹0 (Free)';
-        liveTrack.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span> Supplier Reported';
-        addEvent('DRIVER_ASSIGNED', 'Supplier assigned internal driver (Suresh)');
-        currentStepIndex = 1; // Straight to assigned
-      }
+      providersData = [
+        { code: 'PIDGE', name: 'Pidge', fare: 84, eta: '25m', coldChain: 'Verified', status: 'WINNER' },
+        { code: 'BORZO', name: 'Borzo', fare: 92, eta: '30m', coldChain: 'Verified', status: 'STANDBY' },
+        { code: 'DELHIVERY', name: 'Delhivery', fare: 110, eta: '45m', coldChain: 'Ambient only', status: 'EXCLUDED' },
+        { code: 'PORTER', name: 'Porter', fare: 135, eta: '20m', coldChain: 'Verified', status: 'STANDBY' }
+      ];
+
+      updateJourneyButtons();
+      renderSubModeSelector();
+      renderBanner();
+
+      const initialEvent = journey === 'SUPPLIER_B2B' 
+        ? (subMode === 'COSTONOMY' ? 'DELIVERY_REQUESTED' : 'DRIVER_ASSIGNED')
+        : 'REQUESTED';
+      const initialText = journey === 'SUPPLIER_B2B'
+        ? (subMode === 'COSTONOMY' ? 'Supplier order #ORD-9042 marked READY_FOR_PICKUP. Courier waterfall initiated.' : 'Supplier opted for self-fulfillment with internal driver.')
+        : `Food delivery created by POS/API. Fee held via ${subMode === 'GATEWAY' ? 'Razorpay Payment Gateway' : 'Restaurant Wallet'}.`;
+      
+      addEvent(initialEvent, initialText);
 
       renderStepper();
-      renderActions();
       renderCarriers();
+      renderActions();
+      renderFinancials();
       updateDriverBox();
     }
 
+    function updateJourneyButtons() {
+      const btnB2B = document.getElementById('journeyB2B');
+      const btnFood = document.getElementById('journeyFood');
+      if (journey === 'SUPPLIER_B2B') {
+        btnB2B.className = "px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 text-white shadow-xs transition-all-200";
+        btnFood.className = "px-3.5 py-1.5 text-xs font-medium rounded-lg text-slate-600 dark:text-zinc-300 hover:text-slate-900 dark:hover:text-white transition-all-200";
+      } else {
+        btnFood.className = "px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 text-white shadow-xs transition-all-200";
+        btnB2B.className = "px-3.5 py-1.5 text-xs font-medium rounded-lg text-slate-600 dark:text-zinc-300 hover:text-slate-900 dark:hover:text-white transition-all-200";
+      }
+    }
+
+    function renderSubModeSelector() {
+      const container = document.getElementById('subModeContainer');
+      if (journey === 'SUPPLIER_B2B') {
+        container.innerHTML = `
+          <button onclick="setSubMode('COSTONOMY')" class="px-3 py-1.5 text-xs font-semibold rounded-lg ${subMode === 'COSTONOMY' ? 'bg-white dark:bg-zinc-900 text-indigo-600 dark:text-indigo-400 shadow-xs' : 'text-slate-500 hover:text-slate-900'}">
+            Costonomy 3PL
+          </button>
+          <button onclick="setSubMode('SUPPLIER_OWN')" class="px-3 py-1.5 text-xs font-semibold rounded-lg ${subMode === 'SUPPLIER_OWN' ? 'bg-white dark:bg-zinc-900 text-amber-600 dark:text-amber-400 shadow-xs' : 'text-slate-500 hover:text-slate-900'}">
+            Supplier Own
+          </button>
+        `;
+      } else {
+        container.innerHTML = `
+          <button onclick="setSubMode('GATEWAY')" class="px-3 py-1.5 text-xs font-semibold rounded-lg ${subMode === 'GATEWAY' ? 'bg-white dark:bg-zinc-900 text-indigo-600 dark:text-indigo-400 shadow-xs' : 'text-slate-500 hover:text-slate-900'}">
+            Gateway Paid
+          </button>
+          <button onclick="setSubMode('WALLET')" class="px-3 py-1.5 text-xs font-semibold rounded-lg ${subMode === 'WALLET' ? 'bg-white dark:bg-zinc-900 text-emerald-600 dark:text-emerald-400 shadow-xs' : 'text-slate-500 hover:text-slate-900'}">
+            Wallet Paid
+          </button>
+        `;
+      }
+    }
+
+    function renderBanner() {
+      const desc = document.getElementById('modeDescription');
+      const carrierSec = document.getElementById('carrierWaterfallSection');
+      const liveTrack = document.getElementById('liveTrackStatus');
+
+      if (journey === 'SUPPLIER_B2B') {
+        if (subMode === 'COSTONOMY') {
+          desc.className = "p-3.5 rounded-xl border border-blue-500/20 bg-blue-500/5 text-xs flex items-start gap-3";
+          desc.innerHTML = `
+            <div class="p-1 rounded-md bg-blue-500/20 text-blue-600 dark:text-blue-400 font-bold">B2B 3PL</div>
+            <div>
+              <span class="font-semibold text-blue-700 dark:text-blue-300">Supplier Order — Costonomy 3PL Logistics:</span>
+              <span class="text-slate-600 dark:text-zinc-400"> Multi-carrier waterfall quoting, 30m auto-retry window with 45m supplier takeover offer. Carrier paid via <code>courier_payable</code>. Supplier shares funding above threshold.</span>
+            </div>
+          `;
+          carrierSec.style.display = 'block';
+          liveTrack.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Live GPS';
+        } else {
+          desc.className = "p-3.5 rounded-xl border border-amber-500/20 bg-amber-500/5 text-xs flex items-start gap-3";
+          desc.innerHTML = `
+            <div class="p-1 rounded-md bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold">OWN</div>
+            <div>
+              <span class="font-semibold text-amber-700 dark:text-amber-300">Supplier Own Delivery:</span>
+              <span class="text-slate-600 dark:text-zinc-400"> Supplier fulfills using internal staff. No external 3PL bidding, buyer delivery fee unchanged, status self-reported. No GPS is fabricated.</span>
+            </div>
+          `;
+          carrierSec.style.display = 'none';
+          liveTrack.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span> Supplier Reported';
+        }
+      } else {
+        desc.className = "p-3.5 rounded-xl border border-emerald-500/20 bg-emerald-500/5 text-xs flex items-start gap-3";
+        desc.innerHTML = `
+          <div class="p-1 rounded-md bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-bold">FOOD</div>
+          <div>
+            <span class="font-semibold text-emerald-700 dark:text-emerald-300">Food Delivery (Restaurant to Consumer):</span>
+            <span class="text-slate-600 dark:text-zinc-400"> Parallel flow (D-197). Max fee held via <strong>${subMode}</strong>, actual fee adjusted at pickup. 5-minute strict retry window (no supplier takeover); auto-refund to original rail if no rider is found.</span>
+          </div>
+        `;
+        carrierSec.style.display = 'block';
+        liveTrack.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Live GPS';
+      }
+    }
+
     function getStages() {
-      return currentMode === 'COSTONOMY' ? COSTONOMY_STAGES : SUPPLIER_STAGES;
+      if (journey === 'SUPPLIER_B2B') {
+        return subMode === 'COSTONOMY' ? B2B_COSTONOMY_STAGES : B2B_SUPPLIER_STAGES;
+      }
+      return FOOD_STAGES;
     }
 
     function renderStepper() {
@@ -289,22 +445,26 @@
       const badge = document.getElementById('currentStatusBadge');
       const currentStage = stages[currentStepIndex];
 
-      badge.textContent = currentStage.id;
+      badge.textContent = failureState || currentStage.id;
 
       container.innerHTML = stages.map((s, idx) => {
         const isDone = idx < currentStepIndex;
-        const isCurrent = idx === currentStepIndex;
-        let bg = 'bg-[var(--background)] border-[var(--border)] text-[var(--muted-foreground)]';
+        const isCurrent = idx === currentStepIndex && !failureState;
+        const isFailed = failureState && idx === currentStepIndex;
         
-        if (isCurrent) {
-          bg = 'bg-[var(--primary)] text-[var(--primary-foreground)] border-[var(--primary)] font-semibold shadow-xs';
+        let bg = 'bg-slate-50 dark:bg-zinc-800/60 border-slate-200 dark:border-zinc-700 text-slate-500 dark:text-zinc-400';
+        
+        if (isFailed) {
+          bg = 'bg-rose-500 text-white border-rose-600 font-bold shadow-xs';
+        } else if (isCurrent) {
+          bg = 'bg-indigo-600 text-white border-indigo-700 font-semibold shadow-xs';
         } else if (isDone) {
           bg = 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30';
         }
 
         return `
           <div class="p-2 rounded-xl border ${bg} text-xs transition-all-200">
-            <div class="text-[11px] font-mono opacity-80">${idx + 1}</div>
+            <div class="text-[10px] font-mono opacity-80">${idx + 1}</div>
             <div class="truncate font-medium mt-0.5">${s.label}</div>
           </div>
         `;
@@ -314,18 +474,18 @@
     function renderCarriers() {
       const tbody = document.getElementById('carrierRows');
       tbody.innerHTML = providersData.map(p => {
-        let badgeClass = 'bg-zinc-500/10 text-zinc-600 dark:text-zinc-400';
-        if (p.status === 'WINNER') badgeClass = 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold';
-        if (p.status === 'CASCADE') badgeClass = 'bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold';
-        if (p.status === 'FAILED') badgeClass = 'bg-rose-500/10 text-rose-600 dark:text-rose-400';
+        let badgeClass = 'bg-slate-200 dark:bg-zinc-700 text-slate-600 dark:text-zinc-400';
+        if (p.status === 'WINNER') badgeClass = 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold border border-emerald-500/20';
+        if (p.status === 'CASCADE') badgeClass = 'bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold border border-amber-500/20';
+        if (p.status === 'UNAVAILABLE' || p.status === 'TIMEOUT') badgeClass = 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20';
 
         return `
-          <tr class="py-2">
-            <td class="py-2 font-medium text-[var(--foreground)]">${p.name}</td>
-            <td class="py-2">${p.fare}</td>
+          <tr class="py-2.5">
+            <td class="py-2 font-medium text-slate-900 dark:text-zinc-100">${p.name}</td>
+            <td class="py-2 font-mono">₹${p.fare}</td>
             <td class="py-2">${p.eta}</td>
             <td class="py-2">${p.coldChain}</td>
-            <td class="py-2"><span class="px-2 py-0.5 rounded text-xs ${badgeClass}">${p.status}</span></td>
+            <td class="py-2"><span class="px-2 py-0.5 rounded text-[11px] ${badgeClass}">${p.status}</span></td>
           </tr>
         `;
       }).join('');
@@ -335,9 +495,19 @@
       const container = document.getElementById('actionButtons');
       const stages = getStages();
 
+      if (failureState || isUnderReview) {
+        container.innerHTML = `
+          <span class="text-xs text-rose-600 dark:text-rose-400 font-medium">Standard workflow paused while under review.</span>
+          <button onclick="resetFlow()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-slate-200 dark:bg-zinc-800 text-slate-700 dark:text-zinc-300 hover:bg-slate-300 transition-all-200">
+            Restart Cycle
+          </button>
+        `;
+        return;
+      }
+
       if (currentStepIndex >= stages.length - 1) {
         container.innerHTML = `
-          <button onclick="resetFlow()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 transition-all-200">
+          <button onclick="resetFlow()" class="px-4 py-2 text-xs font-semibold rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 transition-all-200 shadow-xs">
             Restart Cycle
           </button>
         `;
@@ -346,8 +516,12 @@
 
       const nextStage = stages[currentStepIndex + 1];
       container.innerHTML = `
-        <button onclick="advanceStage()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90 transition-all-200">
-          Advance to: ${nextStage.label} &rarr;
+        <button onclick="advanceStage()" class="px-4 py-2 text-xs font-semibold rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 transition-all-200 shadow-xs flex items-center gap-1.5">
+          <span>Advance to ${nextStage.label}</span>
+          <span>&rarr;</span>
+        </button>
+        <button onclick="resetFlow()" class="px-3 py-2 text-xs font-medium rounded-xl border border-slate-200 dark:border-zinc-700 text-slate-600 dark:text-zinc-400 hover:bg-slate-50 transition-all-200">
+          Reset
         </button>
       `;
     }
@@ -358,23 +532,118 @@
         currentStepIndex++;
         const stage = stages[currentStepIndex];
         
-        if (stage.id === 'QUOTE_RECEIVED') {
-          addEvent('QUOTE_RECEIVED', 'Gathered quotes from 4 carriers. Pidge selected (Lowest fare: ₹84)');
+        if (stage.id === 'QUOTE_RECEIVED' || stage.id === 'QUOTED') {
+          addEvent(stage.id, `Multi-carrier quotes evaluated. Pidge selected (Lowest qualifying fare: ₹84)`);
         } else if (stage.id === 'PROVIDER_SELECTED') {
-          addEvent('PROVIDER_SELECTED', 'Booked Pidge (Attempt 1). Assignment SLA timer started.');
+          addEvent(stage.id, `Booking sent to Pidge. SLA timer started (3m deadline). courier_payable state set to ACCRUED.`);
         } else if (stage.id === 'DRIVER_ASSIGNED') {
-          addEvent('DRIVER_ASSIGNED', 'Pidge assigned courier Ramesh Kumar (+91 98765 43210)');
+          addEvent(stage.id, `Courier assigned: Ramesh Kumar (+91 98765 43210).`);
         } else if (stage.id === 'PICKED_UP') {
-          addEvent('PICKED_UP', 'Consignment picked up from supplier warehouse. Order OUT_FOR_DELIVERY');
+          addEvent(stage.id, `Consignment collected by courier. Order OUT_FOR_DELIVERY. courier_payable state transitions to DUE. Supplier funding deduction applied.`);
         } else if (stage.id === 'IN_TRANSIT') {
-          addEvent('IN_TRANSIT', 'Driver is 1.8km away, en route to restaurant.');
+          addEvent(stage.id, `Rider in transit, 1.8km from destination. Live GPS telemetry streaming.`);
         } else if (stage.id === 'DELIVERED') {
-          addEvent('DELIVERED', 'OTP verified. Delivery successful. Order DELIVERED.');
+          addEvent(stage.id, `Courier proof-of-delivery (POD) confirmed. Order DELIVERED. (Note: Handover OTP check is not yet implemented).`);
         }
 
         renderStepper();
         renderActions();
+        renderFinancials();
         updateDriverBox();
+      }
+    }
+
+    function renderFinancials() {
+      const container = document.getElementById('financialLedgerContent');
+      const payableBadge = document.getElementById('payableStateBadge');
+      const payableDesc = document.getElementById('payableStateDesc');
+      const stages = getStages();
+      const currentStage = stages[currentStepIndex];
+
+      const isPickedUpOrBeyond = currentStepIndex >= (journey === 'SUPPLIER_B2B' ? 4 : 4);
+      const isDelivered = currentStage.id === 'DELIVERED';
+
+      if (journey === 'SUPPLIER_B2B') {
+        const customerFee = 120;
+        const supplierDeduction = isPickedUpOrBeyond ? 30 : 0;
+        const courierCost = subMode === 'COSTONOMY' ? 84 : 0;
+        const platformMargin = subMode === 'COSTONOMY' ? (customerFee + supplierDeduction - courierCost) : customerFee;
+
+        // Courier payable states: ACCRUED -> DUE -> PAID
+        if (subMode === 'SUPPLIER_OWN') {
+          payableBadge.textContent = 'NOT_APPLICABLE';
+          payableBadge.className = 'font-mono font-bold px-2 py-0.5 rounded text-[11px] bg-slate-200 dark:bg-zinc-700 text-slate-500';
+          payableDesc.textContent = 'Supplier fulfills with own fleet. No courier payable row created.';
+        } else if (isDelivered) {
+          payableBadge.textContent = 'DUE / READY_TO_PAY';
+          payableBadge.className = 'font-mono font-bold px-2 py-0.5 rounded text-[11px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20';
+          payableDesc.textContent = 'Delivery fulfilled. ₹84 owed to Pidge. Managed via Admin Finance queues / manual rail.';
+        } else if (isPickedUpOrBeyond) {
+          payableBadge.textContent = 'DUE';
+          payableBadge.className = 'font-mono font-bold px-2 py-0.5 rounded text-[11px] bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20';
+          payableDesc.textContent = 'Goods collected; courier liability is now locked as DUE (cannot be cancelled without courier payment).';
+        } else {
+          payableBadge.textContent = 'ACCRUED';
+          payableBadge.className = 'font-mono font-bold px-2 py-0.5 rounded text-[11px] bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20';
+          payableDesc.textContent = 'Courier booked; payable is ACCRUED (nothing owed yet until courier takes custody).';
+        }
+
+        container.innerHTML = `
+          <div class="flex justify-between items-center py-1 border-b border-slate-100 dark:border-zinc-800">
+            <span class="text-slate-500 dark:text-zinc-400">Buyer Delivery Fee (Fixed):</span>
+            <span class="font-semibold text-slate-900 dark:text-zinc-100">₹${customerFee}.00 <span class="text-[10px] text-slate-400">(${isPickedUpOrBeyond ? 'Captured' : 'Held'})</span></span>
+          </div>
+          <div class="flex justify-between items-center py-1 border-b border-slate-100 dark:border-zinc-800">
+            <span class="text-slate-500 dark:text-zinc-400">Supplier Funding Share (D-203):</span>
+            <span class="font-semibold text-slate-900 dark:text-zinc-100">${isPickedUpOrBeyond ? '₹30.00' : '₹0.00'} <span class="text-[10px] text-slate-400">(${isPickedUpOrBeyond ? 'Deducted DELIVERY_FUNDING' : 'Pending pickup'})</span></span>
+          </div>
+          <div class="flex justify-between items-center py-1 border-b border-slate-100 dark:border-zinc-800">
+            <span class="text-slate-500 dark:text-zinc-400">Courier Liability (Pidge):</span>
+            <span class="font-mono font-semibold text-rose-600 dark:text-rose-400">₹${courierCost}.00</span>
+          </div>
+          <div class="flex justify-between items-center pt-1.5 text-xs font-bold">
+            <span class="text-slate-900 dark:text-zinc-100">Costonomy Margin:</span>
+            <span class="text-emerald-600 dark:text-emerald-400 font-mono">+₹${platformMargin}.00</span>
+          </div>
+        `;
+      } else {
+        // Food delivery
+        const maxFee = 60;
+        const actualFee = 45;
+        const refundAmount = isPickedUpOrBeyond ? (maxFee - actualFee) : 0;
+
+        if (isDelivered) {
+          payableBadge.textContent = 'DUE / READY_TO_PAY';
+          payableBadge.className = 'font-mono font-bold px-2 py-0.5 rounded text-[11px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20';
+          payableDesc.textContent = `Food delivered. ₹${actualFee} payable to courier. Managed by FoodCourierPayableSync cursor.`;
+        } else if (isPickedUpOrBeyond) {
+          payableBadge.textContent = 'DUE';
+          payableBadge.className = 'font-mono font-bold px-2 py-0.5 rounded text-[11px] bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20';
+          payableDesc.textContent = `Food collected; courier liability is DUE. Unused fee difference (₹${refundAmount}) refunded to ${subMode}.`;
+        } else {
+          payableBadge.textContent = 'ACCRUED';
+          payableBadge.className = 'font-mono font-bold px-2 py-0.5 rounded text-[11px] bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20';
+          payableDesc.textContent = 'Courier booked; payable is ACCRUED until pickup.';
+        }
+
+        container.innerHTML = `
+          <div class="flex justify-between items-center py-1 border-b border-slate-100 dark:border-zinc-800">
+            <span class="text-slate-500 dark:text-zinc-400">Fee Hold (${subMode}):</span>
+            <span class="font-semibold text-slate-900 dark:text-zinc-100">₹${maxFee}.00</span>
+          </div>
+          <div class="flex justify-between items-center py-1 border-b border-slate-100 dark:border-zinc-800">
+            <span class="text-slate-500 dark:text-zinc-400">Actual Carrier Fare:</span>
+            <span class="font-mono font-semibold text-rose-600 dark:text-rose-400">₹${actualFee}.00</span>
+          </div>
+          <div class="flex justify-between items-center py-1 border-b border-slate-100 dark:border-zinc-800">
+            <span class="text-slate-500 dark:text-zinc-400">Unused Adjustment Refund:</span>
+            <span class="font-mono font-semibold text-emerald-600 dark:text-emerald-400">${isPickedUpOrBeyond ? `₹${refundAmount}.00 (${subMode} refund)` : 'Pending pickup'}</span>
+          </div>
+          <div class="flex justify-between items-center pt-1.5 text-xs font-bold">
+            <span class="text-slate-900 dark:text-zinc-100">Net Fee Charged to Outlet:</span>
+            <span class="text-slate-900 dark:text-zinc-100 font-mono">₹${isPickedUpOrBeyond ? actualFee : maxFee}.00</span>
+          </div>
+        `;
       }
     }
 
@@ -386,18 +655,23 @@
       const driverPhone = document.getElementById('driverPhone');
       const telemetry = document.getElementById('telemetryStatus');
 
-      if (currentStage.id === 'DELIVERED') {
-        eta.textContent = 'Completed';
-        telemetry.textContent = 'Delivered at ' + new Date().toLocaleTimeString();
+      if (failureState === 'DELIVERY_FAILED') {
+        eta.textContent = 'Stalled';
+        driverName.textContent = 'Courier Issue';
+        driverPhone.textContent = 'Held in custody';
+        telemetry.textContent = 'Delivery failed post-pickup. Under operations review.';
+      } else if (currentStage.id === 'DELIVERED') {
+        eta.textContent = 'Delivered';
+        telemetry.textContent = 'Drop-off confirmed at ' + new Date().toLocaleTimeString();
       } else if (currentStage.id === 'IN_TRANSIT') {
         eta.textContent = '12 mins';
-        telemetry.textContent = 'GPS update received 3s ago (Moving at 24 km/h)';
+        telemetry.textContent = 'GPS fix received 3s ago (Moving at 24 km/h)';
       } else if (currentStage.id === 'PICKED_UP') {
         eta.textContent = '18 mins';
-        telemetry.textContent = 'Left supplier facility';
+        telemetry.textContent = 'Consignment left supplier warehouse';
       } else if (currentStage.id === 'DRIVER_ASSIGNED') {
         eta.textContent = '25 mins';
-        telemetry.textContent = 'Driver arriving at supplier in 5 mins';
+        telemetry.textContent = 'Driver arriving at pickup location in 5 mins';
       } else {
         eta.textContent = '--';
         driverName.textContent = 'Matching driver...';
@@ -406,45 +680,101 @@
       }
     }
 
+    // Edge case triggers
     function triggerWaterfallTimeout() {
-      if (currentMode !== 'COSTONOMY') return;
+      if (subMode === 'SUPPLIER_OWN') return;
       attemptCount++;
       providersData[0].status = 'TIMEOUT';
       providersData[1].status = 'WINNER';
       renderCarriers();
-      addEvent('DeliveryReassigned', `Assignment deadline expired with Pidge (>3m). Cascaded to Borzo (Attempt ${attemptCount}). Delivery ID preserved!`);
+      addEvent('DeliveryReassigned', `Assignment deadline expired with Pidge (>3m SLA). Cascaded to Borzo (Attempt ${attemptCount}). Delivery ID preserved!`);
       document.getElementById('driverName').textContent = 'Borzo Dispatch';
-      document.getElementById('driverPhone').textContent = 'Reassigning driver...';
+      document.getElementById('driverPhone').textContent = 'Assigning driver...';
       renderStepper();
+      renderFinancials();
     }
 
     function triggerDriverCancel() {
       attemptCount++;
-      addEvent('DeliveryDriverCancelled', `Driver Ramesh cancelled booking. Waterfall auto-reassigned consignment to Borzo (Attempt ${attemptCount}).`);
+      providersData[0].status = 'UNAVAILABLE';
+      providersData[1].status = 'WINNER';
+      renderCarriers();
+      addEvent('DeliveryDriverCancelled', `Rider Ramesh cancelled booking before pickup. DeliveryReassignListener auto-stood down carrier and booked Borzo (Attempt ${attemptCount}).`);
       updateDriverBox();
+      renderFinancials();
     }
 
     function triggerNoPartner() {
       currentStepIndex = 1;
       providersData.forEach(p => p.status = 'UNAVAILABLE');
       renderCarriers();
-      addEvent('DeliveryProviderUnavailable', 'All providers declined booking. Auto-retry runs every 2 min for 30 min; at 45 min the supplier is offered "Deliver Order Yourself" (shortened in this demo).');
-      
-      const container = document.getElementById('actionButtons');
-      container.innerHTML = `
-        <button onclick="acceptSupplierFallback()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 text-white hover:opacity-90 transition-all-200">
-          Supplier: Accept & Deliver Myself &rarr;
-        </button>
-      `;
+
+      if (journey === 'SUPPLIER_B2B') {
+        addEvent('DeliveryProviderUnavailable', 'All 3PL carriers declined. Background retry sweeps every 2 min for 30 min. At 45 min, supplier receives "Deliver Yourself" offer.');
+        const container = document.getElementById('actionButtons');
+        container.innerHTML = `
+          <button onclick="acceptSupplierFallback()" class="px-4 py-2 text-xs font-semibold rounded-xl bg-amber-500 text-white hover:bg-amber-600 transition-all-200 shadow-xs">
+            Supplier: Accept & Deliver Myself &rarr;
+          </button>
+        `;
+      } else {
+        failureState = 'NO_COURIER';
+        addEvent('FoodDeliveryFailed', `5-minute food retry window expired without partner. Marked FAILED (NO_COURIER). 100% fee refunded to ${subMode}.`);
+        renderStepper();
+        renderActions();
+        renderFinancials();
+        updateDriverBox();
+      }
     }
 
     function acceptSupplierFallback() {
-      setMode('SUPPLIER_OWN');
-      addEvent('DeliverySwitchedToSupplier', 'Supplier accepted self-fulfillment. Fee ₹120 preserved with zero buyer repricing (D-185, §23A.16).');
+      setSubMode('SUPPLIER_OWN');
+      addEvent('DeliverySwitchedToSupplier', 'Supplier took over fulfillment. Fixed fee ₹120 preserved with zero buyer repricing (D-185, §23A.16).');
     }
 
-    function resetFlow() {
-      setMode(currentMode);
+    function triggerPostPickupFailure() {
+      // Must be at least picked up
+      currentStepIndex = journey === 'SUPPLIER_B2B' ? 5 : 4; // IN_TRANSIT / PICKED_UP
+      failureState = 'DELIVERY_FAILED';
+      isUnderReview = true;
+      document.getElementById('reviewWarningBadge').classList.remove('hidden');
+      document.getElementById('opsResolutionSection').classList.remove('hidden');
+
+      addEvent('DeliveryFailed', 'Provider sent DELIVERY_FAILED event post-pickup. Flagged reconciliation_required=true. Tenants see underReview=true.');
+
+      renderStepper();
+      renderActions();
+      renderFinancials();
+      updateDriverBox();
+    }
+
+    function resolveOps(action) {
+      if (action === 'CANCEL_AND_REFUND') {
+        failureState = 'CANCELLED';
+        isUnderReview = false;
+        document.getElementById('reviewWarningBadge').classList.add('hidden');
+        document.getElementById('opsResolutionSection').classList.add('hidden');
+        addEvent('OperationsResolved', `Operations resolved stuck delivery via CANCEL_AND_REFUND. Customer refunded; courier payable remains DUE.`);
+      } else if (action === 'MARK_DELIVERED') {
+        failureState = null;
+        currentStepIndex = getStages().length - 1;
+        isUnderReview = false;
+        document.getElementById('reviewWarningBadge').classList.add('hidden');
+        document.getElementById('opsResolutionSection').classList.add('hidden');
+        addEvent('OperationsResolved', `Operations resolved stuck delivery via MARK_DELIVERED after verifying manual recipient handover.`);
+      } else if (action === 'LATE_DELIVERED_EVENT') {
+        failureState = null;
+        currentStepIndex = getStages().length - 1;
+        isUnderReview = false;
+        document.getElementById('reviewWarningBadge').classList.add('hidden');
+        document.getElementById('opsResolutionSection').classList.add('hidden');
+        addEvent('DELIVERY_FAILURE_SUPERSEDED', `Courier transmitted late DELIVERED event. Failure superseded automatically per D-206. Flag cleared.`);
+      }
+
+      renderStepper();
+      renderActions();
+      renderFinancials();
+      updateDriverBox();
     }
 
     function addEvent(type, text) {
@@ -459,18 +789,18 @@
     function renderEvents() {
       const container = document.getElementById('timelineList');
       container.innerHTML = events.map(e => `
-        <div class="p-2 rounded-lg bg-[var(--card)] border border-[var(--border)] text-xs space-y-0.5">
-          <div class="flex items-center justify-between text-[11px] text-[var(--muted-foreground)]">
-            <span class="font-mono font-bold text-[var(--foreground)]">${e.type}</span>
+        <div class="p-2.5 rounded-xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-100 dark:border-zinc-700/60 text-xs space-y-1">
+          <div class="flex items-center justify-between text-[11px] text-slate-400 dark:text-zinc-500">
+            <span class="font-mono font-bold text-slate-800 dark:text-zinc-200">${e.type}</span>
             <span>${e.time}</span>
           </div>
-          <div class="text-[var(--foreground)]">${e.text}</div>
+          <div class="text-slate-600 dark:text-zinc-300">${e.text}</div>
         </div>
       `).join('');
     }
 
     // Initialize
-    setMode('COSTONOMY');
+    setJourney('SUPPLIER_B2B');
   </script>
 </body>
 </html>
