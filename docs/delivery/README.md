@@ -14,7 +14,7 @@ Start here. Each document has one job; where two disagree, the order of authorit
 | [../architecture/sequence-diagrams/02-delivery-and-logistics.md](../architecture/sequence-diagrams/02-delivery-and-logistics.md) | Message-level sequences | Who calls whom (check the status banner) |
 | [../architecture/delivery-system-implementation-plan.md](../architecture/delivery-system-implementation-plan.md) | The original design brief, with a status table added | History and intent, **not** current design |
 | [delivery_module_guide.md](delivery_module_guide.md) | Product-team walkthrough (corrected) | Orientation only |
-| [delivery_interactive_visualizer.html](delivery_interactive_visualizer.html) | Clickable product demo with illustrative fares | Demos; **not** a source of truth |
+| [delivery_interactive_visualizer.html](delivery_interactive_visualizer.html) | Interactive product and money-movement walkthrough (supplier B2B & food B2C, waterfall, courier payables, ops resolution) | Walkthrough and demos; **not** a source of truth |
 | [prompts.md](prompts.md) | Log of the prompts used to drive the delivery work | Nothing — it is not documentation |
 
 ## Conventions used across these documents
