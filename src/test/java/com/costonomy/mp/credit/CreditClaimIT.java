@@ -8,6 +8,7 @@ import com.costonomy.mp.credit.service.CreditClockConfig;
 import com.costonomy.mp.credit.service.CreditJobs;
 import com.costonomy.mp.notification.NotificationRelayAccess;
 import com.costonomy.mp.support.AbstractIntegrationTest;
+import com.costonomy.mp.support.LocalCommon;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -167,8 +168,7 @@ class CreditClaimIT extends AbstractIntegrationTest {
     }
 
     private void registerDevice(String token) throws Exception {
-        s.api.post(token, "/api/v1/devices", Map.of("platform", "ANDROID", "pushToken", "tok-" + UUID.randomUUID(),
-                "appVersion", "1.0.0", "deviceModel", "Pixel"));
+        LocalCommon.registerDevice(LocalCommon.userIdOf(token), "ANDROID", "tok-" + UUID.randomUUID());
     }
 
     private void relayEvents(String type, long aggregateId) {

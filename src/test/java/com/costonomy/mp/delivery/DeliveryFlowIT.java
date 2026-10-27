@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.delivery.provider.MockDeliveryProvider;
 import com.costonomy.mp.delivery.service.DeliveryJobs;
 import com.costonomy.mp.delivery.service.DeliveryRetryJobs;
@@ -106,8 +108,7 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
                         "city", "Hyderabad", "state", "Telangana",
                         "contactName", "Imran", "contactPhone", "+919876522222",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", created.get("id").asLong());
+        LocalCommon.activate(created.get("id").asLong());
         TestCatalog.tradesAroundTheClock(jdbc, created.get("id").asLong());
         return new Seller(token, created.get("stores").get(0).get("id").asLong());
     }
@@ -193,14 +194,8 @@ class DeliveryFlowIT extends AbstractIntegrationTest {
     private String operator() throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        Long userId = jdbc.queryForObject(
-                "select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                       granted_at, created_at, updated_at, version)
-                select ?, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0
-                  from role r where r.code = 'OPS_DELIVERY'
-                """, userId);
+        Long userId = LocalCommon.userId("+91" + phone);
+        LocalCommon.grantPlatform(userId, "OPS_DELIVERY");
         return token;
     }
 

@@ -17,11 +17,13 @@ import com.costonomy.mp.fooddelivery.repository.FoodDeliveryAttemptRepository;
 import com.costonomy.mp.fooddelivery.repository.FoodDeliveryQuoteRepository;
 import com.costonomy.mp.fooddelivery.repository.FoodDeliveryRepository;
 import com.costonomy.mp.fooddelivery.web.dto.FoodDeliveryDtos;
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.payment.provider.PaymentProvider;
 import com.costonomy.mp.payment.provider.PaymentProviderException;
 import com.costonomy.mp.payment.domain.GatewayRefund;
 import com.costonomy.mp.payment.service.GatewayRefundService;
 import com.costonomy.mp.wallet.service.WalletService;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -68,6 +70,7 @@ public class FoodDeliveryBookingService {
     private final FoodCourierSelector selector;
     private final DeliveryProviderRegistry registry;
     private final DeliveryDirectory directory;
+    private final Directory outlets;
     private final WalletService wallet;
     private final FoodDeliveryTimeline timeline;
     private final FoodDeliveryProperties properties;
@@ -81,7 +84,7 @@ public class FoodDeliveryBookingService {
     public FoodDeliveryBookingService(FoodDeliveryRepository deliveries, FoodDeliveryAttemptRepository attempts,
                                       FoodDeliveryQuoteRepository quotes, FoodDeliveryQuotingService quoting,
                                       FoodCourierSelector selector, DeliveryProviderRegistry registry,
-                                      DeliveryDirectory directory, WalletService wallet, FoodDeliveryTimeline timeline,
+                                      DeliveryDirectory directory, Directory outlets, WalletService wallet, FoodDeliveryTimeline timeline,
                                       FoodDeliveryProperties properties, ProviderReliabilityService reliability,
                                       DeliveryRecoveryService recoveryService,
                                       PaymentProvider paymentProvider,
@@ -94,6 +97,7 @@ public class FoodDeliveryBookingService {
         this.selector = selector;
         this.registry = registry;
         this.directory = directory;
+        this.outlets = outlets;
         this.wallet = wallet;
         this.timeline = timeline;
         this.properties = properties;
@@ -227,8 +231,10 @@ public class FoodDeliveryBookingService {
     }
 
     private FoodDelivery createRequested(CreateRequest r) {
-        Long ownerOfOutlet = jdbc.query("select restaurant_id from outlet where id = ?",
-                (rs, row) -> rs.getLong(1), r.outletId()).stream().findFirst().orElse(null);
+        // The outlet and its restaurant are common's (D-208); a supplier's store is not an outlet here.
+        Long ownerOfOutlet = outlets.outlet(r.outletId())
+                .filter(o -> "OUTLET".equals(o.kind()))
+                .map(AppOutlet::orgId).orElse(null);
         // Not found, not forbidden: whether another restaurant's outlet exists is not for this caller to learn.
         if (ownerOfOutlet == null || !ownerOfOutlet.equals(r.restaurantId())) {
             throw new NotFoundException("Outlet", r.outletId());

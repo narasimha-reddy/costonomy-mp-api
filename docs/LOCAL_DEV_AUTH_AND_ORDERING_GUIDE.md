@@ -8,8 +8,9 @@ This guide documents the local authentication flow (mock OTP) and the order plac
 
 ### 1.1 Overview
 Sign-in is costonomy-common-api's (D-70 in common's DECISIONS): one Costonomy account across the marketplace and
-the other apps. Marketplace has no sign-in endpoints of its own; it accepts common's access tokens and copies users,
-restaurants and stores under common's ids. Locally, run both APIs with costonomy-api's `local/run.sh dev` (common-api
+the other apps. Marketplace has no sign-in endpoints of its own; it accepts common's access tokens. Users,
+restaurants, suppliers, outlets and stores are common's too, and Marketplace keeps no copies (D-208): the app
+creates and edits them in common. Locally, run both APIs with costonomy-api's `local/run.sh dev` (common-api
 on `http://localhost:8082`). In common's dev profile SMS is not sent and the code is always `123456`.
 
 ### 1.2 Authentication Flow (costonomy-common-api, client `mp-mobile`)

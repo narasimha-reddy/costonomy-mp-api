@@ -7028,3 +7028,40 @@ From the review of D-204 to D-206. No migration.
 2. **Production refuses the mock courier.** `costonomy.mp.providers.delivery` joins the guarded providers (its default is `MOCK`, so a deploy that forgot `DELIVERY_PROVIDER` would book couriers that never come and owe real payables for them). The error names the property. A real provider still passes with its settings: Pidge also needs `costonomy.mp.pidge.api-token` (new check) as well as the existing webhook secret. Local and test defaults are unchanged.
 3. **Refund webhooks are applied, safely.** `refund.created`, `refund.processed` and `refund.failed` (Razorpay's shape: the refund under `payload.refund.entity`) are routed by `PaymentWebhookService` to `GatewayRefundService.onGatewayEvent` after the signature check and the existing event de-duplication. A refund is matched only on the payment id **and** the stored provider refund id or the receipt we sent, **and** the amount; a payment id alone matches nothing, and an event that matches nothing is handled as before (so order refunds are unaffected). Only `processed` succeeds a refund; `created` keeps or makes it pending; `failed` makes it visible and retryable under a new key, as the poll does. Under the row lock a state already reached is left alone, so a duplicate, a `created` after `processed`, or a `failed` after success changes nothing; an event for a send we already treated as failed is not applied (a `processed` for one is logged as a possible double refund and noted on the refund). A send in flight is left to its own answer. `refund.speed_changed` is ignored. The poll is unchanged and remains the fallback. **Limitation:** the field names are from Razorpay's public event shape and the mock gateway; they have not been checked against a live account, and Razorpay's `receipt` is only echoed if our send carried it (it does: `RefundOptions.receipt`).
 4. **Documentation of the mobile status corrected** in `docs/delivery/CURRENT_STATE.md` §2 and §6.3, citing the files and tests, with deployment and device status left unknown.
+
+## D-208 — Marketplace keeps no copies of costonomy-common-api's data
+
+D-70 had Marketplace copy users, businesses, outlets and stores under common's ids; D-197 finished the move of
+sign-in. The copies are now gone: one source of every business, outlet, store and person, and nothing to keep in
+step (edits made in Marketplace's copies never reached common, and common's notifications overwrote them).
+
+1. **Dropped (V106).** `users`, `restaurant`, `outlet`, `supplier_organization`, `supplier_store`, `device`, `role`,
+   `permission`, `role_permission`, `user_role`, `restaurant_user(_outlet)`, `supplier_user(_store)` and
+   `supplier_verification`, and the 91 foreign keys from Marketplace's tables onto them. The id columns stay: they
+   hold common's ids, as they always did. Marketplace was never live, so no rows are carried over.
+2. **Reads.** `identity/common/Directory` reads outlets, stores and businesses from common's
+   `POST /internal/v1/apps/MARKETPLACE/outlets/query` and `/orgs/query` (common D-85) and people from its user
+   batch, by id and in batches, kept 30 seconds and dropped by common's change notifications. Every SQL join onto
+   the copies became "select ids, load once, join in Java". Supplier search and discovery load the Marketplace's
+   stores from common (nearest first when there is a point) and apply Marketplace's own rules: delivery radius and
+   pincodes, open now, ratings.
+3. **Marketplace's own fields** about outlets and stores are common's MARKETPLACE outlet settings:
+   `preparationMinutes`, `online` (a store's Offline switch), `directOrdersEnabled`, `deliveryInstructions`, and the
+   Costonomy-only `responseSlaSeconds` and `chatEnabled`. Opening hours are the outlet's `operatingHours` in
+   common's per-day shape, read by `OperatingHoursCodec.fromCommon`.
+4. **Supplier lifecycle is read, not stored** (`SupplierStanding`): unclaimed = INVITED; the business or its
+   Marketplace enrollment suspended = SUSPENDED; GSTIN verified in common's queue = VERIFIED; verified and the
+   business-wide enrollment `live` = ACTIVE; pending = VERIFICATION_PENDING; else REGISTERED. Verification is
+   common's queue; activation stays Marketplace's decision (`POST /admin/suppliers/{id}/activate` sets the
+   enrollment live). Suspension and reactivation set the enrollment's status. A suspended business is out of the
+   Marketplace in common's access too.
+5. **Removed endpoints** (the app calls common): create/read/update of restaurants, outlets, suppliers and stores,
+   members, supplier verification, and devices. Added: `GET /suppliers/{id}/standing` (lifecycle, verification,
+   whether the supplier and each store take orders). `/auth/me` stays, assembled from common.
+6. **Push** targets are common's devices (`POST /internal/v1/apps/MARKETPLACE/push-devices`, D-74);
+   `notification_delivery.device_id` records common's device id.
+7. **Roles.** The permissions and seeded roles the role tables held are `marketplace-catalog.json`
+   (`MarketplaceCatalog`), published to common at start-up as before.
+8. **Tests** use an in-memory stand-in for common (`support/LocalCommon`); the identity calls the app now makes to
+   common go to it through `ApiClient` (`CommonRoutes`), so journeys read as before.
+

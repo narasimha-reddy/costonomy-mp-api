@@ -5,6 +5,7 @@ import com.costonomy.mp.credit.CreditWalletSupport.Line;
 import com.costonomy.mp.settlement.service.SettlementReconciliationService;
 import com.costonomy.mp.settlement.service.SettlementService;
 import com.costonomy.mp.support.AbstractIntegrationTest;
+import com.costonomy.mp.support.LocalCommon;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -82,8 +83,7 @@ class CreditRepaymentPayoutIT extends AbstractIntegrationTest {
     }
 
     private long orgOf(Line line) {
-        return jdbc.queryForObject("select supplier_organization_id from supplier_store where id = ?", Long.class,
-                line.seller().storeId());
+        return LocalCommon.orgOf(line.seller().storeId());
     }
 
     private long setStoreRate(Line line, String rate) {

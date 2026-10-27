@@ -1,5 +1,7 @@
 package com.costonomy.mp.credit;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.credit.CreditWalletSupport.Line;
 import com.costonomy.mp.credit.service.CreditDigestService;
 import com.costonomy.mp.support.ApiClient;
@@ -239,17 +241,9 @@ class CreditDigestIT extends CreditClockedIT {
         String phone = ApiClient.freshPhone();
         String token = s.api.login(phone);
         long userId = e.userId(token);
-        String code = "TEST_NO_CREDIT_" + UUID.randomUUID().toString().substring(0, 8);
-        jdbc.update("insert into role (code, name, scope, description, status, created_at, updated_at, version) "
-                + "values (?, 'No credit', 'SUPPLIER', 'test: sees the store, not credit', 'ACTIVE', now(6), now(6), 0)",
-                code);
-        jdbc.update("insert into role_permission (role_id, permission_id, created_at) "
-                + "select r.id, p.id, now(6) from role r join permission p on p.code = 'STORE_VIEW' where r.code = ?", code);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status, granted_at, created_at,
-                                       updated_at, version)
-                select ?, r.id, 'SUPPLIER_STORE', ?, 'ACTIVE', now(6), now(6), now(6), 0 from role r where r.code = ?
-                """, userId, line.seller().storeId(), code);
+        String code = "SUP_TEST_NO_CREDIT_" + UUID.randomUUID().toString().substring(0, 8);
+        LocalCommon.customRole(code, "SUPPLIER", "No credit", "STORE_VIEW");
+        LocalCommon.grant(userId, code, "SUPPLIER_STORE", line.seller().storeId());
         return token;
     }
 }

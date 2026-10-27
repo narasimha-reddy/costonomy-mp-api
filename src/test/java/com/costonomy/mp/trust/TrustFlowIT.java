@@ -1,5 +1,7 @@
 package com.costonomy.mp.trust;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.delivery.provider.MockDeliveryProvider;
 import com.costonomy.mp.payment.provider.MockPaymentProvider;
 import com.costonomy.mp.support.AbstractIntegrationTest;
@@ -87,8 +89,7 @@ class TrustFlowIT extends AbstractIntegrationTest {
                 "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", "name", "ABC store", "addressLine1", "Road No 36",
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", created.get("id").asLong());
+        LocalCommon.activate(created.get("id").asLong());
         TestCatalog.tradesAroundTheClock(jdbc, created.get("id").asLong());
         return new Seller(token, created.get("stores").get(0).get("id").asLong());
     }
@@ -566,9 +567,8 @@ class TrustFlowIT extends AbstractIntegrationTest {
 
             assertThat(payload.get("orderNumber").asText()).isEqualTo(jdbc.queryForObject(
                     "select order_number from supplier_order where id = ?", String.class, order.orderId()));
-            assertThat(payload.get("restaurantName").asText()).isEqualTo(jdbc.queryForObject("""
-                    select r.name from supplier_order o join outlet t on t.id = o.outlet_id
-                      join restaurant r on r.id = t.restaurant_id where o.id = ?""", String.class, order.orderId()));
+            // Every buyer here is a restaurant called Paradise (newBuyer).
+            assertThat(payload.get("restaurantName").asText()).isEqualTo("Paradise");
         }
 
         @Test
@@ -660,14 +660,8 @@ class TrustFlowIT extends AbstractIntegrationTest {
         private String moderator() throws Exception {
             String phone = ApiClient.freshPhone();
             String token = api.login(phone);
-            Long userId = jdbc.queryForObject(
-                    "select id from users where phone = ?", Long.class, "+91" + phone);
-            jdbc.update("""
-                    insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                           granted_at, created_at, updated_at, version)
-                    select ?, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0
-                      from role r where r.code = 'OPS_MODERATION'
-                    """, userId);
+            Long userId = LocalCommon.userId("+91" + phone);
+            LocalCommon.grantPlatform(userId, "OPS_MODERATION");
             return token;
         }
     }

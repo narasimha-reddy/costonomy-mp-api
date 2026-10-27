@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.delivery.slot.DeliverySlotDtos;
 import com.costonomy.mp.procurement.subscription.SubscriptionDtos;
 import com.costonomy.mp.procurement.subscription.SubscriptionFrequency;
@@ -61,8 +63,7 @@ class DeliverySlotsAndSubscriptionsIT extends AbstractIntegrationTest {
                         "latitude", "17.4622", "longitude", "78.3568"))).get("data");
 
         long storeId = supplierRes.get("stores").get(0).get("id").asLong();
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', verification_status = 'VERIFIED' where id = ?",
-                supplierRes.get("id").asLong());
+        LocalCommon.activate(supplierRes.get("id").asLong());
         TestCatalog.tradesAroundTheClock(jdbc, supplierRes.get("id").asLong());
         jdbc.update("""
                 insert into supplier_delivery_policy (supplier_store_id, own_delivery_enabled,

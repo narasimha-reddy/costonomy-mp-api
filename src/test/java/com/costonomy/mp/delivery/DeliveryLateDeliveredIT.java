@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.delivery.provider.DeliveryProvider;
 import com.costonomy.mp.delivery.repository.DeliveryRepository;
 import com.costonomy.mp.delivery.service.AdminDeliveryService;
@@ -49,11 +51,8 @@ class DeliveryLateDeliveredIT extends AbstractIntegrationTest {
         s = DeliveryFixture.readyForPickup(mvc, json, api, jdbc, paymentProvider, paymentJobs, "0.00", "0.00");
         String phone = ApiClient.freshPhone();
         api.login(phone);
-        opsUserId = jdbc.queryForObject("select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status, granted_at, created_at, updated_at, version)
-                select ?, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0 from role r where r.code = 'OPS_ADMIN'
-                """, opsUserId);
+        opsUserId = LocalCommon.userId("+91" + phone);
+        LocalCommon.grantPlatform(opsUserId, "OPS_ADMIN");
         jdbc.update("""
                 insert into delivery_provider_attempt (delivery_id, provider_code, attempt_number, attempt_type, outcome,
                     provider_delivery_id, quoted_amount, started_at, created_at)

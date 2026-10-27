@@ -16,7 +16,9 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
  * <p>Tests drive the API rather than calling services directly, because most of
  * what Phase 4 has to guarantee — that a scope check actually runs, that a denial
  * looks like a 404 — only holds if the controller, the service and the security
- * chain all agree.
+ * chain all agree. The identity calls the app now makes to costonomy-common-api (creating a restaurant or supplier,
+ * editing outlets and stores, inviting a member) go to the tests' stand-in for common instead ({@link CommonRoutes},
+ * D-208).
  */
 public final class ApiClient {
 
@@ -48,6 +50,10 @@ public final class ApiClient {
     }
 
     public JsonNode post(String token, String path, Object body) throws Exception {
+        var common = CommonRoutes.handle("POST", path, token, body);
+        if (common.isPresent()) {
+            return common.get().body();
+        }
         String response = mvc.perform(MockMvcRequestBuilders.post(path)
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -57,6 +63,10 @@ public final class ApiClient {
     }
 
     public JsonNode postWithHeader(String token, String path, Object body, String headerName, String headerValue) throws Exception {
+        var common = CommonRoutes.handle("POST", path, token, body);
+        if (common.isPresent()) {
+            return common.get().body();
+        }
         String response = mvc.perform(MockMvcRequestBuilders.post(path)
                         .header("Authorization", "Bearer " + token)
                         .header(headerName, headerValue)
@@ -67,6 +77,10 @@ public final class ApiClient {
     }
 
     public int postStatus(String token, String path, Object body) throws Exception {
+        var common = CommonRoutes.handle("POST", path, token, body);
+        if (common.isPresent()) {
+            return common.get().status();
+        }
         return mvc.perform(MockMvcRequestBuilders.post(path)
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -75,6 +89,10 @@ public final class ApiClient {
     }
 
     public int postStatusWithHeader(String token, String path, Object body, String headerName, String headerValue) throws Exception {
+        var common = CommonRoutes.handle("POST", path, token, body);
+        if (common.isPresent()) {
+            return common.get().status();
+        }
         return mvc.perform(MockMvcRequestBuilders.post(path)
                         .header("Authorization", "Bearer " + token)
                         .header(headerName, headerValue)
@@ -84,6 +102,10 @@ public final class ApiClient {
     }
 
     public JsonNode get(String token, String path) throws Exception {
+        var common = CommonRoutes.handle("GET", path, token, null);
+        if (common.isPresent()) {
+            return common.get().body();
+        }
         String response = mvc.perform(
                         MockMvcRequestBuilders.get(path).header("Authorization", "Bearer " + token))
                 .andReturn().getResponse().getContentAsString();
@@ -91,12 +113,20 @@ public final class ApiClient {
     }
 
     public int getStatus(String token, String path) throws Exception {
+        var common = CommonRoutes.handle("GET", path, token, null);
+        if (common.isPresent()) {
+            return common.get().status();
+        }
         return mvc.perform(
                         MockMvcRequestBuilders.get(path).header("Authorization", "Bearer " + token))
                 .andReturn().getResponse().getStatus();
     }
 
     public int patchStatus(String token, String path, Object body) throws Exception {
+        var common = CommonRoutes.handle("PATCH", path, token, body);
+        if (common.isPresent()) {
+            return common.get().status();
+        }
         return mvc.perform(MockMvcRequestBuilders.patch(path)
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)

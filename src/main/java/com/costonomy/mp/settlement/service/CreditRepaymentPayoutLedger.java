@@ -1,5 +1,6 @@
 package com.costonomy.mp.settlement.service;
 
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.settlement.domain.Settlement;
 import com.costonomy.mp.settlement.domain.SettlementAdjustment;
 import com.costonomy.mp.settlement.repository.SettlementAdjustmentRepository;
@@ -34,6 +35,7 @@ public class CreditRepaymentPayoutLedger {
 
     private final JdbcTemplate jdbc;
     private final SettlementAdjustmentRepository adjustments;
+    private final Directory directory;
 
     /** Stores with a payout still pending, made before {@code to}. */
     public List<Long> storesWithPending(Instant to) {
@@ -43,9 +45,10 @@ public class CreditRepaymentPayoutLedger {
                 """, Long.class, Timestamp.from(to));
     }
 
+    /** The store's business, from costonomy-common-api (D-208); a store common does not know is an error, as before. */
     public Long organisationOf(Long storeId) {
-        return jdbc.queryForObject("select supplier_organization_id from supplier_store where id = ?",
-                Long.class, storeId);
+        return directory.outlet(storeId).map(s -> s.orgId())
+                .orElseThrow(() -> new IllegalStateException("Store " + storeId + " is unknown"));
     }
 
     /**

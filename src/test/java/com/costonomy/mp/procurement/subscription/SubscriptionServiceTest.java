@@ -9,7 +9,9 @@ import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.delivery.service.DeliveryDirectory;
 import com.costonomy.mp.delivery.slot.DeliverySlot;
 import com.costonomy.mp.delivery.slot.DeliverySlotRepository;
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.procurement.service.OrderFunding;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -21,12 +23,12 @@ import org.springframework.jdbc.core.ResultSetExtractor;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -45,13 +47,14 @@ class SubscriptionServiceTest {
     @Mock private AccessControlService accessControl;
     @Mock private AuditService auditService;
     @Mock private JdbcTemplate jdbc;
+    @Mock private Directory directory;
 
     private SubscriptionService service;
 
     @BeforeEach
     void setUp() {
         service = new SubscriptionService(subscriptions, skipDates, deliverySlots, orderFunding,
-                deliveryPolicies, accessControl, auditService, jdbc);
+                deliveryPolicies, accessControl, auditService, jdbc, directory);
     }
 
     private SubscriptionDtos.CreateSubscriptionRequest request(String paymentMethod, String deliveryMode,
@@ -74,10 +77,15 @@ class SubscriptionServiceTest {
     }
 
     private void namesForResponse() {
-        when(jdbc.queryForObject(eq("select name from outlet where id = ?"), eq(String.class), anyLong()))
-                .thenReturn("Downtown Cafe");
-        when(jdbc.queryForObject(eq("select name from supplier_store where id = ?"), eq(String.class), anyLong()))
-                .thenReturn("Fresh Dairy Store");
+        when(directory.outlets(any())).thenReturn(Map.of(
+                2L, outlet(2L, "OUTLET", "Downtown Cafe"),
+                10L, outlet(10L, "STORE", "Fresh Dairy Store")));
+    }
+
+    private static AppOutlet outlet(long id, String kind, String name) {
+        return new AppOutlet(id, 1L, kind, name, null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, "ACTIVE", null, null, null, null, null, null, null, null,
+                null, null, null, false, null, Map.of(), null, null, null, null);
     }
 
     private Subscription active() {

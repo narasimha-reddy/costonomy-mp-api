@@ -131,17 +131,7 @@ public class SupplierStorefrontService {
     private List<DiscoveryDtos.SiblingStore> siblings(
             Long storeId, DiscoveryDirectory.OutletInfo outlet) {
 
-        var ids = jdbc.queryForList("""
-                select other.id
-                  from supplier_store s
-                  join supplier_store other
-                    on other.supplier_organization_id = s.supplier_organization_id
-                  join supplier_organization o on o.id = other.supplier_organization_id
-                 where s.id = ?
-                   and other.id <> s.id
-                   and other.status = 'ACTIVE'
-                   and o.lifecycle_status = 'ACTIVE'
-                """, Long.class, storeId);
+        var ids = directory.tradingSiblings(storeId);
         if (ids.isEmpty()) {
             return List.of();
         }

@@ -92,13 +92,17 @@ public class NotificationRelay {
             // Deliberately not excluding the actor. An order rejected at 6am is the
             // shift manager's problem whether or not they placed it, and the person
             // who acted usually wants the receipt anyway.
-            recipients.forEach(userId -> notify(userId, rule, envelope, fields));
+            // Push targets of every recipient in one call to common (D-208), not one per person.
+            Map<Long, List<NotificationAudience.Device>> devices = rule.channels().contains(NotificationChannel.PUSH)
+                    ? audience.devicesOf(recipients) : Map.of();
+            recipients.forEach(userId -> notify(userId, rule, envelope, fields, devices));
         }
     }
 
     private void notify(Long userId, NotificationRule rule,
                         OutboxPublisher.DomainEventEnvelope envelope,
-                        Map<String, String> fields) {
+                        Map<String, String> fields,
+                        Map<Long, List<NotificationAudience.Device>> devices) {
 
         var notification = new Notification();
         notification.setUserId(userId);
@@ -135,7 +139,7 @@ public class NotificationRelay {
             if (!preferences.allows(userId, rule.category(), channel, rule.critical())) {
                 continue;
             }
-            queue(saved, userId, channel);
+            queue(saved, userId, channel, devices.getOrDefault(userId, List.of()));
         }
     }
 
@@ -173,9 +177,9 @@ public class NotificationRelay {
         }
     }
 
-    private void queue(Notification notification, Long userId, NotificationChannel channel) {
+    private void queue(Notification notification, Long userId, NotificationChannel channel,
+                       List<NotificationAudience.Device> devices) {
         if (channel == NotificationChannel.PUSH) {
-            var devices = audience.devicesOf(userId);
             if (devices.isEmpty()) {
                 // No registered device. Not a failure — the notification is in
                 // their inbox, and a delivery row would be a permanent failure

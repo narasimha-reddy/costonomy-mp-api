@@ -58,13 +58,7 @@ public final class TestCatalog {
      * saying the shop is open.
      */
     public static void tradesAroundTheClock(JdbcTemplate jdbc, long supplierOrganizationId) {
-        jdbc.update("""
-                update supplier_store
-                   set operating_hours_json = ?
-                 where supplier_organization_id = ?
-                """,
-                "{\"days\":[\"MONDAY\",\"TUESDAY\",\"WEDNESDAY\",\"THURSDAY\",\"FRIDAY\","
-                        + "\"SATURDAY\",\"SUNDAY\"],\"opensAt\":\"00:00\",\"closesAt\":\"00:00\"}",
-                supplierOrganizationId);
+        // Stores are common's outlets now (D-208): the stand-in holds their hours.
+        LocalCommon.outletsOf(supplierOrganizationId).forEach(LocalCommon::openAroundTheClock);
     }
 }

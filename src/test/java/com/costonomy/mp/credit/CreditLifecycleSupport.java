@@ -1,5 +1,7 @@
 package com.costonomy.mp.credit;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.common.outbox.OutboxPublisher;
 import com.costonomy.mp.credit.CreditWalletSupport.Line;
 import com.costonomy.mp.notification.NotificationRelayAccess;
@@ -29,17 +31,15 @@ final class CreditLifecycleSupport {
 
     /** A user of the seller's own organisation holding {@code roleCode} on the line's store. */
     String staff(Line line, String roleCode) throws Exception {
-        long orgId = e.count("select supplier_organization_id from supplier_store where id = ?",
-                line.seller().storeId());
+        long orgId = LocalCommon.orgOf(line.seller().storeId());
         String phone = ApiClient.freshPhone();
         e.s.api.post(line.seller().token(), "/api/v1/suppliers/" + orgId + "/users",
-                Map.of("phone", phone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, roleCode), "storeId", line.seller().storeId()));
+                Map.of("phone", phone, "roleId", LocalCommon.roleId(roleCode), "storeId", line.seller().storeId()));
         return e.s.api.login(phone);
     }
 
     void registerDevice(String token) throws Exception {
-        e.s.api.post(token, "/api/v1/devices", Map.of("platform", "ANDROID", "pushToken", "tok-" + UUID.randomUUID(),
-                "appVersion", "1.0.0", "deviceModel", "Pixel"));
+        LocalCommon.registerDevice(LocalCommon.userIdOf(token), "ANDROID", "tok-" + UUID.randomUUID());
     }
 
     int events(String type, long aggregateId) {

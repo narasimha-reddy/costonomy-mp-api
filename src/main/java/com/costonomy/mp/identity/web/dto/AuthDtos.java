@@ -1,15 +1,12 @@
 package com.costonomy.mp.identity.web.dto;
 
-import com.costonomy.mp.identity.domain.DevicePlatform;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
-import jakarta.validation.constraints.Size;
-
 import java.time.Instant;
 import java.util.List;
 
-/** Request and response shapes for {@code /api/v1/auth} and {@code /api/v1/devices}. */
+/**
+ * Request and response shapes for {@code /api/v1/auth}. Devices register with costonomy-common-api at sign-in
+ * (D-208); Marketplace has no device endpoints.
+ */
 public final class AuthDtos {
 
     private AuthDtos() {
@@ -55,24 +52,5 @@ public final class AuthDtos {
             String parentScopeName,
             List<String> roles,
             List<String> permissions) {
-    }
-
-    // ── Devices ──────────────────────────────────────────────────────────
-
-    public record DeviceRequest(
-            @NotNull(message = "platform is required")
-            DevicePlatform platform,
-            @Size(max = 512) String pushToken,
-            @Size(max = 32) String appVersion,
-            @Size(max = 120) String deviceModel,
-            @Size(max = 32) String osVersion) {
-    }
-
-    public record DeviceResponse(
-            Long id,
-            DevicePlatform platform,
-            String appVersion,
-            String status,
-            Instant lastSeenAt) {
     }
 }

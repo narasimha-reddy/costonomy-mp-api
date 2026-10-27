@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.delivery.domain.CourierPayable;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import com.costonomy.mp.delivery.provider.DeliveryProvider;
@@ -64,26 +66,18 @@ class DeliveryCancellationLifecycleIT extends AbstractIntegrationTest {
     private String createPlatformUser(String roleCode) throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        long userId = jdbc.queryForObject("select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                       granted_at, created_at, updated_at, version)
-                select ?, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0
-                  from role r where r.code = ?
-                """, userId, roleCode);
+        long userId = LocalCommon.userId("+91" + phone);
+        LocalCommon.grantPlatform(userId, roleCode);
         return token;
     }
 
     private String createOutletViewOnlyUser(Long outletId) throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        long userId = jdbc.queryForObject("select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                       granted_at, created_at, updated_at, version)
-                select ?, r.id, 'OUTLET', ?, 'ACTIVE', now(6), now(6), now(6), 0
-                  from role r where r.code = 'VIEW_ONLY'
-                """, userId, outletId);
+        long userId = LocalCommon.userId("+91" + phone);
+        // A restaurant's own role that sees the outlet and its orders and may not cancel them.
+        LocalCommon.customRole("REST_VIEW_ONLY", "RESTAURANT", "View only", "OUTLET_VIEW", "ORDER_VIEW");
+        LocalCommon.grant(userId, "REST_VIEW_ONLY", "OUTLET", outletId);
         return token;
     }
 

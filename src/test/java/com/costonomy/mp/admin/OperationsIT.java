@@ -1,5 +1,8 @@
 package com.costonomy.mp.admin;
 
+import com.costonomy.mp.support.LocalCommon;
+
+import com.costonomy.mp.access.domain.MarketplaceCatalog;
 import com.costonomy.mp.payment.provider.MockPaymentProvider;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
@@ -70,14 +73,8 @@ class OperationsIT extends AbstractIntegrationTest {
     private String operator(String roleCode) throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        Long userId = jdbc.queryForObject(
-                "select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                       granted_at, created_at, updated_at, version)
-                select ?, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0
-                  from role r where r.code = ?
-                """, userId, roleCode);
+        Long userId = LocalCommon.userId("+91" + phone);
+        LocalCommon.grantPlatform(userId, roleCode);
         return token;
     }
 
@@ -102,8 +99,7 @@ class OperationsIT extends AbstractIntegrationTest {
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
         long supplierId = created.get("id").asLong();
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", supplierId);
+        LocalCommon.activate(supplierId);
         TestCatalog.tradesAroundTheClock(jdbc, supplierId);
         return new Seller(token, supplierId, created.get("stores").get(0).get("id").asLong());
     }
@@ -164,31 +160,21 @@ class OperationsIT extends AbstractIntegrationTest {
             // CREDIT_VIEW at PLATFORM scope, which satisfies a check at *any*
             // outlet or store — so an operator could read and act through the
             // restaurant's own endpoints, indistinguishable from the restaurant.
-            var borrowed = jdbc.queryForList("""
-                    select r.code, p.code
-                      from role_permission rp
-                      join role r on r.id = rp.role_id
-                      join permission p on p.id = rp.permission_id
-                     where r.code like 'OPS_%'
-                       and p.scope in ('RESTAURANT', 'SUPPLIER')
-                    """);
+            // The seeded roles are marketplace-catalog.json now (D-208), published to common.
+            var tenantPermissions = MarketplaceCatalog.permissions().stream()
+                    .filter(p -> p.scope().equals("RESTAURANT") || p.scope().equals("SUPPLIER"))
+                    .map(MarketplaceCatalog.SeededPermission::code).toList();
+            var operatorRoles = MarketplaceCatalog.roles().stream()
+                    .filter(r -> r.code().startsWith("OPS_")).toList();
+            assertThat(operatorRoles).isNotEmpty();
 
-            assertThat(borrowed)
-                    .describedAs("no internal role may hold a tenant permission")
-                    .isEmpty();
-
-            var shared = jdbc.queryForList("""
-                    select r.code, p.code
-                      from role_permission rp
-                      join role r on r.id = rp.role_id
-                      join permission p on p.id = rp.permission_id
-                     where r.code like 'OPS_%'
-                       and p.code in ('ORDER_VIEW', 'CREDIT_VIEW')
-                    """);
-
-            assertThat(shared)
-                    .describedAs("and none of the tenant-facing shared ones either")
-                    .isEmpty();
+            for (var role : operatorRoles) {
+                assertThat(role.permissions())
+                        .describedAs("no internal role may hold a tenant permission (%s)", role.code())
+                        .doesNotContainAnyElementsOf(tenantPermissions)
+                        .describedAs("and none of the tenant-facing shared ones either (%s)", role.code())
+                        .doesNotContain("ORDER_VIEW", "CREDIT_VIEW");
+            }
         }
 
         @Test
@@ -375,9 +361,9 @@ class OperationsIT extends AbstractIntegrationTest {
                     "/api/v1/admin/suppliers/" + order.seller().supplierId() + "/suspend",
                     Map.of("reason", "Quality review"));
 
-            assertThat(jdbc.queryForObject(
-                    "select lifecycle_status from supplier_organization where id = ?",
-                    String.class, order.seller().supplierId())).isEqualTo("SUSPENDED");
+            // The lifecycle is derived from common's enrollment (D-208); read it the way operations does.
+            assertThat(api.get(marketplace, "/api/v1/admin/suppliers/" + order.seller().supplierId())
+                    .at("/data/supplier/lifecycleStatus").asText()).isEqualTo("SUSPENDED");
 
             // A supplier suspended today still owes the deliveries they accepted
             // yesterday; cancelling them would punish the restaurant instead.

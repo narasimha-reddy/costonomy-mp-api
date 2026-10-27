@@ -7,6 +7,7 @@ import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import com.costonomy.mp.delivery.service.OutletDeliveryRadarService;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
+import com.costonomy.mp.identity.common.Directory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -37,11 +38,15 @@ class OutletDeliveryRadarServiceTest {
     @Mock
     private JdbcTemplate jdbc;
 
+    /** Knows no stores: the rows keep the supplier names they were built with. */
+    @Mock
+    private Directory directory;
+
     private OutletDeliveryRadarService radarService;
 
     @BeforeEach
     void setUp() {
-        radarService = new OutletDeliveryRadarService(accessControl, jdbc);
+        radarService = new OutletDeliveryRadarService(accessControl, jdbc, directory);
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.costonomy.mp.trust.service;
 
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.procurement.domain.DeliveryMode;
 import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
 import lombok.RequiredArgsConstructor;
@@ -13,13 +14,15 @@ import java.util.List;
 /**
  * Facts from other modules that receiving, disputes and ratings need to read.
  *
- * <p>{@link JdbcTemplate} across the module edge, like the other directories.
+ * <p>{@link JdbcTemplate} across the module edge, like the other directories. Outlets and their businesses come
+ * from costonomy-common-api through {@link Directory} (D-208).
  */
 @Service
 @RequiredArgsConstructor
 public class TrustDirectory {
 
     private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     public record OrderInfo(
             Long orderId,
@@ -33,10 +36,7 @@ public class TrustDirectory {
 
     /** The restaurant an outlet belongs to, for the wording of a notification; null when unknown. */
     public String restaurantNameOfOutlet(Long outletId) {
-        var names = jdbc.queryForList("""
-                select r.name from outlet o join restaurant r on r.id = o.restaurant_id where o.id = ?
-                """, String.class, outletId);
-        return names.isEmpty() ? null : names.get(0);
+        return directory.outlet(outletId).map(o -> o.orgName()).orElse(null);
     }
 
     public OrderInfo order(Long supplierOrderId) {

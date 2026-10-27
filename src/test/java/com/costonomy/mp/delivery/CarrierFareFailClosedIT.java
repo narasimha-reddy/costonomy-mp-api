@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.delivery.service.DeliveryService;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
@@ -73,7 +75,7 @@ class CarrierFareFailClosedIT extends AbstractIntegrationTest {
                         "latitude", "17.4474",
                         "longitude", "78.3762"))).get("data");
         long outletId = r.get("outlets").get(0).get("id").asLong();
-        Long buyerUserId = jdbc.queryForObject("select id from users where phone = ?", Long.class, "+91" + buyerPhone);
+        Long buyerUserId = LocalCommon.userId("+91" + buyerPhone);
 
         String sellerPhone = ApiClient.freshPhone();
         String sellerToken = api.login(sellerPhone);
@@ -93,8 +95,8 @@ class CarrierFareFailClosedIT extends AbstractIntegrationTest {
                         "longitude", "78.4347"))).get("data");
         long supplierOrgId = s.get("id").asLong();
         long storeId = s.get("stores").get(0).get("id").asLong();
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', verification_status = 'VERIFIED' where id = ?", supplierOrgId);
-        jdbc.update("update supplier_store set pincode = '500003' where id = ?", storeId);
+        LocalCommon.activate(supplierOrgId);
+        LocalCommon.update(storeId, Map.of("pincode", "500003"));
         TestCatalog.tradesAroundTheClock(jdbc, supplierOrgId);
 
         jdbc.update("""

@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.delivery.provider.pidge.PidgeApiClient;
 import com.costonomy.mp.delivery.provider.pidge.PidgeProperties;
 import com.costonomy.mp.delivery.provider.pidge.PidgeSandboxAutoAdvanceJob;
@@ -75,7 +77,7 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
                         "state", "Karnataka", "pincode", "560038",
                         "latitude", "12.9716", "longitude", "77.5946"))).get("data");
         long outletId = r.get("outlets").get(0).get("id").asLong();
-        Long buyerUserId = jdbc.queryForObject("select id from users where phone = ?", Long.class, "+91" + buyerPhone);
+        Long buyerUserId = LocalCommon.userId("+91" + buyerPhone);
 
         supplierToken = api.login(ApiClient.freshPhone());
         JsonNode s = api.post(supplierToken, "/api/v1/suppliers", Map.of(
@@ -87,7 +89,7 @@ class PidgeSandboxAdvanceIT extends AbstractIntegrationTest {
                         "latitude", "12.9352", "longitude", "77.6245"))).get("data");
         long supplierOrgId = s.get("id").asLong();
         long storeId = s.get("stores").get(0).get("id").asLong();
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', verification_status = 'VERIFIED' where id = ?", supplierOrgId);
+        LocalCommon.activate(supplierOrgId);
         TestCatalog.tradesAroundTheClock(jdbc, supplierOrgId);
 
         jdbc.update("""

@@ -1,5 +1,7 @@
 package com.costonomy.mp.catalog;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
@@ -64,8 +66,7 @@ class CatalogIT extends AbstractIntegrationTest {
 
         // Activate directly: verification and activation are an operations flow
         // covered by TenantIsolationIT, and this suite is about the catalog.
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", supplierId);
+        LocalCommon.activate(supplierId);
         TestCatalog.tradesAroundTheClock(jdbc, supplierId);
 
         return new Supplier(token, supplierId, storeId);
@@ -328,8 +329,7 @@ class CatalogIT extends AbstractIntegrationTest {
             var supplier = newSupplier("ABC Foods");
             createSku(supplier, ghee, "ABC-GHEE", "620.00");
 
-            jdbc.update("update supplier_organization set lifecycle_status = 'SUSPENDED' where id = ?",
-                    supplier.supplierId());
+            LocalCommon.suspend(supplier.supplierId());
 
             assertThat(api.get(api.loginFresh(), "/api/v1/products/" + ghee + "/offers").at("/data"))
                     .isEmpty();

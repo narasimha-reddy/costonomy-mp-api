@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.delivery.provider.pidge.PidgeApiClient;
 import com.costonomy.mp.delivery.provider.pidge.PidgeProperties;
 import com.costonomy.mp.support.AbstractIntegrationTest;
@@ -44,19 +46,15 @@ class AdminDeliveryEndpointsIT extends AbstractIntegrationTest {
     void setUp() throws Exception {
         api = new ApiClient(mvc, json);
         operatorToken = createUserWithRole("OPS_ADMIN");
-        viewOnlyToken = createUserWithRole("VIEW_ONLY");
+        // Support staff look at deliveries but do not operate them (no DELIVERY_OPERATE).
+        viewOnlyToken = createUserWithRole("OPS_SUPPORT");
     }
 
     private String createUserWithRole(String roleCode) throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        long userId = jdbc.queryForObject("select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                       granted_at, created_at, updated_at, version)
-                select ?, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0
-                  from role r where r.code = ?
-                """, userId, roleCode);
+        long userId = LocalCommon.userId("+91" + phone);
+        LocalCommon.grantPlatform(userId, roleCode);
         return token;
     }
 

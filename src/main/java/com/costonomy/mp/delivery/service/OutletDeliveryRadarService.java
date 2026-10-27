@@ -5,6 +5,8 @@ import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
+import com.costonomy.mp.identity.common.Directory;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -20,6 +22,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Situational radar and operational action engine for kitchen and outlet staff.
@@ -39,6 +42,7 @@ public class OutletDeliveryRadarService {
 
     private final AccessControlService accessControl;
     private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     @Value("${costonomy.mp.delivery.location-stale-after:60s}")
     private Duration locationStaleAfter = Duration.ofSeconds(60);
@@ -63,9 +67,6 @@ public class OutletDeliveryRadarService {
                     so.order_number,
                     d.outlet_id,
                     d.supplier_store_id,
-                    ss.name AS supplier_store_name,
-                    sorg.display_name AS supplier_org_name,
-                    ss.contact_phone AS supplier_contact_phone,
                     d.mode,
                     d.status,
                     d.driver_name,
@@ -86,8 +87,6 @@ public class OutletDeliveryRadarService {
                     loc.recorded_at
                 FROM delivery d
                 LEFT JOIN supplier_order so ON so.id = d.supplier_order_id
-                LEFT JOIN supplier_store ss ON ss.id = d.supplier_store_id
-                LEFT JOIN supplier_organization sorg ON sorg.id = ss.supplier_organization_id
                 LEFT JOIN receiving rec ON rec.supplier_order_id = d.supplier_order_id
                 LEFT JOIN (
                     SELECT dl1.*
@@ -107,11 +106,11 @@ public class OutletDeliveryRadarService {
                   )
                 """;
 
-        List<DeliveryDtos.OutletDeliveryRadarItemResponse> allItems = jdbc.query(
+        List<DeliveryDtos.OutletDeliveryRadarItemResponse> allItems = withSuppliers(jdbc.query(
                 sql,
                 this::mapRadarItem,
                 outletId
-        );
+        ));
 
         // Sort by arrivalRank ASC (most urgent first), then estimatedArrivalAt ASC, then id ASC
         List<DeliveryDtos.OutletDeliveryRadarItemResponse> sortedItems = allItems.stream()
@@ -201,9 +200,6 @@ public class OutletDeliveryRadarService {
                     so.order_number,
                     d.outlet_id,
                     d.supplier_store_id,
-                    ss.name AS supplier_store_name,
-                    sorg.display_name AS supplier_org_name,
-                    ss.contact_phone AS supplier_contact_phone,
                     d.mode,
                     d.status,
                     d.driver_name,
@@ -224,8 +220,6 @@ public class OutletDeliveryRadarService {
                     loc.recorded_at
                 FROM delivery d
                 LEFT JOIN supplier_order so ON so.id = d.supplier_order_id
-                LEFT JOIN supplier_store ss ON ss.id = d.supplier_store_id
-                LEFT JOIN supplier_organization sorg ON sorg.id = ss.supplier_organization_id
                 LEFT JOIN receiving rec ON rec.supplier_order_id = d.supplier_order_id
                 LEFT JOIN (
                     SELECT dl1.*
@@ -242,16 +236,39 @@ public class OutletDeliveryRadarService {
         queryParams.add(effectiveSize);
         queryParams.add(offset);
 
-        List<DeliveryDtos.OutletDeliveryRadarItemResponse> items = jdbc.query(
+        List<DeliveryDtos.OutletDeliveryRadarItemResponse> items = withSuppliers(jdbc.query(
                 selectSql,
                 this::mapRadarItem,
                 queryParams.toArray()
-        );
+        ));
 
         int totalPages = (int) Math.ceil((double) total / effectiveSize);
         boolean hasNext = (effectivePage + 1) < totalPages;
 
         return new DeliveryDtos.PagedResponse<>(items, effectivePage, effectiveSize, total, totalPages, hasNext);
+    }
+
+    /**
+     * The supplier's store name, business name and phone, read from common in one batch (D-208). A store common
+     * does not know keeps its id and no names, as the old left join did.
+     */
+    private List<DeliveryDtos.OutletDeliveryRadarItemResponse> withSuppliers(
+            List<DeliveryDtos.OutletDeliveryRadarItemResponse> items) {
+        Map<Long, AppOutlet> stores = directory.outlets(
+                items.stream().map(i -> i.supplier().supplierStoreId()).toList());
+        return items.stream().map(i -> {
+            AppOutlet store = stores.get(i.supplier().supplierStoreId());
+            if (store == null) {
+                return i;
+            }
+            var supplier = new DeliveryDtos.SupplierInfo(store.id(), store.name(), store.orgName(),
+                    store.contactPhone());
+            return new DeliveryDtos.OutletDeliveryRadarItemResponse(i.deliveryId(), i.supplierOrderId(),
+                    i.orderNumber(), i.outletId(), i.status(), i.arrivalStage(), i.arrivalRank(), i.scheduleStatus(),
+                    i.minutesOverdue(), i.etaMinutes(), i.estimatedArrivalAt(), supplier, i.driver(), i.problem(),
+                    i.recommendedAction(), i.actionReason(), i.isCheckedIn(), i.location(), i.locationStale(),
+                    i.locationAgeSeconds(), i.requestedAt(), i.assignedAt(), i.pickedUpAt(), i.deliveredAt());
+        }).toList();
     }
 
     private DeliveryDtos.OutletDeliveryRadarItemResponse mapRadarItem(ResultSet rs, int rowNum) throws SQLException {
@@ -260,9 +277,6 @@ public class OutletDeliveryRadarService {
         String orderNumber = rs.getString("order_number");
         Long outletId = rs.getLong("outlet_id");
         Long supplierStoreId = rs.getLong("supplier_store_id");
-        String supplierStoreName = rs.getString("supplier_store_name");
-        String supplierOrgName = rs.getString("supplier_org_name");
-        String supplierContactPhone = rs.getString("supplier_contact_phone");
 
         String statusStr = rs.getString("status");
         DeliveryStatus status = statusStr != null ? DeliveryStatus.valueOf(statusStr) : DeliveryStatus.DELIVERY_REQUESTED;
@@ -410,12 +424,8 @@ public class OutletDeliveryRadarService {
             actionReason = "Order progressing normally on schedule.";
         }
 
-        DeliveryDtos.SupplierInfo supplierInfo = new DeliveryDtos.SupplierInfo(
-                supplierStoreId,
-                supplierStoreName,
-                supplierOrgName,
-                supplierContactPhone
-        );
+        // Names and phone are filled in by withSuppliers, from common (D-208).
+        DeliveryDtos.SupplierInfo supplierInfo = new DeliveryDtos.SupplierInfo(supplierStoreId, null, null, null);
 
         DeliveryDtos.DriverInfo driverInfo = new DeliveryDtos.DriverInfo(
                 driverName,

@@ -6,6 +6,7 @@ import com.costonomy.mp.credit.CreditWalletSupport.Reply;
 import com.costonomy.mp.credit.service.CreditRepaymentPayoutWriter;
 import com.costonomy.mp.settlement.service.SettlementService;
 import com.costonomy.mp.support.AbstractIntegrationTest;
+import com.costonomy.mp.support.LocalCommon;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
@@ -72,8 +73,7 @@ class CreditPayoutReadsIT extends AbstractIntegrationTest {
         long first = s.invoice(line, "65", 100);
         long second = s.invoice(line, "40", 100);
         s.topUp(line.buyer(), "20000.00");
-        long org = jdbc.queryForObject("select supplier_organization_id from supplier_store where id = ?", Long.class,
-                line.seller().storeId());
+        long org = LocalCommon.orgOf(line.seller().storeId());
         jdbc.update("""
                 insert into commission_configuration (scope_type, scope_id, rate_percent, config_version, description,
                     effective_from, status, created_at, updated_at, version)

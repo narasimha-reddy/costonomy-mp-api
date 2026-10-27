@@ -1,5 +1,7 @@
 package com.costonomy.mp.discovery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.discovery.service.SupplierPerformanceProvider;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
@@ -16,6 +18,7 @@ import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -376,37 +379,16 @@ class StorefrontIT extends AbstractIntegrationTest {
             var outlet = newOutlet();
             String run = "D139_" + System.currentTimeMillis();
 
-            // Insert 100 AAA stores directly via SQL into database to be fast
-            // Distances around 2 to 5 km from HYD (17.4156, 78.4347).
-            // A delta of 0.02 to 0.04 deg lat is ~2.2 km to 4.5 km.
-            String insertOrg = """
-                    insert into supplier_organization (legal_name, display_name, contact_name, contact_phone, lifecycle_status, verification_status)
-                    values (?, ?, 'Desk', '+919876500000', 'ACTIVE', 'VERIFIED')
-                    """;
-            String insertStore = """
-                    insert into supplier_store (supplier_organization_id, name, address_line1, city, state, pincode, latitude, longitude, preparation_minutes, status)
-                    values (?, ?, 'Street', 'Hyderabad', 'Telangana', '500034', ?, ?, 30, 'ACTIVE')
-                    """;
-
+            // 100 AAA stores at about 2.2 km from HYD (17.4156, 78.4347).
             for (int i = 0; i < 100; i++) {
                 String orgName = String.format("%s_AAA_%03d", run, i);
-                jdbc.update(insertOrg, orgName + " Ltd", orgName);
-                Long orgId = jdbc.queryForObject("select id from supplier_organization where display_name = ?", Long.class, orgName);
                 double lat = 17.4350 + (i * 0.0001); // ~2.2 km away
-                double lon = 78.4350;
-                jdbc.update(insertStore, orgId, orgName + " Store", String.valueOf(lat), String.valueOf(lon));
-                Long storeId = jdbc.queryForObject("select id from supplier_store where supplier_organization_id = ?", Long.class, orgId);
-                TestCatalog.tradesAroundTheClock(jdbc, orgId);
+                newStore(orgName, String.valueOf(lat), "78.4350");
             }
 
-            // Insert one ZZZ store at 0.5 km (~0.004 deg lat)
+            // One ZZZ store at 0.5 km (~0.004 deg lat)
             String zzzName = run + "_ZZZ_Near";
-            jdbc.update(insertOrg, zzzName + " Ltd", zzzName);
-            Long zzzOrgId = jdbc.queryForObject("select id from supplier_organization where display_name = ?", Long.class, zzzName);
-            double zzzLat = 17.4200; // ~0.5 km away
-            double zzzLon = 78.4347;
-            jdbc.update(insertStore, zzzOrgId, zzzName + " Store", String.valueOf(zzzLat), String.valueOf(zzzLon));
-            TestCatalog.tradesAroundTheClock(jdbc, zzzOrgId);
+            newStore(zzzName, "17.4200", "78.4347");
 
             // Total stores matching run is 101.
             // Page 1 with default limit 50, offset 0:
@@ -462,9 +444,8 @@ class StorefrontIT extends AbstractIntegrationTest {
             var storeD = newStore(run + " StoreD_unrated_near", HYD_LAT, HYD_LON);
             // Store E: 5-star, closed (custom hours 01:00-01:01), near
             var storeE = newStore(run + " StoreE_5star_closed", HYD_LAT, HYD_LON);
-            jdbc.update("update supplier_store set operating_hours_json = ? where id = ?",
-                    "{\"days\":[\"MONDAY\",\"TUESDAY\",\"WEDNESDAY\",\"THURSDAY\",\"FRIDAY\",\"SATURDAY\",\"SUNDAY\"],\"opensAt\":\"01:00\",\"closesAt\":\"01:01\"}",
-                    storeE.storeId());
+            LocalCommon.setHours(storeE.storeId(), Map.of("days", List.of("MONDAY", "TUESDAY", "WEDNESDAY",
+                    "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"), "opensAt", "01:00", "closesAt", "01:01"));
 
             // Ratings:
             rateStore(outlet, storeA, 5);
@@ -747,9 +728,8 @@ class StorefrontIT extends AbstractIntegrationTest {
             // Store E: 5-star, closed, near
             var storeE = newStore(run + " PopE_5star_closed", HYD_LAT, HYD_LON);
             for (int i = 0; i < 10; i++) stock(storeE, prods[i], code("PE" + i, prods[i]), "100");
-            jdbc.update("update supplier_store set operating_hours_json = ? where id = ?",
-                    "{\"days\":[\"MONDAY\",\"TUESDAY\",\"WEDNESDAY\",\"THURSDAY\",\"FRIDAY\",\"SATURDAY\",\"SUNDAY\"],\"opensAt\":\"01:00\",\"closesAt\":\"01:01\"}",
-                    storeE.storeId());
+            LocalCommon.setHours(storeE.storeId(), Map.of("days", List.of("MONDAY", "TUESDAY", "WEDNESDAY",
+                    "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"), "opensAt", "01:00", "closesAt", "01:01"));
 
             // Ratings
             rateStore(outlet, storeA, 5);
@@ -821,8 +801,7 @@ class StorefrontIT extends AbstractIntegrationTest {
             // so it cannot accept an order and must not be offered as one.
             var pending = newStore("Pending Foods", NEARBY_LAT, NEARBY_LON);
             stock(pending, product, code("PEND", product), "250");
-            jdbc.update("update supplier_organization set lifecycle_status = 'VERIFICATION_PENDING' "
-                    + "where id = ?", pending.supplierId());
+            LocalCommon.setLifecycle(pending.supplierId(), "VERIFICATION_PENDING");
 
             var card = product(outlet, product);
             assertThat(card.get("offerCount").asInt()).isEqualTo(1);
@@ -841,8 +820,7 @@ class StorefrontIT extends AbstractIntegrationTest {
 
             var suspended = newStore("Gone Foods", NEARBY_LAT, NEARBY_LON);
             stock(suspended, product, code("GONE", product), "200");
-            jdbc.update("update supplier_organization set lifecycle_status = 'SUSPENDED' where id = ?",
-                    suspended.supplierId());
+            LocalCommon.suspend(suspended.supplierId());
 
             // There is no outlet to measure from, so distance cannot exclude
             // anyone — but a suspended supplier is excluded anywhere.
@@ -946,8 +924,7 @@ class StorefrontIT extends AbstractIntegrationTest {
                         "preparationMinutes", 45))).get("data");
 
         long supplierId = created.get("id").asLong();
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", supplierId);
+        LocalCommon.activate(supplierId);
         // Otherwise every assertion here would depend on the hour the suite ran.
         TestCatalog.tradesAroundTheClock(jdbc, supplierId);
 
@@ -966,7 +943,7 @@ class StorefrontIT extends AbstractIntegrationTest {
     }
 
     private void rateStore(Outlet outlet, Store store, int stars) {
-        Long buyerUserId = jdbc.queryForObject("select id from users limit 1", Long.class);
+        long buyerUserId = LocalCommon.userIdOf(outlet.token());
 
         jdbc.update("""
                 insert into procurement (outlet_id, created_by, status, approval_status,

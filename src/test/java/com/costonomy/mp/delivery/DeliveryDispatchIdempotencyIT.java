@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.common.outbox.OutboxPublisher;
 import com.costonomy.mp.delivery.provider.MockDeliveryProvider;
 import com.costonomy.mp.support.AbstractIntegrationTest;
@@ -101,8 +103,7 @@ class DeliveryDispatchIdempotencyIT extends AbstractIntegrationTest {
                         "city", "Hyderabad", "state", "Telangana",
                         "contactName", "Imran", "contactPhone", "+919876522222",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", created.get("id").asLong());
+        LocalCommon.activate(created.get("id").asLong());
         TestCatalog.tradesAroundTheClock(jdbc, created.get("id").asLong());
         long storeId = created.get("stores").get(0).get("id").asLong();
         long productId = TestCatalog.freshProduct(jdbc, "paneer");

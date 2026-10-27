@@ -4,12 +4,13 @@ import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.security.access.AccessClient;
 import com.costonomy.security.access.AccessSnapshot;
 import lombok.RequiredArgsConstructor;
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.costonomy.mp.identity.common.Directory;
+import com.costonomy.security.client.CommonApiClient;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -20,19 +21,14 @@ import java.util.TreeSet;
  * restaurant-versus-supplier decision to be server-authoritative — the client
  * must never infer it from a phone number, a stored preference, or which screen
  * it happened to be on. So the answer arrives here, fully resolved, with the
- * permissions attached.
- *
- * <p>Scope names are read with {@link JdbcTemplate} rather than through the
- * restaurant and supplier repositories, for the same reason as
- * {@link ScopeResolver}: the access module must not depend on other modules'
- * repositories.
+ * permissions attached. Grants and names are costonomy-common-api's (D-208).
  */
 @Service
 @RequiredArgsConstructor
 public class MembershipService {
 
     private final AccessClient access;
-    private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     public record Membership(
             ScopeType scopeType,
@@ -49,31 +45,46 @@ public class MembershipService {
     /**
      * The scopes the user acts in, from costonomy-common-api's MARKETPLACE access: a business-wide member gets the
      * restaurant or supplier entry, an outlet-level member one entry per outlet or store, an internal operator the
-     * platform entry. Names come from MP's copies (CommonSync keeps them current).
+     * platform entry. Names are common's.
      */
-    @Transactional(readOnly = true)
     public List<Membership> membershipsOf(Long userId) {
         AccessSnapshot snapshot = access.get(userId, null).filter(AccessSnapshot::usable).orElse(null);
         if (snapshot == null) {
             return List.of();
         }
+        List<AccessSnapshot.Org> orgs = snapshot.orgs() == null ? List.of() : snapshot.orgs();
+        Set<Long> orgIds = new TreeSet<>();
+        Set<Long> outletIds = new TreeSet<>();
+        for (AccessSnapshot.Org org : orgs) {
+            if ("BUSINESS".equals(org.accessLevel())) {
+                orgIds.add(org.orgId());
+            } else {
+                org.outlets().forEach(o -> outletIds.add(o.outletId()));
+            }
+        }
+        Map<Long, CommonApiClient.AppOrg> namedOrgs = directory.orgs(orgIds);
+        Map<Long, CommonApiClient.AppOutlet> namedOutlets = directory.outlets(outletIds);
+
         List<Membership> memberships = new ArrayList<>();
-        for (AccessSnapshot.Org org : snapshot.orgs() == null ? List.<AccessSnapshot.Org>of() : snapshot.orgs()) {
+        for (AccessSnapshot.Org org : orgs) {
             boolean supplier = "SUPPLIER".equals(org.orgType());
             if ("BUSINESS".equals(org.accessLevel())) {
                 ScopeType type = supplier ? ScopeType.SUPPLIER : ScopeType.RESTAURANT;
-                var named = nameOf(type, org.orgId());
+                var named = namedOrgs.get(org.orgId());
                 // TreeSet: clients render and diff these, so a stable order avoids spurious "changed" signals.
-                memberships.add(new Membership(type, org.orgId(), named.name(), named.parentId(), named.parentName(),
-                        roleNames(org.role()),
+                memberships.add(new Membership(type, org.orgId(), named == null ? null : named.displayName(), null,
+                        null, roleNames(org.role()),
                         List.copyOf(new TreeSet<>(org.permissions() == null ? Set.of() : org.permissions()))));
                 continue;
             }
             ScopeType type = supplier ? ScopeType.SUPPLIER_STORE : ScopeType.OUTLET;
             for (AccessSnapshot.Outlet outlet : org.outlets()) {
-                var named = nameOf(type, outlet.outletId());
-                memberships.add(new Membership(type, outlet.outletId(), named.name(), named.parentId(),
-                        named.parentName(), roleNames(outlet.role() != null ? outlet.role() : org.role()),
+                // A grant pointing at an outlet common no longer has should not break the login response; it simply
+                // has no name.
+                var named = namedOutlets.get(outlet.outletId());
+                memberships.add(new Membership(type, outlet.outletId(), named == null ? null : named.name(),
+                        named == null ? org.orgId() : named.orgId(), named == null ? null : named.orgName(),
+                        roleNames(outlet.role() != null ? outlet.role() : org.role()),
                         List.copyOf(new TreeSet<>(outlet.permissions() == null ? Set.of() : outlet.permissions()))));
             }
         }
@@ -88,43 +99,5 @@ public class MembershipService {
 
     private static List<String> roleNames(AccessSnapshot.Role role) {
         return role == null || role.name() == null ? List.of() : List.of(role.name());
-    }
-
-    private record NamedScope(String name, Long parentId, String parentName) {
-    }
-
-    private NamedScope nameOf(ScopeType type, Long id) {
-        if (id == null) {
-            return new NamedScope("Costonomy Marketplace", null, null);
-        }
-
-        return switch (type) {
-            case RESTAURANT -> queryOne(
-                    "select name, null, null from restaurant where id = ?", id);
-            case OUTLET -> queryOne("""
-                    select o.name, r.id, r.name
-                      from outlet o join restaurant r on r.id = o.restaurant_id
-                     where o.id = ?
-                    """, id);
-            case SUPPLIER -> queryOne(
-                    "select display_name, null, null from supplier_organization where id = ?", id);
-            case SUPPLIER_STORE -> queryOne("""
-                    select s.name, o.id, o.display_name
-                      from supplier_store s join supplier_organization o
-                        on o.id = s.supplier_organization_id
-                     where s.id = ?
-                    """, id);
-            case PLATFORM -> new NamedScope("Costonomy Marketplace", null, null);
-        };
-    }
-
-    private NamedScope queryOne(String sql, Long id) {
-        var rows = jdbc.query(sql, (rs, i) -> new NamedScope(
-                rs.getString(1),
-                rs.getObject(2) == null ? null : rs.getLong(2),
-                rs.getString(3)), id);
-        // A grant pointing at a deleted scope should not break the login response;
-        // it simply has no name.
-        return rows.isEmpty() ? new NamedScope(null, null, null) : rows.get(0);
     }
 }

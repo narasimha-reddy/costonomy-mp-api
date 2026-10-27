@@ -1,5 +1,7 @@
 package com.costonomy.mp.catalog;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
@@ -47,8 +49,7 @@ class SkuMeasureIT extends AbstractIntegrationTest {
                 "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", "name", "Spice Co store", "addressLine1", "Road No 36",
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", created.get("id").asLong());
+        LocalCommon.activate(created.get("id").asLong());
         TestCatalog.tradesAroundTheClock(jdbc, created.get("id").asLong());
         storeId = created.get("stores").get(0).get("id").asLong();
         productId = TestCatalog.freshProduct(jdbc, "turmeric");

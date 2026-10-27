@@ -1,5 +1,7 @@
 package com.costonomy.mp.discovery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
@@ -89,8 +91,7 @@ class RecommendationIT extends AbstractIntegrationTest {
                         "preparationMinutes", 45))).get("data");
 
         long supplierId = created.get("id").asLong();
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", supplierId);
+        LocalCommon.activate(supplierId);
         TestCatalog.tradesAroundTheClock(jdbc, supplierId);
 
         return new Store(token, supplierId, created.get("stores").get(0).get("id").asLong());
@@ -318,7 +319,7 @@ class RecommendationIT extends AbstractIntegrationTest {
     class Choices {
 
         private void rate(Outlet outlet, Store store, int stars) {
-            Long buyerUserId = jdbc.queryForObject("select id from users limit 1", Long.class);
+            long buyerUserId = LocalCommon.userIdOf(outlet.token());
             jdbc.update("""
                     insert into procurement (outlet_id, created_by, status, approval_status,
                                               payment_method, payment_status, total_amount, created_at, updated_at, version)
@@ -373,9 +374,8 @@ class RecommendationIT extends AbstractIntegrationTest {
             // The cheapest has only 5 kg against the 20 asked for.
             assertThat(api.patchStatus(thin.token(), "/api/v1/supplier-skus/" + thinSku,
                     Map.of("availableQuantity", "5"))).isEqualTo(200);
-            jdbc.update("update supplier_store set operating_hours_json = ? where id = ?",
-                    "{\"days\":[\"MONDAY\",\"TUESDAY\",\"WEDNESDAY\",\"THURSDAY\",\"FRIDAY\",\"SATURDAY\","
-                            + "\"SUNDAY\"],\"opensAt\":\"01:00\",\"closesAt\":\"01:01\"}", closed.storeId());
+            LocalCommon.setHours(closed.storeId(), Map.of("days", List.of("MONDAY", "TUESDAY", "WEDNESDAY",
+                    "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"), "opensAt", "01:00", "closesAt", "01:01"));
             rate(outlet, near, 3);
             rate(outlet, far, 5);
             rate(outlet, thin, 4);
@@ -586,8 +586,7 @@ class RecommendationIT extends AbstractIntegrationTest {
         @DisplayName("a suspended supplier is not findable")
         void suspendedSupplierHidden() throws Exception {
             var store = newStore("Ghost Traders", NEARBY_LAT, NEARBY_LON);
-            jdbc.update("update supplier_organization set lifecycle_status = 'SUSPENDED' where id = ?",
-                    store.supplierId());
+            LocalCommon.suspend(store.supplierId());
 
             assertThat(api.get(api.loginFresh(), "/api/v1/search/suppliers?q=ghost")
                     .at("/data/suppliers")).isEmpty();

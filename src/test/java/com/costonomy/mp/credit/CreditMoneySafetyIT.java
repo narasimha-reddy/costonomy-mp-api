@@ -5,6 +5,7 @@ import com.costonomy.mp.credit.CreditWalletSupport.Reply;
 import com.costonomy.mp.credit.service.CreditInvoiceService;
 import com.costonomy.mp.settlement.service.SettlementService;
 import com.costonomy.mp.support.AbstractIntegrationTest;
+import com.costonomy.mp.support.LocalCommon;
 import com.costonomy.mp.support.TestOrder;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -492,9 +493,9 @@ class CreditMoneySafetyIT extends AbstractIntegrationTest {
 
         // Even a request that somehow exists (seeded here) cannot be paid out by the supplier.
         jdbc.update("insert into dispute_refund (dispute_id, supplier_order_id, outlet_id, supplier_store_id, amount, "
-                + "reason, status, requested_by, created_at, updated_at, version) select ?, ?, ?, ?, 500, 'seeded', "
-                + "'REQUESTED', u.id, now(6), now(6), 0 from users u order by u.id limit 1",
-                disputeId, orderId, buyer.outletId(), seller.storeId());
+                + "reason, status, requested_by, created_at, updated_at, version) values (?, ?, ?, ?, 500, 'seeded', "
+                + "'REQUESTED', ?, now(6), now(6), 0)",
+                disputeId, orderId, buyer.outletId(), seller.storeId(), LocalCommon.userIdOf(buyer.token()));
         long requestId = jdbc.queryForObject("select id from dispute_refund where dispute_id = ?", Long.class, disputeId);
         var approve = e.call("POST", seller.token(), "/api/v1/dispute-refunds/" + requestId + "/approve",
                 UUID.randomUUID().toString(), Map.of());

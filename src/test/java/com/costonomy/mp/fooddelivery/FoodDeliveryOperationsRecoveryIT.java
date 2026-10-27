@@ -1,5 +1,7 @@
 package com.costonomy.mp.fooddelivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.delivery.domain.DeliveryRecoveryTask;
 import com.costonomy.mp.delivery.provider.DeliveryProvider;
 import com.costonomy.mp.delivery.provider.MockDeliveryProvider;
@@ -78,14 +80,8 @@ class FoodDeliveryOperationsRecoveryIT extends AbstractIntegrationTest {
         var api = new ApiClient(mvc, json);
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        Long userId = jdbc.queryForObject(
-                "select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                       granted_at, created_at, updated_at, version)
-                select ?, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0
-                  from role r where r.code = ?
-                """, userId, roleCode);
+        Long userId = LocalCommon.userId("+91" + phone);
+        LocalCommon.grantPlatform(userId, roleCode);
         return token;
     }
 
@@ -582,14 +578,8 @@ class FoodDeliveryOperationsRecoveryIT extends AbstractIntegrationTest {
         var api = new ApiClient(mvc, json);
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        Long userId = jdbc.queryForObject(
-                "select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                       granted_at, created_at, updated_at, version)
-                select ?, r.id, 'OUTLET', ?, 'ACTIVE', now(6), now(6), now(6), 0
-                  from role r where r.code = ?
-                """, userId, outletId, roleCode);
+        Long userId = LocalCommon.userId("+91" + phone);
+        LocalCommon.grant(userId, roleCode, "OUTLET", outletId);
         return token;
     }
 

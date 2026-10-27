@@ -62,8 +62,7 @@ public final class DeliveryFixture {
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
         long supplierId = created.get("id").asLong();
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", supplierId);
+        LocalCommon.activate(supplierId);
         TestCatalog.tradesAroundTheClock(jdbc, supplierId);
         long storeId = created.get("stores").get(0).get("id").asLong();
         jdbc.update("""

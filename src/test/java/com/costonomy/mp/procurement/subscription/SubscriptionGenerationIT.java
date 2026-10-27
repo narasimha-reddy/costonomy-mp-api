@@ -1,5 +1,7 @@
 package com.costonomy.mp.procurement.subscription;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
@@ -74,8 +76,7 @@ class SubscriptionGenerationIT extends AbstractIntegrationTest {
                         "contactName", "Ramesh", "contactPhone", "+919876500012",
                         "latitude", "17.4622", "longitude", "78.3568"))).get("data");
         long storeId = supplier.get("stores").get(0).get("id").asLong();
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', verification_status = 'VERIFIED' where id = ?",
-                supplier.get("id").asLong());
+        LocalCommon.activate(supplier.get("id").asLong());
         TestCatalog.tradesAroundTheClock(jdbc, supplier.get("id").asLong());
         jdbc.update("""
                 insert into supplier_delivery_policy (supplier_store_id, own_delivery_enabled,
@@ -444,7 +445,7 @@ class SubscriptionGenerationIT extends AbstractIntegrationTest {
             long subId = subscribe(w, "10", "DAILY", "WALLET");
             String viewerPhone = ApiClient.freshPhone();
             api.post(w.buyer(), "/api/v1/outlets/" + w.outletId() + "/users", Map.of(
-                    "phone", viewerPhone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "REST_RECEIVING_STAFF"), "name", "Receiver"));
+                    "phone", viewerPhone, "roleId", LocalCommon.roleId("REST_RECEIVING_STAFF"), "name", "Receiver"));
             String viewer = api.login(viewerPhone);
 
             assertThat(api.getStatus(viewer, "/api/v1/subscriptions/" + subId)).isEqualTo(200);

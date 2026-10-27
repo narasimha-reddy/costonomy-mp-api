@@ -1,5 +1,7 @@
 package com.costonomy.mp.access;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -10,7 +12,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.Map;
@@ -30,7 +31,6 @@ class TenantIsolationIT extends AbstractIntegrationTest {
 
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
-    @Autowired private JdbcTemplate jdbc;
 
     private ApiClient api;
 
@@ -77,9 +77,9 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             assertThat(restaurant.get("id").asLong()).isPositive();
             assertThat(restaurant.get("outlets")).hasSize(1);
 
-            // Not a trivial assertion: without the owner grant written in the same
-            // transaction, the creator could not read back their own restaurant,
-            // because every later call is authorized against user_role.
+            // Not a trivial assertion: without the owner grant made with the restaurant,
+            // the creator could not read back their own restaurant, because every
+            // later call is authorized against the grants common holds.
             assertThat(api.getStatus(token, "/api/v1/restaurants/" + restaurant.get("id").asLong()))
                     .isEqualTo(200);
         }
@@ -155,7 +155,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             String staffPhone = ApiClient.freshPhone();
             api.post(owner, "/api/v1/outlets/" + outletOne + "/users", Map.of(
                     "phone", staffPhone,
-                    "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "REST_STORE_MANAGER"),
+                    "roleId", LocalCommon.roleId("REST_STORE_MANAGER"),
                     "name", "Ravi"));
 
             String staff = api.login(staffPhone);
@@ -183,7 +183,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             for (String role : new String[] {"SUP_OWNER", "OPS_ADMIN", "OPS_MARKETPLACE"}) {
                 assertThat(api.postStatus(owner, "/api/v1/outlets/" + outletId + "/users", Map.of(
                         "phone", ApiClient.freshPhone(),
-                        "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, role))))
+                        "roleId", LocalCommon.roleId(role))))
                         .describedAs("granting %s on an outlet", role)
                         .isEqualTo(400);
             }
@@ -251,7 +251,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             String salesPhone = ApiClient.freshPhone();
             api.post(owner, "/api/v1/suppliers/" + supplierId + "/users", Map.of(
                     "phone", salesPhone,
-                    "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "SUP_SALESPERSON"),
+                    "roleId", LocalCommon.roleId("SUP_SALESPERSON"),
                     "storeId", storeOne));
 
             String sales = api.login(salesPhone);
@@ -275,7 +275,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
             // or B could grant one of their staff access to A's store.
             assertThat(api.postStatus(supplierB, "/api/v1/suppliers/" + supplierBId + "/users", Map.of(
                     "phone", ApiClient.freshPhone(),
-                    "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "SUP_SALESPERSON"),
+                    "roleId", LocalCommon.roleId("SUP_SALESPERSON"),
                     "storeId", storeA)))
                     .isEqualTo(404);
         }
@@ -340,14 +340,8 @@ class TenantIsolationIT extends AbstractIntegrationTest {
         private String grantPlatformOperator() throws Exception {
             String phone = ApiClient.freshPhone();
             String token = api.login(phone);
-            Long userId = jdbc.queryForObject(
-                    "select id from users where phone = ?", Long.class, "+91" + phone);
-            jdbc.update("""
-                    insert into user_role (user_id, role_id, scope_type, scope_id, status, granted_at,
-                                           created_at, updated_at, version)
-                    select ?, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0
-                      from role r where r.code = 'OPS_SUPPLIER_VERIFY'
-                    """, userId);
+            Long userId = LocalCommon.userId("+91" + phone);
+            LocalCommon.grantPlatform(userId, "OPS_SUPPLIER_VERIFY");
             return token;
         }
     }
@@ -408,7 +402,7 @@ class TenantIsolationIT extends AbstractIntegrationTest {
 
             String staffPhone = ApiClient.freshPhone();
             api.post(owner, "/api/v1/outlets/" + outletId + "/users", Map.of(
-                    "phone", staffPhone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "REST_PROCUREMENT_STAFF")));
+                    "phone", staffPhone, "roleId", LocalCommon.roleId("REST_PROCUREMENT_STAFF")));
 
             JsonNode membership = api.get(api.login(staffPhone), "/api/v1/auth/me")
                     .at("/data/memberships").get(0);
@@ -428,16 +422,13 @@ class TenantIsolationIT extends AbstractIntegrationTest {
 
             String staffPhone = ApiClient.freshPhone();
             api.post(owner, "/api/v1/outlets/" + outletId + "/users", Map.of(
-                    "phone", staffPhone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "REST_STORE_MANAGER")));
+                    "phone", staffPhone, "roleId", LocalCommon.roleId("REST_STORE_MANAGER")));
 
             String staff = api.login(staffPhone);
             assertThat(api.getStatus(staff, "/api/v1/outlets/" + outletId)).isEqualTo(200);
 
-            jdbc.update("""
-                    update user_role ur join users u on u.id = ur.user_id
-                       set ur.status = 'REVOKED'
-                     where u.phone = ?
-                    """, "+91" + staffPhone);
+            // Revoked in common; Marketplace asks common for access on every request.
+            LocalCommon.revoke(LocalCommon.userId("+91" + staffPhone), "REST_STORE_MANAGER", "OUTLET", outletId);
 
             // Doc 46: "permission revoked while screen open → server rejects".
             // Their access token is still valid — which is exactly why permissions

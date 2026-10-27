@@ -46,9 +46,9 @@ public class StorefrontService {
     private static final int MIN_TERM = 2;
 
     /**
-     * Whether a store stocks something matching the term that you could buy today.
+     * How many purchasable things matching the term each store stocks.
      *
-     * <p>Takes three bound parameters, all the same term.
+     * <p>Takes three bound parameters, all the same term, then the store ids.
      *
      * <p>Three conditions, and each rules out a supplier who cannot actually sell
      * it: the SKU is live, the offer is live and unexpired — a listing with the
@@ -62,18 +62,23 @@ public class StorefrontService {
      * knowing — it is only worthless as a reason to pick the supplier.
      */
     private static final String STOCKS_MATCHING = """
-            from supplier_sku k
+            select k.supplier_store_id, count(*)
+              from supplier_sku k
               join canonical_product cp on cp.id = k.canonical_product_id
               join supplier_offer f on f.supplier_sku_id = k.id
                    and f.status = 'ACTIVE'
                    and f.availability = 'AVAILABLE'
                    and (f.effective_to is null or f.effective_to > now())
               left join brand b on b.id = k.brand_id
-             where k.supplier_store_id = s.id
-               and k.status = 'ACTIVE'
+             where k.status = 'ACTIVE'
                and (lower(k.name) like concat('%', ?, '%')
                     or lower(cp.name) like concat('%', ?, '%')
-                    or lower(b.name) like concat('%', ?, '%'))""";
+                    or lower(b.name) like concat('%', ?, '%'))
+               and k.supplier_store_id in (%s)
+             group by k.supplier_store_id""";
+
+    /** Ids per {@code in (...)} list. */
+    private static final int CHUNK = 1000;
 
     private final JdbcTemplate jdbc;
     private final DiscoveryDirectory directory;
@@ -95,13 +100,14 @@ public class StorefrontService {
             return List.of();
         }
 
+        var stores = trading(directory.allStores());
         var rows = fetchSkuRows("""
                    and (lower(k.name) like concat('%', ?, '%')
                         or lower(cp.name) like concat('%', ?, '%')
                         or lower(b.name) like concat('%', ?, '%'))
-                """, List.of(term, term, term), limit);
+                """, List.of(term, term, term), stores, limit);
 
-        return decorate(rows, outletId, null).skus();
+        return decorate(rows, stores, outletId, null).skus();
     }
 
     /**
@@ -117,9 +123,9 @@ public class StorefrontService {
     public List<DiscoveryDtos.StorefrontSku> storeCatalog(Long storeId, Long outletId, String query) {
         String term = query == null ? "" : query.trim().toLowerCase();
 
-        var sql = new StringBuilder("   and s.id = ?\n");
+        var stores = trading(directory.stores(List.of(storeId)).values());
+        var sql = new StringBuilder();
         var args = new ArrayList<Object>();
-        args.add(storeId);
         if (term.length() >= MIN_TERM) {
             sql.append("""
                        and (lower(k.name) like concat('%', ?, '%')
@@ -131,8 +137,8 @@ public class StorefrontService {
             args.add(term);
         }
 
-        var rows = fetchSkuRows(sql.toString(), args, MAX_LIMIT);
-        return decorate(rows, outletId, storeId).skus();
+        var rows = fetchSkuRows(sql.toString(), args, stores, MAX_LIMIT);
+        return decorate(rows, stores, outletId, storeId).skus();
     }
 
     /**
@@ -193,44 +199,22 @@ public class StorefrontService {
 
         var outlet = outletId == null ? null : directory.outlet(outletId).orElse(null);
 
-        var args = new ArrayList<Object>();
-
-        var sql = new StringBuilder("""
-                select s.id, o.display_name, s.name, s.city, s.latitude, s.longitude,
-                       (select count(*) from supplier_sku k
-                         where k.supplier_store_id = s.id and k.status = 'ACTIVE') as product_count,
-                """);
-
-        // Counted in the select and tested again in the where, rather than counted
-        // once and filtered on the alias: MySQL cannot see a select alias in a
-        // where clause, and HAVING without a GROUP BY is a subtler thing to read
-        // than the same predicate written twice.
-        if (filtered) {
-            sql.append("       (select count(*) ").append(STOCKS_MATCHING).append(") as matching_count\n");
-            args.add(term);
-            args.add(term);
-            args.add(term);
-        } else {
-            sql.append("       0 as matching_count\n");
+        // D-208: the stores are common's, so who trades and what they are called
+        // is decided here; only what they stock is asked of SQL.
+        var tradingStores = trading(directory.allStores());
+        if (tradingStores.isEmpty()) {
+            return new DiscoveryDtos.SupplierSearchPage(List.of(), 0, 0, null);
         }
-
-        sql.append("""
-                  from supplier_store s
-                  join supplier_organization o on o.id = s.supplier_organization_id
-                 where s.status = 'ACTIVE'
-                   and o.lifecycle_status = 'ACTIVE'
-                """);
-
-        if (filtered) {
-            sql.append("   and (lower(o.display_name) like concat('%', ?, '%')\n")
-               .append("        or lower(s.name) like concat('%', ?, '%')\n")
-               .append("        or exists (select 1 ").append(STOCKS_MATCHING).append("))\n");
-            args.add(term);
-            args.add(term);
-            args.add(term);
-            args.add(term);
-            args.add(term);
-        }
+        var tradingIds = List.copyOf(tradingStores.keySet());
+        Map<Long, Integer> productCounts = countPerStore("""
+                select supplier_store_id, count(*)
+                  from supplier_sku
+                 where status = 'ACTIVE'
+                   and supplier_store_id in (%s)
+                 group by supplier_store_id""", List.of(), tradingIds);
+        Map<Long, Integer> matchingCounts = filtered
+                ? countPerStore(STOCKS_MATCHING, List.of(term, term, term), tradingIds)
+                : Map.of();
 
         record Row(Long storeId, String supplierName, String storeName, String city,
                    BigDecimal latitude, BigDecimal longitude, int productCount,
@@ -238,19 +222,24 @@ public class StorefrontService {
         }
 
         List<Row> rows = new ArrayList<>();
-        jdbc.query(sql.toString(),
-                rs -> {
-                    rows.add(new Row(rs.getLong(1), rs.getString(2), rs.getString(3),
-                            rs.getString(4), rs.getBigDecimal(5), rs.getBigDecimal(6),
-                            rs.getInt(7), rs.getInt(8)));
-                },
-                args.toArray());
+        for (var store : tradingStores.values()) {
+            int matching = matchingCounts.getOrDefault(store.storeId(), 0);
+            // A term matches the supplier's name, the store's name, or something
+            // they stock that could be bought today.
+            if (filtered && matching == 0
+                    && !contains(store.supplierName(), term) && !contains(store.storeName(), term)) {
+                continue;
+            }
+            rows.add(new Row(store.storeId(), store.supplierName(), store.storeName(),
+                    store.city(), store.latitude(), store.longitude(),
+                    productCounts.getOrDefault(store.storeId(), 0), matching));
+        }
 
         if (rows.isEmpty()) {
             return new DiscoveryDtos.SupplierSearchPage(List.of(), 0, 0, null);
         }
 
-        var storeInfo = directory.stores(rows.stream().map(Row::storeId).toList());
+        var storeInfo = tradingStores;
         var ratings = performance.forStores(rows.stream().map(Row::storeId).toList());
 
         record Sized(DiscoveryDtos.SupplierSearchResult result, Double distance) {
@@ -349,50 +338,80 @@ public class StorefrontService {
                           BigDecimal measureValue, String measureUnit) {
     }
 
-    private List<SkuRow> fetchSkuRows(String extraWhere, List<Object> args, Integer limit) {
+    /**
+     * Purchasable offers at these stores, cheapest first, at most {@code limit}.
+     *
+     * <p>D-208: the stores come from common already filtered to those taking
+     * orders, and their names are attached here. Long store lists are asked in
+     * chunks, each cheapest-first and capped, then merged and capped again —
+     * the same rows one query over every store would have returned.
+     */
+    private List<SkuRow> fetchSkuRows(String extraWhere, List<Object> args,
+                                      Map<Long, DiscoveryDirectory.StoreInfo> stores, Integer limit) {
         int capped = limit == null ? DEFAULT_LIMIT : Math.min(Math.max(limit, 1), MAX_LIMIT);
+        if (stores.isEmpty()) {
+            return List.of();
+        }
 
+        var storeIds = List.copyOf(stores.keySet());
         List<SkuRow> rows = new ArrayList<>();
+        for (int from = 0; from < storeIds.size(); from += CHUNK) {
+            var chunk = storeIds.subList(from, Math.min(from + CHUNK, storeIds.size()));
+            // The store ids come first: their "in (...)" precedes the caller's filter in the SQL.
+            var chunkArgs = new ArrayList<Object>(chunk);
+            chunkArgs.addAll(args);
+            fetchSkuChunk(extraWhere, chunkArgs, chunk.size(), capped, stores, rows);
+        }
+        if (storeIds.size() > CHUNK) {
+            rows.sort(Comparator.comparing(SkuRow::sellingPrice,
+                    Comparator.nullsFirst(Comparator.naturalOrder())));
+            if (rows.size() > capped) {
+                rows = new ArrayList<>(rows.subList(0, capped));
+            }
+        }
+        return rows;
+    }
+
+    private void fetchSkuChunk(String extraWhere, List<Object> args, int storeCount, int capped,
+                               Map<Long, DiscoveryDirectory.StoreInfo> stores, List<SkuRow> rows) {
+        String placeholders = String.join(",", java.util.Collections.nCopies(storeCount, "?"));
         jdbc.query("""
                 select f.id, k.id, k.name, b.name,
                        k.pack_size, k.pack_unit, f.selling_price, f.gst_rate,
                        f.availability, f.available_quantity,
                        k.image_url, cp.image_url,
                        cp.id, cp.name,
-                       s.id, o.display_name, s.name,
+                       f.supplier_store_id,
                        cp.category_id, pc.name,
                        k.measure_value, k.measure_unit,
                        k.grade, coalesce(f.mrp, k.mrp) as mrp
                   from supplier_offer f
                   join supplier_sku k on k.id = f.supplier_sku_id
                   join canonical_product cp on cp.id = k.canonical_product_id
-                  join supplier_store s on s.id = f.supplier_store_id
-                  join supplier_organization o on o.id = s.supplier_organization_id
                   left join brand b on b.id = k.brand_id
                   left join product_category pc on pc.id = cp.category_id
                  where f.status = 'ACTIVE'
                    and k.status = 'ACTIVE'
-                   and s.status = 'ACTIVE'
-                   and o.lifecycle_status = 'ACTIVE'
                    and (f.effective_to is null or f.effective_to > now())
+                   and f.supplier_store_id in (%s)
                 %s
                  order by f.selling_price
                  limit %d
-                """.formatted(extraWhere, capped),
+                """.formatted(placeholders, extraWhere, capped),
                 rs -> {
+                    var store = stores.get(rs.getLong(15));
                     rows.add(new SkuRow(
                             rs.getLong(1), rs.getLong(2), rs.getString(3), rs.getString(4),
-                            rs.getString(22), rs.getBigDecimal(5), rs.getString(6),
-                            rs.getBigDecimal(23), rs.getBigDecimal(7),
+                            rs.getString(20), rs.getBigDecimal(5), rs.getString(6),
+                            rs.getBigDecimal(21), rs.getBigDecimal(7),
                             rs.getBigDecimal(8), rs.getString(9), rs.getBigDecimal(10),
                             rs.getString(11), rs.getString(12),
                             rs.getLong(13), rs.getString(14),
-                            rs.getLong(15), rs.getString(16), rs.getString(17),
-                            (Long) rs.getObject(18), rs.getString(19),
-                            rs.getBigDecimal(20), rs.getString(21)));
+                            rs.getLong(15), store.supplierName(), store.storeName(),
+                            (Long) rs.getObject(16), rs.getString(17),
+                            rs.getBigDecimal(18), rs.getString(19)));
                 },
                 args.toArray());
-        return rows;
     }
 
     private record Decorated(List<DiscoveryDtos.StorefrontSku> skus) {
@@ -405,13 +424,13 @@ public class StorefrontService {
      * @param onlyStore when set, serviceability is not applied — the caller asked
      *                  for this store specifically.
      */
-    private Decorated decorate(List<SkuRow> rows, Long outletId, Long onlyStore) {
+    private Decorated decorate(List<SkuRow> rows, Map<Long, DiscoveryDirectory.StoreInfo> storeInfo,
+                               Long outletId, Long onlyStore) {
         if (rows.isEmpty()) {
             return new Decorated(List.of());
         }
 
         var storeIds = rows.stream().map(SkuRow::storeId).distinct().toList();
-        var storeInfo = directory.stores(storeIds);
         var ratings = performance.forStores(storeIds);
         var outlet = outletId == null ? null : directory.outlet(outletId).orElse(null);
 
@@ -504,6 +523,38 @@ public class StorefrontService {
         // is shown but does not reorder: a supplier 200m away charging twice as
         // much is not the better answer to "who sells curd".
         return new Decorated(out.stream().map(Sized::sku).toList());
+    }
+
+    /** The stores that take orders, by id. D-208: was {@code s.status} and {@code o.lifecycle_status} in SQL. */
+    private static Map<Long, DiscoveryDirectory.StoreInfo> trading(
+            java.util.Collection<DiscoveryDirectory.StoreInfo> stores) {
+        Map<Long, DiscoveryDirectory.StoreInfo> out = new java.util.LinkedHashMap<>();
+        stores.stream().filter(DiscoveryDirectory.StoreInfo::tradeable)
+                .forEach(store -> out.put(store.storeId(), store));
+        return out;
+    }
+
+    /** A {@code (store id, count)} query over chunks of store ids; {@code sql} has one {@code (%s)} for them. */
+    private Map<Long, Integer> countPerStore(String sql, List<Object> leadingArgs, List<Long> storeIds) {
+        Map<Long, Integer> counts = new HashMap<>();
+        for (int from = 0; from < storeIds.size(); from += CHUNK) {
+            var chunk = storeIds.subList(from, Math.min(from + CHUNK, storeIds.size()));
+            var args = new ArrayList<Object>(leadingArgs);
+            args.addAll(chunk);
+            // replace, not formatted(): the term match carries literal '%' signs.
+            jdbc.query(sql.replace("(%s)",
+                            "(" + String.join(",", java.util.Collections.nCopies(chunk.size(), "?")) + ")"),
+                    rs -> {
+                        counts.put(rs.getLong(1), rs.getInt(2));
+                    },
+                    args.toArray());
+        }
+        return counts;
+    }
+
+    /** SQL's {@code lower(name) like '%term%'}: a missing name matches nothing. */
+    private static boolean contains(String name, String term) {
+        return name != null && name.toLowerCase().contains(term);
     }
 
     /** Doc 07 §13: a declared pincode list wins, then the store's own radius. D-138. */

@@ -12,6 +12,7 @@ import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.delivery.domain.DeliveryMode;
 import com.costonomy.mp.delivery.slot.DeliverySlot;
 import com.costonomy.mp.delivery.slot.DeliverySlotRepository;
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.procurement.domain.OrderItemStatus;
 import com.costonomy.mp.procurement.domain.Pricing;
 import com.costonomy.mp.procurement.domain.SupplierOrder;
@@ -20,6 +21,7 @@ import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
 import com.costonomy.mp.procurement.repository.OrderNumberGenerator;
 import com.costonomy.mp.procurement.repository.SupplierOrderItemRepository;
 import com.costonomy.mp.procurement.repository.SupplierOrderRepository;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -47,6 +49,7 @@ public class SubscriptionService {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     @Transactional
     public SubscriptionDtos.SubscriptionResponse createSubscription(
@@ -143,9 +146,7 @@ public class SubscriptionService {
         accessControl.requireScoped(actorId, Permissions.OUTLET_VIEW,
                 ScopeType.OUTLET, outletId, "Outlet");
 
-        return subscriptions.findByOutletIdOrderByCreatedAtDesc(outletId).stream()
-                .map(this::toResponse)
-                .toList();
+        return toResponses(subscriptions.findByOutletIdOrderByCreatedAtDesc(outletId));
     }
 
     @Transactional(readOnly = true)
@@ -153,9 +154,7 @@ public class SubscriptionService {
         accessControl.requireScoped(actorId, Permissions.STORE_VIEW,
                 ScopeType.SUPPLIER_STORE, supplierStoreId, "SupplierStore");
 
-        return subscriptions.findBySupplierStoreIdOrderByCreatedAtDesc(supplierStoreId).stream()
-                .map(this::toResponse)
-                .toList();
+        return toResponses(subscriptions.findBySupplierStoreIdOrderByCreatedAtDesc(supplierStoreId));
     }
 
     @Transactional
@@ -319,12 +318,13 @@ public class SubscriptionService {
         // Build delivery list
         Map<Long, DeliverySlot> slotMap = deliverySlots.findBySupplierStoreId(supplierStoreId).stream()
                 .collect(Collectors.toMap(DeliverySlot::getId, s -> s));
+        Map<Long, AppOutlet> outlets = directory.outlets(dueSubscriptions.stream().map(Subscription::getOutletId).toList());
 
         List<SubscriptionDtos.ManifestDeliveryOrder> deliveries = dueSubscriptions.stream()
                 .map(sub -> {
                     DeliverySlot slot = sub.getPreferredSlotId() != null ? slotMap.get(sub.getPreferredSlotId()) : null;
                     String slotName = slot != null ? slot.getSlotName() : "Standard";
-                    OutletInfo outlet = loadOutletInfo(sub.getOutletId());
+                    OutletInfo outlet = outletInfo(sub.getOutletId(), outlets.get(sub.getOutletId()));
 
                     return new SubscriptionDtos.ManifestDeliveryOrder(
                             sub.getId(),
@@ -385,15 +385,31 @@ public class SubscriptionService {
     }
 
     private SubscriptionDtos.SubscriptionResponse toResponse(Subscription sub) {
+        return toResponse(sub, directory.outlets(List.of(sub.getOutletId(), sub.getSupplierStoreId())));
+    }
+
+    /** Several at once: the outlet and store names in one call to common (D-208). */
+    private List<SubscriptionDtos.SubscriptionResponse> toResponses(List<Subscription> subs) {
+        Set<Long> ids = new HashSet<>();
+        subs.forEach(sub -> {
+            ids.add(sub.getOutletId());
+            ids.add(sub.getSupplierStoreId());
+        });
+        Map<Long, AppOutlet> names = directory.outlets(ids);
+        return subs.stream().map(sub -> toResponse(sub, names)).toList();
+    }
+
+    /** @param names outlets and stores by id, from common */
+    private SubscriptionDtos.SubscriptionResponse toResponse(Subscription sub, Map<Long, AppOutlet> names) {
         List<LocalDate> skips = skipDates.findBySubscriptionId(sub.getId()).stream()
                 .map(SubscriptionSkipDate::getSkipDate)
                 .sorted()
                 .toList();
 
-        String outletName = jdbc.queryForObject(
-                "select name from outlet where id = ?", String.class, sub.getOutletId());
-        String storeName = jdbc.queryForObject(
-                "select name from supplier_store where id = ?", String.class, sub.getSupplierStoreId());
+        AppOutlet outlet = names.get(sub.getOutletId());
+        AppOutlet store = names.get(sub.getSupplierStoreId());
+        String outletName = outlet != null ? outlet.name() : null;
+        String storeName = store != null ? store.name() : null;
 
         String prodName = null;
         String prodImage = null;
@@ -455,15 +471,12 @@ public class SubscriptionService {
 
     private record OutletInfo(String name, String restaurantName, String address, String phone) {}
 
-    private OutletInfo loadOutletInfo(Long outletId) {
-        var row = jdbc.query("""
-                select o.name, r.name, concat_ws(', ', o.address_line1, o.landmark, o.city), o.contact_phone
-                  from outlet o
-                  join restaurant r on r.id = o.restaurant_id
-                 where o.id = ?
-                """,
-                rs -> rs.next() ? new OutletInfo(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4)) : null,
-                outletId);
-        return row != null ? row : new OutletInfo("Outlet #" + outletId, "Restaurant", "Address", "");
+    private static OutletInfo outletInfo(Long outletId, AppOutlet o) {
+        if (o == null) {
+            return new OutletInfo("Outlet #" + outletId, "Restaurant", "Address", "");
+        }
+        String address = java.util.stream.Stream.of(o.addressLine1(), o.landmark(), o.city())
+                .filter(Objects::nonNull).collect(Collectors.joining(", "));
+        return new OutletInfo(o.name(), o.orgName(), address, o.contactPhone());
     }
 }

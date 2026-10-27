@@ -1,5 +1,7 @@
 package com.costonomy.mp.notification;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.common.outbox.OutboxPublisher;
 import com.costonomy.mp.notification.service.NotificationDispatcher;
 import com.costonomy.mp.support.AbstractIntegrationTest;
@@ -57,8 +59,7 @@ class NotificationFlowIT extends AbstractIntegrationTest {
     private Buyer newBuyer() throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        long userId = jdbc.queryForObject(
-                "select id from users where phone = ?", Long.class, "+91" + phone);
+        long userId = LocalCommon.userId("+91" + phone);
         long outletId = api.post(token, "/api/v1/restaurants", Map.of(
                 "name", "Paradise",
                 "firstOutlet", Map.of("name", "Banjara Hills", "addressLine1", "Road No 12",
@@ -71,8 +72,7 @@ class NotificationFlowIT extends AbstractIntegrationTest {
     private Seller newSeller() throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        long userId = jdbc.queryForObject(
-                "select id from users where phone = ?", Long.class, "+91" + phone);
+        long userId = LocalCommon.userId("+91" + phone);
         JsonNode created = api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", "ABC Foods Pvt Ltd", "displayName", "ABC Foods",
                 "contactName", "Ops Desk", "contactPhone", "+919876500000",
@@ -82,11 +82,9 @@ class NotificationFlowIT extends AbstractIntegrationTest {
         return new Seller(token, userId, created.get("stores").get(0).get("id").asLong());
     }
 
-    /** Register a device so push has somewhere to go. */
-    private void registerDevice(String token, String pushToken) throws Exception {
-        api.post(token, "/api/v1/devices", Map.of(
-                "platform", "ANDROID", "pushToken", pushToken,
-                "appVersion", "1.0.0", "deviceModel", "Pixel"));
+    /** Register a device so push has somewhere to go. Devices are common's now (D-208). */
+    private void registerDevice(String token, String pushToken) {
+        LocalCommon.registerDevice(LocalCommon.userIdOf(token), "ANDROID", pushToken);
     }
 
     /** Publish a domain event exactly as the outbox would. */

@@ -9,6 +9,12 @@ import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.common.outbox.OutboxService;
+import com.costonomy.mp.identity.common.Directory;
+import com.costonomy.mp.supplier.domain.SupplierLifecycleStatus;
+import com.costonomy.mp.supplier.domain.SupplierStanding;
+import com.costonomy.security.client.CommonApiClient;
+import com.costonomy.security.client.CommonApiClient.AppOrg;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -45,6 +51,8 @@ public class AdminModerationService {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final OutboxService outbox;
+    private final Directory directory;
+    private final CommonApiClient common;
 
     // ── Suppliers ────────────────────────────────────────────────────────
 
@@ -55,25 +63,28 @@ public class AdminModerationService {
      * the deliveries they accepted yesterday, and cancelling them would punish the
      * restaurants rather than the supplier. Suspension stops new orders, which the
      * serviceability and submission checks already enforce by requiring an ACTIVE
-     * organisation.
+     * supplier ({@link SupplierStanding#takesOrders}).
      */
     @Transactional
     public void suspendSupplier(Long actorId, Long supplierId, String reason) {
         accessControl.require(actorId, Permissions.SUPPLIER_SUSPEND, ScopeType.PLATFORM, null);
 
-        String current = lifecycleOf(supplierId);
-        if ("SUSPENDED".equals(current)) {
+        SupplierLifecycleStatus current = lifecycleOf(supplierId);
+        if (current == SupplierLifecycleStatus.SUSPENDED) {
             return;
         }
+        if (!current.canTransitionTo(SupplierLifecycleStatus.SUSPENDED)) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Cannot move supplier from " + current + " to SUSPENDED");
+        }
 
-        jdbc.update("""
-                update supplier_organization
-                   set lifecycle_status = 'SUSPENDED', version = version + 1, updated_at = now(6)
-                 where id = ?
-                """, supplierId);
+        // D-208: the lifecycle is derived from common; suspending is setting the
+        // business's Marketplace enrollment SUSPENDED there.
+        common.setEnrollment(supplierId, "SUSPENDED", null, actorId);
+        directory.evictOrg(supplierId);
 
         auditService.record(actorId, null, "SUPPLIER_SUSPENDED", "SUPPLIER",
-                supplierId, current, "SUSPENDED", reason, "ADMIN");
+                supplierId, current.name(), "SUSPENDED", reason, "ADMIN");
 
         outbox.publish("SupplierSuspended", "SUPPLIER", supplierId,
                 Map.of("reason", reason), actorId);
@@ -85,32 +96,51 @@ public class AdminModerationService {
     public void reactivateSupplier(Long actorId, Long supplierId, String reason) {
         accessControl.require(actorId, Permissions.SUPPLIER_SUSPEND, ScopeType.PLATFORM, null);
 
-        String current = lifecycleOf(supplierId);
-        if (!"SUSPENDED".equals(current)) {
+        AppOrg org = supplier(supplierId);
+        SupplierLifecycleStatus current = SupplierStanding.of(org);
+        if (current != SupplierLifecycleStatus.SUSPENDED) {
             throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
                     "This supplier isn't suspended.");
         }
+        // A business suspended or closed in Costonomy itself is not Marketplace's to
+        // lift: reactivating the enrollment would change nothing the supplier sees.
+        if ("SUSPENDED".equals(org.status()) || "CLOSED".equals(org.status())) {
+            throw new BusinessException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "This business is " + org.status() + " in Costonomy, not only in the Marketplace.");
+        }
 
         // Back to ACTIVE, not to whatever they were before. A suspended supplier
-        // who was mid-verification must not be silently promoted past it.
-        jdbc.update("""
-                update supplier_organization
-                   set lifecycle_status = 'ACTIVE', version = version + 1, updated_at = now(6)
-                 where id = ? and verification_status = 'VERIFIED'
-                """, supplierId);
+        // who was mid-verification must not be silently promoted past it: only a
+        // verified one goes live, the rest return to their verification stage.
+        boolean verified = "VERIFIED".equals(org.verificationStatus());
+        common.setEnrollment(supplierId, "ACTIVE", verified ? Boolean.TRUE : null, actorId);
+        directory.evictOrg(supplierId);
 
+        SupplierLifecycleStatus now = SupplierStanding.lifecycle(org.claimStatus(), org.status(),
+                "ACTIVE", verified || org.live(), org.verificationStatus());
         auditService.record(actorId, null, "SUPPLIER_REACTIVATED", "SUPPLIER",
-                supplierId, current, "ACTIVE", reason, "ADMIN");
+                supplierId, current.name(), now.name(), reason, "ADMIN");
     }
 
-    private String lifecycleOf(Long supplierId) {
-        var rows = jdbc.queryForList(
-                "select lifecycle_status from supplier_organization where id = ?",
-                String.class, supplierId);
-        if (rows.isEmpty()) {
-            throw new NotFoundException("Supplier", supplierId);
-        }
-        return rows.get(0);
+    private SupplierLifecycleStatus lifecycleOf(Long supplierId) {
+        return SupplierStanding.of(supplier(supplierId));
+    }
+
+    private AppOrg supplier(Long supplierId) {
+        return directory.org(supplierId).filter(o -> "SUPPLIER".equals(o.orgType()))
+                .orElseThrow(() -> new NotFoundException("Supplier", supplierId));
+    }
+
+    /** An outlet or store of the given kind, as a missing row was before: not found. */
+    private AppOutlet place(Long id, String kind, String entity) {
+        return directory.outlet(id).filter(o -> kind.equals(o.kind()))
+                .orElseThrow(() -> new NotFoundException(entity, id));
+    }
+
+    /** D-208: a store's or outlet's Marketplace fields are common's MARKETPLACE outlet settings. */
+    private void putSetting(Long id, String key, Object value, Long actorId) {
+        common.putOutletSettings(id, Map.of(key, value), null, actorId);
+        directory.evictOutlet(id);
     }
 
     // ── Payments ─────────────────────────────────────────────────────────
@@ -285,21 +315,11 @@ public class AdminModerationService {
                     "The answer window must be between 10 seconds and 24 hours.");
         }
 
-        var rows = jdbc.queryForList(
-                "select response_sla_seconds from supplier_store where id = ?",
-                Integer.class, storeId);
-        if (rows.isEmpty()) {
-            throw new NotFoundException("SupplierStore", storeId);
-        }
-
-        jdbc.update("""
-                update supplier_store
-                   set response_sla_seconds = ?, version = version + 1, updated_at = now(6)
-                 where id = ?
-                """, seconds, storeId);
+        int current = SupplierStanding.responseSlaSeconds(place(storeId, "STORE", "SupplierStore"));
+        putSetting(storeId, SupplierStanding.RESPONSE_SLA_SECONDS, seconds, actorId);
 
         auditService.record(actorId, null, "SUPPLIER_STORE_SLA_CHANGED", "SUPPLIER_STORE",
-                storeId, String.valueOf(rows.get(0)), String.valueOf(seconds), reason, "ADMIN");
+                storeId, String.valueOf(current), String.valueOf(seconds), reason, "ADMIN");
     }
 
     /**
@@ -319,22 +339,13 @@ public class AdminModerationService {
     public void setDirectOrders(Long actorId, Long storeId, boolean enabled, String reason) {
         accessControl.require(actorId, Permissions.CATALOG_MODERATE, ScopeType.PLATFORM, null);
 
-        var rows = jdbc.queryForList(
-                "select direct_orders_enabled from supplier_store where id = ?",
-                Boolean.class, storeId);
-        if (rows.isEmpty()) {
-            throw new NotFoundException("SupplierStore", storeId);
-        }
-
-        jdbc.update("""
-                update supplier_store
-                   set direct_orders_enabled = ?, version = version + 1, updated_at = now(6)
-                 where id = ?
-                """, enabled, storeId);
+        boolean current = SupplierStanding.directOrdersEnabled(
+                place(storeId, "STORE", "SupplierStore"));
+        putSetting(storeId, SupplierStanding.DIRECT_ORDERS_ENABLED, enabled, actorId);
 
         auditService.record(actorId, null, "SUPPLIER_STORE_DIRECT_ORDERS_CHANGED",
                 "SUPPLIER_STORE", storeId,
-                String.valueOf(rows.get(0)), String.valueOf(enabled), reason, "ADMIN");
+                String.valueOf(current), String.valueOf(enabled), reason, "ADMIN");
     }
 
     /**
@@ -352,23 +363,16 @@ public class AdminModerationService {
 
         accessControl.require(actorId, Permissions.CATALOG_MODERATE, ScopeType.PLATFORM, null);
 
-        // The table name is not caller-supplied — the two controller methods
-        // pass a literal each. Interpolating one that was would be an injection.
-        String entity = "outlet".equals(table) ? "OUTLET" : "SUPPLIER_STORE";
-        var rows = jdbc.queryForList(
-                "select chat_enabled from %s where id = ?".formatted(table), Boolean.class, id);
-        if (rows.isEmpty()) {
-            throw new NotFoundException(entity, id);
-        }
-
-        jdbc.update("""
-                update %s
-                   set chat_enabled = ?, version = version + 1, updated_at = now(6)
-                 where id = ?
-                """.formatted(table), enabled, id);
+        // `table` is the controller's literal, "outlet" or "supplier_store";
+        // since D-208 it only picks which kind of common outlet the id must be.
+        boolean outlet = "outlet".equals(table);
+        String entity = outlet ? "OUTLET" : "SUPPLIER_STORE";
+        boolean current = SupplierStanding.chatEnabled(
+                place(id, outlet ? "OUTLET" : "STORE", entity));
+        putSetting(id, SupplierStanding.CHAT_ENABLED, enabled, actorId);
 
         auditService.record(actorId, null, "CHAT_ENABLED_CHANGED", entity, id,
-                String.valueOf(rows.get(0)), String.valueOf(enabled), reason, "ADMIN");
+                String.valueOf(current), String.valueOf(enabled), reason, "ADMIN");
     }
 
     // ── Disputes ─────────────────────────────────────────────────────────

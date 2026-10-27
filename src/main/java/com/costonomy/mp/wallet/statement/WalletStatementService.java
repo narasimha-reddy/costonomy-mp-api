@@ -2,6 +2,7 @@ package com.costonomy.mp.wallet.statement;
 
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.wallet.domain.WalletDirection;
 import com.costonomy.mp.wallet.domain.WalletTransaction;
 import com.costonomy.mp.wallet.service.WalletService;
@@ -56,12 +57,12 @@ public class WalletStatementService {
     private final JdbcTemplate jdbc;
     private final com.costonomy.mp.wallet.invoice.service.BillStatuses billStatuses;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
+    private final Directory directory;
 
     @Transactional(readOnly = true)
     public WalletStatement build(Long outletId, StatementPeriod period) {
         var wallet = wallets.find(outletId).orElse(null);
-        String outletName = jdbc.queryForList("select name from outlet where id = ?", String.class, outletId)
-                .stream().findFirst().orElse("");
+        String outletName = directory.outlet(outletId).map(o -> o.name()).orElse("");
         var start = period.start();
         var end = period.endExclusive();
 

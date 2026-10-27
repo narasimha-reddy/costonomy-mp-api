@@ -1,6 +1,9 @@
 package com.costonomy.mp.catalog.service;
 
 import com.costonomy.mp.catalog.repository.BrandRepository;
+import com.costonomy.mp.identity.common.Directory;
+import com.costonomy.mp.supplier.domain.SupplierStanding;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -10,6 +13,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -20,9 +24,10 @@ import java.util.Set;
 /**
  * Supplier and brand names for catalog responses.
  *
- * <p>Store and organisation names are read with {@link JdbcTemplate} rather than
- * through the supplier module's repositories, for the same reason as
- * {@code ScopeResolver}: a module reaching into another module's repositories is
+ * <p>Stores, their suppliers and outlets are common's (D-208), read through
+ * {@link Directory}. The delivery policy is read with {@link JdbcTemplate} rather
+ * than through the supplier module's repositories, for the same reason as
+ * the access module: a module reaching into another module's repositories is
  * the coupling the modular-monolith rules exist to prevent. This is a read-only
  * projection for display, not a claim on the supplier domain.
  */
@@ -32,15 +37,20 @@ public class CatalogDirectory {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    /** Ids per {@code in (...)} list. */
+    private static final int CHUNK = 1000;
+
     private final JdbcTemplate jdbc;
+    private final Directory common;
     private final BrandRepository brands;
 
     /**
      * Display and ranking facts about a supplier store.
      *
      * @param active whether the store can currently receive orders (doc 03 §15) —
-     *               the store ACTIVE <em>and</em> its organisation ACTIVE, so a
-     *               shop under a supplier still awaiting verification is not
+     *               {@link SupplierStanding#takesOrders}: the store ACTIVE and online
+     *               <em>and</em> its supplier ACTIVE, so a shop under a supplier
+     *               still awaiting verification is not
      * @param serviceablePincodes an explicit allow-list; empty means geography decides
      */
     public record StoreInfo(
@@ -60,46 +70,53 @@ public class CatalogDirectory {
     }
 
     public Optional<OutletInfo> outlet(Long outletId) {
-        if (outletId == null) {
-            return Optional.empty();
-        }
-        var rows = jdbc.query(
-                "select latitude, longitude, pincode from outlet where id = ?",
-                (rs, n) -> new OutletInfo(
-                        rs.getBigDecimal(1), rs.getBigDecimal(2), rs.getString(3)),
-                outletId);
-        return rows.stream().findFirst();
+        return common.outlet(outletId)
+                .filter(o -> !"STORE".equals(o.kind()))
+                .map(o -> new OutletInfo(o.latitude(), o.longitude(), o.pincode()));
     }
 
     public Map<Long, StoreInfo> storeInfo(List<Long> storeIds) {
         if (storeIds.isEmpty()) {
             return Map.of();
         }
-        String placeholders = String.join(",", java.util.Collections.nCopies(storeIds.size(), "?"));
+        var stores = common.outlets(storeIds).values().stream()
+                .filter(o -> "STORE".equals(o.kind()))
+                .toList();
+        var policies = deliveryPolicies(stores.stream().map(AppOutlet::id).toList());
 
         Map<Long, StoreInfo> result = new HashMap<>();
-        jdbc.query("""
-                select s.id, s.name, o.display_name, s.status, o.lifecycle_status,
-                       s.response_sla_seconds, s.preparation_minutes,
-                       s.latitude, s.longitude,
-                       d.max_delivery_radius_km, d.serviceable_pincodes_json
-                  from supplier_store s
-                  join supplier_organization o on o.id = s.supplier_organization_id
-                  left join supplier_delivery_policy d on d.supplier_store_id = s.id
-                 where s.id in (%s)
-                """.formatted(placeholders),
-                rs -> {
-                    // Both must be true: an ACTIVE store under an organisation that
-                    // is suspended, or still awaiting verification, cannot trade.
-                    boolean active = "ACTIVE".equals(rs.getString(4))
-                            && "ACTIVE".equals(rs.getString(5));
-                    result.put(rs.getLong(1), new StoreInfo(
-                            rs.getString(2), rs.getString(3), active,
-                            rs.getInt(6), rs.getInt(7),
-                            rs.getBigDecimal(8), rs.getBigDecimal(9),
-                            rs.getBigDecimal(10), pincodes(rs.getString(11))));
-                },
-                storeIds.toArray());
+        for (AppOutlet s : stores) {
+            var policy = policies.get(s.id());
+            result.put(s.id(), new StoreInfo(
+                    s.name(), s.orgName(), SupplierStanding.takesOrders(s),
+                    SupplierStanding.responseSlaSeconds(s), SupplierStanding.preparationMinutes(s),
+                    s.latitude(), s.longitude(),
+                    policy == null ? null : policy.maxRadiusKm(),
+                    policy == null ? Set.of() : policy.pincodes()));
+        }
+        return result;
+    }
+
+    private record Policy(BigDecimal maxRadiusKm, Set<String> pincodes) {
+    }
+
+    /** Each store's delivery policy, Marketplace's own table. */
+    private Map<Long, Policy> deliveryPolicies(List<Long> storeIds) {
+        Map<Long, Policy> result = new HashMap<>();
+        for (int from = 0; from < storeIds.size(); from += CHUNK) {
+            var chunk = storeIds.subList(from, Math.min(from + CHUNK, storeIds.size()));
+            String placeholders = String.join(",", Collections.nCopies(chunk.size(), "?"));
+            jdbc.query("""
+                    select supplier_store_id, max_delivery_radius_km, serviceable_pincodes_json
+                      from supplier_delivery_policy
+                     where supplier_store_id in (%s)
+                    """.formatted(placeholders),
+                    rs -> {
+                        result.put(rs.getLong(1),
+                                new Policy(rs.getBigDecimal(2), pincodes(rs.getString(3))));
+                    },
+                    chunk.toArray());
+        }
         return result;
     }
 

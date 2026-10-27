@@ -1,5 +1,7 @@
 package com.costonomy.mp.settlement;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.payment.provider.MockPaymentProvider;
 import com.costonomy.mp.payment.service.PaymentJobs;
 import com.costonomy.mp.settlement.service.SettlementService;
@@ -74,14 +76,8 @@ class SettlementFlowIT extends AbstractIntegrationTest {
     private String operator(String roleCode) throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        Long userId = jdbc.queryForObject(
-                "select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                       granted_at, created_at, updated_at, version)
-                select ?, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0
-                  from role r where r.code = ?
-                """, userId, roleCode);
+        Long userId = LocalCommon.userId("+91" + phone);
+        LocalCommon.grantPlatform(userId, roleCode);
         return token;
     }
 
@@ -105,8 +101,7 @@ class SettlementFlowIT extends AbstractIntegrationTest {
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
         long supplierId = created.get("id").asLong();
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", supplierId);
+        LocalCommon.activate(supplierId);
         TestCatalog.tradesAroundTheClock(jdbc, supplierId);
         long storeId = created.get("stores").get(0).get("id").asLong();
         jdbc.update("""

@@ -1,5 +1,7 @@
 package com.costonomy.mp.settlement.service;
 
+import com.costonomy.mp.identity.common.Directory;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -12,13 +14,15 @@ import java.util.List;
 /**
  * Facts from other modules that settlement needs to read.
  *
- * <p>{@link JdbcTemplate} across the module edge, like the other directories.
+ * <p>{@link JdbcTemplate} across the module edge, like the other directories. A store's business comes from
+ * costonomy-common-api through {@link Directory} (D-208).
  */
 @Service
 @RequiredArgsConstructor
 public class SettlementDirectory {
 
     private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     /**
      * An order that is finished and owes commission.
@@ -52,11 +56,10 @@ public class SettlementDirectory {
     public List<SettleableOrder> settleableOrders(Instant from, Instant to) {
         List<SettleableOrder> orders = new ArrayList<>();
         jdbc.query("""
-                select so.id, so.supplier_store_id, ss.supplier_organization_id,
+                select so.id, so.supplier_store_id,
                        coalesce(so.final_payable_amount, so.accepted_amount - coalesce(so.doorstep_refund_amount, 0) - coalesce(so.weight_adjustment_amount, 0)),
                        so.delivery_fee, so.updated_at
                   from supplier_order so
-                  join supplier_store ss on ss.id = so.supplier_store_id
              left join commission_calculation c on c.supplier_order_id = so.id
                  where so.status = 'COMPLETED'
                    and so.payment_method = 'PREPAID'
@@ -65,12 +68,32 @@ public class SettlementDirectory {
                  order by so.id
                 """,
                 rs -> {
-                    orders.add(new SettleableOrder(rs.getLong(1), rs.getLong(2), rs.getLong(3),
-                            rs.getBigDecimal(4), rs.getBigDecimal(5),
-                            rs.getTimestamp(6).toInstant()));
+                    orders.add(new SettleableOrder(rs.getLong(1), rs.getLong(2), null,
+                            rs.getBigDecimal(3), rs.getBigDecimal(4),
+                            rs.getTimestamp(5).toInstant()));
                 },
                 java.sql.Timestamp.from(from), java.sql.Timestamp.from(to));
-        return orders;
+        return withOrganisations(orders);
+    }
+
+    /**
+     * Each order's supplier business, from common in one call (D-208). An order whose store common does not know
+     * is left out, as the join to the store table used to leave it out.
+     */
+    private List<SettleableOrder> withOrganisations(List<SettleableOrder> orders) {
+        if (orders.isEmpty()) {
+            return orders;
+        }
+        var stores = directory.outlets(orders.stream().map(SettleableOrder::supplierStoreId).toList());
+        List<SettleableOrder> known = new ArrayList<>();
+        for (var o : orders) {
+            AppOutlet store = stores.get(o.supplierStoreId());
+            if (store != null) {
+                known.add(new SettleableOrder(o.orderId(), o.supplierStoreId(), store.orgId(),
+                        o.acceptedAmount(), o.deliveryFee(), o.completedAt()));
+            }
+        }
+        return known;
     }
 
     /**
@@ -142,18 +165,18 @@ public class SettlementDirectory {
 
     public java.util.Optional<OrderFigures> orderFigures(Long supplierOrderId) {
         var rows = jdbc.query("""
-                select so.id, so.supplier_store_id, ss.supplier_organization_id,
+                select so.id, so.supplier_store_id,
                        coalesce(so.final_payable_amount, so.accepted_amount), so.delivery_fee, so.updated_at, so.status
                   from supplier_order so
-                  join supplier_store ss on ss.id = so.supplier_store_id
                  where so.id = ?
                 """,
                 (rs, row) -> new OrderFigures(new SettleableOrder(rs.getLong(1), rs.getLong(2),
-                        rs.getLong(3),
-                        rs.getBigDecimal(4) == null ? BigDecimal.ZERO : rs.getBigDecimal(4),
-                        rs.getBigDecimal(5), rs.getTimestamp(6).toInstant()), rs.getString(7)),
+                        null,
+                        rs.getBigDecimal(3) == null ? BigDecimal.ZERO : rs.getBigDecimal(3),
+                        rs.getBigDecimal(4), rs.getTimestamp(5).toInstant()), rs.getString(6)),
                 supplierOrderId);
-        return rows.stream().findFirst();
+        return rows.stream().findFirst().flatMap(f -> withOrganisations(List.of(f.order())).stream().findFirst()
+                .map(order -> new OrderFigures(order, f.status())));
     }
 
     /**

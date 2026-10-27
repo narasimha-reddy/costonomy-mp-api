@@ -1,6 +1,7 @@
 package com.costonomy.mp.wallet;
 
 import com.costonomy.mp.support.AbstractIntegrationTest;
+import com.costonomy.mp.support.LocalCommon;
 import com.costonomy.mp.wallet.WalletTopUpSupport.Buyer;
 import com.costonomy.mp.wallet.WalletTopUpSupport.Reply;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -96,11 +97,7 @@ class WalletTransactionDetailIT extends AbstractIntegrationTest {
 
     /** A supplier order with a number in a shop with a name. */
     private long order(String number, String shop) {
-        long store = insert("""
-                insert into supplier_store (supplier_organization_id, name, address_line1, city, state,
-                       created_at, updated_at, version)
-                values (1, ?, 'MG Road', 'Hyderabad', 'Telangana', now(6), now(6), 0)
-                """, shop);
+        long store = LocalCommon.supplierStore(shop);
         return insert("""
                 insert into supplier_order (procurement_id, supplier_store_id, outlet_id, order_number,
                        delivery_mode, created_at, updated_at, version)

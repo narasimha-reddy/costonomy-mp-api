@@ -3,6 +3,7 @@ package com.costonomy.mp.wallet;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.support.AbstractIntegrationTest;
+import com.costonomy.mp.support.LocalCommon;
 import com.costonomy.mp.wallet.WalletTopUpSupport.Buyer;
 import com.costonomy.mp.wallet.invoice.service.BillTracking;
 import com.costonomy.mp.wallet.service.WalletService;
@@ -63,16 +64,12 @@ class CreditRepaymentLedgerIT extends AbstractIntegrationTest {
         buyer = t.newBuyer();
         seed = new LedgerSeed(t, jdbc, buyer);
         seed.credit("2026-09-01 10:00:00.000000", TOP_UP, "1000.00", "start").sync();
-        store = insert("""
-                insert into supplier_store (supplier_organization_id, name, address_line1, city, state,
-                       created_at, updated_at, version)
-                values (1, 'Anand Wholesale', 'MG Road', 'Hyderabad', 'Telangana', now(6), now(6), 0)
-                """);
+        store = LocalCommon.supplierStore("Anand Wholesale");
         agreement = insert("""
                 insert into credit_agreement (outlet_id, restaurant_id, supplier_store_id, supplier_organization_id,
                        status, created_at, updated_at, version)
-                values (?, 1, ?, 1, 'ACTIVE', now(6), now(6), 0)
-                """, buyer.outletId(), store);
+                values (?, ?, ?, ?, 'ACTIVE', now(6), now(6), 0)
+                """, buyer.outletId(), LocalCommon.orgOf(buyer.outletId()), store, LocalCommon.orgOf(store));
     }
 
     @AfterEach

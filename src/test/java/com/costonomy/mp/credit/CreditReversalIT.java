@@ -1,5 +1,7 @@
 package com.costonomy.mp.credit;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.credit.CreditWalletSupport.Line;
 import com.costonomy.mp.credit.CreditWalletSupport.Reply;
 import com.costonomy.mp.credit.service.CreditJobs;
@@ -178,10 +180,10 @@ class CreditReversalIT extends AbstractIntegrationTest {
     }
 
     private String staff(Line line, String roleCode) throws Exception {
-        long orgId = e.count("select supplier_organization_id from supplier_store where id = ?", line.seller().storeId());
+        long orgId = LocalCommon.orgOf(line.seller().storeId());
         String phone = ApiClient.freshPhone();
         s.api.post(line.seller().token(), "/api/v1/suppliers/" + orgId + "/users",
-                Map.of("phone", phone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, roleCode), "storeId", line.seller().storeId()));
+                Map.of("phone", phone, "roleId", LocalCommon.roleId(roleCode), "storeId", line.seller().storeId()));
         return s.api.login(phone);
     }
 

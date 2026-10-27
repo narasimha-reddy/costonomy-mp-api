@@ -1,0 +1,882 @@
+{
+ "_comment": "Marketplace's permissions and seeded roles (D-208): what the role/permission tables held at V105. Published to costonomy-common-api at start-up; the codes map to common's by PermissionCodes.",
+ "permissions": [
+  {
+   "code": "AUDIT_VIEW",
+   "scope": "INTERNAL",
+   "name": "View audit log",
+   "description": "Search the audit trail"
+  },
+  {
+   "code": "CATALOG_EDIT",
+   "scope": "SUPPLIER",
+   "name": "Edit catalog",
+   "description": "Add and change SKUs, prices, availability"
+  },
+  {
+   "code": "CATALOG_IMPORT",
+   "scope": "SUPPLIER",
+   "name": "Import catalog",
+   "description": "Bulk import SKUs"
+  },
+  {
+   "code": "CATALOG_MODERATE",
+   "scope": "INTERNAL",
+   "name": "Moderate catalog",
+   "description": "Edit canonical products, disable SKUs"
+  },
+  {
+   "code": "CATALOG_VIEW",
+   "scope": "SUPPLIER",
+   "name": "View catalog",
+   "description": "See the store catalog"
+  },
+  {
+   "code": "CHAT_SEND",
+   "scope": "RESTAURANT",
+   "name": "Send chat messages",
+   "description": "Write in a conversation with a supplier"
+  },
+  {
+   "code": "CHAT_SEND_SUPPLIER",
+   "scope": "SUPPLIER",
+   "name": "Send chat messages",
+   "description": "Write in a conversation with a restaurant"
+  },
+  {
+   "code": "CHAT_VIEW",
+   "scope": "RESTAURANT",
+   "name": "Read chat",
+   "description": "Read conversations with suppliers this outlet trades with"
+  },
+  {
+   "code": "CHAT_VIEW_SUPPLIER",
+   "scope": "SUPPLIER",
+   "name": "Read chat",
+   "description": "Read conversations with restaurants this store trades with"
+  },
+  {
+   "code": "CONFIG_MANAGE",
+   "scope": "INTERNAL",
+   "name": "Manage configuration",
+   "description": "Change operational configuration"
+  },
+  {
+   "code": "CONFIG_VIEW",
+   "scope": "INTERNAL",
+   "name": "View configuration",
+   "description": "Read operational configuration without changing it"
+  },
+  {
+   "code": "CREDIT_APPROVE",
+   "scope": "SUPPLIER",
+   "name": "Approve credit",
+   "description": "Approve a credit agreement"
+  },
+  {
+   "code": "CREDIT_AUDIT",
+   "scope": "INTERNAL",
+   "name": "Audit credit",
+   "description": "Inspect credit exposure across the network"
+  },
+  {
+   "code": "CREDIT_COLLECT",
+   "scope": "SUPPLIER",
+   "name": "Collect on credit",
+   "description": "Record a payment received, and confirm or reject a restaurant's payment claim"
+  },
+  {
+   "code": "CREDIT_MODIFY",
+   "scope": "SUPPLIER",
+   "name": "Modify credit",
+   "description": "Change limit, period or terms"
+  },
+  {
+   "code": "CREDIT_REJECT",
+   "scope": "SUPPLIER",
+   "name": "Reject credit",
+   "description": "Reject a credit request"
+  },
+  {
+   "code": "CREDIT_REPAY",
+   "scope": "RESTAURANT",
+   "name": "Repay credit",
+   "description": "Repay a supplier's credit invoice"
+  },
+  {
+   "code": "CREDIT_REQUEST",
+   "scope": "RESTAURANT",
+   "name": "Request credit",
+   "description": "Request credit terms from a supplier"
+  },
+  {
+   "code": "CREDIT_REQUEST_VIEW",
+   "scope": "SUPPLIER",
+   "name": "View credit requests",
+   "description": "See incoming credit requests"
+  },
+  {
+   "code": "CREDIT_VIEW",
+   "scope": "SHARED",
+   "name": "View credit",
+   "description": "See credit balances and ledger"
+  },
+  {
+   "code": "CREDIT_WRITE_OFF",
+   "scope": "SUPPLIER",
+   "name": "Write off credit",
+   "description": "Give up on a debt a restaurant owes"
+  },
+  {
+   "code": "DELIVERY_FINANCE_INSPECT",
+   "scope": "INTERNAL",
+   "name": "Inspect delivery finance",
+   "description": "See courier payables, courier payments, gateway refunds and their queues"
+  },
+  {
+   "code": "DELIVERY_FINANCE_OPERATE",
+   "scope": "INTERNAL",
+   "name": "Operate delivery finance",
+   "description": "Record a courier payment, retry, void or adjust a payable, and retry or resolve a gateway refund"
+  },
+  {
+   "code": "DELIVERY_INSPECT",
+   "scope": "INTERNAL",
+   "name": "Inspect deliveries",
+   "description": "Read any delivery, its attempts and its events"
+  },
+  {
+   "code": "DELIVERY_OPERATE",
+   "scope": "INTERNAL",
+   "name": "Operate delivery",
+   "description": "Inspect and reassign deliveries"
+  },
+  {
+   "code": "DISPUTE_CREATE",
+   "scope": "RESTAURANT",
+   "name": "Raise dispute",
+   "description": "Raise a dispute against a delivered order"
+  },
+  {
+   "code": "DISPUTE_INSPECT",
+   "scope": "INTERNAL",
+   "name": "Inspect disputes",
+   "description": "Read any dispute and its full thread"
+  },
+  {
+   "code": "DISPUTE_MODERATE",
+   "scope": "INTERNAL",
+   "name": "Moderate disputes",
+   "description": "Investigate and resolve disputes"
+  },
+  {
+   "code": "DISPUTE_REFUND_DECIDE",
+   "scope": "SUPPLIER",
+   "name": "Decide dispute refunds",
+   "description": "Approve or decline a refund asked for on a dispute; an approval comes out of the payout"
+  },
+  {
+   "code": "DISPUTE_RESPOND",
+   "scope": "SUPPLIER",
+   "name": "Respond to disputes",
+   "description": "Answer a dispute raised against this store's order"
+  },
+  {
+   "code": "NOTIFICATION_VIEW",
+   "scope": "SHARED",
+   "name": "View notifications",
+   "description": "See notifications"
+  },
+  {
+   "code": "ORDER_ACCEPT",
+   "scope": "SUPPLIER",
+   "name": "Accept order",
+   "description": "Accept an incoming order"
+  },
+  {
+   "code": "ORDER_CANCEL",
+   "scope": "RESTAURANT",
+   "name": "Cancel order",
+   "description": "Cancel where policy permits"
+  },
+  {
+   "code": "ORDER_INSPECT",
+   "scope": "INTERNAL",
+   "name": "Inspect orders",
+   "description": "Read any supplier order and its timeline"
+  },
+  {
+   "code": "ORDER_PARTIAL_ACCEPT",
+   "scope": "SUPPLIER",
+   "name": "Partially accept order",
+   "description": "Accept reduced quantities"
+  },
+  {
+   "code": "ORDER_PREPARE",
+   "scope": "SUPPLIER",
+   "name": "Mark preparing",
+   "description": "Move an order to preparing"
+  },
+  {
+   "code": "ORDER_READY",
+   "scope": "SUPPLIER",
+   "name": "Mark ready",
+   "description": "Mark an order ready for pickup"
+  },
+  {
+   "code": "ORDER_RECEIVE",
+   "scope": "RESTAURANT",
+   "name": "Receive order",
+   "description": "Record received quantities"
+  },
+  {
+   "code": "ORDER_REJECT",
+   "scope": "SUPPLIER",
+   "name": "Reject order",
+   "description": "Reject an incoming order"
+  },
+  {
+   "code": "ORDER_SUPPORT",
+   "scope": "INTERNAL",
+   "name": "Order support",
+   "description": "Inspect any order for support"
+  },
+  {
+   "code": "ORDER_VIEW",
+   "scope": "SHARED",
+   "name": "View order",
+   "description": "See an order and its timeline"
+  },
+  {
+   "code": "OUTLET_EDIT",
+   "scope": "RESTAURANT",
+   "name": "Edit outlet",
+   "description": "Change outlet details and address"
+  },
+  {
+   "code": "OUTLET_USER_MANAGE",
+   "scope": "RESTAURANT",
+   "name": "Manage outlet users",
+   "description": "Invite, assign and remove outlet members"
+  },
+  {
+   "code": "OUTLET_VIEW",
+   "scope": "RESTAURANT",
+   "name": "View outlet",
+   "description": "See outlet details"
+  },
+  {
+   "code": "PAYMENT_CREATE",
+   "scope": "RESTAURANT",
+   "name": "Make payment",
+   "description": "Authorise payment for an order"
+  },
+  {
+   "code": "PAYMENT_INSPECT",
+   "scope": "INTERNAL",
+   "name": "Inspect payments",
+   "description": "Read any payment, refund and reconciliation state"
+  },
+  {
+   "code": "PAYMENT_RECONCILE",
+   "scope": "INTERNAL",
+   "name": "Reconcile payments",
+   "description": "Inspect and reconcile payments and refunds"
+  },
+  {
+   "code": "PERFORMANCE_VIEW",
+   "scope": "SUPPLIER",
+   "name": "View performance",
+   "description": "See acceptance, fill and on-time rates"
+  },
+  {
+   "code": "PROCUREMENT_APPROVE",
+   "scope": "RESTAURANT",
+   "name": "Approve procurement",
+   "description": "Approve an order that policy has held"
+  },
+  {
+   "code": "PROCUREMENT_CREATE",
+   "scope": "RESTAURANT",
+   "name": "Create procurement",
+   "description": "Build a cart and procurement request"
+  },
+  {
+   "code": "PROCUREMENT_SUBMIT",
+   "scope": "RESTAURANT",
+   "name": "Submit procurement",
+   "description": "Place the order with suppliers"
+  },
+  {
+   "code": "QUICKSCAN_PAY",
+   "scope": "RESTAURANT",
+   "name": "Pay by QuickScan",
+   "description": "Pay a shop by QR from the wallet"
+  },
+  {
+   "code": "RATING_CREATE",
+   "scope": "RESTAURANT",
+   "name": "Rate supplier",
+   "description": "Rate a completed order"
+  },
+  {
+   "code": "RATING_MODERATE",
+   "scope": "INTERNAL",
+   "name": "Moderate ratings",
+   "description": "Hide or restore a published rating"
+  },
+  {
+   "code": "REFUND_DECIDE",
+   "scope": "INTERNAL",
+   "name": "Decide escalated refunds",
+   "description": "Approve or decline a dispute refund the supplier declined or did not answer"
+  },
+  {
+   "code": "REFUND_OPERATE",
+   "scope": "INTERNAL",
+   "name": "Operate stuck refunds",
+   "description": "Verify, retry, re-credit or complete a refund the provider did not send, and block or unblock a payment as a refund source"
+  },
+  {
+   "code": "REQUIREMENT_CREATE",
+   "scope": "RESTAURANT",
+   "name": "Create requirement",
+   "description": "Raise a procurement requirement"
+  },
+  {
+   "code": "REQUIREMENT_EDIT",
+   "scope": "RESTAURANT",
+   "name": "Edit requirement",
+   "description": "Change or cancel a requirement"
+  },
+  {
+   "code": "RESTAURANT_EDIT",
+   "scope": "RESTAURANT",
+   "name": "Edit restaurant",
+   "description": "Change restaurant details"
+  },
+  {
+   "code": "RESTAURANT_VIEW",
+   "scope": "RESTAURANT",
+   "name": "View restaurant",
+   "description": "See restaurant details"
+  },
+  {
+   "code": "SETTLEMENT_OPERATE",
+   "scope": "INTERNAL",
+   "name": "Operate settlements",
+   "description": "Generate and approve settlements"
+  },
+  {
+   "code": "SETTLEMENT_VIEW",
+   "scope": "SUPPLIER",
+   "name": "View settlements",
+   "description": "See settlement statements"
+  },
+  {
+   "code": "STORE_EDIT",
+   "scope": "SUPPLIER",
+   "name": "Edit store",
+   "description": "Change store details, hours and SLA"
+  },
+  {
+   "code": "STORE_VIEW",
+   "scope": "SUPPLIER",
+   "name": "View store",
+   "description": "See store details"
+  },
+  {
+   "code": "SUPPLIER_EDIT",
+   "scope": "SUPPLIER",
+   "name": "Edit supplier",
+   "description": "Change supplier organisation details"
+  },
+  {
+   "code": "SUPPLIER_INSPECT",
+   "scope": "INTERNAL",
+   "name": "Inspect suppliers",
+   "description": "Read any supplier organisation, store and catalog entry"
+  },
+  {
+   "code": "SUPPLIER_SUSPEND",
+   "scope": "INTERNAL",
+   "name": "Suspend supplier",
+   "description": "Suspend or reactivate a supplier"
+  },
+  {
+   "code": "SUPPLIER_USER_MANAGE",
+   "scope": "SUPPLIER",
+   "name": "Manage supplier users",
+   "description": "Invite, assign and remove store members"
+  },
+  {
+   "code": "SUPPLIER_VERIFY",
+   "scope": "INTERNAL",
+   "name": "Verify supplier",
+   "description": "Approve or reject supplier verification"
+  },
+  {
+   "code": "SUPPLIER_VIEW",
+   "scope": "SUPPLIER",
+   "name": "View supplier",
+   "description": "See supplier organisation details"
+  },
+  {
+   "code": "WALLET_WITHDRAW",
+   "scope": "RESTAURANT",
+   "name": "Withdraw from wallet",
+   "description": "Send wallet money back to the card or bank it came from"
+  }
+ ],
+ "roles": [
+  {
+   "code": "OPS_ADMIN",
+   "scope": "INTERNAL",
+   "name": "Marketplace Administration",
+   "description": "Configuration and elevated administration",
+   "permissions": [
+    "AUDIT_VIEW",
+    "CATALOG_MODERATE",
+    "CONFIG_MANAGE",
+    "CONFIG_VIEW",
+    "CREDIT_AUDIT",
+    "DELIVERY_FINANCE_INSPECT",
+    "DELIVERY_FINANCE_OPERATE",
+    "DELIVERY_INSPECT",
+    "DELIVERY_OPERATE",
+    "DISPUTE_INSPECT",
+    "DISPUTE_MODERATE",
+    "NOTIFICATION_VIEW",
+    "ORDER_INSPECT",
+    "ORDER_SUPPORT",
+    "PAYMENT_INSPECT",
+    "PAYMENT_RECONCILE",
+    "RATING_MODERATE",
+    "REFUND_DECIDE",
+    "REFUND_OPERATE",
+    "SETTLEMENT_OPERATE",
+    "SUPPLIER_INSPECT",
+    "SUPPLIER_SUSPEND",
+    "SUPPLIER_VERIFY"
+   ]
+  },
+  {
+   "code": "OPS_DELIVERY",
+   "scope": "INTERNAL",
+   "name": "Delivery Operations",
+   "description": "Delivery inspection and reassignment",
+   "permissions": [
+    "AUDIT_VIEW",
+    "DELIVERY_INSPECT",
+    "DELIVERY_OPERATE",
+    "ORDER_INSPECT",
+    "ORDER_SUPPORT"
+   ]
+  },
+  {
+   "code": "OPS_FINANCE",
+   "scope": "INTERNAL",
+   "name": "Finance",
+   "description": "Payments, refunds and settlements",
+   "permissions": [
+    "AUDIT_VIEW",
+    "CONFIG_VIEW",
+    "CREDIT_AUDIT",
+    "DELIVERY_FINANCE_INSPECT",
+    "DELIVERY_FINANCE_OPERATE",
+    "DISPUTE_INSPECT",
+    "ORDER_INSPECT",
+    "ORDER_SUPPORT",
+    "PAYMENT_INSPECT",
+    "PAYMENT_RECONCILE",
+    "REFUND_DECIDE",
+    "REFUND_OPERATE",
+    "SETTLEMENT_OPERATE"
+   ]
+  },
+  {
+   "code": "OPS_MARKETPLACE",
+   "scope": "INTERNAL",
+   "name": "Marketplace Operations",
+   "description": "Day-to-day marketplace operations",
+   "permissions": [
+    "AUDIT_VIEW",
+    "CATALOG_MODERATE",
+    "CONFIG_VIEW",
+    "CREDIT_AUDIT",
+    "DELIVERY_INSPECT",
+    "DELIVERY_OPERATE",
+    "DISPUTE_INSPECT",
+    "DISPUTE_MODERATE",
+    "ORDER_INSPECT",
+    "ORDER_SUPPORT",
+    "PAYMENT_INSPECT",
+    "SUPPLIER_INSPECT",
+    "SUPPLIER_SUSPEND",
+    "SUPPLIER_VERIFY"
+   ]
+  },
+  {
+   "code": "OPS_MODERATION",
+   "scope": "INTERNAL",
+   "name": "Moderation",
+   "description": "Catalog, rating and dispute moderation",
+   "permissions": [
+    "AUDIT_VIEW",
+    "CATALOG_MODERATE",
+    "DISPUTE_INSPECT",
+    "DISPUTE_MODERATE",
+    "ORDER_INSPECT",
+    "RATING_MODERATE",
+    "SUPPLIER_INSPECT"
+   ]
+  },
+  {
+   "code": "OPS_SUPPLIER_VERIFY",
+   "scope": "INTERNAL",
+   "name": "Supplier Verification",
+   "description": "Reviews supplier verification",
+   "permissions": [
+    "AUDIT_VIEW",
+    "SUPPLIER_INSPECT",
+    "SUPPLIER_VERIFY"
+   ]
+  },
+  {
+   "code": "OPS_SUPPORT",
+   "scope": "INTERNAL",
+   "name": "Customer Support",
+   "description": "Read-only support access",
+   "permissions": [
+    "AUDIT_VIEW",
+    "CONFIG_VIEW",
+    "DELIVERY_FINANCE_INSPECT",
+    "DELIVERY_INSPECT",
+    "DISPUTE_INSPECT",
+    "ORDER_INSPECT",
+    "ORDER_SUPPORT",
+    "PAYMENT_INSPECT",
+    "SUPPLIER_INSPECT"
+   ]
+  },
+  {
+   "code": "REST_ADMIN",
+   "scope": "RESTAURANT",
+   "name": "Admin",
+   "description": "Manages outlets, users and policies",
+   "permissions": [
+    "CHAT_SEND",
+    "CHAT_VIEW",
+    "CREDIT_REPAY",
+    "CREDIT_REQUEST",
+    "CREDIT_VIEW",
+    "DISPUTE_CREATE",
+    "NOTIFICATION_VIEW",
+    "ORDER_CANCEL",
+    "ORDER_RECEIVE",
+    "ORDER_VIEW",
+    "OUTLET_EDIT",
+    "OUTLET_USER_MANAGE",
+    "OUTLET_VIEW",
+    "PAYMENT_CREATE",
+    "PROCUREMENT_APPROVE",
+    "PROCUREMENT_CREATE",
+    "PROCUREMENT_SUBMIT",
+    "QUICKSCAN_PAY",
+    "RATING_CREATE",
+    "REQUIREMENT_CREATE",
+    "REQUIREMENT_EDIT",
+    "RESTAURANT_EDIT",
+    "RESTAURANT_VIEW",
+    "WALLET_WITHDRAW"
+   ]
+  },
+  {
+   "code": "REST_FINANCE_STAFF",
+   "scope": "RESTAURANT",
+   "name": "Finance Staff",
+   "description": "Handles payments and credit",
+   "permissions": [
+    "CHAT_VIEW",
+    "CREDIT_REPAY",
+    "CREDIT_REQUEST",
+    "CREDIT_VIEW",
+    "NOTIFICATION_VIEW",
+    "ORDER_VIEW",
+    "OUTLET_VIEW",
+    "PAYMENT_CREATE",
+    "QUICKSCAN_PAY",
+    "WALLET_WITHDRAW"
+   ]
+  },
+  {
+   "code": "REST_OWNER",
+   "scope": "RESTAURANT",
+   "name": "Owner",
+   "description": "Full control of the restaurant",
+   "permissions": [
+    "CHAT_SEND",
+    "CHAT_VIEW",
+    "CREDIT_REPAY",
+    "CREDIT_REQUEST",
+    "CREDIT_VIEW",
+    "DISPUTE_CREATE",
+    "NOTIFICATION_VIEW",
+    "ORDER_CANCEL",
+    "ORDER_RECEIVE",
+    "ORDER_VIEW",
+    "OUTLET_EDIT",
+    "OUTLET_USER_MANAGE",
+    "OUTLET_VIEW",
+    "PAYMENT_CREATE",
+    "PROCUREMENT_APPROVE",
+    "PROCUREMENT_CREATE",
+    "PROCUREMENT_SUBMIT",
+    "QUICKSCAN_PAY",
+    "RATING_CREATE",
+    "REQUIREMENT_CREATE",
+    "REQUIREMENT_EDIT",
+    "RESTAURANT_EDIT",
+    "RESTAURANT_VIEW",
+    "WALLET_WITHDRAW"
+   ]
+  },
+  {
+   "code": "REST_PROCUREMENT_STAFF",
+   "scope": "RESTAURANT",
+   "name": "Procurement Staff",
+   "description": "Raises requirements and builds carts",
+   "permissions": [
+    "CHAT_SEND",
+    "CHAT_VIEW",
+    "NOTIFICATION_VIEW",
+    "ORDER_VIEW",
+    "OUTLET_VIEW",
+    "PROCUREMENT_CREATE",
+    "REQUIREMENT_CREATE",
+    "REQUIREMENT_EDIT"
+   ]
+  },
+  {
+   "code": "REST_PURCHASE_MANAGER",
+   "scope": "RESTAURANT",
+   "name": "Purchase Manager",
+   "description": "Owns procurement for an outlet",
+   "permissions": [
+    "CHAT_SEND",
+    "CHAT_VIEW",
+    "CREDIT_REPAY",
+    "CREDIT_REQUEST",
+    "CREDIT_VIEW",
+    "DISPUTE_CREATE",
+    "NOTIFICATION_VIEW",
+    "ORDER_CANCEL",
+    "ORDER_RECEIVE",
+    "ORDER_VIEW",
+    "OUTLET_VIEW",
+    "PAYMENT_CREATE",
+    "PROCUREMENT_APPROVE",
+    "PROCUREMENT_CREATE",
+    "PROCUREMENT_SUBMIT",
+    "QUICKSCAN_PAY",
+    "RATING_CREATE",
+    "REQUIREMENT_CREATE",
+    "REQUIREMENT_EDIT",
+    "RESTAURANT_VIEW",
+    "WALLET_WITHDRAW"
+   ]
+  },
+  {
+   "code": "REST_RECEIVING_STAFF",
+   "scope": "RESTAURANT",
+   "name": "Receiving Staff",
+   "description": "Receives deliveries and raises disputes",
+   "permissions": [
+    "CHAT_SEND",
+    "CHAT_VIEW",
+    "DISPUTE_CREATE",
+    "NOTIFICATION_VIEW",
+    "ORDER_RECEIVE",
+    "ORDER_VIEW",
+    "OUTLET_VIEW",
+    "RATING_CREATE"
+   ]
+  },
+  {
+   "code": "REST_STORE_MANAGER",
+   "scope": "RESTAURANT",
+   "name": "Store Manager",
+   "description": "Runs an outlet day to day",
+   "permissions": [
+    "CHAT_SEND",
+    "CHAT_VIEW",
+    "DISPUTE_CREATE",
+    "NOTIFICATION_VIEW",
+    "ORDER_RECEIVE",
+    "ORDER_VIEW",
+    "OUTLET_EDIT",
+    "OUTLET_VIEW",
+    "PROCUREMENT_CREATE",
+    "PROCUREMENT_SUBMIT",
+    "RATING_CREATE",
+    "REQUIREMENT_CREATE",
+    "REQUIREMENT_EDIT"
+   ]
+  },
+  {
+   "code": "SUP_ADMIN",
+   "scope": "SUPPLIER",
+   "name": "Supplier Admin",
+   "description": "Manages stores, users and catalog",
+   "permissions": [
+    "CATALOG_EDIT",
+    "CATALOG_IMPORT",
+    "CATALOG_VIEW",
+    "CHAT_SEND_SUPPLIER",
+    "CHAT_VIEW_SUPPLIER",
+    "CREDIT_APPROVE",
+    "CREDIT_COLLECT",
+    "CREDIT_MODIFY",
+    "CREDIT_REJECT",
+    "CREDIT_REQUEST_VIEW",
+    "CREDIT_VIEW",
+    "CREDIT_WRITE_OFF",
+    "DISPUTE_REFUND_DECIDE",
+    "DISPUTE_RESPOND",
+    "NOTIFICATION_VIEW",
+    "ORDER_ACCEPT",
+    "ORDER_PARTIAL_ACCEPT",
+    "ORDER_PREPARE",
+    "ORDER_READY",
+    "ORDER_REJECT",
+    "ORDER_VIEW",
+    "PERFORMANCE_VIEW",
+    "SETTLEMENT_VIEW",
+    "STORE_EDIT",
+    "STORE_VIEW",
+    "SUPPLIER_EDIT",
+    "SUPPLIER_USER_MANAGE",
+    "SUPPLIER_VIEW"
+   ]
+  },
+  {
+   "code": "SUP_FINANCE_STAFF",
+   "scope": "SUPPLIER",
+   "name": "Finance Staff",
+   "description": "Handles credit and settlements",
+   "permissions": [
+    "CHAT_VIEW_SUPPLIER",
+    "CREDIT_APPROVE",
+    "CREDIT_COLLECT",
+    "CREDIT_MODIFY",
+    "CREDIT_REJECT",
+    "CREDIT_REQUEST_VIEW",
+    "CREDIT_VIEW",
+    "DISPUTE_REFUND_DECIDE",
+    "NOTIFICATION_VIEW",
+    "ORDER_VIEW",
+    "SETTLEMENT_VIEW",
+    "STORE_VIEW"
+   ]
+  },
+  {
+   "code": "SUP_OPERATIONS_STAFF",
+   "scope": "SUPPLIER",
+   "name": "Operations Staff",
+   "description": "Prepares and dispatches orders",
+   "permissions": [
+    "CATALOG_VIEW",
+    "CHAT_SEND_SUPPLIER",
+    "CHAT_VIEW_SUPPLIER",
+    "NOTIFICATION_VIEW",
+    "ORDER_PREPARE",
+    "ORDER_READY",
+    "ORDER_VIEW",
+    "STORE_VIEW"
+   ]
+  },
+  {
+   "code": "SUP_OWNER",
+   "scope": "SUPPLIER",
+   "name": "Supplier Owner",
+   "description": "Full control of the supplier organisation",
+   "permissions": [
+    "CATALOG_EDIT",
+    "CATALOG_IMPORT",
+    "CATALOG_VIEW",
+    "CHAT_SEND_SUPPLIER",
+    "CHAT_VIEW_SUPPLIER",
+    "CREDIT_APPROVE",
+    "CREDIT_COLLECT",
+    "CREDIT_MODIFY",
+    "CREDIT_REJECT",
+    "CREDIT_REQUEST_VIEW",
+    "CREDIT_VIEW",
+    "CREDIT_WRITE_OFF",
+    "DISPUTE_REFUND_DECIDE",
+    "DISPUTE_RESPOND",
+    "NOTIFICATION_VIEW",
+    "ORDER_ACCEPT",
+    "ORDER_PARTIAL_ACCEPT",
+    "ORDER_PREPARE",
+    "ORDER_READY",
+    "ORDER_REJECT",
+    "ORDER_VIEW",
+    "PERFORMANCE_VIEW",
+    "SETTLEMENT_VIEW",
+    "STORE_EDIT",
+    "STORE_VIEW",
+    "SUPPLIER_EDIT",
+    "SUPPLIER_USER_MANAGE",
+    "SUPPLIER_VIEW"
+   ]
+  },
+  {
+   "code": "SUP_SALESPERSON",
+   "scope": "SUPPLIER",
+   "name": "Salesperson",
+   "description": "Responds to orders and manages catalog",
+   "permissions": [
+    "CATALOG_EDIT",
+    "CATALOG_VIEW",
+    "CHAT_SEND_SUPPLIER",
+    "CHAT_VIEW_SUPPLIER",
+    "DISPUTE_RESPOND",
+    "NOTIFICATION_VIEW",
+    "ORDER_ACCEPT",
+    "ORDER_PARTIAL_ACCEPT",
+    "ORDER_REJECT",
+    "ORDER_VIEW",
+    "STORE_VIEW"
+   ]
+  },
+  {
+   "code": "SUP_STORE_MANAGER",
+   "scope": "SUPPLIER",
+   "name": "Store Manager",
+   "description": "Runs a supplier store",
+   "permissions": [
+    "CATALOG_EDIT",
+    "CATALOG_IMPORT",
+    "CATALOG_VIEW",
+    "CHAT_SEND_SUPPLIER",
+    "CHAT_VIEW_SUPPLIER",
+    "CREDIT_COLLECT",
+    "CREDIT_REQUEST_VIEW",
+    "CREDIT_VIEW",
+    "DISPUTE_REFUND_DECIDE",
+    "DISPUTE_RESPOND",
+    "NOTIFICATION_VIEW",
+    "ORDER_ACCEPT",
+    "ORDER_PARTIAL_ACCEPT",
+    "ORDER_PREPARE",
+    "ORDER_READY",
+    "ORDER_REJECT",
+    "ORDER_VIEW",
+    "PERFORMANCE_VIEW",
+    "STORE_EDIT",
+    "STORE_VIEW"
+   ]
+  }
+ ]
+}

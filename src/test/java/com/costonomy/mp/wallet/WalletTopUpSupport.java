@@ -1,5 +1,7 @@
 package com.costonomy.mp.wallet;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.payment.provider.MockPaymentProvider;
 import com.costonomy.mp.support.ApiClient;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -66,12 +68,7 @@ final class WalletTopUpSupport {
     }
 
     void grant(long userId, long outletId, String roleCode) {
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                       granted_at, created_at, updated_at, version)
-                select ?, r.id, 'OUTLET', ?, 'ACTIVE', now(6), now(6), now(6), 0
-                  from role r where r.code = ?
-                """, userId, outletId, roleCode);
+        LocalCommon.grant(userId, roleCode, "OUTLET", outletId);
     }
 
     Reply call(String method, String token, String path, Object body, String idempotencyKey) throws Exception {

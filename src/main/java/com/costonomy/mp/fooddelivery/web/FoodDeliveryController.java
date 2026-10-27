@@ -8,12 +8,13 @@ import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.fooddelivery.service.FoodDeliveryBookingService;
 import com.costonomy.mp.fooddelivery.service.FoodDeliveryQueryService;
 import com.costonomy.mp.fooddelivery.web.dto.FoodDeliveryDtos;
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.identity.security.ActorContext;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -27,7 +28,7 @@ public class FoodDeliveryController {
     private final FoodDeliveryBookingService bookingService;
     private final FoodDeliveryQueryService queryService;
     private final AccessControlService accessControl;
-    private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     @PostMapping
     @Operation(summary = "Request a food delivery for an outlet")
@@ -39,8 +40,10 @@ public class FoodDeliveryController {
         Long actorId = ActorContext.requireUserId();
         accessControl.require(actorId, Permissions.OUTLET_EDIT, ScopeType.OUTLET, outletId);
 
-        Long restaurantId = jdbc.query("select restaurant_id from outlet where id = ?",
-                (rs, row) -> rs.getLong(1), outletId).stream().findFirst().orElse(null);
+        // The restaurant of an outlet is its business in common (D-208).
+        Long restaurantId = directory.outlet(outletId)
+                .filter(o -> "OUTLET".equals(o.kind()))
+                .map(AppOutlet::orgId).orElse(null);
         if (restaurantId == null) {
             throw new NotFoundException("Outlet", outletId);
         }

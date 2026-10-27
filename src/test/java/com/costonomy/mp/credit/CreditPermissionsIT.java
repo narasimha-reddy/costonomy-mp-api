@@ -1,8 +1,11 @@
 package com.costonomy.mp.credit;
 
+import com.costonomy.mp.access.domain.MarketplaceCatalog;
+
 import com.costonomy.mp.credit.CreditWalletSupport.Line;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
+import com.costonomy.mp.support.LocalCommon;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -45,18 +48,9 @@ class CreditPermissionsIT extends AbstractIntegrationTest {
         String phone = ApiClient.freshPhone();
         String token = s.api.login(phone);
         long userId = e.userId(token);
-        String code = "TEST_CREDIT_VIEWER_" + UUID.randomUUID().toString().substring(0, 8);
-        jdbc.update("insert into role (code, name, scope, description, status, created_at, updated_at, version) "
-                + "values (?, 'Credit viewer', 'RESTAURANT', 'test: sees credit, cannot repay', 'ACTIVE', "
-                + "now(6), now(6), 0)", code);
-        jdbc.update("insert into role_permission (role_id, permission_id, created_at) "
-                + "select r.id, p.id, now(6) from role r join permission p on p.code = 'CREDIT_VIEW' where r.code = ?",
-                code);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status, granted_at, created_at,
-                                       updated_at, version)
-                select ?, r.id, 'OUTLET', ?, 'ACTIVE', now(6), now(6), now(6), 0 from role r where r.code = ?
-                """, userId, outletId, code);
+        String code = "REST_TEST_CREDIT_VIEWER_" + UUID.randomUUID().toString().substring(0, 8);
+        LocalCommon.customRole(code, "RESTAURANT", "Credit viewer", "CREDIT_VIEW");
+        LocalCommon.grant(userId, code, "OUTLET", outletId);
         return token;
     }
 
@@ -107,15 +101,14 @@ class CreditPermissionsIT extends AbstractIntegrationTest {
         s.topUp(line.buyer(), "20000.00");
         String staffPhone = ApiClient.freshPhone();
         s.api.post(line.buyer().token(), "/api/v1/outlets/" + line.buyer().outletId() + "/users",
-                Map.of("phone", staffPhone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, "REST_FINANCE_STAFF")));
+                Map.of("phone", staffPhone, "roleId", LocalCommon.roleId("REST_FINANCE_STAFF")));
         String staff = s.api.login(staffPhone);
 
         var first = s.repay(staff, line.agreementId(), UUID.randomUUID().toString(),
                 Map.of("amount", "1000.00", "invoiceIds", List.of(invoice)));
         assertThat(first.status()).describedAs(first.body().toString()).isEqualTo(201);
 
-        jdbc.update("update user_role ur join users u on u.id = ur.user_id set ur.status = 'REVOKED' "
-                + "where u.phone = ?", "+91" + staffPhone);
+        LocalCommon.revokeAll(LocalCommon.userId(staffPhone));
         var before = s.snapshot(line);
         long rowsBefore = idempotencyRows(staff);
 
@@ -133,11 +126,10 @@ class CreditPermissionsIT extends AbstractIntegrationTest {
 
     /** A user of the seller's own organisation holding {@code roleCode} on the line's store. */
     private String staff(CreditWalletSupport.Line line, String roleCode) throws Exception {
-        long orgId = e.count("select supplier_organization_id from supplier_store where id = ?",
-                line.seller().storeId());
+        long orgId = LocalCommon.orgOf(line.seller().storeId());
         String phone = ApiClient.freshPhone();
         s.api.post(line.seller().token(), "/api/v1/suppliers/" + orgId + "/users",
-                Map.of("phone", phone, "roleId", jdbc.queryForObject("select id from role where code = ?", Long.class, roleCode), "storeId", line.seller().storeId()));
+                Map.of("phone", phone, "roleId", LocalCommon.roleId(roleCode), "storeId", line.seller().storeId()));
         return s.api.login(phone);
     }
 
@@ -237,8 +229,7 @@ class CreditPermissionsIT extends AbstractIntegrationTest {
 
     /** What a seeded role holds (Marketplace's own codes; common's templates take the Staff share from these). */
     private List<String> seeded(String roleCode) {
-        return jdbc.queryForList("select p.code from role_permission rp join role r on r.id = rp.role_id "
-                + "join permission p on p.id = rp.permission_id where r.code = ?", String.class, roleCode);
+        return MarketplaceCatalog.role(roleCode).orElseThrow().permissions();
     }
 
     @Test

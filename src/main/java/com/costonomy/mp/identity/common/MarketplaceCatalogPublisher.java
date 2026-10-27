@@ -1,5 +1,6 @@
 package com.costonomy.mp.identity.common;
 
+import com.costonomy.mp.access.domain.MarketplaceCatalog;
 import com.costonomy.mp.access.domain.PermissionCodes;
 import com.costonomy.security.CostonomySecurityProperties;
 import com.costonomy.security.client.ServiceTokenClient;
@@ -9,7 +10,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -29,8 +29,8 @@ import java.util.TreeSet;
  * Publishes Marketplace's permissions to costonomy-common-api at startup ({@code PUT
  * /internal/v1/apps/MARKETPLACE/catalog}), so common's MARKETPLACE access carries every code Marketplace checks.
  *
- * <p>The source is Marketplace's own {@code role}, {@code permission} and {@code role_permission} tables, which its
- * migrations seed, with their codes mapped by {@link PermissionCodes} (D-75). Businesses hold common's roles (the
+ * <p>The source is {@link MarketplaceCatalog} (what Marketplace's role tables held before D-208), with the codes
+ * mapped by {@link PermissionCodes} (D-75). Businesses hold common's roles (the
  * built-in templates or their own); the seeded roles only decide the Staff template's share and the Costonomy staff
  * roles. A failure is logged and the app starts with whatever catalog common already has.
  *
@@ -43,7 +43,6 @@ import java.util.TreeSet;
 @ConditionalOnProperty(name = "costonomy.mp.catalog.publish", havingValue = "true", matchIfMissing = true)
 public class MarketplaceCatalogPublisher implements ApplicationRunner {
 
-    private final JdbcTemplate jdbc;
     private final ServiceTokenClient tokens;
     private final CostonomySecurityProperties props;
     private final ObjectMapper json;
@@ -87,20 +86,15 @@ public class MarketplaceCatalogPublisher implements ApplicationRunner {
         record Seeded(String code, String name, String description, String scope) {
         }
         List<Seeded> seeded = new ArrayList<>();
-        jdbc.query("SELECT code, name, description, scope FROM permission ORDER BY code", rs -> {
-            seeded.add(new Seeded(rs.getString("code"), rs.getString("name"), rs.getString("description"),
-                    rs.getString("scope")));
-        });
+        MarketplaceCatalog.permissions().forEach(p -> seeded.add(new Seeded(p.code(), p.name(), p.description(),
+                p.scope())));
         Map<String, List<String>> held = new LinkedHashMap<>();
-        jdbc.query("SELECT r.code, p.code FROM role_permission rp JOIN role r ON r.id = rp.role_id "
-                + "JOIN permission p ON p.id = rp.permission_id WHERE r.status = 'ACTIVE' ORDER BY r.code, p.code", rs -> {
-            held.computeIfAbsent(rs.getString(1), k -> new ArrayList<>()).add(rs.getString(2));
-        });
         Map<String, String> roleScope = new LinkedHashMap<>();
         Map<String, String[]> roleText = new LinkedHashMap<>();
-        jdbc.query("SELECT code, name, description, scope FROM role WHERE status = 'ACTIVE' ORDER BY code", rs -> {
-            roleScope.put(rs.getString("code"), rs.getString("scope"));
-            roleText.put(rs.getString("code"), new String[] {rs.getString("name"), rs.getString("description")});
+        MarketplaceCatalog.roles().forEach(r -> {
+            held.put(r.code(), List.copyOf(r.permissions()));
+            roleScope.put(r.code(), r.scope());
+            roleText.put(r.code(), new String[] {r.name(), r.description()});
         });
 
         // What the seeded staff roles could do: the Staff template's share.

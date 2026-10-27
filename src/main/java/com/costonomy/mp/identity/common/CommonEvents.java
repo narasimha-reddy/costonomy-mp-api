@@ -2,6 +2,7 @@ package com.costonomy.mp.identity.common;
 
 import com.costonomy.security.access.AccessClient;
 import com.costonomy.security.webhook.CommonAccessChanged;
+import com.costonomy.security.webhook.CommonEnrollmentChanged;
 import com.costonomy.security.webhook.CommonEvent;
 import com.costonomy.security.webhook.CommonOrgUpdated;
 import com.costonomy.security.webhook.CommonOutletUpdated;
@@ -13,36 +14,46 @@ import org.springframework.stereotype.Component;
 
 import java.util.Optional;
 
-/** costonomy-common-api webhooks (verified by the starter) keep MP's copies current between requests. */
+/**
+ * costonomy-common-api's change notifications (verified by the starter): the {@link Directory} drops what changed, and
+ * a changed grant takes effect on the user's next request, not after the cache expires.
+ */
 @Component
 @RequiredArgsConstructor
 public class CommonEvents {
 
-    private final CommonSync sync;
+    private final Directory directory;
     private final AccessClient access;
 
     @EventListener
     public void onUser(CommonUserUpdated e) {
-        id(e, "userId", "id").ifPresent(sync::syncUser);
+        id(e, "userId", "id").ifPresent(directory::evictUser);
     }
 
     @EventListener
     public void onOrg(CommonOrgUpdated e) {
-        id(e, "orgId", "id").ifPresent(sync::syncOrg);
+        id(e, "orgId", "id").ifPresent(directory::evictOrg);
     }
 
+    /** An outlet changed (including its Marketplace settings); defaults changed: every outlet reads them. */
     @EventListener
     public void onOutlet(CommonOutletUpdated e) {
-        id(e, "outletId", "id").ifPresent(sync::syncOutlet);
+        if ("outlet.settings_defaults_changed".equals(e.type())) {
+            directory.evictAll();
+            return;
+        }
+        id(e, "outletId", "id").ifPresent(directory::evictOutlet);
     }
 
-    /** A changed or removed grant takes effect on the user's next request, not after the cache expires. */
+    /** Activation, suspension and live changes are a business's enrollment. */
+    @EventListener
+    public void onEnrollment(CommonEnrollmentChanged e) {
+        id(e, "orgId", null).ifPresent(directory::evictOrg);
+    }
+
     @EventListener
     public void onAccess(CommonAccessChanged e) {
-        id(e, "userId", null).ifPresent(userId -> {
-            access.evictUser(userId, null);
-            sync.invalidate(userId);
-        });
+        id(e, "userId", null).ifPresent(userId -> access.evictUser(userId, null));
     }
 
     private static Optional<Long> id(CommonEvent e, String field, String fallback) {

@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.delivery.service.DeliveryService;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
@@ -109,8 +111,7 @@ class ColdChainIT extends AbstractIntegrationTest {
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
         long orgId = created.get("id").asLong();
         long storeId = created.get("stores").get(0).get("id").asLong();
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', verification_status = 'VERIFIED' where id = ?",
-                orgId);
+        LocalCommon.activate(orgId);
         TestCatalog.tradesAroundTheClock(jdbc, orgId);
         jdbc.update("""
                 insert into supplier_delivery_policy (supplier_store_id, own_delivery_enabled,
@@ -505,9 +506,9 @@ class ColdChainIT extends AbstractIntegrationTest {
             var buyer = newBuyer();
             var seller = newSeller(false);
             long storeId = seller.storeId();
-            jdbc.update("update supplier_store set pincode = '500003' where id = ?", storeId);
-            // Any existing user will do for the audit column.
-            Long buyerUserId = jdbc.queryForObject("select min(id) from users", Long.class);
+            LocalCommon.update(storeId, Map.of("pincode", "500003"));
+            // The buyer will do for the audit column.
+            long buyerUserId = LocalCommon.userIdOf(buyer.token());
             jdbc.update("""
                     insert into procurement (outlet_id, created_by, status, approval_status,
                                              payment_method, payment_status, total_amount, created_at, updated_at, version)

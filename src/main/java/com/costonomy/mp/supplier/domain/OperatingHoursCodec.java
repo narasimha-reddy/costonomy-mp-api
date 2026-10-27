@@ -55,6 +55,56 @@ public final class OperatingHoursCodec {
         }
     }
 
+    private static final List<String> COMMON_DAYS = List.of("mon", "tue", "wed", "thu", "fri", "sat", "sun");
+
+    /**
+     * Hours as costonomy-common-api keeps them on the outlet (D-208): {@code {"mon":[["09:00","21:00"]], ...}}, one
+     * window a day here; a day that is absent or empty is closed. The older {@code {days, opensAt, closesAt}} shape is
+     * read too. Null or unreadable: the defaults.
+     */
+    public static OperatingHours fromCommon(java.util.Map<String, Object> hours) {
+        if (hours == null || hours.isEmpty()) {
+            return OperatingHours.defaults();
+        }
+        if (hours.containsKey("days") || hours.containsKey("opensAt")) {
+            try {
+                return read(JSON.writeValueAsString(hours));
+            } catch (Exception e) {
+                return OperatingHours.defaults();
+            }
+        }
+        Set<DayOfWeek> days = EnumSet.noneOf(DayOfWeek.class);
+        LocalTime opens = null;
+        LocalTime closes = null;
+        for (int i = 0; i < COMMON_DAYS.size(); i++) {
+            Object windows = hours.get(COMMON_DAYS.get(i));
+            if (!(windows instanceof List<?> list) || list.isEmpty() || !(list.get(0) instanceof List<?> window)
+                    || window.size() < 2) {
+                continue;
+            }
+            days.add(DayOfWeek.of(i + 1));
+            if (opens == null) {
+                opens = time(String.valueOf(window.get(0)));
+                closes = time(String.valueOf(window.get(1)));
+            }
+        }
+        if (days.isEmpty()) {
+            return OperatingHours.defaults();
+        }
+        return new OperatingHours(days, opens, closes);
+    }
+
+    /** The common shape of these hours: the same window on each open day. */
+    public static java.util.Map<String, Object> toCommon(OperatingHours hours) {
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < COMMON_DAYS.size(); i++) {
+            if (hours.days().contains(DayOfWeek.of(i + 1))) {
+                out.put(COMMON_DAYS.get(i), List.of(List.of(hours.opensAt().toString(), hours.closesAt().toString())));
+            }
+        }
+        return out;
+    }
+
     public static String write(OperatingHours hours) {
         ObjectNode node = JSON.createObjectNode();
         node.putPOJO("days", hours.dayNames());

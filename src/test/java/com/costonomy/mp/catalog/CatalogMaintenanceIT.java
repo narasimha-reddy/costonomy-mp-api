@@ -1,5 +1,7 @@
 package com.costonomy.mp.catalog;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
 import com.costonomy.mp.support.TestCatalog;
@@ -51,8 +53,7 @@ class CatalogMaintenanceIT extends AbstractIntegrationTest {
                 "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000",
                         "name", "Metro store", "addressLine1", "Road No 36", "city", "Hyderabad",
                         "state", "Telangana", "latitude", "17.4399", "longitude", "78.4983"))).get("data");
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", created.get("id").asLong());
+        LocalCommon.activate(created.get("id").asLong());
         long storeId = created.get("stores").get(0).get("id").asLong();
         return new Seller(token, storeId, TestCatalog.freshProduct(jdbc, "paneer"));
     }

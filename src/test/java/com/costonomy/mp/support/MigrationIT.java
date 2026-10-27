@@ -84,48 +84,33 @@ class MigrationIT extends AbstractIntegrationTest {
     }
 
     @Test
-    @DisplayName("delivery rows enforce their parent tenant scopes")
+    @DisplayName("delivery rows enforce their parent order's scope")
     void deliveryParentScopeConstraintsExist() {
+        // The food delivery's outlet/restaurant scope key went with the outlet table (V106, D-208): outlets are
+        // common's. The supplier delivery's key is onto Marketplace's own supplier_order and stays.
         Integer supplierScope = jdbc.queryForObject("""
                 select count(*) from information_schema.key_column_usage
                 where constraint_schema = database()
                     and constraint_name = 'fk_delivery_order_scope'
                     and table_name = 'delivery'
                 """, Integer.class);
-        Integer foodScope = jdbc.queryForObject("""
-                select count(*) from information_schema.key_column_usage
-                where constraint_schema = database()
-                    and constraint_name = 'fk_food_delivery_outlet_restaurant_scope'
-                    and table_name = 'food_delivery'
-                """, Integer.class);
 
         assertThat(supplierScope).isEqualTo(3);
-        assertThat(foodScope).isEqualTo(2);
-
-        assertThat(org.assertj.core.api.Assertions.catchThrowable(() -> jdbc.update("""
-                insert into food_delivery (
-                    restaurant_id, outlet_id, idempotency_key,
-                    status, pickup_address, customer_name, customer_phone, drop_address,
-                    tracking_token, requested_at
-                ) values (
-                    999999, 888888, 'test-idem-scope',
-                    'REQUESTED', 'addr', 'Cust', '9876543210', 'drop',
-                    'token12345678901234567890123456', now()
-                )
-                """)))
-                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
     }
 
     @Test
-    @DisplayName("a phone number can only be registered once")
-    void userPhoneIsUnique() {
-        jdbc.update("insert into users (phone, status) values (?, 'ACTIVE')", "+919999000001");
+    @DisplayName("Marketplace keeps no copies of common's tables (V106)")
+    void commonTablesAreGone() {
+        var left = jdbc.queryForList("""
+                select table_name from information_schema.tables
+                where table_schema = database()
+                  and table_name in ('users', 'restaurant', 'outlet', 'supplier_organization', 'supplier_store',
+                                     'device', 'role', 'permission', 'role_permission', 'user_role',
+                                     'restaurant_user', 'restaurant_user_outlet', 'supplier_user',
+                                     'supplier_user_store', 'supplier_verification')
+                """, String.class);
 
-        assertThat(
-                org.assertj.core.api.Assertions.catchThrowable(() ->
-                        jdbc.update("insert into users (phone, status) values (?, 'ACTIVE')", "+919999000001")))
-                .describedAs("uk_users_phone must reject a duplicate")
-                .isNotNull();
+        assertThat(left).describedAs("businesses, people, grants and devices are common's (D-208)").isEmpty();
     }
 
     @Test
@@ -257,10 +242,6 @@ class MigrationIT extends AbstractIntegrationTest {
                         "settlement_adjustment",
                         // Reference data that is added or removed, never edited.
                         "canonical_product_alias",
-                        // Pure join tables and links.
-                        "role_permission",
-                        "restaurant_user_outlet",
-                        "supplier_user_store",
                         // A subscription's excluded dates are immutable entries in
                         // the schedule, not independently updated entities.
                         "subscription_skip_date",

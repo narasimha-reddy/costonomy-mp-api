@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -37,6 +38,9 @@ public class PopularSupplierService {
     private final DiscoveryDirectory directory;
     private final SupplierPerformanceProvider performance;
     private final ServiceabilityPolicy serviceabilityPolicy;
+
+    /** Ids per {@code in (...)} list. */
+    private static final int CHUNK = 1000;
 
     /** How many aisles to name per supplier before the tail stops earning space. */
     private static final int CATEGORIES_PER_SUPPLIER = 6;
@@ -81,38 +85,55 @@ public class PopularSupplierService {
                          from supplier_offer f2
                          join supplier_sku k2 on k2.id = f2.supplier_sku_id and k2.status = 'ACTIVE'
                          join canonical_product cp2 on cp2.id = k2.canonical_product_id
-                        where f2.supplier_store_id = s.id
+                        where f2.supplier_store_id = f.supplier_store_id
                           and f2.status = 'ACTIVE'
                           and (f2.effective_to is null or f2.effective_to > now())
                           and cp2.category_id = ?)
                 """;
 
-        var stores = jdbc.query("""
-                select s.id, o.display_name, s.name, s.city,
-                       s.latitude, s.longitude, count(distinct f.id) as sku_count
-                  from supplier_store s
-                  join supplier_organization o on o.id = s.supplier_organization_id
-                  join supplier_offer f on f.supplier_store_id = s.id and f.status = 'ACTIVE'
-                  join supplier_sku k on k.id = f.supplier_sku_id and k.status = 'ACTIVE'
-                  where s.status = 'ACTIVE'
-                    and o.lifecycle_status = 'ACTIVE'
-                    and (f.effective_to is null or f.effective_to > now())
-                %s
-                 group by s.id, o.display_name, s.name, s.city, s.latitude, s.longitude
-                 order by sku_count desc, s.id
-                """.formatted(aisle),
-                (rs, row) -> new StoreRow(
-                        rs.getLong(1), rs.getString(2), rs.getString(3),
-                        rs.getString(4),
-                        rs.getBigDecimal(5), rs.getBigDecimal(6), rs.getInt(7)),
-                categoryId == null ? new Object[0] : new Object[] { categoryId });
+        // D-208: which stores trade, and their names, come from common; SQL only
+        // counts what each of them lists.
+        var trading = new LinkedHashMap<Long, DiscoveryDirectory.StoreInfo>();
+        directory.allStores().stream().filter(DiscoveryDirectory.StoreInfo::tradeable)
+                .forEach(info -> trading.put(info.storeId(), info));
+        var tradingIds = List.copyOf(trading.keySet());
+
+        var stores = new ArrayList<StoreRow>();
+        for (int from = 0; from < tradingIds.size(); from += CHUNK) {
+            var chunk = tradingIds.subList(from, Math.min(from + CHUNK, tradingIds.size()));
+            var args = new ArrayList<Object>(chunk);
+            if (categoryId != null) {
+                args.add(categoryId);
+            }
+            jdbc.query("""
+                    select f.supplier_store_id, count(distinct f.id) as sku_count
+                      from supplier_offer f
+                      join supplier_sku k on k.id = f.supplier_sku_id and k.status = 'ACTIVE'
+                     where f.status = 'ACTIVE'
+                       and (f.effective_to is null or f.effective_to > now())
+                       and f.supplier_store_id in (%s)
+                    %s
+                     group by f.supplier_store_id
+                    """.formatted(String.join(",", Collections.nCopies(chunk.size(), "?")), aisle),
+                    rs -> {
+                        var info = trading.get(rs.getLong(1));
+                        stores.add(new StoreRow(
+                                info.storeId(), info.supplierName(), info.storeName(),
+                                info.city(), info.latitude(), info.longitude(), rs.getInt(2)));
+                    },
+                    args.toArray());
+        }
+        // Deepest catalogue first, then store id: the order the nearest-first
+        // sort below keeps for suppliers at the same distance.
+        stores.sort(Comparator.comparingInt(StoreRow::skuCount).reversed()
+                .thenComparing(StoreRow::id));
 
         if (stores.isEmpty()) {
             return List.of();
         }
 
         var storeIdsAll = stores.stream().map(StoreRow::id).toList();
-        var storeInfo = directory.stores(storeIdsAll);
+        var storeInfo = trading;
         // Ratings are an all-time aggregate over order history. They are needed for every store only to filter or sort
         // by rating; otherwise they are fetched for the page that is returned (D-181).
         boolean needsRatings = minRating != null || "rating".equals(effectiveSort);

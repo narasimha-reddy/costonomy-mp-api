@@ -1,5 +1,7 @@
 package com.costonomy.mp.credit;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.credit.CreditWalletSupport.Line;
 import com.costonomy.mp.credit.CreditWalletSupport.Reply;
 import com.costonomy.mp.credit.service.CreditJobs;
@@ -365,11 +367,8 @@ class CreditNoteOutstandingSitesIT extends AbstractIntegrationTest {
     private String operator(String roleCode) throws Exception {
         String phone = ApiClient.freshPhone();
         String token = s.api.login(phone);
-        Long userId = jdbc.queryForObject("select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status, granted_at, created_at, updated_at, version)
-                select ?, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0 from role r where r.code = ?
-                """, userId, roleCode);
+        Long userId = LocalCommon.userId("+91" + phone);
+        LocalCommon.grantPlatform(userId, roleCode);
         return token;
     }
 

@@ -226,16 +226,14 @@ discovery/      search, serviceability, Best Value ranking
   domain/       Serviceability, RankingWeights, ExplanationCode, SupplierPerformance
   service/      BestValueScorer, RecommendationService, SearchService,
                 SupplierPerformanceProvider
-restaurant/     Restaurant, Outlet, membership; RestaurantService
-supplier/       SupplierOrganization, SupplierStore, verification; SupplierService
+supplier/       SupplierStanding (lifecycle read from common), OperatingHours;
+                SupplierStandingService (standing, activation)
 identity/
-  domain/       User, OtpVerification, RefreshToken, Device
-  provider/     OtpProvider port + MSG91 and Mock adapters
-  service/      OtpService + OtpAttemptStore, JwtService,
-                RefreshTokenService + RefreshTokenStore, AuthService,
-                DeviceService, PhoneNumbers
-  security/     AuthenticatedActor, ActorContext, JwtAuthenticationFilter
-  web/          AuthController, DeviceController
+  common/       Directory (businesses, outlets, stores, people from costonomy-common-api),
+                CommonEvents, MarketplaceCatalogPublisher
+  service/      MeService, PhoneNumbers
+  security/     AuthenticatedActor, ActorContext
+  web/          AuthController
 ```
 
 ### Three things that are easy to get wrong here
@@ -321,12 +319,13 @@ alone grants nothing; the check is always actor + permission + scope (doc 03 §1
   reports denial as **404, not 403** — otherwise a caller can change an id in a
   URL and enumerate which outlets, stores and orders exist (doc 09 §3).
 - Use `require(...)` only when the caller is already known to be inside the tenant.
-- Grants are read live from `user_role` on every check. Only the role → permission
-  catalogue is cached. Revoking access must take effect on the next request
-  (doc 46), which is also why the JWT carries no permissions.
-- A role grant endpoint must restrict which roles it can grant. `REST_*` on an
-  outlet, `SUP_*` on a supplier. Without that, an org admin can grant themselves
-  an internal role and leave their own tenant.
+- Grants are costonomy-common-api's, read through the starter's `AccessClient` (cached a minute, evicted by
+  common's change notifications). Revoking access must take effect on the next request (doc 46), which is also
+  why the JWT carries no permissions. Granting roles is common's (its team screens); Marketplace grants nothing.
+- **Marketplace keeps no copies of common's data (D-208).** Restaurants and suppliers are common's businesses,
+  outlets and stores its outlets, people its users. Read them through `identity/common/Directory` (batch by id),
+  never by joining tables; Marketplace's own outlet/store fields are common's MARKETPLACE outlet settings and the
+  supplier lifecycle is `SupplierStanding`. Business tables keep the ids, without foreign keys.
 - **No internal (`OPS_*`) role may hold a tenant permission.** That property is
   what makes a `PLATFORM`-scoped grant safe to accept at any scope, and
   `PermissionCatalogIT` enforces it. Ops read-access needs its own `INTERNAL`

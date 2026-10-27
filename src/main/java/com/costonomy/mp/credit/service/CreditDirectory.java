@@ -1,5 +1,8 @@
 package com.costonomy.mp.credit.service;
 
+import com.costonomy.mp.identity.common.Directory;
+import com.costonomy.mp.supplier.domain.SupplierStanding;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -12,14 +15,16 @@ import java.util.List;
  *
  * <p>{@link JdbcTemplate} rather than another module's repositories — the same
  * boundary rule as {@code ProcurementDirectory}, {@code CatalogDirectory} and
- * {@code ScopeResolver}. Read-only projections across a module edge, without
- * taking a dependency on that module's internals.
+ * the access module. Read-only projections across a module edge, without
+ * taking a dependency on that module's internals. Outlets, stores and their
+ * businesses come from costonomy-common-api through {@link Directory} (D-208).
  */
 @Service
 @RequiredArgsConstructor
 public class CreditDirectory {
 
     private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     public record OrderInfo(
             Long orderId,
@@ -55,19 +60,10 @@ public class CreditDirectory {
     }
 
     public StoreInfo store(Long supplierStoreId) {
-        var rows = jdbc.query("""
-                select s.id, s.name, o.id, o.display_name, s.status, o.lifecycle_status,
-                       s.latitude, s.longitude
-                  from supplier_store s
-                  join supplier_organization o on o.id = s.supplier_organization_id
-                 where s.id = ?
-                """,
-                (rs, row) -> new StoreInfo(rs.getLong(1), rs.getString(2), rs.getLong(3),
-                        rs.getString(4),
-                        "ACTIVE".equals(rs.getString(5)) && "ACTIVE".equals(rs.getString(6)),
-                        rs.getBigDecimal(7), rs.getBigDecimal(8)),
-                supplierStoreId);
-        return rows.isEmpty() ? null : rows.get(0);
+        return directory.outlet(supplierStoreId).filter(s -> "STORE".equals(s.kind()))
+                .map(s -> new StoreInfo(s.id(), s.name(), s.orgId(), s.orgName(),
+                        SupplierStanding.takesOrders(s), s.latitude(), s.longitude()))
+                .orElse(null);
     }
 
     /**
@@ -88,19 +84,7 @@ public class CreditDirectory {
     }
 
     public OutletInfo outlet(Long outletId) {
-        var rows = jdbc.query("""
-                select o.id, o.name, r.id, r.name, o.landmark, o.address_line1, o.city,
-                       o.latitude, o.longitude
-                  from outlet o join restaurant r on r.id = o.restaurant_id
-                 where o.id = ?
-                """,
-                (rs, row) -> new OutletInfo(rs.getLong(1), rs.getString(2),
-                        rs.getLong(3), rs.getString(4),
-                        rs.getString(5) != null ? rs.getString(5) : rs.getString(6),
-                        rs.getString(7),
-                        rs.getBigDecimal(8), rs.getBigDecimal(9)),
-                outletId);
-        return rows.isEmpty() ? null : rows.get(0);
+        return outlets(outletId == null ? List.of() : List.of(outletId)).get(outletId);
     }
 
     /** Several outlets at once (outlet and restaurant names); an id that does not exist is simply absent. */
@@ -109,21 +93,16 @@ public class CreditDirectory {
         if (outletIds.isEmpty()) {
             return found;
         }
-        String marks = String.join(",", java.util.Collections.nCopies(outletIds.size(), "?"));
-        jdbc.query("""
-                select o.id, o.name, r.id, r.name, o.landmark, o.address_line1, o.city,
-                       o.latitude, o.longitude
-                  from outlet o join restaurant r on r.id = o.restaurant_id
-                 where o.id in (%s)
-                """.formatted(marks),
-                (rs) -> {
-                    found.put(rs.getLong(1), new OutletInfo(rs.getLong(1), rs.getString(2),
-                            rs.getLong(3), rs.getString(4),
-                            rs.getString(5) != null ? rs.getString(5) : rs.getString(6),
-                            rs.getString(7), rs.getBigDecimal(8), rs.getBigDecimal(9)));
-                },
-                outletIds.toArray());
+        directory.outlets(outletIds).values().stream()
+                .filter(o -> "OUTLET".equals(o.kind()))
+                .forEach(o -> found.put(o.id(), outletInfo(o)));
         return found;
+    }
+
+    private static OutletInfo outletInfo(AppOutlet o) {
+        return new OutletInfo(o.id(), o.name(), o.orgId(), o.orgName(),
+                o.landmark() != null ? o.landmark() : o.addressLine1(),
+                o.city(), o.latitude(), o.longitude());
     }
 
     /**

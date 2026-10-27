@@ -7,11 +7,11 @@ import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.storage.provider.FileStorage;
 import com.costonomy.mp.storage.provider.StorageException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -47,7 +47,7 @@ public class UploadService {
     private final FileStorage storage;
     private final AccessControlService accessControl;
     private final AuditService auditService;
-    private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     public record StoredFile(String url, String key, String contentType, int bytes) {
     }
@@ -90,15 +90,11 @@ public class UploadService {
      *
      * <p>Read here rather than taken from the request for the obvious reason: a
      * client-supplied owner id is a directory-traversal parameter with a friendly
-     * name.
+     * name. From costonomy-common-api (D-208).
      */
     private Long organizationOf(Long storeId) {
-        var ids = jdbc.queryForList(
-                "select supplier_organization_id from supplier_store where id = ?",
-                Long.class, storeId);
-        if (ids.isEmpty()) {
-            throw new NotFoundException("SupplierStore", storeId);
-        }
-        return ids.get(0);
+        return directory.outlet(storeId).filter(s -> "STORE".equals(s.kind()))
+                .map(s -> s.orgId())
+                .orElseThrow(() -> new NotFoundException("SupplierStore", storeId));
     }
 }

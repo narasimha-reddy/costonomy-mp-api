@@ -67,12 +67,16 @@ class AdminDeliveryServiceTest {
     @Mock
     private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
+    @Mock
+    private com.costonomy.mp.identity.common.Directory directory;
+
     private AdminDeliveryService service;
 
     @BeforeEach
     void setUp() {
         service = new AdminDeliveryService(accessControl, deliveries, ledgerRepository, statsRepository, metricsRepository,
-                quotes, attempts, recoveryService, waterfallService, deliveryService, foodDeliveryQueryService, jdbc);
+                quotes, attempts, recoveryService, waterfallService, deliveryService, foodDeliveryQueryService, jdbc,
+                directory);
     }
 
 

@@ -1,5 +1,7 @@
 package com.costonomy.mp.billing;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.billing.service.FiscalYear;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -338,7 +340,7 @@ class TaxInvoiceIT extends TaxInvoiceTestBase {
 
             // Once the supplier's GSTIN is filled in, generating the invoice issues the waiting credit note too.
             String gstin = freshGstin();
-            jdbc.update("update supplier_organization set gstin = ? where id = ?", gstin, seller.orgId());
+            LocalCommon.setGstin(seller.orgId(), gstin);
             assertThat(post(seller.token(), generatePath(p), Map.of()).status()).isEqualTo(200);
             assertThat(creditNoteRows(p.orderId())).isEqualTo(1);
         }

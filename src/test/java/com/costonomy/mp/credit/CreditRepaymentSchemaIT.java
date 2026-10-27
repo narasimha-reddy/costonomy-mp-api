@@ -1,5 +1,6 @@
 package com.costonomy.mp.credit;
 
+import com.costonomy.mp.access.domain.MarketplaceCatalog;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -86,11 +87,9 @@ class CreditRepaymentSchemaIT extends AbstractIntegrationTest {
     @Test
     @DisplayName("CREDIT_REPAY is a restaurant permission held by exactly the four roles that hold QUICKSCAN_PAY")
     void creditRepayGrants() {
-        assertThat(jdbc.queryForObject("select scope from permission where code = 'CREDIT_REPAY'", String.class))
-                .isEqualTo("RESTAURANT");
-        List<String> holders = jdbc.queryForList("select r.code from role r "
-                + "join role_permission rp on rp.role_id = r.id join permission p on p.id = rp.permission_id "
-                + "where p.code = 'CREDIT_REPAY' order by r.code", String.class);
+        assertThat(MarketplaceCatalog.permissions()).filteredOn(p -> p.code().equals("CREDIT_REPAY"))
+                .singleElement().extracting(MarketplaceCatalog.SeededPermission::scope).isEqualTo("RESTAURANT");
+        List<String> holders = holders("CREDIT_REPAY");
         assertThat(holders).containsExactly("REST_ADMIN", "REST_FINANCE_STAFF", "REST_OWNER",
                 "REST_PURCHASE_MANAGER");
         // The rule behind the list: no supplier or internal role can repay on a restaurant's behalf.
@@ -100,10 +99,13 @@ class CreditRepaymentSchemaIT extends AbstractIntegrationTest {
     @Test
     @DisplayName("CREDIT_REPAY is granted to the same roles as QUICKSCAN_PAY")
     void sameRolesAsQuickScan() {
-        String q = "select r.code from role r join role_permission rp on rp.role_id = r.id "
-                + "join permission p on p.id = rp.permission_id where p.code = ? order by r.code";
-        assertThat(jdbc.queryForList(q, String.class, "CREDIT_REPAY"))
-                .isEqualTo(jdbc.queryForList(q, String.class, "QUICKSCAN_PAY"));
+        assertThat(holders("CREDIT_REPAY")).isEqualTo(holders("QUICKSCAN_PAY"));
+    }
+
+    /** The seeded roles holding a permission, by code (Marketplace's catalogue; common grants them). */
+    private static List<String> holders(String permission) {
+        return MarketplaceCatalog.roles().stream().filter(r -> r.permissions().contains(permission))
+                .map(MarketplaceCatalog.SeededRole::code).sorted().toList();
     }
 
     // ── credit_repayment ─────────────────────────────────────────────────

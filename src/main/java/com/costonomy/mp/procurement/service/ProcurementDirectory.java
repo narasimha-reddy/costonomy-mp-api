@@ -4,8 +4,10 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.supplier.domain.OperatingHours;
-import com.costonomy.mp.supplier.domain.OperatingHoursCodec;
+import com.costonomy.mp.supplier.domain.SupplierStanding;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import java.math.BigDecimal;
 import java.time.ZonedDateTime;
 import java.util.*;
@@ -14,15 +16,17 @@ import java.util.*;
  * Facts from other modules that procurement needs to read.
  *
  * <p>{@link JdbcTemplate} rather than other modules' repositories, for the same
- * reason as {@code ScopeResolver} and {@code DiscoveryDirectory}: read-only
+ * reason as the access module and {@code DiscoveryDirectory}: read-only
  * projections across a module boundary, without taking a dependency on that
- * module's internals.
+ * module's internals. Stores, outlets and businesses come from
+ * costonomy-common-api through {@link Directory} (D-208).
  */
 @Service
 @RequiredArgsConstructor
 public class ProcurementDirectory {
 
     private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     /**
      * @param tradeable store ACTIVE, organisation ACTIVE <em>and</em> the store
@@ -60,36 +64,42 @@ public class ProcurementDirectory {
         if (storeIds.isEmpty()) {
             return Map.of();
         }
-        String placeholders = String.join(",", Collections.nCopies(storeIds.size(), "?"));
-
-        Map<Long, StoreInfo> result = new HashMap<>();
+        // Stores from common; the delivery policy is Marketplace's own table.
+        Map<Long, AppOutlet> stores = new LinkedHashMap<>(directory.outlets(storeIds));
+        stores.values().removeIf(s -> !"STORE".equals(s.kind()));
+        if (stores.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, BigDecimal[]> policies = new HashMap<>();
+        String placeholders = String.join(",", Collections.nCopies(stores.size(), "?"));
         jdbc.query("""
-                select s.id, s.name, o.display_name, s.status, o.lifecycle_status,
-                       s.response_sla_seconds, s.latitude, s.longitude,
-                       s.operating_hours_json, s.direct_orders_enabled,
-                       d.min_order_value, d.free_delivery_threshold
-                  from supplier_store s
-                  join supplier_organization o on o.id = s.supplier_organization_id
-                  left join supplier_delivery_policy d on d.supplier_store_id = s.id
-                 where s.id in (%s)
+                select supplier_store_id, min_order_value, free_delivery_threshold
+                  from supplier_delivery_policy
+                 where supplier_store_id in (%s)
                 """.formatted(placeholders),
                 // A statement block, not an expression: Map.put returns a value,
                 // which makes the lambda ambiguous between ResultSetExtractor and
                 // RowCallbackHandler.
                 rs -> {
-                    // Absent hours are the defaults, never "closed".
-                    var hours = OperatingHoursCodec.read(rs.getString(9));
-                    boolean open = hours.isOpenAt(ZonedDateTime.now(OperatingHours.ZONE));
-                    result.put(rs.getLong(1), new StoreInfo(
-                            rs.getLong(1), rs.getString(2), rs.getString(3),
-                            "ACTIVE".equals(rs.getString(4)) && "ACTIVE".equals(rs.getString(5))
-                                    && open,
-                            rs.getInt(6), rs.getBigDecimal(7), rs.getBigDecimal(8),
-                            open, hours.opensAt().toString(), rs.getBoolean(10),
-                            rs.getBigDecimal(11) != null ? rs.getBigDecimal(11) : BigDecimal.ZERO,
-                            rs.getBigDecimal(12)));
+                    policies.put(rs.getLong(1), new BigDecimal[] {rs.getBigDecimal(2), rs.getBigDecimal(3)});
                 },
-                storeIds.toArray());
+                stores.keySet().toArray());
+
+        Map<Long, StoreInfo> result = new HashMap<>();
+        ZonedDateTime now = ZonedDateTime.now(OperatingHours.ZONE);
+        stores.values().forEach(s -> {
+            // Absent hours are the defaults, never "closed".
+            var hours = SupplierStanding.hours(s);
+            boolean open = hours.isOpenAt(now);
+            BigDecimal[] policy = policies.getOrDefault(s.id(), new BigDecimal[2]);
+            result.put(s.id(), new StoreInfo(
+                    s.id(), s.name(), s.orgName(),
+                    SupplierStanding.takesOrders(s) && open,
+                    SupplierStanding.responseSlaSeconds(s), s.latitude(), s.longitude(),
+                    open, hours.opensAt().toString(), SupplierStanding.directOrdersEnabled(s),
+                    policy[0] != null ? policy[0] : BigDecimal.ZERO,
+                    policy[1]));
+        });
         return result;
     }
 
@@ -110,20 +120,12 @@ public class ProcurementDirectory {
 
     /** Names and whereabouts for the supplier's view of an incoming order (doc 05 §25). */
     public OutletSummary outletSummary(Long outletId) {
-        var rows = jdbc.query("""
-                select o.name, r.name, o.landmark, o.address_line1, o.city,
-                       o.latitude, o.longitude
-                  from outlet o
-                  join restaurant r on r.id = o.restaurant_id
-                 where o.id = ?
-                """,
-                (rs, i) -> new OutletSummary(
-                        rs.getString(1), rs.getString(2),
-                        rs.getString(3) != null ? rs.getString(3) : rs.getString(4),
-                        rs.getString(5),
-                        rs.getBigDecimal(6), rs.getBigDecimal(7)),
-                outletId);
-        return rows.isEmpty() ? null : rows.get(0);
+        return directory.outlet(outletId).filter(o -> "OUTLET".equals(o.kind()))
+                .map(o -> new OutletSummary(
+                        o.name(), o.orgName(),
+                        o.landmark() != null ? o.landmark() : o.addressLine1(),
+                        o.city(), o.latitude(), o.longitude()))
+                .orElse(null);
     }
 
     /**
@@ -154,9 +156,8 @@ public class ProcurementDirectory {
     }
 
     public Long restaurantIdOfOutlet(Long outletId) {
-        var ids = jdbc.queryForList(
-                "select restaurant_id from outlet where id = ?", Long.class, outletId);
-        return ids.isEmpty() ? null : ids.get(0);
+        return directory.outlet(outletId).filter(o -> "OUTLET".equals(o.kind()))
+                .map(AppOutlet::orgId).orElse(null);
     }
 
     public List<Long> categoryIdsOfProducts(List<Long> productIds) {

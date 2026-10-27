@@ -1,6 +1,8 @@
 package com.costonomy.mp.chat.service;
 
 import com.costonomy.mp.chat.domain.ChatAttachmentType;
+import com.costonomy.mp.identity.common.Directory;
+import com.costonomy.mp.supplier.domain.SupplierStanding;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -14,13 +16,16 @@ import java.util.Optional;
  * modules' repositories.
  *
  * <p>Reads, by SQL, the way every other module's directory does here. Nothing in
- * this class writes, and nothing it returns is authoritative anywhere else.
+ * this class writes, and nothing it returns is authoritative anywhere else. The
+ * outlet, the store and their businesses come from costonomy-common-api through
+ * {@link Directory} (D-208); only whether the two have traded is read here.
  */
 @Service
 @RequiredArgsConstructor
 public class ChatDirectory {
 
     private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     /**
      * The two ends of a conversation.
@@ -46,28 +51,25 @@ public class ChatDirectory {
     }
 
     public Optional<Pair> pair(Long outletId, Long supplierStoreId) {
-        var rows = jdbc.query("""
-                select o.id, o.name, r.name, o.chat_enabled,
-                       s.id, s.name, org.display_name, s.chat_enabled,
-                       exists (
+        var found = directory.outlets(List.of(outletId, supplierStoreId));
+        var outlet = found.get(outletId);
+        var store = found.get(supplierStoreId);
+        if (outlet == null || store == null || !"OUTLET".equals(outlet.kind()) || !"STORE".equals(store.kind())) {
+            return Optional.empty();
+        }
+        Boolean traded = jdbc.queryForObject("""
+                select exists (
                            select 1 from intent i
-                            where i.outlet_id = o.id and i.supplier_store_id = s.id
+                            where i.outlet_id = ? and i.supplier_store_id = ?
                               and i.status <> 'DRAFT')
                        or exists (
                            select 1 from supplier_order so
-                            where so.outlet_id = o.id and so.supplier_store_id = s.id)
-                  from outlet o
-                  join restaurant r on r.id = o.restaurant_id
-                  join supplier_store s on s.id = ?
-                  join supplier_organization org on org.id = s.supplier_organization_id
-                 where o.id = ?
-                """,
-                (rs, i) -> new Pair(
-                        rs.getLong(1), rs.getString(2), rs.getString(3), rs.getBoolean(4),
-                        rs.getLong(5), rs.getString(6), rs.getString(7), rs.getBoolean(8),
-                        rs.getBoolean(9)),
-                supplierStoreId, outletId);
-        return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+                            where so.outlet_id = ? and so.supplier_store_id = ?)
+                """, Boolean.class, outletId, supplierStoreId, outletId, supplierStoreId);
+        return Optional.of(new Pair(
+                outlet.id(), outlet.name(), outlet.orgName(), SupplierStanding.chatEnabled(outlet),
+                store.id(), store.name(), store.orgName(), SupplierStanding.chatEnabled(store),
+                Boolean.TRUE.equals(traded)));
     }
 
     /**

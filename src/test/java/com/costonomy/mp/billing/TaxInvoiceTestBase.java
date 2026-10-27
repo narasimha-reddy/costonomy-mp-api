@@ -3,6 +3,7 @@ package com.costonomy.mp.billing;
 import com.costonomy.mp.common.outbox.OutboxPublisher;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
+import com.costonomy.mp.support.LocalCommon;
 import com.costonomy.mp.support.TestCatalog;
 import com.costonomy.mp.support.TestOrder;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -83,8 +84,8 @@ abstract class TaxInvoiceTestBase extends AbstractIntegrationTest {
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
         long orgId = created.get("id").asLong();
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED', gstin = ? where id = ?", gstin, orgId);
+        LocalCommon.activate(orgId);
+        LocalCommon.setGstin(orgId, gstin);
         TestCatalog.tradesAroundTheClock(jdbc, orgId);
         long storeId = created.get("stores").get(0).get("id").asLong();
         jdbc.update("""

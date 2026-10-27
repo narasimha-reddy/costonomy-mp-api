@@ -5,21 +5,29 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import com.costonomy.mp.delivery.domain.ConsignmentWeight;
+import com.costonomy.mp.delivery.provider.DeliveryProvider;
+import com.costonomy.mp.identity.common.Directory;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Objects;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Facts from other modules that delivery needs to read.
  *
  * <p>{@link JdbcTemplate} across the module edge, like {@code ProcurementDirectory}
- * and {@code CreditDirectory}.
+ * and {@code CreditDirectory}. Stores and outlets (pickup and drop points) come from
+ * costonomy-common-api through {@link Directory} (D-208).
  */
 @Service
 @RequiredArgsConstructor
 public class DeliveryDirectory {
 
     private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     public record OrderInfo(
             Long orderId,
@@ -159,51 +167,38 @@ public class DeliveryDirectory {
     }
 
     public Place pickupFor(Long supplierStoreId) {
-        var rows = jdbc.query("""
-                select s.name, concat_ws(', ', s.address_line1, s.address_line2, s.city,
-                       s.state, s.pincode), s.latitude, s.longitude,
-                       s.contact_name, s.contact_phone
-                  from supplier_store s where s.id = ?
-                """,
-                (rs, row) -> new Place(rs.getString(1), rs.getString(2), rs.getBigDecimal(3),
-                        rs.getBigDecimal(4), rs.getString(5), rs.getString(6)),
-                supplierStoreId);
-        return rows.isEmpty() ? null : rows.get(0);
+        return directory.outlet(supplierStoreId).map(DeliveryDirectory::place).orElse(null);
     }
 
     public Place dropFor(Long outletId) {
-        var rows = jdbc.query("""
-                select o.name, concat_ws(', ', o.address_line1, o.address_line2, o.city,
-                       o.state, o.pincode), o.latitude, o.longitude,
-                       o.contact_name, o.contact_phone
-                  from outlet o where o.id = ?
-                """,
-                (rs, row) -> new Place(rs.getString(1), rs.getString(2), rs.getBigDecimal(3),
-                        rs.getBigDecimal(4), rs.getString(5), rs.getString(6)),
-                outletId);
-        return rows.isEmpty() ? null : rows.get(0);
+        return directory.outlet(outletId).map(DeliveryDirectory::place).orElse(null);
     }
 
     /** City, state and pincode of a supplier store, or null when there is no such store. */
-    public com.costonomy.mp.delivery.provider.DeliveryProvider.Locality pickupLocality(Long supplierStoreId) {
-        var rows = jdbc.query("""
-                select city, state, pincode from supplier_store where id = ?
-                """,
-                (rs, row) -> new com.costonomy.mp.delivery.provider.DeliveryProvider.Locality(
-                        rs.getString(1), rs.getString(2), rs.getString(3)),
-                supplierStoreId);
-        return rows.isEmpty() ? null : rows.get(0);
+    public DeliveryProvider.Locality pickupLocality(Long supplierStoreId) {
+        return directory.outlet(supplierStoreId).map(DeliveryDirectory::locality).orElse(null);
     }
 
     /** City, state and pincode of an outlet, or null when there is no such outlet. */
-    public com.costonomy.mp.delivery.provider.DeliveryProvider.Locality dropLocality(Long outletId) {
-        var rows = jdbc.query("""
-                select city, state, pincode from outlet where id = ?
-                """,
-                (rs, row) -> new com.costonomy.mp.delivery.provider.DeliveryProvider.Locality(
-                        rs.getString(1), rs.getString(2), rs.getString(3)),
-                outletId);
-        return rows.isEmpty() ? null : rows.get(0);
+    public DeliveryProvider.Locality dropLocality(Long outletId) {
+        return directory.outlet(outletId).map(DeliveryDirectory::locality).orElse(null);
+    }
+
+    /** One line a courier can read: address lines, city, state, pincode, skipping what is not set. */
+    private static Place place(AppOutlet o) {
+        String address = Stream.of(o.addressLine1(), o.addressLine2(), o.city(), stateOf(o), o.pincode())
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining(", "));
+        return new Place(o.name(), address, o.latitude(), o.longitude(), o.contactName(), o.contactPhone());
+    }
+
+    private static DeliveryProvider.Locality locality(AppOutlet o) {
+        return new DeliveryProvider.Locality(o.city(), stateOf(o), o.pincode());
+    }
+
+    /** Couriers match on the state's name ("Telangana"); the ISO code only when common has no name for it. */
+    private static String stateOf(AppOutlet o) {
+        return o.stateName() != null ? o.stateName() : o.stateCode();
     }
 
     /**

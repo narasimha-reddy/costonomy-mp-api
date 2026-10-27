@@ -2,6 +2,7 @@ package com.costonomy.mp.wallet.service;
 
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.payment.domain.Payment;
 import com.costonomy.mp.payment.domain.Refund;
 import com.costonomy.mp.payment.domain.RefundStatus;
@@ -26,7 +27,8 @@ import java.util.List;
  * is not on file is left out, never made up.
  *
  * <p>At most one query per kind of related row (order and store, refund and its payment, top-up,
- * QuickScan payment), however many references the entry has.
+ * QuickScan payment), however many references the entry has. Store names come from
+ * costonomy-common-api through {@link Directory} (D-208).
  */
 @Service
 @RequiredArgsConstructor
@@ -39,6 +41,7 @@ public class WalletEntryDetailService {
     private final WalletService wallets;
     private final com.costonomy.mp.wallet.invoice.service.WalletInvoiceService invoices;
     private final com.costonomy.mp.wallet.invoice.service.BillStatuses billStatuses;
+    private final Directory directory;
 
     @Transactional(readOnly = true)
     public WalletDtos.TransactionDetail detail(Long outletId, String entryKey) {
@@ -238,8 +241,8 @@ public class WalletEntryDetailService {
         long id = Long.parseLong(reference.substring(prefix.length()));
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery("""
-                        select r.id, r.credit_agreement_id, s.name
-                          from credit_repayment r join supplier_store s on s.id = r.supplier_store_id
+                        select r.id, r.credit_agreement_id, r.supplier_store_id
+                          from credit_repayment r
                          where r.id = :id and r.outlet_id = :outlet
                         """)
                 .setParameter("id", id).setParameter("outlet", outletId).getResultList();
@@ -247,7 +250,11 @@ public class WalletEntryDetailService {
             return null;
         }
         var row = rows.get(0);
-        return new CreditRepaymentRow(((Number) row[0]).longValue(), ((Number) row[1]).longValue(), (String) row[2]);
+        var store = directory.outlet(((Number) row[2]).longValue()).orElse(null);
+        if (store == null) {
+            return null;
+        }
+        return new CreditRepaymentRow(((Number) row[0]).longValue(), ((Number) row[1]).longValue(), store.name());
     }
 
     /** The invoice numbers a repayment settled, oldest invoice first. */
@@ -265,11 +272,17 @@ public class WalletEntryDetailService {
             return null;
         }
         List<Object[]> rows = em.createQuery("""
-                        select o.orderNumber, s.name from SupplierOrder o, SupplierStore s
-                         where o.id = :id and o.outletId = :outlet and s.id = o.supplierStoreId
+                        select o.orderNumber, o.supplierStoreId from SupplierOrder o
+                         where o.id = :id and o.outletId = :outlet
                         """, Object[].class)
                 .setParameter("id", supplierOrderId).setParameter("outlet", outletId).getResultList();
-        return rows.isEmpty() ? null : new String[]{(String) rows.get(0)[0], (String) rows.get(0)[1]};
+        if (rows.isEmpty()) {
+            return null;
+        }
+        // The shop's name from common (D-208); a store common does not know reads as no order, as the join did.
+        return directory.outlet((Long) rows.get(0)[1])
+                .map(store -> new String[]{(String) rows.get(0)[0], store.name()})
+                .orElse(null);
     }
 
     private String razorpayPaymentOfOrder(Long supplierOrderId, Long outletId) {

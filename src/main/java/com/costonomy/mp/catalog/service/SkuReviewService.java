@@ -10,6 +10,7 @@ import com.costonomy.mp.common.audit.AuditService;
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.common.error.ErrorCode;
 import com.costonomy.mp.common.error.NotFoundException;
+import com.costonomy.mp.identity.common.Directory;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -42,6 +43,7 @@ public class SkuReviewService {
     private final AccessControlService accessControl;
     private final AuditService auditService;
     private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     /**
      * Review a pack you received.
@@ -61,7 +63,7 @@ public class SkuReviewService {
 
         var existing = reviews.findBySupplierOrderItemId(orderItemId).orElse(null);
         if (existing != null) {
-            return toResponse(existing);
+            return toResponses(List.of(existing)).get(0);
         }
 
         if (!"COMPLETED".equals(line.orderStatus())) {
@@ -90,16 +92,14 @@ public class SkuReviewService {
                 line.supplierSkuId(), null, String.valueOf(request.rating()),
                 "Order item " + orderItemId, "API");
 
-        return toResponse(review);
+        return toResponses(List.of(review)).get(0);
     }
 
     /** A pack's published reviews. Public to anyone signed in, like a rating. */
     @Transactional(readOnly = true)
     public List<CatalogDtos.SkuReviewResponse> forSku(Long skuId) {
-        return reviews.findBySupplierSkuIdAndModerationStatusOrderByCreatedAtDesc(
-                        skuId, "PUBLISHED").stream()
-                .map(this::toResponse)
-                .toList();
+        return toResponses(reviews.findBySupplierSkuIdAndModerationStatusOrderByCreatedAtDesc(
+                skuId, "PUBLISHED"));
     }
 
     /**
@@ -124,14 +124,17 @@ public class SkuReviewService {
         return rows.get(0);
     }
 
-    private CatalogDtos.SkuReviewResponse toResponse(SkuReview review) {
-        var names = jdbc.queryForList(
-                "select name from outlet where id = ?", String.class, review.getOutletId());
-        return new CatalogDtos.SkuReviewResponse(
-                review.getId(), review.getSupplierSkuId(), review.getSupplierOrderItemId(),
-                review.getRating(), review.getComment(),
-                names.isEmpty() ? null : names.get(0),
-                review.getCreatedAt());
+    /** The reviewer is labelled by outlet name, from common (D-208), in one batch. */
+    private List<CatalogDtos.SkuReviewResponse> toResponses(List<SkuReview> page) {
+        var outlets = directory.outlets(page.stream().map(SkuReview::getOutletId).toList());
+        return page.stream().map(review -> {
+            var outlet = outlets.get(review.getOutletId());
+            return new CatalogDtos.SkuReviewResponse(
+                    review.getId(), review.getSupplierSkuId(), review.getSupplierOrderItemId(),
+                    review.getRating(), review.getComment(),
+                    outlet == null ? null : outlet.name(),
+                    review.getCreatedAt());
+        }).toList();
     }
 
     private record Line(Long supplierSkuId, Long supplierOrderId,

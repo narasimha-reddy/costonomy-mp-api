@@ -1,5 +1,7 @@
 package com.costonomy.mp.intent;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.payment.provider.MockPaymentProvider;
 import com.costonomy.mp.support.AbstractIntegrationTest;
 import com.costonomy.mp.support.ApiClient;
@@ -171,7 +173,7 @@ class IntentFlowIT extends AbstractIntegrationTest {
         @DisplayName("an outlet named like its restaurant is sent without the outlet name, so the text has no repeated bracket")
         void outletNameSameAsRestaurantIsLeftOut() throws Exception {
             var buyer = newBuyer();
-            jdbc.update("update outlet set name = 'Paradise' where id = ?", buyer.outletId());
+            LocalCommon.update(buyer.outletId(), Map.of("name", "Paradise"));
             var seller = newSeller("Metro");
             var draft = addItem(buyer, listSku(seller, "paneer", "410"), 5);
             long intentId = draft.at("/data/id").asLong();
@@ -1757,8 +1759,7 @@ class IntentFlowIT extends AbstractIntegrationTest {
     private Buyer newBuyer() throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        long userId = jdbc.queryForObject(
-                "select id from users where phone = ?", Long.class, "+91" + phone);
+        long userId = LocalCommon.userId("+91" + phone);
         long outletId = api.post(token, "/api/v1/restaurants", Map.of(
                 "name", "Paradise",
                 "firstOutlet", Map.of("name", "Banjara Hills", "addressLine1", "Road No 12",
@@ -1771,8 +1772,7 @@ class IntentFlowIT extends AbstractIntegrationTest {
     private Seller newSeller(String name) throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        long userId = jdbc.queryForObject(
-                "select id from users where phone = ?", Long.class, "+91" + phone);
+        long userId = LocalCommon.userId("+91" + phone);
         JsonNode created = api.post(token, "/api/v1/suppliers", Map.of(
                 "legalName", name + " Pvt Ltd", "displayName", name,
                 "contactName", "Ops Desk", "contactPhone", "+919876500000",
@@ -1780,8 +1780,7 @@ class IntentFlowIT extends AbstractIntegrationTest {
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
 
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", created.get("id").asLong());
+        LocalCommon.activate(created.get("id").asLong());
         TestCatalog.tradesAroundTheClock(jdbc, created.get("id").asLong());
 
         return new Seller(token, created.get("stores").get(0).get("id").asLong(), userId);

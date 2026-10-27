@@ -12,7 +12,9 @@ import com.costonomy.mp.delivery.domain.Delivery;
 import com.costonomy.mp.delivery.domain.DeliveryMode;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import com.costonomy.mp.delivery.repository.DeliveryRepository;
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.procurement.domain.SupplierOrderStatus;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.EmptyResultDataAccessException;
@@ -41,6 +43,7 @@ public class SupplierDeliveryMovementService {
     private final JdbcTemplate jdbc;
     private final OutboxService outbox;
     private final SupplierCourierPayableSync courierPayables;
+    private final Directory directory;
 
     private record OrderSnapshot(
             Long id,
@@ -186,11 +189,11 @@ public class SupplierDeliveryMovementService {
     }
 
     private OrderSnapshot loadOrder(Long orderId) {
+        OrderSnapshot order;
         try {
-            return jdbc.queryForObject("""
-                    SELECT so.id, so.order_number, so.supplier_store_id, so.outlet_id, so.status, so.delivery_mode, s.name as supplier_name
+            order = jdbc.queryForObject("""
+                    SELECT so.id, so.order_number, so.supplier_store_id, so.outlet_id, so.status, so.delivery_mode
                       FROM supplier_order so
-                      JOIN supplier_store s ON s.id = so.supplier_store_id
                      WHERE so.id = ?
                     """, (rs, rowNum) -> new OrderSnapshot(
                     rs.getLong("id"),
@@ -199,11 +202,17 @@ public class SupplierDeliveryMovementService {
                     rs.getLong("outlet_id"),
                     SupplierOrderStatus.valueOf(rs.getString("status")),
                     com.costonomy.mp.procurement.domain.DeliveryMode.valueOf(rs.getString("delivery_mode")),
-                    rs.getString("supplier_name")
+                    null
             ), orderId);
         } catch (EmptyResultDataAccessException ex) {
             throw new NotFoundException("SupplierOrder", orderId);
         }
+        // The store's name is common's (D-208); an order whose store common does not know is not found, as before.
+        String storeName = directory.outlet(order.supplierStoreId())
+                .map(AppOutlet::name)
+                .orElseThrow(() -> new NotFoundException("SupplierOrder", orderId));
+        return new OrderSnapshot(order.id(), order.orderNumber(), order.supplierStoreId(), order.outletId(),
+                order.status(), order.deliveryMode(), storeName);
     }
 
     private void publishOrderEvent(OrderSnapshot order, SupplierOrderStatus target, Long actorId) {

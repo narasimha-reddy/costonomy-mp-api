@@ -2,6 +2,7 @@ package com.costonomy.mp.credit;
 
 import com.costonomy.mp.credit.CreditCsvSupport.Csv;
 import com.costonomy.mp.credit.CreditWalletSupport.Line;
+import com.costonomy.mp.support.LocalCommon;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -198,9 +199,8 @@ class CreditStatementCsvIT extends CreditClockedIT {
                 UUID.randomUUID().toString(), Map.of("amount", "100.00", "method", "CASH",
                         "reference", "ref, with \"quotes\" and a comma"));
         assertThat(comma.status()).isEqualTo(200);
-        jdbc.update("update outlet set name = ? where id = ?", "=cmd|' /C calc'!A0", f.line().buyer().outletId());
-        jdbc.update("update restaurant set name = ? where id = (select restaurant_id from outlet where id = ?)",
-                "Hotel \"Sara\", Banjara\nHills", f.line().buyer().outletId());
+        LocalCommon.update(f.line().buyer().outletId(), Map.of("name", "=cmd|' /C calc'!A0"));
+        LocalCommon.setOrgName(LocalCommon.orgOf(f.line().buyer().outletId()), "Hotel \"Sara\", Banjara\nHills");
 
         var csv = csv(f.line().seller().token(), agreement, "");
         assertThat(csv.status()).isEqualTo(200);
@@ -293,8 +293,7 @@ class CreditStatementCsvIT extends CreditClockedIT {
     @DisplayName("a restaurant name that starts with a formula character is quoted in collections.csv too")
     void collectionsInjection() throws Exception {
         var f = fx();
-        jdbc.update("update restaurant set name = '=1+1' where id = (select restaurant_id from outlet where id = ?)",
-                f.line().buyer().outletId());
+        LocalCommon.setOrgName(LocalCommon.orgOf(f.line().buyer().outletId()), "=1+1");
         var csv = collections(f.line().seller().token(), f.line().seller().storeId(), "");
         assertThat(csv.rows().get(1).get(2)).isEqualTo("'=1+1");
     }

@@ -15,6 +15,8 @@ import com.costonomy.mp.delivery.repository.DeliveryRepository;
 import com.costonomy.mp.delivery.web.dto.DeliveryDtos;
 import com.costonomy.mp.fooddelivery.service.FoodDeliveryQueryService;
 import com.costonomy.mp.fooddelivery.web.dto.FoodDeliveryDtos;
+import com.costonomy.mp.identity.common.Directory;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -43,6 +45,7 @@ public class AdminDeliveryService {
     private final DeliveryService deliveryService;
     private final FoodDeliveryQueryService foodDeliveryQueryService;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final Directory directory;
 
     @Transactional(readOnly = true)
     public List<DeliveryDtos.DeliveryLedgerResponse> getLedger(Long actorId, Long deliveryId) {
@@ -123,7 +126,7 @@ public class AdminDeliveryService {
     }
 
     /**
-     * Paginated list of recent deliveries with joined supplier store, supplier org, and provider details.
+     * Paginated list of recent deliveries with supplier store, supplier org (from common, D-208) and provider details.
      * Default page size is 10.
      * Requires {@code DELIVERY_INSPECT} at PLATFORM scope.
      */
@@ -162,10 +165,7 @@ public class AdminDeliveryService {
                     d.supplier_order_id,
                     so.order_number,
                     d.outlet_id,
-                    o.name AS outlet_name,
                     d.supplier_store_id,
-                    ss.name AS supplier_store_name,
-                    sorg.display_name AS supplier_org_name,
                     d.mode,
                     d.status,
                     d.provider_code,
@@ -203,9 +203,6 @@ public class AdminDeliveryService {
                     d.failure_reason
                 FROM delivery d
                 LEFT JOIN supplier_order so ON so.id = d.supplier_order_id
-                LEFT JOIN outlet o ON o.id = d.outlet_id
-                LEFT JOIN supplier_store ss ON ss.id = d.supplier_store_id
-                LEFT JOIN supplier_organization sorg ON sorg.id = ss.supplier_organization_id
                 LEFT JOIN delivery_provider dp ON dp.code = d.provider_code
                 """ + whereClause + " ORDER BY d.requested_at DESC LIMIT ? OFFSET ?";
 
@@ -213,11 +210,11 @@ public class AdminDeliveryService {
         queryParams.add(effectiveSize);
         queryParams.add(offset);
 
-        List<DeliveryDtos.AdminDeliverySummaryResponse> items = jdbc.query(
+        List<DeliveryDtos.AdminDeliverySummaryResponse> items = withNames(jdbc.query(
                 selectSql,
                 this::mapAdminDeliverySummary,
                 queryParams.toArray()
-        );
+        ));
 
         int totalPages = (int) Math.ceil((double) total / effectiveSize);
         boolean hasNext = (effectivePage + 1) < totalPages;
@@ -269,10 +266,7 @@ public class AdminDeliveryService {
                     d.supplier_order_id,
                     so.order_number,
                     d.outlet_id,
-                    o.name AS outlet_name,
                     d.supplier_store_id,
-                    ss.name AS supplier_store_name,
-                    sorg.display_name AS supplier_org_name,
                     d.mode,
                     d.status,
                     d.provider_code,
@@ -310,22 +304,44 @@ public class AdminDeliveryService {
                     d.failure_reason
                 FROM delivery d
                 LEFT JOIN supplier_order so ON so.id = d.supplier_order_id
-                LEFT JOIN outlet o ON o.id = d.outlet_id
-                LEFT JOIN supplier_store ss ON ss.id = d.supplier_store_id
-                LEFT JOIN supplier_organization sorg ON sorg.id = ss.supplier_organization_id
                 LEFT JOIN delivery_provider dp ON dp.code = d.provider_code
                 """ + condition + " ORDER BY minutes_overdue DESC, d.requested_at DESC LIMIT ? OFFSET ?";
 
-        List<DeliveryDtos.AdminDeliverySummaryResponse> items = jdbc.query(
+        List<DeliveryDtos.AdminDeliverySummaryResponse> items = withNames(jdbc.query(
                 selectSql,
                 this::mapAdminDeliverySummary,
                 effectiveSize, offset
-        );
+        ));
 
         int totalPages = (int) Math.ceil((double) total / effectiveSize);
         boolean hasNext = (effectivePage + 1) < totalPages;
 
         return new DeliveryDtos.PagedResponse<>(items, effectivePage, effectiveSize, total, totalPages, hasNext);
+    }
+
+    /**
+     * Outlet, store and supplier names from common, one batch per page (D-208). An id common does not know keeps
+     * null names, as the old left joins did.
+     */
+    private List<DeliveryDtos.AdminDeliverySummaryResponse> withNames(List<DeliveryDtos.AdminDeliverySummaryResponse> items) {
+        java.util.Set<Long> ids = new java.util.HashSet<>();
+        items.forEach(i -> {
+            ids.add(i.outletId());
+            ids.add(i.supplierStoreId());
+        });
+        java.util.Map<Long, AppOutlet> named = directory.outlets(ids);
+        return items.stream().map(i -> {
+            AppOutlet outlet = named.get(i.outletId());
+            AppOutlet store = named.get(i.supplierStoreId());
+            return new DeliveryDtos.AdminDeliverySummaryResponse(i.id(), i.supplierOrderId(), i.orderNumber(),
+                    i.outletId(), outlet == null ? null : outlet.name(),
+                    i.supplierStoreId(), store == null ? null : store.name(), store == null ? null : store.orgName(),
+                    i.mode(), i.status(), i.providerCode(), i.providerName(), i.providerDeliveryId(), i.fee(),
+                    i.currency(), i.vehicleType(), i.weightKg(), i.driverName(), i.driverPhone(), i.driverVehicle(),
+                    i.etaMinutes(), i.estimatedArrivalAt(), i.minutesOverdue(), i.requestedAt(), i.bookedAt(),
+                    i.assignedAt(), i.pickedUpAt(), i.deliveredAt(), i.cancelledAt(), i.failureCode(),
+                    i.failureReason());
+        }).toList();
     }
 
     private DeliveryDtos.AdminDeliverySummaryResponse mapAdminDeliverySummary(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
@@ -339,10 +355,10 @@ public class AdminDeliveryService {
                 rs.getLong("supplier_order_id"),
                 rs.getString("order_number"),
                 rs.getLong("outlet_id"),
-                rs.getString("outlet_name"),
+                null,
                 rs.getLong("supplier_store_id"),
-                rs.getString("supplier_store_name"),
-                rs.getString("supplier_org_name"),
+                null,
+                null,
                 rs.getString("mode"),
                 deliveryStatus,
                 rs.getString("provider_code"),

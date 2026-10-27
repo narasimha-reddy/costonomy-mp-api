@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.common.error.BusinessException;
 import com.costonomy.mp.delivery.service.CourierPayableService;
 import com.costonomy.mp.delivery.service.DeliveryResolutionService;
@@ -63,13 +65,8 @@ class DeliveryResolutionIT extends AbstractIntegrationTest {
     private String operator(String roleCode) throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        opsUserId = jdbc.queryForObject("select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                       granted_at, created_at, updated_at, version)
-                select ?, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0
-                  from role r where r.code = ?
-                """, opsUserId, roleCode);
+        opsUserId = LocalCommon.userId("+91" + phone);
+        LocalCommon.grantPlatform(opsUserId, roleCode);
         return token;
     }
 

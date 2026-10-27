@@ -6,6 +6,7 @@ import com.costonomy.mp.credit.CreditWalletSupport.Line;
 import com.costonomy.mp.credit.CreditWalletSupport.Reply;
 import com.costonomy.mp.notification.NotificationRelayAccess;
 import com.costonomy.mp.payment.provider.MockPaymentProvider;
+import com.costonomy.mp.support.LocalCommon;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.ApplicationContext;
 import org.springframework.http.MediaType;
@@ -283,12 +284,11 @@ final class CreditPaySupport {
     }
 
     void deactivateStore(Line line) {
-        jdbc.update("update supplier_store set status = 'INACTIVE' where id = ?", line.seller().storeId());
+        LocalCommon.setStatus(line.seller().storeId(), "INACTIVE");
     }
 
     void setStoreRate(Line line, String rate) {
-        long org = jdbc.queryForObject("select supplier_organization_id from supplier_store where id = ?", Long.class,
-                line.seller().storeId());
+        long org = LocalCommon.orgOf(line.seller().storeId());
         jdbc.update("""
                 insert into commission_configuration (scope_type, scope_id, rate_percent, config_version, description,
                     effective_from, status, created_at, updated_at, version)

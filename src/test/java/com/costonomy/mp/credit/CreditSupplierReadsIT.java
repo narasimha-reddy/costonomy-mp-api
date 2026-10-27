@@ -5,6 +5,7 @@ import com.costonomy.mp.credit.CreditWalletSupport.Line;
 import com.costonomy.mp.credit.CreditWalletSupport.Reply;
 import com.costonomy.mp.credit.CreditWalletSupport.Seller;
 import com.costonomy.mp.support.AbstractIntegrationTest;
+import com.costonomy.mp.support.LocalCommon;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -402,7 +403,7 @@ class CreditSupplierReadsIT extends AbstractIntegrationTest {
             var f = twoRestaurants();
             var seller = f.first().seller();
             jdbc.update("update credit_agreement set status = 'SUSPENDED' where id = ?", f.second().agreementId());
-            jdbc.update("update outlet set name = 'Zebra Grill' where id = ?", f.second().buyer().outletId());
+            LocalCommon.update(f.second().buyer().outletId(), Map.of("name", "Zebra Grill"));
             var suspended = ok(get(seller.token(), base(seller) + "/receivables/restaurants?status=SUSPENDED"));
             assertThat(suspended.get("items")).hasSize(1);
             assertThat(suspended.get("items").get(0).get("agreementId").asLong()).isEqualTo(f.second().agreementId());

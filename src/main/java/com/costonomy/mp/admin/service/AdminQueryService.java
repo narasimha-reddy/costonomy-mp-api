@@ -5,14 +5,28 @@ import com.costonomy.mp.access.domain.ScopeType;
 import com.costonomy.mp.access.service.AccessControlService;
 import com.costonomy.mp.admin.web.dto.AdminDtos;
 import com.costonomy.mp.common.error.NotFoundException;
+import com.costonomy.mp.identity.common.Directory;
+import com.costonomy.mp.supplier.domain.SupplierStanding;
+import com.costonomy.security.client.CommonApiClient.AppOrg;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
+import com.costonomy.security.client.CommonApiClient.OrgPage;
+import com.costonomy.security.client.CommonApiClient.OrgQuery;
+import com.costonomy.security.client.CommonApiClient.OutletQuery;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
 
 /**
  * Everything operations reads. Doc 09 §12.
@@ -23,6 +37,10 @@ import java.util.List;
  * procurement, payment, delivery and trust — and importing four modules'
  * aggregates would make the admin module depend on all of them and nothing depend
  * on it. It would also load entity graphs to render a flat list.
+ *
+ * <p><b>Names come from common.</b> D-208: businesses, outlets and stores are
+ * costonomy-common-api's, so the SQL selects their ids and the {@link Directory}
+ * fills in names and standing, one batch per page.
  *
  * <p><b>Every method checks an INTERNAL permission at PLATFORM scope.</b> No
  * tenant permission appears anywhere in this class. That is what stops an
@@ -40,101 +58,140 @@ public class AdminQueryService {
 
     private static final int MAX_PAGE = 100;
 
+    /** How many suppliers to ask common for at a time when filtering by lifecycle. */
+    private static final int STATUS_BATCH = 500;
+
     private final JdbcTemplate jdbc;
     private final AccessControlService accessControl;
+    private final Directory directory;
 
     // ── Suppliers ────────────────────────────────────────────────────────
 
+    /**
+     * Suppliers by name or GSTIN, newest first.
+     *
+     * <p>D-208: the businesses are common's, searched there; the lifecycle is derived
+     * ({@link SupplierStanding}), not stored, so a {@code status} filter runs here
+     * after each batch from common, and the page is cut after the filter.
+     */
     @Transactional(readOnly = true)
     public List<AdminDtos.SupplierSummary> searchSuppliers(Long actorId, String query,
                                                            String status, Integer limit) {
         require(actorId, Permissions.SUPPLIER_INSPECT);
 
-        String like = query == null || query.isBlank() ? null : "%" + query.trim() + "%";
-        List<AdminDtos.SupplierSummary> results = new ArrayList<>();
+        String q = query == null || query.isBlank() ? null : query.trim();
+        int wanted = page(limit);
+        List<AppOrg> found = new ArrayList<>();
 
-        jdbc.query("""
-                select o.id, o.legal_name, o.display_name, o.gstin, o.lifecycle_status,
-                       o.verification_status, o.created_at,
-                       (select count(*) from supplier_store s
-                         where s.supplier_organization_id = o.id)                  as stores,
-                       (select count(*) from supplier_sku k
-                          join supplier_store s2 on s2.id = k.supplier_store_id
-                         where s2.supplier_organization_id = o.id
-                           and k.status = 'ACTIVE')                                as skus
-                  from supplier_organization o
-                 where (? is null or o.legal_name like ? or o.display_name like ?
-                        or o.gstin like ?)
-                   and (? is null or o.lifecycle_status = ?)
-                 order by o.id desc
-                 limit ?
-                """,
-                rs -> {
-                    results.add(new AdminDtos.SupplierSummary(
-                            rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                            rs.getString(5), rs.getString(6), rs.getInt(8), rs.getInt(9),
-                            rs.getTimestamp(7).toInstant()));
-                },
-                like, like, like, like, status, status, page(limit));
+        if (status == null || status.isBlank()) {
+            found.addAll(directory.orgs(new OrgQuery(null, "SUPPLIER", q, wanted, 0)).items());
+        } else {
+            // Ask in batches until the page is full or common has no more.
+            int offset = 0;
+            while (found.size() < wanted) {
+                OrgPage batch = directory.orgs(new OrgQuery(null, "SUPPLIER", q, STATUS_BATCH, offset));
+                for (AppOrg org : batch.items()) {
+                    if (found.size() < wanted && status.equals(SupplierStanding.of(org).name())) {
+                        found.add(org);
+                    }
+                }
+                offset += batch.items().size();
+                if (batch.items().size() < STATUS_BATCH || offset >= batch.total()) {
+                    break;
+                }
+            }
+        }
 
-        return results;
+        if (found.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, List<AppOutlet>> storesByOrg = storesOf(found.stream().map(AppOrg::id).toList());
+        Map<Long, Integer> skus = activeSkuCounts(storesByOrg.values().stream()
+                .flatMap(List::stream).map(AppOutlet::id).toList());
+
+        return found.stream()
+                .map(org -> summary(org, storesByOrg.getOrDefault(org.id(), List.of()), skus))
+                .toList();
     }
 
     @Transactional(readOnly = true)
     public AdminDtos.SupplierDetail supplier(Long actorId, Long supplierId) {
         require(actorId, Permissions.SUPPLIER_INSPECT);
 
-        var summaries = searchSupplierById(supplierId);
-        if (summaries == null) {
-            throw new NotFoundException("Supplier", supplierId);
+        AppOrg org = directory.org(supplierId)
+                .filter(o -> "SUPPLIER".equals(o.orgType()))
+                .orElseThrow(() -> new NotFoundException("Supplier", supplierId));
+
+        List<AppOutlet> stores = directory.outletsOf(supplierId).stream()
+                .filter(s -> "STORE".equals(s.kind()))
+                .sorted(Comparator.comparingLong(AppOutlet::id))
+                .toList();
+        List<Long> storeIds = stores.stream().map(AppOutlet::id).toList();
+        Map<Long, Integer> skus = activeSkuCounts(storeIds);
+
+        Map<Long, BigDecimal> averages = new HashMap<>();
+        Map<Long, Integer> counts = new HashMap<>();
+        if (!storeIds.isEmpty()) {
+            jdbc.query("""
+                    select r.supplier_store_id, avg(r.overall_rating), count(*)
+                      from rating r
+                     where r.moderation_status = 'PUBLISHED'
+                       and r.supplier_store_id in (%s)
+                     group by r.supplier_store_id
+                    """.formatted(marks(storeIds.size())),
+                    rs -> {
+                        averages.put(rs.getLong(1), rs.getBigDecimal(2));
+                        counts.put(rs.getLong(1), rs.getInt(3));
+                    },
+                    storeIds.toArray());
         }
 
-        List<AdminDtos.StoreSummary> stores = new ArrayList<>();
-        jdbc.query("""
-                select s.id, s.name, s.city, s.status, s.response_sla_seconds,
-                       (select count(*) from supplier_sku k
-                         where k.supplier_store_id = s.id and k.status = 'ACTIVE')  as skus,
-                       (select avg(r.overall_rating) from rating r
-                         where r.supplier_store_id = s.id
-                           and r.moderation_status = 'PUBLISHED')                   as avg_rating,
-                       (select count(*) from rating r2
-                         where r2.supplier_store_id = s.id
-                           and r2.moderation_status = 'PUBLISHED')                  as ratings
-                  from supplier_store s
-                 where s.supplier_organization_id = ?
-                 order by s.id
-                """,
-                rs -> {
-                    stores.add(new AdminDtos.StoreSummary(
-                            rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                            (Integer) rs.getObject(5), rs.getInt(6),
-                            // Null where nobody has rated. Doc 07 §4 again: an
-                            // absent signal is absent, not a middling one.
-                            rs.getBigDecimal(7), rs.getInt(8)));
-                },
-                supplierId);
+        List<AdminDtos.StoreSummary> summaries = stores.stream()
+                .map(s -> new AdminDtos.StoreSummary(
+                        s.id(), s.name(), s.city(), SupplierStanding.storeStatus(s),
+                        SupplierStanding.responseSlaSeconds(s), skus.getOrDefault(s.id(), 0),
+                        // Null where nobody has rated. Doc 07 §4 again: an
+                        // absent signal is absent, not a middling one.
+                        averages.get(s.id()), counts.getOrDefault(s.id(), 0)))
+                .toList();
 
-        return new AdminDtos.SupplierDetail(summaries, stores);
+        return new AdminDtos.SupplierDetail(summary(org, stores, skus), summaries);
     }
 
-    private AdminDtos.SupplierSummary searchSupplierById(Long supplierId) {
-        var rows = jdbc.query("""
-                select o.id, o.legal_name, o.display_name, o.gstin, o.lifecycle_status,
-                       o.verification_status, o.created_at,
-                       (select count(*) from supplier_store s
-                         where s.supplier_organization_id = o.id)                  as stores,
-                       (select count(*) from supplier_sku k
-                          join supplier_store s2 on s2.id = k.supplier_store_id
-                         where s2.supplier_organization_id = o.id
-                           and k.status = 'ACTIVE')                                as skus
-                  from supplier_organization o where o.id = ?
-                """,
-                (rs, row) -> new AdminDtos.SupplierSummary(
-                        rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                        rs.getString(5), rs.getString(6), rs.getInt(8), rs.getInt(9),
-                        rs.getTimestamp(7).toInstant()),
-                supplierId);
-        return rows.isEmpty() ? null : rows.get(0);
+    private AdminDtos.SupplierSummary summary(AppOrg org, List<AppOutlet> stores,
+                                              Map<Long, Integer> skus) {
+        int activeSkus = stores.stream().mapToInt(s -> skus.getOrDefault(s.id(), 0)).sum();
+        return new AdminDtos.SupplierSummary(
+                org.id(), org.legalName(), org.displayName(), org.gstin(),
+                SupplierStanding.of(org).name(),
+                SupplierStanding.verification(org.verificationStatus()).name(),
+                stores.size(), activeSkus, instant(org.createdAt()));
+    }
+
+    /** The stores of each business, in one call to common. */
+    private Map<Long, List<AppOutlet>> storesOf(List<Long> orgIds) {
+        Map<Long, List<AppOutlet>> byOrg = new HashMap<>();
+        directory.query(new OutletQuery(null, orgIds, List.of("STORE"), null, null, null, null))
+                .forEach(s -> byOrg.computeIfAbsent(s.orgId(), k -> new ArrayList<>()).add(s));
+        return byOrg;
+    }
+
+    /** ACTIVE SKUs per store; stores with none are absent. */
+    private Map<Long, Integer> activeSkuCounts(List<Long> storeIds) {
+        Map<Long, Integer> counts = new HashMap<>();
+        if (storeIds.isEmpty()) {
+            return counts;
+        }
+        jdbc.query("""
+                select k.supplier_store_id, count(*) from supplier_sku k
+                 where k.status = 'ACTIVE' and k.supplier_store_id in (%s)
+                 group by k.supplier_store_id
+                """.formatted(marks(storeIds.size())),
+                rs -> {
+                    counts.put(rs.getLong(1), rs.getInt(2));
+                },
+                storeIds.toArray());
+        return counts;
     }
 
     // ── Orders ───────────────────────────────────────────────────────────
@@ -163,7 +220,7 @@ public class AdminQueryService {
                 like, like, status, status, outletId, outletId,
                 supplierStoreId, supplierStoreId, page(limit));
 
-        return results;
+        return named(results);
     }
 
     /**
@@ -244,32 +301,48 @@ public class AdminQueryService {
 
         entries.sort(Comparator.comparing(AdminDtos.TimelineEntry::at));
 
-        return new AdminDtos.OrderTimeline(orders.get(0),
+        return new AdminDtos.OrderTimeline(named(orders).get(0),
                 paymentForOrder(orderId), deliveryForOrder(orderId), entries);
     }
 
+    /** Ids only: the outlet, restaurant and supplier names come from common ({@link #named}). D-208. */
     private String orderSelect() {
         return """
-                select so.id, so.order_number, so.status, so.outlet_id, o.name, r.name,
-                       so.supplier_store_id, sorg.display_name, so.total_amount,
-                       so.accepted_amount, so.payment_method, so.payment_status,
+                select so.id, so.order_number, so.status, so.outlet_id, so.supplier_store_id,
+                       so.total_amount, so.accepted_amount, so.payment_method, so.payment_status,
                        so.acceptance_deadline, so.created_at
                   from supplier_order so
-                  join outlet o on o.id = so.outlet_id
-                  join restaurant r on r.id = o.restaurant_id
-                  join supplier_store ss on ss.id = so.supplier_store_id
-                  join supplier_organization sorg on sorg.id = ss.supplier_organization_id
                 """;
     }
 
     private AdminDtos.OrderSummary mapOrder(java.sql.ResultSet rs) throws java.sql.SQLException {
-        var deadline = rs.getTimestamp(13);
+        var deadline = rs.getTimestamp(10);
         return new AdminDtos.OrderSummary(
                 rs.getLong(1), rs.getString(2), rs.getString(3), rs.getLong(4),
-                rs.getString(5), rs.getString(6), rs.getLong(7), rs.getString(8),
-                rs.getBigDecimal(9), rs.getBigDecimal(10), rs.getString(11),
-                rs.getString(12), deadline == null ? null : deadline.toInstant(),
-                rs.getTimestamp(14).toInstant());
+                null, null, rs.getLong(5), null,
+                rs.getBigDecimal(6), rs.getBigDecimal(7), rs.getString(8),
+                rs.getString(9), deadline == null ? null : deadline.toInstant(),
+                rs.getTimestamp(11).toInstant());
+    }
+
+    /**
+     * Fills in the outlet, restaurant and supplier names, one batch for the page.
+     *
+     * <p>An outlet or store common does not know keeps its row with the name left
+     * null: an operator looking for an order needs to see it, broken reference and all.
+     */
+    private List<AdminDtos.OrderSummary> named(List<AdminDtos.OrderSummary> orders) {
+        Map<Long, AppOutlet> places = places(orders.stream()
+                .flatMap(o -> Stream.of(o.outletId(), o.supplierStoreId())).toList());
+        return orders.stream().map(o -> {
+            AppOutlet outlet = places.get(o.outletId());
+            AppOutlet store = places.get(o.supplierStoreId());
+            return new AdminDtos.OrderSummary(o.id(), o.orderNumber(), o.status(), o.outletId(),
+                    outlet == null ? null : outlet.name(), outlet == null ? null : outlet.orgName(),
+                    o.supplierStoreId(), store == null ? null : store.orgName(),
+                    o.totalAmount(), o.acceptedAmount(), o.paymentMethod(), o.paymentStatus(),
+                    o.acceptanceDeadline(), o.createdAt());
+        }).toList();
     }
 
     // ── Payments ─────────────────────────────────────────────────────────
@@ -422,8 +495,7 @@ public class AdminQueryService {
 
         List<AdminDtos.CreditExposureSummary> results = new ArrayList<>();
         jdbc.query("""
-                select a.id, a.outlet_id, o.name, a.supplier_store_id, sorg.display_name,
-                       a.status, a.approved_limit, a.reserved_amount, a.utilized_amount,
+                select a.id, a.outlet_id, a.supplier_store_id, a.status, a.approved_limit, a.reserved_amount, a.utilized_amount,
                        a.approved_limit - a.reserved_amount - a.utilized_amount   as available,
                        coalesce((select sum(i.amount - i.paid_amount - i.credited_amount) from credit_invoice i
                                   where i.credit_agreement_id = a.id
@@ -432,23 +504,27 @@ public class AdminQueryService {
                                   where i2.credit_agreement_id = a.id
                                     and i2.status = 'OVERDUE'), 0)                  as overdue
                   from credit_agreement a
-                  join outlet o on o.id = a.outlet_id
-                  join supplier_store s on s.id = a.supplier_store_id
-                  join supplier_organization sorg on sorg.id = s.supplier_organization_id
                  where (? is null or a.status = ?)
                  order by overdue desc, a.id desc
                  limit ?
                 """,
                 rs -> {
                     results.add(new AdminDtos.CreditExposureSummary(
-                            rs.getLong(1), rs.getLong(2), rs.getString(3), rs.getLong(4),
-                            rs.getString(5), rs.getString(6), rs.getBigDecimal(7),
-                            rs.getBigDecimal(8), rs.getBigDecimal(9), rs.getBigDecimal(10),
-                            rs.getBigDecimal(11), rs.getBigDecimal(12)));
+                            rs.getLong(1), rs.getLong(2), null, rs.getLong(3),
+                            null, rs.getString(4), rs.getBigDecimal(5),
+                            rs.getBigDecimal(6), rs.getBigDecimal(7), rs.getBigDecimal(8),
+                            rs.getBigDecimal(9), rs.getBigDecimal(10)));
                 },
                 status, status, page(limit));
 
-        return results;
+        // Names from common, one batch (D-208).
+        Map<Long, AppOutlet> places = places(results.stream()
+                .flatMap(a -> Stream.of(a.outletId(), a.supplierStoreId())).toList());
+        return results.stream().map(a -> new AdminDtos.CreditExposureSummary(
+                a.agreementId(), a.outletId(), nameOf(places.get(a.outletId())),
+                a.supplierStoreId(), orgNameOf(places.get(a.supplierStoreId())), a.status(),
+                a.approvedLimit(), a.reserved(), a.utilized(), a.available(), a.due(),
+                a.overdue())).toList();
     }
 
     // ── Disputes ─────────────────────────────────────────────────────────
@@ -459,15 +535,13 @@ public class AdminQueryService {
         require(actorId, Permissions.DISPUTE_INSPECT);
 
         List<AdminDtos.DisputeSummary> results = new ArrayList<>();
+        List<Long[]> parties = new ArrayList<>();
         jdbc.query("""
                 select d.id, d.dispute_number, d.supplier_order_id, so.order_number,
-                       d.category, d.status, d.claimed_amount, o.name, sorg.display_name,
+                       d.category, d.status, d.claimed_amount, d.outlet_id, d.supplier_store_id,
                        d.created_at
                   from dispute d
                   join supplier_order so on so.id = d.supplier_order_id
-                  join outlet o on o.id = d.outlet_id
-                  join supplier_store s on s.id = d.supplier_store_id
-                  join supplier_organization sorg on sorg.id = s.supplier_organization_id
                  where (? is null or d.status = ?)
                    and (? is null or d.category = ?)
                  order by d.id desc
@@ -477,12 +551,22 @@ public class AdminQueryService {
                     results.add(new AdminDtos.DisputeSummary(
                             rs.getLong(1), rs.getString(2), rs.getLong(3), rs.getString(4),
                             rs.getString(5), rs.getString(6), rs.getBigDecimal(7),
-                            rs.getString(8), rs.getString(9),
-                            rs.getTimestamp(10).toInstant()));
+                            null, null, rs.getTimestamp(10).toInstant()));
+                    parties.add(new Long[] {rs.getLong(8), rs.getLong(9)});
                 },
                 status, status, category, category, page(limit));
 
-        return results;
+        // Names from common, one batch (D-208).
+        Map<Long, AppOutlet> places = places(parties.stream().flatMap(Stream::of).toList());
+        List<AdminDtos.DisputeSummary> named = new ArrayList<>(results.size());
+        for (int i = 0; i < results.size(); i++) {
+            var d = results.get(i);
+            named.add(new AdminDtos.DisputeSummary(d.id(), d.disputeNumber(), d.supplierOrderId(),
+                    d.orderNumber(), d.category(), d.status(), d.claimedAmount(),
+                    nameOf(places.get(parties.get(i)[0])),
+                    orgNameOf(places.get(parties.get(i)[1])), d.createdAt()));
+        }
+        return named;
     }
 
     // ── Audit ────────────────────────────────────────────────────────────
@@ -539,6 +623,34 @@ public class AdminQueryService {
      */
     private void require(Long actorId, String permission) {
         accessControl.require(actorId, permission, ScopeType.PLATFORM, null);
+    }
+
+    private Map<Long, AppOutlet> places(List<Long> ids) {
+        return ids.isEmpty() ? Map.of() : directory.outlets(ids);
+    }
+
+    private static String nameOf(AppOutlet outlet) {
+        return outlet == null ? null : outlet.name();
+    }
+
+    /** The display name of the supplier a store belongs to. */
+    private static String orgNameOf(AppOutlet store) {
+        return store == null ? null : store.orgName();
+    }
+
+    private static Instant instant(String iso) {
+        if (iso == null || iso.isBlank()) {
+            return null;
+        }
+        try {
+            return Instant.parse(iso);
+        } catch (DateTimeParseException e) {
+            return null;
+        }
+    }
+
+    private static String marks(int n) {
+        return String.join(",", Collections.nCopies(n, "?"));
     }
 
     private int page(Integer limit) {

@@ -3,30 +3,27 @@ package com.costonomy.mp.identity.common;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.costonomy.mp.access.domain.PermissionCodes;
-import com.costonomy.mp.support.AbstractIntegrationTest;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * The catalog Marketplace publishes to costonomy-common-api (D-75) is one common accepts: every permission is
  * {@code <module>.<action>} of a declared module, common's own codes are left out, the templates hold only tenant
  * permissions, and the Costonomy staff roles only platform ones.
  */
-class MarketplaceCatalogIT extends AbstractIntegrationTest {
-
-    @Autowired private JdbcTemplate jdbc;
+@Tag("integration")
+class MarketplaceCatalogIT {
 
     @SuppressWarnings("unchecked")
     @Test
     @DisplayName("the published catalog follows common's catalog rules")
     void catalogIsValid() {
-        Map<String, Object> catalog = new MarketplaceCatalogPublisher(jdbc, null, null, null).catalog();
+        Map<String, Object> catalog = new MarketplaceCatalogPublisher(null, null, null).catalog();
         Set<String> modules = new HashSet<>();
         ((List<Map<String, Object>>) catalog.get("modules")).forEach(m -> modules.add((String) m.get("code")));
 

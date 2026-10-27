@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Fill a local database with suppliers, stores and offers.
 
+Suppliers, restaurants and their stores and outlets are created in costonomy-common-api (D-208);
+offers, delivery and credit terms in the Marketplace.
+
 The V7 migration seeds the *canonical* catalog — the platform's product list —
 but nothing sells anything. Search, comparison, cart and checkout all need live
 offers, so a freshly migrated local database shows empty screens that look like
@@ -38,6 +41,8 @@ MYSQL_PORT = os.environ.get("MYSQL_PORT", "3306")
 MYSQL_USER = os.environ.get("MYSQL_USER", "")
 MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "")
 MYSQL_DB = os.environ.get("MP_DB", "costonomy_mp")
+# Businesses, stores, verification and platform roles are costonomy-common-api's (D-208).
+COMMON_DB = os.environ.get("COMMON_DB", "costonomy_common")
 OTP = os.environ.get("OTP", "123456")
 
 
@@ -66,15 +71,16 @@ def call(path, body=None, token=None, method=None):
     return payload["data"]
 
 
-def sql(statement):
-    """The activation step only. Everything else goes through the API."""
+def sql(statement, database=None):
+    """The two writes no API offers a tenant: activating a supplier and granting a platform role (common's DB)."""
     import shutil
+    database = database or COMMON_DB
     mysql_cmd = shutil.which("mysql") or "/usr/local/mysql/bin/mysql"
     if os.path.exists(mysql_cmd) or shutil.which("mysql"):
         try:
             subprocess.run(
                 [mysql_cmd, f"-h{MYSQL_HOST}", f"-P{MYSQL_PORT}",
-                 f"-u{MYSQL_USER}", f"-p{MYSQL_PASSWORD}", MYSQL_DB, "-e", statement],
+                 f"-u{MYSQL_USER}", f"-p{MYSQL_PASSWORD}", database, "-e", statement],
                 check=True, capture_output=True,
             )
             return
@@ -84,9 +90,33 @@ def sql(statement):
 
     subprocess.run(
         ["docker", "exec", "-i", MYSQL_CONTAINER, "mysql", "-uroot", "-proot",
-         MYSQL_DB, "-e", statement],
+         database, "-e", statement],
         check=True, capture_output=True,
     )
+
+
+def common(path, body=None, token=None, method=None):
+    """costonomy-common-api with the user's token: the bare object back, or ApiError."""
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(COMMON + path, data=data, method=method or ("POST" if body is not None else "GET"))
+    request.add_header("Content-Type", "application/json")
+    if token:
+        request.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(request) as response:
+            text = response.read()
+            return json.loads(text) if text else None
+    except urllib.error.HTTPError as error:
+        payload = json.load(error)
+        raise ApiError(path, payload.get("error") or payload)
+
+
+def activate(supplier_id):
+    """Verified and live in common: what Costonomy staff do through the verification queue and
+    POST /admin/suppliers/{id}/activate. A fresh local database has no staff account to do it."""
+    sql(f"update organization set verification_status = 'VERIFIED' where id = {supplier_id}")
+    sql("update app_enrollment set status = 'ACTIVE', is_live = 1 "
+        f"where org_id = {supplier_id} and app_code = 'MARKETPLACE' and outlet_id is null")
 
 
 def common_call(path, body):
@@ -242,7 +272,7 @@ STOCK = {
 
 
 def existing_supplier(token):
-    """The supplier this user already owns, if any.
+    """The supplier this user already owns, if any, as (supplier id, first store id).
 
     Re-running the seed is normal — after a migration, after a wipe of one table,
     or just to top up SKUs. Without this check each run created a *new* supplier
@@ -252,7 +282,8 @@ def existing_supplier(token):
     me = call("/auth/me", token=token)
     for membership in me.get("memberships", []):
         if membership["scopeType"] == "SUPPLIER" and membership["scopeId"]:
-            return call(f"/suppliers/{membership['scopeId']}", token=token)
+            stores = common(f"/v1/orgs/{membership['scopeId']}/outlets", token=token)
+            return membership["scopeId"], stores[0]["id"]
     return None
 
 
@@ -261,48 +292,44 @@ def seed_supplier(spec):
 
     already = existing_supplier(token)
     if already is not None:
-        supplier_id = already["id"]
-        store_id = already["stores"][0]["id"]
+        supplier_id, store_id = already
         # Ensure active on reuse as well
-        sql("update supplier_organization set lifecycle_status = 'ACTIVE', "
-            f"verification_status = 'VERIFIED' where id = {supplier_id}")
+        activate(supplier_id)
         enable_credit(token, store_id)
         print(f"  {spec['name']}: reusing supplier {supplier_id}, store {store_id}")
         return stock_store(token, supplier_id, store_id, spec)
 
-    created = call("/suppliers", {
+    # The business and its store are common's (D-208), enrolled in the Marketplace.
+    created = common("/v1/orgs", {
+        "orgType": "SUPPLIER",
         "legalName": spec["name"] + " Pvt Ltd",
         "displayName": spec["name"],
-        # D-097: a supplier and each of its stores carry their own contact, and
-        # both are required on create. The store's is the number a restaurant
-        # rings about a delivery, so it is the store's own, not the head office's.
+        # D-097: a supplier and each of its stores carry their own contact. The
+        # store's is the number a restaurant rings about a delivery, so it is the
+        # store's own, not the head office's.
         "contactName": spec["name"] + " Desk",
         "contactPhone": spec["phone"],
-        "firstStore": {
+        "enrollApps": ["MARKETPLACE"],
+        "firstOutlet": {
+            "kind": "STORE",
             "name": spec["name"] + " — " + spec["store"],
             "contactName": spec["store"] + " Desk",
             "contactPhone": spec["phone"],
             "addressLine1": spec["store"] + " Main Road",
             "city": "Bengaluru",
-            "state": "Karnataka",
+            "stateCode": "IN-KA",
             "pincode": "560071",
             "latitude": spec["lat"],
             "longitude": spec["lng"],
-            # No response window here: 2769c9f took it off the store and D-091
-            # put the supplier's clock on the request, so CreateStoreRequest
-            # refuses the field outright.
         },
     }, token=token)
 
     supplier_id = created["id"]
-    store_id = created["stores"][0]["id"]
+    store_id = created["outlets"][0]["id"]
 
-    # The one direct write. A supplier goes live only after a platform admin
-    # reviews its verification, and a fresh local database has no admin account
-    # to do the reviewing — see POST /admin/suppliers/{id}/activate for the path
-    # a real supplier takes.
-    sql("update supplier_organization set lifecycle_status = 'ACTIVE', "
-        f"verification_status = 'VERIFIED' where id = {supplier_id}")
+    # A supplier trades only after Costonomy staff verify and activate it, and a
+    # fresh local database has no staff account to do it.
+    activate(supplier_id)
 
     return stock_store(token, supplier_id, store_id, spec)
 
@@ -396,31 +423,34 @@ def seed_restaurant(spec):
     me = call("/auth/me", token=token)
     for membership in me.get("memberships", []):
         if membership["scopeType"] == "RESTAURANT" and membership["scopeId"]:
-            restaurant = call(f"/restaurants/{membership['scopeId']}", token=token)
-            outlet = restaurant["outlets"][0]
+            outlet = common(f"/v1/orgs/{membership['scopeId']}/outlets", token=token)[0]
             if outlet.get("latitude") is None:
-                call(f"/outlets/{outlet['id']}", {
+                common(f"/v1/outlets/{outlet['id']}", {
                     "latitude": spec["lat"],
                     "longitude": spec["lng"],
                 }, token=token, method="PATCH")
-                print(f"  {restaurant['name']}: located existing outlet {outlet['id']}")
+                print(f"  {membership['scopeName']}: located existing outlet {outlet['id']}")
             else:
-                print(f"  {restaurant['name']}: reusing outlet {outlet['id']}")
+                print(f"  {membership['scopeName']}: reusing outlet {outlet['id']}")
             return token, outlet["id"]
 
-    created = call("/restaurants", {
-        "name": spec["name"],
+    created = common("/v1/orgs", {
+        "orgType": "RESTAURANT",
+        "displayName": spec["name"],
+        "enrollApps": ["MARKETPLACE"],
         "firstOutlet": {
+            "kind": "OUTLET",
             "name": spec["outlet"],
             "addressLine1": spec["outlet"] + " Main Road",
             "city": "Bengaluru",
-            "state": "Karnataka",
+            "stateCode": "IN-KA",
             "pincode": "560038",
+            "contactPhone": spec["phone"],
             "latitude": spec["lat"],
             "longitude": spec["lng"],
         },
     }, token=token)
-    print(f"  {created['name']}: restaurant {created['id']}, outlet {created['outlets'][0]['id']}")
+    print(f"  {created['displayName']}: restaurant {created['id']}, outlet {created['outlets'][0]['id']}")
     return token, created["outlets"][0]["id"]
 
 
@@ -586,20 +616,19 @@ def seed_operator():
     it — tracking, receiving, rating, disputes — is unreachable outside the Java
     suite.
 
-    Granted by direct insert because granting a platform role is deliberately not
-    an API a tenant can call. That is the same reason this only ever runs against
-    a local database.
+    Granted by direct insert into costonomy-common-api's grants (D-208), because
+    granting a platform role is deliberately not an API a tenant can call. That is
+    the same reason this only ever runs against a local database. Common reads
+    access changes within a minute.
     """
     token = login(OPERATOR_PHONE)
     user_id = call("/auth/me", token=token)["user"]["id"]
 
     sql(
-        "insert into user_role (user_id, role_id, scope_type, scope_id, status, "
-        "granted_at, created_at, updated_at, version) "
-        "select %d, r.id, 'PLATFORM', null, 'ACTIVE', now(6), now(6), now(6), 0 "
-        "from role r where r.code = 'OPS_ADMIN' "
-        "and not exists (select 1 from user_role ur where ur.user_id = %d "
-        "and ur.role_id = r.id and ur.scope_type = 'PLATFORM')" % (user_id, user_id)
+        "insert into role_grant (user_id, role_id, scope_type) "
+        "select %d, r.id, 'PLATFORM' from role r where r.code = 'OPS_ADMIN' and r.is_platform = 1 "
+        "and not exists (select 1 from role_grant g where g.user_id = %d "
+        "and g.role_id = r.id and g.scope_type = 'PLATFORM')" % (user_id, user_id)
     )
     print(f"  operations account {OPERATOR_PHONE} (user {user_id}) — OPS_ADMIN at platform scope")
 

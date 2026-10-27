@@ -1,23 +1,30 @@
 package com.costonomy.mp.billing.service;
 
+import com.costonomy.mp.identity.common.Directory;
+import com.costonomy.security.client.CommonApiClient.AppOutlet;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Facts from procurement, catalog, supplier and restaurant that billing needs, read through
  * {@link JdbcTemplate} across the module edge like the other directories. Billing no longer imports another
- * module's repositories or entities.
+ * module's repositories or entities. The supplier and the restaurant (names, GSTIN, address, state) are
+ * costonomy-common-api's, read through {@link Directory} (D-208).
  */
 @Service
 @RequiredArgsConstructor
 public class BillingDirectory {
 
     private final JdbcTemplate jdbc;
+    private final Directory directory;
 
     /** An order as billing sees it. Amounts the order stores; nothing here is recomputed. */
     public record OrderFacts(Long id, String status, String orderNumber, Long supplierStoreId, Long outletId,
@@ -85,30 +92,34 @@ public class BillingDirectory {
 
     /** The supplier as registered: legal name, never the display name, and the store's own address and state. */
     public Optional<SupplierParty> supplier(Long supplierStoreId) {
-        return jdbc.query("""
-                select o.id, o.legal_name, o.gstin,
-                       concat_ws(', ', s.address_line1, s.address_line2, s.city, s.pincode), s.state
-                  from supplier_store s
-                  join supplier_organization o on o.id = s.supplier_organization_id
-                 where s.id = ?
-                """,
-                (rs, row) -> new SupplierParty(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                        rs.getString(5)),
-                supplierStoreId).stream().findFirst();
+        return directory.outlet(supplierStoreId)
+                .filter(s -> "STORE".equals(s.kind()))
+                .map(s -> new SupplierParty(s.orgId(), s.orgLegalName(), s.gstin(), address(s), state(s)));
     }
 
     /** The buyer: the restaurant's legal name when it has one, else its name. */
     public Optional<BuyerParty> buyer(Long outletId) {
-        return jdbc.query("""
-                select r.id, coalesce(nullif(trim(r.legal_name), ''), r.name), r.gstin,
-                       concat_ws(', ', o.address_line1, o.address_line2, o.city, o.pincode), o.state
-                  from outlet o
-                  join restaurant r on r.id = o.restaurant_id
-                 where o.id = ?
-                """,
-                (rs, row) -> new BuyerParty(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                        rs.getString(5)),
-                outletId).stream().findFirst();
+        return directory.outlet(outletId)
+                .filter(o -> "OUTLET".equals(o.kind()))
+                .map(o -> new BuyerParty(o.orgId(),
+                        o.orgLegalName() != null && !o.orgLegalName().isBlank() ? o.orgLegalName().trim() : o.orgName(),
+                        o.gstin(), address(o), state(o)));
+    }
+
+    /** Address lines, city and pincode, skipping what is not set; the state is printed on its own. */
+    private static String address(AppOutlet o) {
+        return Stream.of(o.addressLine1(), o.addressLine2(), o.city(), o.pincode())
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining(", "));
+    }
+
+    /**
+     * The state as a name {@link GstState#ofName} reads back to the right code. Common gives the GST code ("36")
+     * directly (D-208), so the place of supply is that code's state; only when common has no code is its state
+     * name used, matched exactly as a typed name was before. Never guessed: no match leaves the invoice refused.
+     */
+    private static String state(AppOutlet o) {
+        return GstState.ofCode(o.gstStateCode()).map(GstState::stateName).orElse(o.stateName());
     }
 
     /** The supplier store that owns an order, for the access check; empty when the order does not exist. */

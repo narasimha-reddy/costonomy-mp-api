@@ -1,5 +1,7 @@
 package com.costonomy.mp.delivery;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.delivery.domain.DeliveryMode;
 import com.costonomy.mp.delivery.domain.DeliveryStatus;
 import com.costonomy.mp.payment.provider.MockPaymentProvider;
@@ -57,13 +59,8 @@ class SupplierDeliveryMovementIT extends AbstractIntegrationTest {
     private String createStoreViewOnlyUser(Long storeId) throws Exception {
         String phone = ApiClient.freshPhone();
         String token = api.login(phone);
-        long userId = jdbc.queryForObject("select id from users where phone = ?", Long.class, "+91" + phone);
-        jdbc.update("""
-                insert into user_role (user_id, role_id, scope_type, scope_id, status,
-                                       granted_at, created_at, updated_at, version)
-                select ?, r.id, 'SUPPLIER_STORE', ?, 'ACTIVE', now(6), now(6), now(6), 0
-                  from role r where r.code = 'SUP_FINANCE_STAFF'
-                """, userId, storeId);
+        long userId = LocalCommon.userId("+91" + phone);
+        LocalCommon.grant(userId, "SUP_FINANCE_STAFF", "SUPPLIER_STORE", storeId);
         return token;
     }
 

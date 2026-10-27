@@ -1,5 +1,7 @@
 package com.costonomy.mp.credit;
 
+import com.costonomy.mp.support.LocalCommon;
+
 import com.costonomy.mp.common.outbox.OutboxPublisher;
 import com.costonomy.mp.credit.service.CreditInvoiceService;
 import com.costonomy.mp.credit.service.CreditJobs;
@@ -122,8 +124,7 @@ class CreditFlowIT extends AbstractIntegrationTest {
                 "firstStore", Map.of("contactName", "Store Desk", "contactPhone", "+919876500000", "name", "ABC store", "addressLine1", "Road No 36",
                         "city", "Hyderabad", "state", "Telangana",
                         "latitude", "17.4399", "longitude", "78.4983"))).get("data");
-        jdbc.update("update supplier_organization set lifecycle_status = 'ACTIVE', "
-                + "verification_status = 'VERIFIED' where id = ?", created.get("id").asLong());
+        LocalCommon.activate(created.get("id").asLong());
         TestCatalog.tradesAroundTheClock(jdbc, created.get("id").asLong());
         return new Seller(token, created.get("stores").get(0).get("id").asLong());
     }
@@ -940,9 +941,7 @@ class CreditFlowIT extends AbstractIntegrationTest {
     class RestaurantNotifications {
 
         private void registerDevice(Buyer buyer) throws Exception {
-            api.post(buyer.token(), "/api/v1/devices", Map.of(
-                    "platform", "ANDROID", "pushToken", "tok-" + UUID.randomUUID(),
-                    "appVersion", "1.0.0", "deviceModel", "Pixel"));
+            LocalCommon.registerDevice(LocalCommon.userIdOf(buyer.token()), "ANDROID", "tok-" + UUID.randomUUID());
         }
 
         /** This aggregate's outbox events of one type, handed to the relay as the outbox would. */

@@ -14,6 +14,7 @@ import com.costonomy.mp.common.config.AppConfigService;
 import com.costonomy.mp.common.domain.Serviceability;
 import com.costonomy.mp.common.error.NotFoundException;
 import com.costonomy.mp.discovery.web.dto.DiscoveryDtos;
+import com.costonomy.mp.identity.common.Directory;
 import com.costonomy.mp.procurement.domain.Pricing;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -49,6 +50,7 @@ public class SkuDetailService {
     private final SkuReviewRepository reviews;
     private final CanonicalProductRepository products;
     private final DiscoveryDirectory directory;
+    private final Directory common;
     private final CatalogDirectory brands;
     private final SupplierPerformanceProvider performance;
     private final AppConfigService config;
@@ -125,7 +127,7 @@ public class SkuDetailService {
                 metrics == null ? null : metrics.averageRating().orElse(null),
                 metrics == null ? 0 : metrics.ratingCount(),
                 average(published), published.size(),
-                published.stream().limit(REVIEWS).map(this::toResponse).toList(),
+                reviewResponses(published.stream().limit(REVIEWS).toList()),
                 siblings(sku),
                 brandOptions(sku, product == null ? null : product.getImageUrl()));
     }
@@ -263,13 +265,16 @@ public class SkuDetailService {
         return total.divide(BigDecimal.valueOf(published.size()), 1, RoundingMode.HALF_UP);
     }
 
-    private DiscoveryDtos.SkuReviewResponse toResponse(SkuReview review) {
-        var names = jdbc.queryForList(
-                "select name from outlet where id = ?", String.class, review.getOutletId());
-        return new DiscoveryDtos.SkuReviewResponse(
-                review.getId(), review.getRating(), review.getComment(),
-                names.isEmpty() ? null : names.get(0),
-                review.getCreatedAt());
+    /** The reviewer is labelled by outlet name, from common (D-208), in one batch. */
+    private List<DiscoveryDtos.SkuReviewResponse> reviewResponses(List<SkuReview> page) {
+        var outlets = common.outlets(page.stream().map(SkuReview::getOutletId).toList());
+        return page.stream().map(review -> {
+            var outlet = outlets.get(review.getOutletId());
+            return new DiscoveryDtos.SkuReviewResponse(
+                    review.getId(), review.getRating(), review.getComment(),
+                    outlet == null ? null : outlet.name(),
+                    review.getCreatedAt());
+        }).toList();
     }
 
 }
